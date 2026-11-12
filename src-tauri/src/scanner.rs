@@ -118,37 +118,6 @@ pub fn scan_repositories(options: ScanOptions) -> Result<Vec<GitRepositoryInfo>,
     .collect();
 
     const MAX_DEPENDENCY_DESCENT: usize = 4;
-const DEPENDENCY_PATH_NAMES: &[&str] = &[
-    "node_modules", "target", "vendor", ".cargo", ".rustup", ".npm",
-    ".pnpm-store", ".yarn", "venv", ".venv", "env", "site-packages",
-    "dist-packages", "__pycache__", ".gradle", ".nuget", "bower_components",
-    "pods", "dist", "build", "bin", "obj", "third_party", "third-party",
-];
-
-fn is_dependency_repository_path(path: &str) -> bool {
-    Path::new(path).components().any(|component| {
-        let part = component.as_os_str().to_string_lossy().to_lowercase();
-        DEPENDENCY_PATH_NAMES.contains(&part.as_str())
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_dependency_repository_path;
-    use std::path::MAIN_SEPARATOR;
-
-    #[test]
-    fn classifies_known_dependency_directories() {
-        let path = format!("projects{0}app{0}node_modules{0}some-package", MAIN_SEPARATOR);
-        assert!(is_dependency_repository_path(&path));
-    }
-
-    #[test]
-    fn does_not_classify_similarly_named_project_directories() {
-        let path = format!("projects{0}targeting-tool{0}src", MAIN_SEPARATOR);
-        assert!(!is_dependency_repository_path(&path));
-    }
-}
 
     for root in roots {
         let walker = WalkDir::new(&root)
@@ -228,6 +197,38 @@ mod tests {
     });
 
     Ok(repositories)
+}
+
+const DEPENDENCY_PATH_NAMES: &[&str] = &[
+    "node_modules", "target", "vendor", ".cargo", ".rustup", ".npm",
+    ".pnpm-store", ".yarn", "venv", ".venv", "env", "site-packages",
+    "dist-packages", "__pycache__", ".gradle", ".nuget", "bower_components",
+    "pods", "dist", "build", "bin", "obj", "third_party", "third-party",
+];
+
+fn is_dependency_repository_path(path: &str) -> bool {
+    Path::new(path).components().any(|component| {
+        let part = component.as_os_str().to_string_lossy().to_lowercase();
+        DEPENDENCY_PATH_NAMES.contains(&part.as_str())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_dependency_repository_path;
+    use std::path::MAIN_SEPARATOR;
+
+    #[test]
+    fn classifies_known_dependency_directories() {
+        let path = format!("projects{0}app{0}node_modules{0}some-package", MAIN_SEPARATOR);
+        assert!(is_dependency_repository_path(&path));
+    }
+
+    #[test]
+    fn does_not_classify_similarly_named_project_directories() {
+        let path = format!("projects{0}targeting-tool{0}src", MAIN_SEPARATOR);
+        assert!(!is_dependency_repository_path(&path));
+    }
 }
 
 /// Groups indexed repositories by parent directory and computes summary counts for Remote vs Local

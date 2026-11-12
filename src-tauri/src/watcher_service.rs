@@ -137,6 +137,8 @@ pub fn check_all_repos_for_updates(root_paths: Vec<String>) -> Vec<RepoUpdateNot
         root_paths: roots,
         max_depth: Some(5),
         include_hidden_dirs: Some(false),
+        // Background update polling is limited to primary project repositories.
+        index_dependency_repositories: Some(false),
     }) {
         Ok(list) => list,
         Err(_) => return Vec::new(),
