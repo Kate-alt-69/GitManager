@@ -3,8 +3,10 @@ pub mod remote_providers;
 pub mod scanner;
 pub mod watcher_service;
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::path::BaseDirectory;
 use std::sync::atomic::Ordering;
@@ -32,6 +34,117 @@ pub struct AppState {
     pub watcher: BackgroundWatcherControl,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppPreferences {
+    pub scan_roots: Vec<String>,
+    pub max_scan_depth: usize,
+    pub include_hidden_dirs: bool,
+    pub index_dependency_repositories: bool,
+    pub show_dependency_repositories: bool,
+    pub first_run_complete: bool,
+}
+
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self {
+            scan_roots: default_scan_roots()
+                .into_iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect(),
+            max_scan_depth: 8,
+            include_hidden_dirs: false,
+            index_dependency_repositories: true,
+            show_dependency_repositories: false,
+            first_run_complete: false,
+        }
+    }
+}
+
+fn preferences_file(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let directory = app_handle
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not resolve GitManager config directory: {error}"))?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
+    Ok(directory.join("preferences.json"))
+}
+
+#[tauri::command]
+fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String> {
+    let path = preferences_file(&app_handle)?;
+    if !path.is_file() {
+        return Ok(AppPreferences::default());
+    }
+
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("Could not read GitManager preferences: {error}"))?;
+    if content.len() > 256 * 1024 {
+        return Err("GitManager preferences file is unexpectedly large.".to_string());
+    }
+
+    let mut preferences: AppPreferences = serde_json::from_str(&content)
+        .map_err(|error| format!("GitManager preferences are invalid JSON: {error}"))?;
+    preferences.scan_roots = normalize_scan_roots(preferences.scan_roots)?;
+    preferences.max_scan_depth = preferences.max_scan_depth.clamp(2, 16);
+    Ok(preferences)
+}
+
+fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
+    if roots.len() > 32 {
+        return Err("GitManager supports up to 32 scan roots.".to_string());
+    }
+
+    let mut normalized = Vec::new();
+    for root in roots {
+        let raw = root.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(raw);
+        if !path.is_dir() {
+            return Err(format!("Scan root is not an existing directory: {raw}"));
+        }
+        let canonical = fs::canonicalize(&path)
+            .map_err(|error| format!("Could not resolve scan root {raw}: {error}"))?;
+        let value = canonical.to_string_lossy().to_string();
+        if !normalized.iter().any(|existing: &String| existing.eq_ignore_ascii_case(&value)) {
+            normalized.push(value);
+        }
+    }
+
+    if normalized.is_empty() {
+        return Err("Add at least one directory to scan.".to_string());
+    }
+    Ok(normalized)
+}
+
+#[tauri::command]
+fn save_app_preferences(
+    app_handle: AppHandle,
+    mut preferences: AppPreferences,
+) -> Result<AppPreferences, String> {
+    preferences.scan_roots = normalize_scan_roots(preferences.scan_roots)?;
+    if !(2..=16).contains(&preferences.max_scan_depth) {
+        return Err("Scan depth must be between 2 and 16.".to_string());
+    }
+
+    let path = preferences_file(&app_handle)?;
+    let temporary = path.with_extension("json.tmp");
+    let content = serde_json::to_vec_pretty(&preferences)
+        .map_err(|error| format!("Could not serialize GitManager preferences: {error}"))?;
+    fs::write(&temporary, content)
+        .map_err(|error| format!("Could not write GitManager preferences: {error}"))?;
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("Could not replace GitManager preferences: {error}"))?;
+    }
+    fs::rename(&temporary, &path)
+        .map_err(|error| format!("Could not save GitManager preferences: {error}"))?;
+    Ok(preferences)
+}
+
 #[tauri::command]
 fn get_default_scan_directories() -> Vec<String> {
     default_scan_roots()
@@ -46,12 +159,14 @@ fn scan_machine_repositories(
     max_depth: Option<usize>,
     include_hidden_dirs: Option<bool>,
     filter_mode: Option<String>,
+    index_dependency_repositories: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<IndexedRepoSummary, String> {
     let local_repos = scan_repositories(ScanOptions {
         root_paths,
         max_depth,
         include_hidden_dirs,
+        index_dependency_repositories,
     })?;
 
     let mut combined = local_repos;
@@ -453,6 +568,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             get_default_scan_directories,
+            load_app_preferences,
+            save_app_preferences,
             scan_machine_repositories,
             inspect_repository,
             connect_git_account,

@@ -11,6 +11,7 @@ pub struct ScanOptions {
     pub root_paths: Vec<String>,
     pub max_depth: Option<usize>,
     pub include_hidden_dirs: Option<bool>,
+    pub index_dependency_repositories: Option<bool>,
 }
 
 /// Default common developer directories across Windows 10/11, Linux, and macOS
@@ -51,6 +52,7 @@ pub fn default_scan_roots() -> Vec<PathBuf> {
 pub fn scan_repositories(options: ScanOptions) -> Result<Vec<GitRepositoryInfo>, String> {
     let max_depth = options.max_depth.unwrap_or(6);
     let include_hidden = options.include_hidden_dirs.unwrap_or(false);
+    let index_dependencies = options.index_dependency_repositories.unwrap_or(true);
 
     let roots: Vec<PathBuf> = if options.root_paths.is_empty() {
         default_scan_roots()
@@ -66,27 +68,87 @@ pub fn scan_repositories(options: ScanOptions) -> Result<Vec<GitRepositoryInfo>,
     let mut discovered_workdirs: HashSet<PathBuf> = HashSet::new();
     let mut repositories: Vec<GitRepositoryInfo> = Vec::new();
 
-    // Ignored heavy/system folders across Windows, macOS, and Linux
+    // These folders are never useful scan roots; project dependency folders are
+    // handled separately so nested Git repositories can still be indexed.
     let ignored_names: HashSet<&str> = [
-        "node_modules",
-        "target",
-        "dist",
-        "build",
-        "vendor",
-        ".cargo",
-        ".rustup",
-        ".npm",
-        ".cache",
         "AppData",
         "Library",
         "System Volume Information",
         "$RECYCLE.BIN",
-        "venv",
-        ".venv",
-        "__pycache__",
+        "Windows",
+        "Program Files",
+        "Program Files (x86)",
+        "ProgramData",
+        "Recovery",
+        "proc",
+        "sys",
+        "dev",
+        "Volumes",
     ]
     .into_iter()
     .collect();
+
+    let dependency_names: HashSet<&str> = [
+        "node_modules",
+        "target",
+        "vendor",
+        ".cargo",
+        ".rustup",
+        ".npm",
+        ".pnpm-store",
+        ".yarn",
+        "venv",
+        ".venv",
+        "env",
+        "site-packages",
+        "dist-packages",
+        "__pycache__",
+        ".gradle",
+        ".nuget",
+        "bower_components",
+        "Pods",
+        "dist",
+        "build",
+        "bin",
+        "obj",
+        "third_party",
+        "third-party",
+    ]
+    .into_iter()
+    .collect();
+
+    const MAX_DEPENDENCY_DESCENT: usize = 4;
+const DEPENDENCY_PATH_NAMES: &[&str] = &[
+    "node_modules", "target", "vendor", ".cargo", ".rustup", ".npm",
+    ".pnpm-store", ".yarn", "venv", ".venv", "env", "site-packages",
+    "dist-packages", "__pycache__", ".gradle", ".nuget", "bower_components",
+    "pods", "dist", "build", "bin", "obj", "third_party", "third-party",
+];
+
+fn is_dependency_repository_path(path: &str) -> bool {
+    Path::new(path).components().any(|component| {
+        let part = component.as_os_str().to_string_lossy().to_lowercase();
+        DEPENDENCY_PATH_NAMES.contains(&part.as_str())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_dependency_repository_path;
+    use std::path::MAIN_SEPARATOR;
+
+    #[test]
+    fn classifies_known_dependency_directories() {
+        let path = format!("projects{0}app{0}node_modules{0}some-package", MAIN_SEPARATOR);
+        assert!(is_dependency_repository_path(&path));
+    }
+
+    #[test]
+    fn does_not_classify_similarly_named_project_directories() {
+        let path = format!("projects{0}targeting-tool{0}src", MAIN_SEPARATOR);
+        assert!(!is_dependency_repository_path(&path));
+    }
+}
 
     for root in roots {
         let walker = WalkDir::new(&root)
@@ -95,13 +157,47 @@ pub fn scan_repositories(options: ScanOptions) -> Result<Vec<GitRepositoryInfo>,
             .into_iter()
             .filter_entry(|entry| {
                 let name = entry.file_name().to_string_lossy();
+                let relative = match entry.path().strip_prefix(&root) {
+                    Ok(path) => path,
+                    Err(_) => return false,
+                };
+                let components: Vec<String> = relative
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
+                    .collect();
+
+                // Yield the .git marker itself but never walk through its object database.
+                if components.iter().take(components.len().saturating_sub(1)).any(|part| part == ".git") {
+                    return false;
+                }
                 if name == ".git" {
                     return true;
                 }
-                if ignored_names.contains(name.as_ref()) {
+                let lower_name = name.to_lowercase();
+                if ignored_names.contains(lower_name.as_str()) {
                     return false;
                 }
-                if !include_hidden && name.starts_with('.') && entry.depth() > 0 {
+
+                let dependency_index = components
+                    .iter()
+                    .position(|part| dependency_names.contains(part.as_str()));
+                if let Some(index) = dependency_index {
+                    if !index_dependencies {
+                        return false;
+                    }
+                    let depth_inside_dependency = components.len().saturating_sub(index + 1);
+                    if depth_inside_dependency > MAX_DEPENDENCY_DESCENT {
+                        return false;
+                    }
+                }
+
+                let inside_dependency = dependency_index.is_some();
+                if !include_hidden
+                    && name.starts_with('.')
+                    && entry.depth() > 0
+                    && !inside_dependency
+                    && !dependency_names.contains(name.as_ref())
+                {
                     return false;
                 }
                 true
@@ -141,6 +237,8 @@ pub struct IndexedRepoSummary {
     pub by_folder: HashMap<String, Vec<String>>,
     pub remote_count: usize,
     pub local_only_count: usize,
+    pub dependency_count: usize,
+    pub dependency_repo_ids: Vec<String>,
     pub effective_filter_mode: String,
 }
 
@@ -148,6 +246,14 @@ pub fn build_indexed_summary(repos: Vec<GitRepositoryInfo>, requested_filter: &s
     let remote_count = repos.iter().filter(|r| r.has_remote).count();
     let local_only_count = repos.iter().filter(|r| !r.has_remote).count();
 
+    let mut dependency_repo_ids = Vec::new();
+    for repo in &repos {
+        if is_dependency_repository_path(&repo.path) {
+            dependency_repo_ids.push(repo.id.clone());
+        }
+    }
+
+    let dependency_count = dependency_repo_ids.len();
     let mut by_folder: HashMap<String, Vec<String>> = HashMap::new();
     for repo in &repos {
         by_folder
@@ -178,6 +284,8 @@ pub fn build_indexed_summary(repos: Vec<GitRepositoryInfo>, requested_filter: &s
         by_folder,
         remote_count,
         local_only_count,
+        dependency_count,
+        dependency_repo_ids,
         effective_filter_mode,
     }
 }
