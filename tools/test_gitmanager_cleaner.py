@@ -122,6 +122,7 @@ class GitManagerCleanerTests(unittest.TestCase):
         installed = cleaner.set_commit_clean_hook(self.root, helper, enabled=True)
         self.assertTrue(installed["enabled"])
         hook = Path(installed["hook_path"])
+        hooks = hook.parent
         self.assertIn("GitManager managed Commit Clean hook v1", hook.read_text(encoding="utf-8"))
         disabled = cleaner.set_commit_clean_hook(self.root, helper, enabled=False)
         self.assertFalse(disabled["enabled"])
