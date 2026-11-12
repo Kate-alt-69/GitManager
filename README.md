@@ -121,3 +121,10 @@ On first launch, GitManager asks which directories to index. Add one or more fol
 CI lookups are read-only and use public provider endpoints; they do not trigger or rerun pipelines.
 
 Per-repository Auto Update and unattended Keep Remote Clean / Commit Clean automation are not enabled by this dashboard stage. Those policies need their own explicit settings and safe execution flow before they can perform background pulls or remote writes.
+
+
+### Per-repository Auto Update
+
+Local repositories expose an **Auto Update** preference in their inspector. When enabled, the in-app watcher and standalone OS service may fast-forward that repository automatically only when the working tree is clean and the local branch has no commits missing from the remote. GitManager uses fast-forward-only update semantics; dirty or divergent repositories remain manual notifications. The background watcher uses the scan roots saved during first-run setup.
+
+Keep Remote Clean and Commit Clean remain separate follow-up features; they are not presented as active automation controls in this build.

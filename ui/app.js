@@ -264,6 +264,9 @@ function renderUpdateNotificationsTray() {
             <div class="update-alert-copy">
               <strong>${escapeHtml(promptText)}</strong>
               <span>Branch <code>${escapeHtml(upd.branch)}</code> is ${upd.commits_behind} commit(s) behind remote (${escapeHtml((upd.remote_oid || "").slice(0, 7))})</span>
+              ${upd.failure_message ? `<span class="update-alert-error">${escapeHtml(upd.automatic_attempt ? "Auto Update stopped safely: " : "Update failed: ")}${escapeHtml(upd.failure_message)}</span>` : ""}
+              ${upd.working_tree_clean === false ? '<span class="update-alert-note">Working tree has local changes; automatic update is disabled for this repository.</span>' : ""}
+              ${Number(upd.commits_ahead) > 0 ? '<span class="update-alert-note">Local branch has commits not on origin; update requires manual review.</span>' : ""}
             </div>
           </div>
           <div class="update-alert-actions">
@@ -306,9 +309,9 @@ function renderUpdateNotificationsTray() {
   });
 }
 
-async function acceptAndPullRepoUpdate(repoPath) {
+async function acceptAndPullRepoUpdate(repoPath, automatic = false) {
   pullingRepoPaths.add(repoPath);
-  setServiceCheckingVisual(true, `Updating ${repoPath}...`);
+  setServiceCheckingVisual(true, automatic ? `Auto-updating ${repoPath}...` : `Updating ${repoPath}...`);
   renderUpdateNotificationsTray();
 
   try {
@@ -316,8 +319,11 @@ async function acceptAndPullRepoUpdate(repoPath) {
     pendingUpdateAlerts = pendingUpdateAlerts.filter((u) => u.repo_path !== repoPath);
     await runMachineScan();
   } catch (err) {
-    // In browser demo preview mode, simulate successful fast-forward update
-    pendingUpdateAlerts = pendingUpdateAlerts.filter((u) => u.repo_path !== repoPath);
+    const alert = pendingUpdateAlerts.find((item) => item.repo_path === repoPath);
+    if (alert) {
+      alert.failure_message = String((err && err.message) || err || "Update failed");
+      alert.automatic_attempt = automatic;
+    }
   } finally {
     pullingRepoPaths.delete(repoPath);
     setServiceCheckingVisual(false, "Svc: Watching Remotes");
@@ -338,11 +344,30 @@ function setServiceCheckingVisual(isChecking, text) {
 }
 
 function pushRepoUpdateAlert(upd) {
-  const exists = pendingUpdateAlerts.some((u) => u.repo_path === upd.repo_path);
-  if (!exists) {
+  if (!upd || !upd.repo_path || pullingRepoPaths.has(upd.repo_path)) return;
+  const repo = allRepositories.find((item) => item.id === upd.repo_id);
+  const settings = repo ? repositoryAutomationSettings(repo) : null;
+  const safeForAutoUpdate =
+    repo &&
+    repo.source_kind === "local_scan" &&
+    settings &&
+    settings.autoUpdate === true &&
+    upd.working_tree_clean === true &&
+    Number(upd.commits_ahead) === 0;
+
+  const existing = pendingUpdateAlerts.find((item) => item.repo_path === upd.repo_path);
+  if (existing) {
+    Object.assign(existing, upd);
+  } else {
     pendingUpdateAlerts.push(upd);
-    renderUpdateNotificationsTray();
   }
+
+  if (safeForAutoUpdate) {
+    void acceptAndPullRepoUpdate(upd.repo_path, true);
+    return;
+  }
+
+  renderUpdateNotificationsTray();
 }
 
 function renderGitTreeGraph(container, commits, selectedOid, onSelectCommit) {
@@ -875,6 +900,38 @@ function renderRepositoryDashboard(container) {
   refreshDashboardCiStatuses(repositories);
 }
 
+function repositoryAutomationSettings(repo) {
+  if (!appPreferences.repositorySettings) appPreferences.repositorySettings = {};
+  if (!appPreferences.repositorySettings[repo.id]) {
+    appPreferences.repositorySettings[repo.id] = {
+      autoUpdate: false,
+      keepRemoteClean: false,
+      commitClean: false
+    };
+  }
+  return appPreferences.repositorySettings[repo.id];
+}
+
+async function saveRepositoryAutoUpdate(repo, enabled, checkbox, status) {
+  const settings = repositoryAutomationSettings(repo);
+  const previous = Boolean(settings.autoUpdate);
+  settings.autoUpdate = enabled;
+  if (checkbox) checkbox.disabled = true;
+  if (status) status.textContent = "Saving…";
+  try {
+    appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
+    if (status) status.textContent = enabled
+      ? "Auto Update enabled · clean fast-forwards only"
+      : "Auto Update disabled";
+  } catch (error) {
+    settings.autoUpdate = previous;
+    if (checkbox) checkbox.checked = previous;
+    if (status) status.textContent = "Could not save: " + String((error && error.message) || error);
+  } finally {
+    if (checkbox) checkbox.disabled = false;
+  }
+}
+
 function renderSelectedRepositoryDetails() {
   const headerEl = document.getElementById("repo-detail-header");
   const treeContainer = document.getElementById("git-tree-container");
@@ -944,6 +1001,14 @@ function renderSelectedRepositoryDetails() {
       </div>
     </div>
   `;
+
+  const autoUpdateCheckbox = document.getElementById("repo-auto-update");
+  if (autoUpdateCheckbox) {
+    autoUpdateCheckbox.addEventListener("change", () => {
+      const status = document.getElementById("repo-auto-update-status");
+      void saveRepositoryAutoUpdate(repo, autoUpdateCheckbox.checked, autoUpdateCheckbox, status);
+    });
+  }
 
   const backToDashboardBtn = document.getElementById("btn-back-to-dashboard");
   if (backToDashboardBtn) {
@@ -1047,6 +1112,16 @@ function renderSelectedRepositoryDetails() {
       </div>
     </div>
 
+    <div class="inspector-card-block automation-settings-card">
+      <h4 class="inspector-section-title">Repository Automation</h4>
+      <label class="repository-setting-option">
+        <input id="repo-auto-update" type="checkbox" ${repositoryAutomationSettings(repo).autoUpdate ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} />
+        <span><strong>Auto Update</strong><small>Automatically fast-forward when remote commits arrive, but only if this repository has no uncommitted files and no local-only commits.</small></span>
+      </label>
+      <div id="repo-auto-update-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).autoUpdate ? "Auto Update enabled · clean fast-forwards only" : "Auto Update is off for this repository") : "Available for locally indexed repositories only"}</div>
+      <p class="repository-setting-note">Background Service must be enabled. Unsafe or divergent updates remain as manual notifications. Keep Remote Clean and Commit Clean are not enabled in this build yet.</p>
+    </div>
+
     <div class="inspector-card-block">
       <h4 class="inspector-section-title">Configured Remotes (${repo.remotes.length})</h4>
       ${remotesHtml}
@@ -1134,26 +1209,18 @@ async function runMachineScan(customRoot) {
 async function triggerManualUpdateCheck(customRoot) {
   setServiceCheckingVisual(true, "Svc: Checking Remotes...");
   try {
-    const rootPaths = customRoot && customRoot.trim().length > 0 ? [customRoot.trim()] : [];
+    const rootPaths = customRoot && customRoot.trim().length > 0
+      ? [customRoot.trim()]
+      : (appPreferences && appPreferences.scanRoots) || [];
     const updates = await tauriInvoke("check_repo_updates_now", { rootPaths });
     if (Array.isArray(updates) && updates.length > 0) {
       updates.forEach(pushRepoUpdateAlert);
     }
     setServiceCheckingVisual(false, `Svc: Checked (${updates.length} update(s))`);
   } catch (err) {
-    // Demo fallback notification so the user can preview the exact prompt & loading icon anywhere
-    const sampleRepo = allRepositories[0] || DEMO_REPOSITORIES[0];
-    pushRepoUpdateAlert({
-      repo_id: sampleRepo.id,
-      repo_name: sampleRepo.name,
-      repo_path: sampleRepo.path,
-      branch: sampleRepo.current_branch,
-      local_oid: "c100001",
-      remote_oid: "f987654",
-      commits_behind: 2,
-      prompt_message: `Hay you have ${sampleRepo.name} update do you want to update it?`
-    });
-    setServiceCheckingVisual(false, "Svc: Watching Remotes");
+    setServiceCheckingVisual(false, "Svc: Update check failed");
+    const note = document.getElementById("filter-status-note");
+    if (note) note.textContent = "Could not check remote updates: " + String((err && err.message) || err);
   }
 }
 

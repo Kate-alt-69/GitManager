@@ -1512,3 +1512,49 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* Per-repository automation and safe update feedback */
+.repository-setting-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.repository-setting-option input {
+  margin-top: 3px;
+  accent-color: var(--accent-blue);
+}
+.repository-setting-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.repository-setting-option strong {
+  font-size: 12px;
+  font-weight: 700;
+}
+.repository-setting-option small {
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.repository-setting-status {
+  margin-top: 9px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+.repository-setting-note {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.update-alert-error {
+  color: #ff7b72 !important;
+}
+.update-alert-note {
+  color: #d2a8ff !important;
+}

@@ -3,6 +3,7 @@ pub mod remote_providers;
 pub mod scanner;
 pub mod watcher_service;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,6 +35,14 @@ pub struct AppState {
     pub watcher: BackgroundWatcherControl,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RepositoryPreferences {
+    pub auto_update: bool,
+    pub keep_remote_clean: bool,
+    pub commit_clean: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppPreferences {
@@ -42,6 +51,7 @@ pub struct AppPreferences {
     pub include_hidden_dirs: bool,
     pub index_dependency_repositories: bool,
     pub show_dependency_repositories: bool,
+    pub repository_settings: HashMap<String, RepositoryPreferences>,
     pub first_run_complete: bool,
 }
 
@@ -56,6 +66,7 @@ impl Default for AppPreferences {
             include_hidden_dirs: false,
             index_dependency_repositories: true,
             show_dependency_repositories: false,
+            repository_settings: HashMap::new(),
             first_run_complete: false,
         }
     }
@@ -86,7 +97,22 @@ fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String>
 
     let mut preferences: AppPreferences = serde_json::from_str(&content)
         .map_err(|error| format!("GitManager preferences are invalid JSON: {error}"))?;
-    preferences.scan_roots = normalize_scan_roots(preferences.scan_roots)?;
+    // Keep disconnected drive roots in the saved setup so removable/external
+    // drives can be scanned again when they are mounted.
+    let mut retained_roots = Vec::new();
+    for raw_root in preferences.scan_roots.drain(..).take(32) {
+        let root = raw_root.trim();
+        if root.is_empty() {
+            continue;
+        }
+        let value = fs::canonicalize(root)
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|_| root.to_string());
+        if !retained_roots.iter().any(|existing: &String| existing.eq_ignore_ascii_case(&value)) {
+            retained_roots.push(value);
+        }
+    }
+    preferences.scan_roots = retained_roots;
     preferences.max_scan_depth = preferences.max_scan_depth.clamp(2, 16);
     Ok(preferences)
 }
@@ -556,10 +582,13 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             let state = app.state::<AppState>();
+            let preferences = load_app_preferences(app.handle().clone())
+                .unwrap_or_else(|_| AppPreferences::default());
             spawn_background_update_watcher(
                 app.handle().clone(),
                 state.watcher.enabled.clone(),
                 state.watcher.checking_now.clone(),
+                preferences.scan_roots,
             );
             Ok(())
         })
