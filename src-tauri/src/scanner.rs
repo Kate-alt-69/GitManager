@@ -71,19 +71,19 @@ pub fn scan_repositories(options: ScanOptions) -> Result<Vec<GitRepositoryInfo>,
     // These folders are never useful scan roots; project dependency folders are
     // handled separately so nested Git repositories can still be indexed.
     let ignored_names: HashSet<&str> = [
-        "AppData",
-        "Library",
-        "System Volume Information",
-        "$RECYCLE.BIN",
-        "Windows",
-        "Program Files",
-        "Program Files (x86)",
-        "ProgramData",
-        "Recovery",
+        "appdata",
+        "library",
+        "system volume information",
+        "$recycle.bin",
+        "windows",
+        "program files",
+        "program files (x86)",
+        "programdata",
+        "recovery",
         "proc",
         "sys",
         "dev",
-        "Volumes",
+        "volumes",
     ]
     .into_iter()
     .collect();

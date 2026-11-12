@@ -104,3 +104,20 @@ Add --include-virtualenvs to include validated Python environments. --include-wi
 A repository can add a .gitmanager-cleanignore file at its root with one relative path or glob pattern per line to exclude cleanup candidates for that repository. Existing .gitignore rules are reported in the preview, and remote cleanup appends a clearly marked GitManager-managed block to .gitignore only when it actually removes tracked generated outputs. Existing user-authored ignore rules are preserved.
 
 The cleaner needs Python 3.10 or newer on PATH (py -3.10, py -3, python3, or python). The native GitManager app remains Rust/Tauri; Python is only used when invoking the cleaner. Automatic commit hooks and unattended Keep Remote Clean scheduling are intentionally not enabled by this first cleaner integration.
+
+
+---
+
+## 5. Workspace Setup & Repository Dashboard
+
+On first launch, GitManager asks which directories to index. Add one or more folders such as `D:/Project_Customs`, or choose a drive root such as `D:/` when a broader scan is intended. GitManager persists these preferences in its per-user application configuration directory; it does not automatically scan every system drive.
+
+- **Configurable roots and depth** — add/remove scan folders, restore recommended development folders, and choose a scan depth from 2 to 16 (8 by default).
+- **Dependency repositories stay indexed** — Git repositories found inside known dependency/build folders are classified separately. The scanner limits how deeply it descends into those folders so it can find nested package repositories without crawling every file in a dependency tree.
+- **Projects / Dependencies / All** — the main workspace defaults to Projects. Switch to Dependencies or All to inspect the indexed package/vendor repositories.
+- **Repository cards** — show the remote owner/repository name when available, latest local commit summary, current branch, and CI status. Public GitHub commit status and GitLab pipeline APIs are queried for recent local commit SHAs; statuses can show unavailable when a project is private, has no public status, or the provider cannot be queried.
+- **Persistent setup** — change scan folders and discovery options later from Scan Setup in the toolbar.
+
+CI lookups are read-only and use public provider endpoints; they do not trigger or rerun pipelines.
+
+Per-repository Auto Update and unattended Keep Remote Clean / Commit Clean automation are not enabled by this dashboard stage. Those policies need their own explicit settings and safe execution flow before they can perform background pulls or remote writes.

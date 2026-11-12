@@ -31,11 +31,15 @@ jobs:
         run: python -m unittest discover -s tools -p "test_*.py" -v
 
   rust-backend:
-    name: Tauri backend cargo check
+    name: Tauri backend tests
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Validate UI JavaScript syntax
+        run: |
+          node --check ui/app.js
+          node --check ui/cleaner.js
       - name: Install Linux Tauri build dependencies
         run: |
           sudo apt-get update
@@ -44,5 +48,5 @@ jobs:
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-      - name: Check Rust backend
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+      - name: Test Rust backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
