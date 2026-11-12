@@ -3,7 +3,10 @@ pub mod remote_providers;
 pub mod scanner;
 pub mod watcher_service;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use serde_json::Value;
+use tauri::path::BaseDirectory;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -213,6 +216,198 @@ fn control_background_service(
     })
 }
 
+
+
+fn resolve_cleaner_script(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let bundled = app_handle
+        .path()
+        .resolve("tools/gitmanager_cleaner.py", BaseDirectory::Resource)
+        .map_err(|e| format!("Could not resolve the bundled cleaner: {e}"))?;
+    if bundled.is_file() {
+        return Ok(bundled);
+    }
+
+    // Keep source checkouts usable when running with cargo/tauri dev.
+    let current = std::env::current_dir().map_err(|e| e.to_string())?;
+    let candidates = [
+        current.join("tools/gitmanager_cleaner.py"),
+        current.join("../tools/gitmanager_cleaner.py"),
+        current.join("../../tools/gitmanager_cleaner.py"),
+    ];
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| format!("Python cleaner resource was not found (checked {}).", bundled.display()))
+}
+
+fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value, String> {
+    let script = resolve_cleaner_script(&app_handle)?;
+    #[cfg(target_os = "windows")]
+    let interpreters: Vec<(String, Vec<String>)> = vec![
+        ("py".to_string(), vec!["-3.10".to_string()]),
+        ("py".to_string(), vec!["-3".to_string()]),
+        ("python".to_string(), vec![]),
+    ];
+    #[cfg(not(target_os = "windows"))]
+    let interpreters: Vec<(String, Vec<String>)> = vec![
+        ("python3".to_string(), vec![]),
+        ("python".to_string(), vec![]),
+    ];
+
+    let mut last_error = String::new();
+    for (executable, prefix) in interpreters {
+        let output = Command::new(&executable)
+            .args(prefix)
+            .arg(&script)
+            .args(&args)
+            .env("PYTHONUTF8", "1")
+            .output();
+
+        let output = match output {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                last_error = format!("Could not start {executable}: {error}");
+                continue;
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            last_error = if stderr.is_empty() {
+                format!("{executable} exited with status {}", output.status)
+            } else {
+                stderr
+            };
+            // A Python version too old to parse the helper can fall through to
+            // another installed interpreter. Other errors should be reported.
+            if last_error.contains("SyntaxError") || last_error.contains("invalid syntax") {
+                continue;
+            }
+            return Err(last_error);
+        }
+
+        return serde_json::from_slice::<Value>(&output.stdout)
+            .map_err(|e| format!("Cleaner returned invalid JSON: {e}"));
+    }
+
+    if last_error.is_empty() {
+        last_error = "Python 3.10 or newer was not found in PATH (tried py -3.10, py -3, python3, and python).".to_string();
+    }
+    Err(last_error)
+}
+
+fn cleaner_arguments(
+    command: &str,
+    scope: &str,
+    repo_path: Option<String>,
+    remote_url: Option<String>,
+    branch: Option<String>,
+    include_dependencies: bool,
+    include_virtualenvs: bool,
+    include_windows_junk: bool,
+    confirmation: Option<String>,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    match (command, scope) {
+        ("plan", "repository") | ("apply", "repository") => {
+            args.extend([command.to_string(), "--scope".to_string(), "repository".to_string()]);
+            let path = repo_path.filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "Select a local Git repository first.".to_string())?;
+            args.extend(["--path".to_string(), path]);
+        }
+        ("plan", "system") | ("apply", "system") => {
+            args.extend([command.to_string(), "--scope".to_string(), "system".to_string()]);
+            if include_windows_junk {
+                args.push("--include-windows-junk".to_string());
+            }
+        }
+        ("remote-plan", "remote") | ("remote-clean", "remote") => {
+            args.push(command.to_string());
+            let url = remote_url.filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "The selected repository does not have a usable remote URL.".to_string())?;
+            args.extend(["--url".to_string(), url]);
+            if let Some(value) = branch.filter(|value| !value.trim().is_empty()) {
+                args.extend(["--branch".to_string(), value]);
+            }
+            if command == "remote-clean" {
+                args.push("--push".to_string());
+            }
+        }
+        _ => return Err("Unsupported cleanup scope.".to_string()),
+    }
+
+    if include_dependencies {
+        args.push("--include-dependencies".to_string());
+    }
+    if include_virtualenvs {
+        args.push("--include-virtualenvs".to_string());
+    }
+    if let Some(value) = confirmation {
+        args.extend(["--confirm".to_string(), value]);
+    }
+    Ok(args)
+}
+
+#[tauri::command]
+async fn cleaner_preview(
+    app_handle: AppHandle,
+    scope: String,
+    repo_path: Option<String>,
+    remote_url: Option<String>,
+    branch: Option<String>,
+    include_dependencies: Option<bool>,
+    include_virtualenvs: Option<bool>,
+    include_windows_junk: Option<bool>,
+) -> Result<Value, String> {
+    let args = cleaner_arguments(
+        if scope == "remote" { "remote-plan" } else { "plan" },
+        &scope,
+        repo_path,
+        remote_url,
+        branch,
+        include_dependencies.unwrap_or(false),
+        include_virtualenvs.unwrap_or(false),
+        include_windows_junk.unwrap_or(false),
+        None,
+    )?;
+    tokio::task::spawn_blocking(move || run_cleaner_script(app_handle, args))
+        .await
+        .map_err(|e| format!("Cleaner task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn cleaner_apply(
+    app_handle: AppHandle,
+    scope: String,
+    repo_path: Option<String>,
+    remote_url: Option<String>,
+    branch: Option<String>,
+    include_dependencies: Option<bool>,
+    include_virtualenvs: Option<bool>,
+    include_windows_junk: Option<bool>,
+    confirm_text: String,
+) -> Result<Value, String> {
+    if confirm_text != "YES" {
+        return Err("Type YES exactly to confirm cleanup.".to_string());
+    }
+    let args = cleaner_arguments(
+        if scope == "remote" { "remote-clean" } else { "apply" },
+        &scope,
+        repo_path,
+        remote_url,
+        branch,
+        include_dependencies.unwrap_or(false),
+        include_virtualenvs.unwrap_or(false),
+        include_windows_junk.unwrap_or(false),
+        Some(confirm_text),
+    )?;
+    tokio::task::spawn_blocking(move || run_cleaner_script(app_handle, args))
+        .await
+        .map_err(|e| format!("Cleaner task failed: {e}"))?
+}
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -236,7 +431,9 @@ pub fn run() {
             connect_git_account,
             check_repo_updates_now,
             pull_repository_update,
-            control_background_service
+            control_background_service,
+            cleaner_preview,
+            cleaner_apply
         ])
         .run(tauri::generate_context!())
         .expect("error while running GitManager Tauri v2 application");
