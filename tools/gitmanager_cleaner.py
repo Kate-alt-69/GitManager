@@ -268,6 +268,10 @@ def build_repo_plan(
     prune_names = {
         ".git", ".hg", ".svn", "node_modules", "target", "vendor",
         ".venv", "venv", "env", ".tox", ".nox", ".uv", "__pycache__",
+        "dist", "build", "bin", "obj", ".next", ".turbo", ".nuxt",
+        ".output", ".svelte-kit", ".parcel-cache", ".vite", ".cache",
+        ".pytest_cache", ".mypy_cache", ".ruff_cache", ".gradle",
+        ".dart_tool", ".zig-cache", "zig-out",
     }
     for current, dirs, files in os.walk(repo, topdown=True, followlinks=False):
         current_path = Path(current)
@@ -285,6 +289,7 @@ def build_repo_plan(
                 (".nuxt", "Nuxt output"), (".output", "Nitro output"),
                 (".svelte-kit", "SvelteKit output"), (".parcel-cache", "Parcel cache"),
                 (".cache", "Node project cache"), (".vite", "Vite cache"),
+                ("dist", "Node distribution output"),
             ]:
                 add(current_path / name, label, "Build cache")
             for name in (".cache", ".vite", ".tmp"):

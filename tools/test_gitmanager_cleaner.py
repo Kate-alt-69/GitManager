@@ -20,6 +20,8 @@ class GitManagerCleanerTests(unittest.TestCase):
         (self.root / ".gitignore").write_text("node_modules/\n.next/\n", encoding="utf-8")
         (self.root / ".next").mkdir()
         (self.root / ".next" / "cache.bin").write_bytes(b"x" * 1024)
+        (self.root / "dist").mkdir()
+        (self.root / "dist" / "bundle.js").write_bytes(b"built" * 128)
         (self.root / "node_modules").mkdir()
         (self.root / "node_modules" / "dep.js").write_text("module.exports = 1", encoding="utf-8")
         (self.root / "src").mkdir()
@@ -34,6 +36,7 @@ class GitManagerCleanerTests(unittest.TestCase):
         plan = cleaner.build_repo_plan(self.root)
         paths = {item["relative_path"] for item in plan["candidates"]}
         self.assertIn(".next", paths)
+        self.assertIn("dist", paths)
         self.assertNotIn("node_modules", paths)
         self.assertTrue((self.root / ".next").exists())
         with_deps = cleaner.build_repo_plan(self.root, include_dependencies=True)
@@ -60,8 +63,9 @@ class GitManagerCleanerTests(unittest.TestCase):
     def test_apply_preserves_git_and_source(self):
         plan = cleaner.build_repo_plan(self.root)
         result = cleaner.apply_plan(plan, confirmation="YES")
-        self.assertEqual(result["removed_count"], 1)
+        self.assertEqual(result["removed_count"], 2)
         self.assertFalse((self.root / ".next").exists())
+        self.assertFalse((self.root / "dist").exists())
         self.assertTrue((self.root / ".git").exists())
         self.assertTrue((self.root / "src/app.js").exists())
 
