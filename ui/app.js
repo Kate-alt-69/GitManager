@@ -932,6 +932,45 @@ async function saveRepositoryAutoUpdate(repo, enabled, checkbox, status) {
   }
 }
 
+async function saveRepositoryCommitClean(repo, enabled, checkbox, status) {
+  const previous = Boolean(repositoryAutomationSettings(repo).commitClean);
+  if (enabled && !window.confirm(
+    "Install GitManager's pre-commit hook for this repository? It removes detected generated/dependency paths from the commit index while keeping their files on disk. Existing custom hooks will not be overwritten."
+  )) {
+    if (checkbox) checkbox.checked = previous;
+    return;
+  }
+
+  if (checkbox) checkbox.disabled = true;
+  if (status) status.textContent = enabled ? "Installing pre-commit hook…" : "Removing pre-commit hook…";
+  try {
+    const result = await tauriInvoke("set_repository_commit_clean", {
+      repoPath: repo.path,
+      enabled
+    });
+    repositoryAutomationSettings(repo).commitClean = enabled;
+    appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
+    if (status) status.textContent = result.message || (enabled ? "Commit Clean hook installed" : "Commit Clean hook removed");
+  } catch (error) {
+    try {
+      await tauriInvoke("set_repository_commit_clean", {
+        repoPath: repo.path,
+        enabled: previous
+      });
+    } catch (rollbackError) {
+      if (status) status.textContent = "Could not apply or roll back hook: " +
+        String((rollbackError && rollbackError.message) || rollbackError);
+    }
+    repositoryAutomationSettings(repo).commitClean = previous;
+    if (checkbox) checkbox.checked = previous;
+    if (status && !status.textContent.startsWith("Could not apply or roll back")) {
+      status.textContent = "Could not update Commit Clean: " + String((error && error.message) || error);
+    }
+  } finally {
+    if (checkbox) checkbox.disabled = false;
+  }
+}
+
 function renderSelectedRepositoryDetails() {
   const headerEl = document.getElementById("repo-detail-header");
   const treeContainer = document.getElementById("git-tree-container");
@@ -1007,6 +1046,13 @@ function renderSelectedRepositoryDetails() {
     autoUpdateCheckbox.addEventListener("change", () => {
       const status = document.getElementById("repo-auto-update-status");
       void saveRepositoryAutoUpdate(repo, autoUpdateCheckbox.checked, autoUpdateCheckbox, status);
+    });
+  }
+  const commitCleanCheckbox = document.getElementById("repo-commit-clean");
+  if (commitCleanCheckbox) {
+    commitCleanCheckbox.addEventListener("change", () => {
+      const status = document.getElementById("repo-commit-clean-status");
+      void saveRepositoryCommitClean(repo, commitCleanCheckbox.checked, commitCleanCheckbox, status);
     });
   }
 
@@ -1119,7 +1165,12 @@ function renderSelectedRepositoryDetails() {
         <span><strong>Auto Update</strong><small>Automatically fast-forward when remote commits arrive, but only if this repository has no uncommitted files and no local-only commits.</small></span>
       </label>
       <div id="repo-auto-update-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).autoUpdate ? "Auto Update enabled · clean fast-forwards only" : "Auto Update is off for this repository") : "Available for locally indexed repositories only"}</div>
-      <p class="repository-setting-note">Background Service must be enabled. Unsafe or divergent updates remain as manual notifications. Keep Remote Clean and Commit Clean are not enabled in this build yet.</p>
+      <label class="repository-setting-option">
+        <input id="repo-commit-clean" type="checkbox" ${repositoryAutomationSettings(repo).commitClean ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} />
+        <span><strong>Commit Clean</strong><small>Install a pre-commit hook that omits detected generated/dependency paths from commits while preserving the files in your working tree.</small></span>
+      </label>
+      <div id="repo-commit-clean-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).commitClean ? "Commit Clean hook enabled" : "Commit Clean hook is not installed") : "Available for locally indexed repositories only"}</div>
+      <p class="repository-setting-note">Auto Update requires the Background Service and only performs clean fast-forwards. Commit Clean uses the repository's default Git hooks folder and refuses to replace existing custom pre-commit hooks. Keep Remote Clean remains a separate follow-up workflow.</p>
     </div>
 
     <div class="inspector-card-block">

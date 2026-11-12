@@ -528,6 +528,224 @@ def remote_plan(
         return plan
 
 
+MANAGED_EXCLUDE_BEGIN = "# >>> GitManager Commit Clean excludes >>>"
+MANAGED_EXCLUDE_END = "# <<< GitManager Commit Clean excludes <<<"
+
+
+def _git_common_dir(repo: Path) -> Path:
+    result = _git(repo, "rev-parse", "--git-common-dir")
+    if result.returncode != 0:
+        raise ValueError(f"Could not resolve the common Git directory: {result.stderr.strip()}")
+    path = Path(result.stdout.strip())
+    if not path.is_absolute():
+        path = repo / path
+    return path.resolve(strict=True)
+
+
+def _default_hooks_dir(repo: Path) -> Path:
+    configured = _git(repo, "config", "--local", "--get", "core.hooksPath")
+    if configured.returncode == 0 and configured.stdout.strip():
+        raise ValueError(
+            "This repository already uses a custom core.hooksPath. GitManager will not modify custom hook directories."
+        )
+    common_dir = _git_common_dir(repo)
+    hooks_dir = common_dir / "hooks"
+    if _is_linklike(hooks_dir):
+        raise ValueError("GitManager refused a symlinked .git/hooks directory.")
+    if not _is_relative_to(hooks_dir.resolve(strict=False), common_dir):
+        raise ValueError("GitManager refused an unexpected hooks directory.")
+    return hooks_dir
+
+
+def _managed_exclude_rules(plan: dict, removed_paths: list[str]) -> list[str]:
+    removed = set(removed_paths)
+    rules = []
+    for item in plan.get("candidates", []):
+        if item.get("path") not in removed:
+            continue
+        relative = str(item.get("relative_path", "")).replace("\\", "/").strip("/")
+        if relative:
+            rules.append("/" + relative + ("/" if item.get("kind") == "directory" else ""))
+    return sorted(set(rules), key=str.casefold)
+
+
+def _local_exclude_file(repo: Path) -> Path:
+    common_dir = _git_common_dir(repo)
+    info_dir = common_dir / "info"
+    exclude_file = info_dir / "exclude"
+    if _is_linklike(info_dir) or _is_linklike(exclude_file):
+        raise ValueError("GitManager refused a symlinked .git/info/exclude path.")
+    return exclude_file
+
+
+def _update_local_excludes(repo: Path, plan: dict, removed_paths: list[str]) -> None:
+    rules = _managed_exclude_rules(plan, removed_paths)
+    if not rules:
+        return
+    exclude_file = _local_exclude_file(repo)
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude_file.read_text(encoding="utf-8") if exclude_file.exists() else ""
+    lines = existing.splitlines()
+    begin = lines.index(MANAGED_EXCLUDE_BEGIN) if MANAGED_EXCLUDE_BEGIN in lines else -1
+    previous_rules = []
+    if begin >= 0:
+        try:
+            end = lines.index(MANAGED_EXCLUDE_END, begin + 1)
+        except ValueError:
+            end = begin
+        previous_rules = [
+            line for line in lines[begin + 1:end]
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        lines = lines[:begin] + lines[end + 1:]
+    existing_rules = set(lines)
+    combined = sorted((set(previous_rules) | set(rules)) - existing_rules, key=str.casefold)
+    if combined:
+        body = "\n".join(lines).rstrip()
+        block = "\n".join([MANAGED_EXCLUDE_BEGIN, *combined, MANAGED_EXCLUDE_END])
+        exclude_file.write_text(body + ("\n\n" if body else "") + block + "\n", encoding="utf-8")
+
+
+def commit_clean_index(
+    repo_path: str | Path,
+    *,
+    include_dependencies: bool = True,
+) -> dict:
+    """Remove generated candidates from the Git index only; preserve every working-tree file."""
+    repo = _git_repo_root(Path(repo_path).expanduser())
+    plan = build_repo_plan(
+        repo,
+        include_dependencies=include_dependencies,
+        include_virtualenvs=False,
+        include_build_caches=True,
+        include_tracked=True,
+    )
+    omitted: list[str] = []
+    failures: list[str] = []
+    tracked_candidates = [item for item in plan["candidates"] if item.get("tracked")]
+    # Validate the local exclude destination before altering the index so a
+    # symlinked .git/info/exclude cannot leave a half-applied cleanup.
+    if tracked_candidates:
+        _local_exclude_file(repo)
+    for item in tracked_candidates:
+        relative = item["relative_path"]
+        if not _safe_candidate(Path(item["path"]), repo):
+            failures.append(f"{relative}: safety check rejected the path")
+            continue
+        result = _git(repo, "rm", "--cached", "-r", "-f", "--", relative, timeout=120)
+        if result.returncode == 0:
+            omitted.append(relative)
+        else:
+            failures.append(f"{relative}: {(result.stderr or result.stdout).strip()}")
+
+    if omitted:
+        _update_local_excludes(repo, plan, [item["path"] for item in plan["candidates"] if item["relative_path"] in omitted])
+
+    return {
+        "scope": "commit",
+        "repository": str(repo),
+        "removed_count": len(omitted),
+        "omitted_paths": omitted,
+        "working_tree_preserved": True,
+        "failures": failures,
+    }
+
+
+def _commit_hook_contents() -> str:
+    return """#!/bin/sh
+# GitManager managed Commit Clean hook v1
+HOOK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 1
+if command -v py >/dev/null 2>&1 && py -3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
+  exec py -3 "$HOOK_DIR/gitmanager_cleaner.py" commit-clean --path "$REPO_ROOT"
+elif command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
+  exec python3 "$HOOK_DIR/gitmanager_cleaner.py" commit-clean --path "$REPO_ROOT"
+elif command -v python >/dev/null 2>&1 && python -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
+  exec python "$HOOK_DIR/gitmanager_cleaner.py" commit-clean --path "$REPO_ROOT"
+fi
+echo "[GitManager] Commit Clean requires Python 3.10 or newer (python3, py -3, or python)." >&2
+exit 1
+"""
+
+
+def set_commit_clean_hook(
+    repo_path: str | Path,
+    script_path: str | Path,
+    *,
+    enabled: bool,
+) -> dict:
+    repo = _git_repo_root(Path(repo_path).expanduser())
+    hooks_dir = _default_hooks_dir(repo)
+    hook_path = hooks_dir / "pre-commit"
+    helper_path = hooks_dir / "gitmanager_cleaner.py"
+    if _is_linklike(hook_path) or _is_linklike(helper_path):
+        raise ValueError("GitManager refused a symlinked pre-commit hook or helper path.")
+    hook_contents = _commit_hook_contents()
+
+    if not enabled:
+        if not hook_path.exists():
+            return {"enabled": False, "changed": False, "message": "No GitManager Commit Clean hook was installed."}
+        try:
+            current = hook_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"Could not inspect the pre-commit hook: {exc}") from exc
+        if current != hook_contents:
+            raise ValueError(
+                "The current pre-commit hook is not the exact GitManager-managed hook. It was left untouched."
+            )
+        hook_path.unlink()
+        # Delete only the exact helper copy installed beside our hook.
+        if helper_path.is_file():
+            try:
+                helper_text = helper_path.read_text(encoding="utf-8")
+            except OSError:
+                helper_text = ""
+            if (
+                "GitManager's cross-platform, preview-first developer cache cleaner." in helper_text
+                and "def set_commit_clean_hook(" in helper_text
+            ):
+                helper_path.unlink()
+        return {"enabled": False, "changed": True, "message": "GitManager Commit Clean hook removed."}
+
+    source = Path(script_path).resolve(strict=True)
+    if not source.is_file():
+        raise ValueError(f"Cleaner helper does not exist: {source}")
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    if hook_path.exists():
+        current = hook_path.read_text(encoding="utf-8")
+        if current != hook_contents:
+            raise ValueError(
+                "A pre-commit hook already exists. GitManager will not overwrite or chain an existing custom hook."
+            )
+    if helper_path.exists() and helper_path.read_bytes() != source.read_bytes():
+        try:
+            installed_helper = helper_path.read_text(encoding="utf-8")
+        except OSError:
+            installed_helper = ""
+        if (
+            "GitManager's cross-platform, preview-first developer cache cleaner." not in installed_helper
+            or "def set_commit_clean_hook(" not in installed_helper
+        ):
+            raise ValueError("A different gitmanager_cleaner.py already exists in .git/hooks; it was left untouched.")
+        # Refresh only a copy that identifies itself as GitManager-managed.
+        shutil.copy2(source, helper_path)
+
+    if not helper_path.exists():
+        shutil.copy2(source, helper_path)
+    if not hook_path.exists():
+        hook_path.write_text(hook_contents, encoding="utf-8", newline="\n")
+        try:
+            hook_path.chmod(hook_path.stat().st_mode | 0o111)
+        except OSError:
+            pass
+    return {
+        "enabled": True,
+        "changed": True,
+        "hook_path": str(hook_path),
+        "message": "GitManager Commit Clean hook installed. Generated outputs will be omitted from commits while their working-tree files are preserved.",
+    }
+
+
 def remote_clean(
     url: str, *, confirmation: str, branch: Optional[str] = None,
     include_dependencies: bool = True, include_virtualenvs: bool = False,
@@ -620,6 +838,15 @@ def _parser() -> argparse.ArgumentParser:
         if command == "apply":
             current.add_argument("--confirm", required=True, help="Must be exactly YES")
 
+    commit_clean = sub.add_parser("commit-clean", help="Omit generated output from the Git index before commit without deleting working files")
+    commit_clean.add_argument("--path", default=".")
+    commit_clean.add_argument("--no-dependencies", action="store_true")
+
+    hook = sub.add_parser("commit-hook", help="Install or remove the repository-local GitManager pre-commit hook")
+    hook.add_argument("--path", required=True)
+    hook.add_argument("--script", help="Path to the bundled GitManager cleaner Python helper")
+    hook.add_argument("--disable", action="store_true")
+
     remote = sub.add_parser("remote-plan", help="Temporarily clone and preview tracked generated outputs")
     remote.add_argument("--url", required=True)
     remote.add_argument("--branch")
@@ -657,6 +884,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                     plan, confirmation=args.confirm, include_tracked=args.include_tracked
                 )
                 print(json.dumps(result, indent=2))
+        elif args.command == "commit-clean":
+            result = commit_clean_index(
+                args.path,
+                include_dependencies=not args.no_dependencies,
+            )
+            print(json.dumps(result, indent=2))
+        elif args.command == "commit-hook":
+            if args.disable:
+                result = set_commit_clean_hook(args.path, "", enabled=False)
+            else:
+                if not args.script:
+                    raise ValueError("Installing the hook requires --script.")
+                result = set_commit_clean_hook(args.path, args.script, enabled=True)
+            print(json.dumps(result, indent=2))
         elif args.command == "remote-plan":
             result = remote_plan(
                 args.url, args.branch, include_dependencies=not args.no_dependencies,

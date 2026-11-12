@@ -518,6 +518,35 @@ fn cleaner_arguments(
 }
 
 #[tauri::command]
+async fn set_repository_commit_clean(
+    app_handle: AppHandle,
+    repo_path: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    if repo_path.trim().is_empty() {
+        return Err("Select a local Git repository first.".to_string());
+    }
+    let script = resolve_cleaner_script(&app_handle)?;
+    let mut args = vec![
+        "commit-hook".to_string(),
+        "--path".to_string(),
+        repo_path,
+    ];
+    if enabled {
+        args.extend([
+            "--script".to_string(),
+            script.to_string_lossy().to_string(),
+        ]);
+    } else {
+        args.push("--disable".to_string());
+    }
+
+    tokio::task::spawn_blocking(move || run_cleaner_script(app_handle, args))
+        .await
+        .map_err(|error| format!("Commit Clean hook task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn cleaner_preview(
     app_handle: AppHandle,
     scope: String,
@@ -606,7 +635,8 @@ pub fn run() {
             pull_repository_update,
             control_background_service,
             cleaner_preview,
-            cleaner_apply
+            cleaner_apply,
+            set_repository_commit_clean
         ])
         .run(tauri::generate_context!())
         .expect("error while running GitManager Tauri v2 application");

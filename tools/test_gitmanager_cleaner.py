@@ -69,6 +69,74 @@ class GitManagerCleanerTests(unittest.TestCase):
         self.assertTrue((self.root / ".git").exists())
         self.assertTrue((self.root / "src/app.js").exists())
 
+    def test_commit_clean_unstages_generated_paths_without_deleting_worktree(self):
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "-f", "dist/bundle.js"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-qm", "track generated output"],
+            check=True,
+        )
+        result = cleaner.commit_clean_index(self.root, include_dependencies=False)
+        self.assertEqual(result["removed_count"], 1)
+        self.assertIn("dist", result["omitted_paths"])
+        self.assertTrue(result["working_tree_preserved"])
+        self.assertTrue((self.root / "dist" / "bundle.js").is_file())
+        listed = subprocess.run(
+            ["git", "-C", str(self.root), "ls-files", "--", "dist"],
+            text=True, capture_output=True, check=True,
+        )
+        self.assertEqual(listed.stdout.strip(), "")
+        exclude = (self.root / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+        self.assertIn("/dist/", exclude)
+
+    def test_commit_clean_refuses_symlinked_exclude_before_changing_index(self):
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "-f", "dist/bundle.js"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-qm", "track generated output"],
+            check=True,
+        )
+        external = Path(self.temp.name) / "external-exclude"
+        external.write_text("# user file\n", encoding="utf-8")
+        exclude = self.root / ".git" / "info" / "exclude"
+        exclude.unlink()
+        try:
+            exclude.symlink_to(external)
+        except (OSError, NotImplementedError):
+            self.skipTest("Symlinks are not available")
+        with self.assertRaises(ValueError):
+            cleaner.commit_clean_index(self.root, include_dependencies=False)
+        listed = subprocess.run(
+            ["git", "-C", str(self.root), "ls-files", "--", "dist"],
+            text=True, capture_output=True, check=True,
+        )
+        self.assertIn("dist/bundle.js", listed.stdout)
+        self.assertEqual(external.read_text(encoding="utf-8"), "# user file\n")
+
+    def test_commit_clean_hook_installs_and_removes_only_its_own_hook(self):
+        helper = Path(cleaner.__file__).resolve()
+        installed = cleaner.set_commit_clean_hook(self.root, helper, enabled=True)
+        self.assertTrue(installed["enabled"])
+        hook = Path(installed["hook_path"])
+        self.assertIn("GitManager managed Commit Clean hook v1", hook.read_text(encoding="utf-8"))
+        disabled = cleaner.set_commit_clean_hook(self.root, helper, enabled=False)
+        self.assertFalse(disabled["enabled"])
+        self.assertFalse(hook.exists())
+        self.assertFalse((hooks / "gitmanager_cleaner.py").exists())
+
+    def test_commit_clean_hook_refuses_to_replace_existing_user_hook(self):
+        hooks = self.root / ".git" / "hooks"
+        hooks.mkdir(exist_ok=True)
+        existing = hooks / "pre-commit"
+        existing.write_text("#!/bin/sh\\necho user-hook\\n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            cleaner.set_commit_clean_hook(self.root, Path(cleaner.__file__).resolve(), enabled=True)
+        self.assertEqual(existing.read_text(encoding="utf-8"), "#!/bin/sh\\necho user-hook\\n")
+
     def test_custom_cleanignore_is_repository_specific(self):
         (self.root / ".gitmanager-cleanignore").write_text(".next/\n", encoding="utf-8")
         plan = cleaner.build_repo_plan(self.root)

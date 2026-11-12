@@ -128,3 +128,10 @@ Per-repository Auto Update and unattended Keep Remote Clean / Commit Clean autom
 Local repositories expose an **Auto Update** preference in their inspector. When enabled, the in-app watcher and standalone OS service may fast-forward that repository automatically only when the working tree is clean and the local branch has no commits missing from the remote. GitManager uses fast-forward-only update semantics; dirty or divergent repositories remain manual notifications. The background watcher uses the scan roots saved during first-run setup.
 
 Keep Remote Clean and Commit Clean remain separate follow-up features; they are not presented as active automation controls in this build.
+
+
+### Per-repository Commit Clean
+
+The repository inspector can install **Commit Clean** as a Git `pre-commit` hook for a locally indexed repository. On commit, it detects tracked generated/build/dependency paths and removes those paths from the Git index for that commit. It does **not** delete the files from the working tree. Exact paths are added to that repository's local `.git/info/exclude`, preserving the shared `.gitignore` and excluding those generated paths from future `git add .` operations.
+
+The hook requires Python 3.10 or newer. GitManager installs only into the repository's default `.git/hooks` directory, refuses custom `core.hooksPath` configurations, and will not overwrite an existing custom `pre-commit` hook. Disable Commit Clean in the same repository inspector to remove the GitManager-managed hook.
