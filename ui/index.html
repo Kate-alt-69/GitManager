@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GitManager — Pure-Rust &amp; Tauri v2 Git Explorer</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <!-- Top Action & Scan Bar -->
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-logo" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1">
+              <circle cx="6" cy="6" r="3"></circle>
+              <circle cx="18" cy="6" r="3"></circle>
+              <circle cx="6" cy="18" r="3"></circle>
+              <path d="M6 9v6"></path>
+              <path d="M18 9a9 9 0 0 1-9 9"></path>
+            </svg>
+          </div>
+          <div>
+            <h1 class="brand-title">GitManager</h1>
+            <span class="brand-subtitle">Pure Rust + Tauri v2 Crate • Background Update Service (`svchost` / Daemon)</span>
+          </div>
+        </div>
+
+        <div class="scan-controls">
+          <!-- Background Service & Clear Loading Indicator Pill -->
+          <div id="service-status-pill" class="service-status-pill" title="Background Repo Update Watcher Service (Windows svchost/sc.exe • Linux systemd • macOS launchd)">
+            <svg id="service-spinner-icon" class="loading-spinner active-spin" width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity="0.25" stroke-width="3"></circle>
+              <path d="M12 3a9 9 0 0 1 9 9" stroke="#58a6ff" stroke-width="3" stroke-linecap="round"></path>
+            </svg>
+            <span id="service-status-text">Svc: Watching Remotes</span>
+            <button id="btn-check-updates-now" class="btn-mini" title="Check all repos for remote updates right now">
+              Check Updates
+            </button>
+            <button id="btn-register-os-service" class="btn-mini" title="Register OS Background Service (sc.exe / svchost on Windows, systemd on Linux, launchd on macOS)">
+              Register Svc
+            </button>
+          </div>
+
+          <input
+            id="scan-path-input"
+            type="text"
+            class="scan-input"
+            placeholder="Scan root folder (leave blank for default Projects/Home folders)..."
+          />
+          <button id="btn-browse-folder" class="btn btn-secondary" title="Pick a folder to index">
+            Browse Folder
+          </button>
+          <button id="btn-scan-repos" class="btn btn-primary">
+            Scan for .git Repos
+          </button>
+          <button id="btn-open-accounts" class="btn btn-accent">
+            Connect GitHub / GitLab
+          </button>
+        </div>
+      </header>
+
+      <!-- Live Background Service Update Notification Banner Container -->
+      <div id="update-notifications-tray" class="update-notifications-tray"></div>
+
+      <!-- Main 3-Pane Workspace -->
+      <div class="workspace-grid">
+        <!-- Left Sidebar: Indexed Repositories & Smart Remote/Local Filtering -->
+        <aside class="sidebar">
+          <div class="sidebar-controls">
+            <input
+              id="repo-search-input"
+              type="search"
+              class="search-input"
+              placeholder="Filter indexed repos by name, owner, email, or .git path..."
+            />
+
+            <!-- Remote vs Local Smart Filter Bar -->
+            <div class="filter-bar">
+              <div class="filter-label-row">
+                <span class="section-caption">AVAILABILITY FILTER</span>
+                <span id="filter-fallback-badge" class="fallback-pill hidden">
+                  Auto-Grouped into 1
+                </span>
+              </div>
+              <div class="segmented-control" role="tablist">
+                <button id="filter-btn-grouped" class="seg-btn active" data-filter="grouped">
+                  All / Grouped (<span id="count-all">0</span>)
+                </button>
+                <button id="filter-btn-remote" class="seg-btn" data-filter="remote">
+                  Remote (<span id="count-remote">0</span>)
+                </button>
+                <button id="filter-btn-local" class="seg-btn" data-filter="local">
+                  Local (<span id="count-local">0</span>)
+                </button>
+              </div>
+              <p id="filter-status-note" class="filter-note">
+                Showing both Remote &amp; Local repositories.
+              </p>
+            </div>
+
+            <!-- Indexing Group By Selector -->
+            <div class="index-mode-row">
+              <label for="index-group-select" class="section-caption">INDEX BY:</label>
+              <select id="index-group-select" class="select-control">
+                <option value="folder">Parent Folder</option>
+                <option value="git_dir">.git Folder Location</option>
+                <option value="provider">Remote Provider (GitHub / GitLab / Local)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Connected Remote Accounts Strip -->
+          <div id="connected-accounts-bar" class="connected-accounts-bar hidden"></div>
+
+          <!-- Indexed Repository List -->
+          <div id="repo-list-container" class="repo-list-container"></div>
+        </aside>
+
+        <!-- Center & Right Pane: Selected Repository Header, Inspector Card & Full Git Tree -->
+        <main class="main-panel">
+          <div id="repo-detail-header" class="repo-detail-header"></div>
+
+          <div class="content-split">
+            <!-- Full Interactive Git Commit Graph Tree -->
+            <section class="git-tree-section">
+              <div class="panel-Subheader">
+                <h2>Full Git Commit Tree</h2>
+                <span id="tree-stats-badge" class="badge-pill">0 commits</span>
+              </div>
+              <div id="git-tree-container" class="git-tree-container"></div>
+            </section>
+
+            <!-- Repository & Selected Commit Metadata Inspector -->
+            <aside class="inspector-section">
+              <div class="panel-Subheader">
+                <h2>Repository &amp; .git Inspector</h2>
+              </div>
+              <div id="repo-inspector-card" class="inspector-body"></div>
+            </aside>
+          </div>
+        </main>
+      </div>
+
+      <!-- Connect GitHub / GitLab Account Modal -->
+      <div id="account-modal-backdrop" class="modal-backdrop hidden">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+          <div class="modal-header">
+            <h3 id="modal-title">Connect GitHub or GitLab Account</h3>
+            <button id="btn-close-modal" class="icon-close-btn" aria-label="Close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="modal-desc">
+              Connect a specific <strong>GitHub</strong> or <strong>GitLab</strong> account to list and inspect its remote repositories alongside your local <code>.git</code> folders.
+            </p>
+            <div class="form-group">
+              <label for="provider-select">Git Provider</label>
+              <select id="provider-select" class="select-control">
+                <option value="github">GitHub (github.com)</option>
+                <option value="gitlab">GitLab (gitlab.com)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="account-username">Account Username / Organization</label>
+              <input
+                id="account-username"
+                type="text"
+                class="scan-input"
+                placeholder="e.g. octocat, tauri-apps, or gitlab-org"
+              />
+            </div>
+            <div class="form-group">
+              <label for="account-token">Personal Access Token (Optional — required only for private repos)</label>
+              <input
+                id="account-token"
+                type="password"
+                class="scan-input"
+                placeholder="ghp_... or glpat-..."
+              />
+            </div>
+            <div id="modal-error-box" class="modal-error hidden"></div>
+          </div>
+          <div class="modal-footer">
+            <button id="btn-cancel-modal" class="btn btn-secondary">Cancel</button>
+            <button id="btn-submit-account" class="btn btn-primary">Connect &amp; Fetch Remote Repos</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
