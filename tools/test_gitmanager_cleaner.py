@@ -73,7 +73,12 @@ class GitManagerCleanerTests(unittest.TestCase):
     def test_remote_urls_are_restricted_to_https_and_ssh(self):
         cleaner._validate_remote_url("https://github.com/example/project.git")
         cleaner._validate_remote_url("git@github.com:example/project.git")
-        for bad in ("file:///tmp/repo", "-c core.hooksPath=/tmp", "https://host/repo\n--upload-pack=x"):
+        for bad in (
+            "file:///tmp/repo", "-c core.hooksPath=/tmp",
+            "https://host/repo\n--upload-pack=x",
+            "https://user:secret@github.com/example/project.git",
+            "ssh://git:secret@github.com/example/project.git",
+        ):
             with self.assertRaises(ValueError):
                 cleaner._validate_remote_url(bad)
 
@@ -94,6 +99,19 @@ class GitManagerCleanerTests(unittest.TestCase):
         home = Path.home().resolve()
         for item in plan["candidates"]:
             self.assertTrue(cleaner._is_relative_to(Path(item["path"]).resolve(), home))
+
+    def test_managed_ignore_rules_only_cover_removed_candidates(self):
+        plan = {
+            "candidates": [
+                {"path": "/tmp/clone/.next", "relative_path": ".next", "kind": "directory"},
+                {"path": "/tmp/clone/target", "relative_path": "target", "kind": "directory"},
+                {"path": "/tmp/clone/src/bin", "relative_path": "src/bin", "kind": "directory"},
+            ]
+        }
+        rules = cleaner.managed_ignore_rules(plan, ["/tmp/clone/.next"])
+        self.assertEqual(rules, ["/.next/"])
+        self.assertNotIn("/target/", rules)
+        self.assertNotIn("/src/bin/", rules)
 
     def test_remote_apply_never_omits_push_or_confirmation_guards(self):
         with self.assertRaises(ValueError):

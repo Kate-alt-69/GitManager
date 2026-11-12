@@ -222,9 +222,9 @@ fn resolve_cleaner_script(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let bundled = app_handle
         .path()
         .resolve("tools/gitmanager_cleaner.py", BaseDirectory::Resource)
-        .map_err(|e| format!("Could not resolve the bundled cleaner: {e}"))?;
-    if bundled.is_file() {
-        return Ok(bundled);
+        .ok();
+    if let Some(path) = bundled.as_ref().filter(|path| path.is_file()) {
+        return Ok(path.clone());
     }
 
     // Keep source checkouts usable when running with cargo/tauri dev.
@@ -237,7 +237,11 @@ fn resolve_cleaner_script(app_handle: &AppHandle) -> Result<PathBuf, String> {
     candidates
         .into_iter()
         .find(|path| path.is_file())
-        .ok_or_else(|| format!("Python cleaner resource was not found (checked {}).", bundled.display()))
+        .ok_or_else(|| {
+            let checked = bundled.map(|path| path.display().to_string())
+                .unwrap_or_else(|| "the Tauri resource directory".to_string());
+            format!("Python cleaner resource was not found (checked {}).", checked)
+        })
 }
 
 fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value, String> {
@@ -256,8 +260,25 @@ fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value,
 
     let mut last_error = String::new();
     for (executable, prefix) in interpreters {
+        let version_check = Command::new(&executable)
+            .args(&prefix)
+            .args(["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 3)"])
+            .output();
+        match version_check {
+            Ok(result) if result.status.success() => {}
+            Ok(_) => {
+                last_error = format!("{executable} does not provide Python 3.10 or newer.");
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                last_error = format!("Could not check {executable}: {error}");
+                continue;
+            }
+        }
+
         let output = Command::new(&executable)
-            .args(prefix)
+            .args(&prefix)
             .arg(&script)
             .args(&args)
             .env("PYTHONUTF8", "1")
@@ -337,7 +358,13 @@ fn cleaner_arguments(
         _ => return Err("Unsupported cleanup scope.".to_string()),
     }
 
-    if include_dependencies {
+    if scope == "remote" {
+        // Remote subcommands include dependencies by default; the remote parser
+        // uses the inverse opt-out flag rather than the local --include flag.
+        if !include_dependencies {
+            args.push("--no-dependencies".to_string());
+        }
+    } else if include_dependencies {
         args.push("--include-dependencies".to_string());
     }
     if include_virtualenvs {

@@ -1,0 +1,48 @@
+name: GitManager Cleaner CI
+
+on:
+  push:
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-cleaner:
+    name: Python cleaner (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile cleaner
+        run: python -m py_compile tools/gitmanager_cleaner.py
+      - name: Run cleaner safety tests
+        run: python -m unittest discover -s tools -p "test_*.py" -v
+
+  rust-backend:
+    name: Tauri backend cargo check
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Linux Tauri build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Check Rust backend
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets

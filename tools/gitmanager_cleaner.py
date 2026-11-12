@@ -27,13 +27,19 @@ from urllib.parse import urlparse
 VERSION = "1.0.0"
 MANAGED_IGNORE_BEGIN = "# >>> GitManager managed clean rules >>>"
 MANAGED_IGNORE_END = "# <<< GitManager managed clean rules <<<"
-MANAGED_IGNORE_RULES = [
-    "# Build outputs and reconstructable development caches",
-    "node_modules/", "target/", ".next/", ".turbo/", ".nuxt/", ".output/",
-    ".svelte-kit/", ".parcel-cache/", ".vite/", ".pytest_cache/",
-    ".mypy_cache/", ".ruff_cache/", "__pycache__/", "*.py[cod]",
-    ".gradle/", "bin/", "obj/", ".dart_tool/", ".zig-cache/", "zig-out/",
-]
+def managed_ignore_rules(plan: dict, removed_paths: list[str]) -> list[str]:
+    """Ignore only paths this cleanup actually removed; never blanket-ignore user folders."""
+    removed = set(removed_paths)
+    rules = []
+    for item in plan.get("candidates", []):
+        if item.get("path") not in removed:
+            continue
+        relative = str(item.get("relative_path", "")).replace("\\", "/").strip("/")
+        if not relative:
+            continue
+        rule = "/" + relative + ("/" if item.get("kind") == "directory" else "")
+        rules.append(rule)
+    return sorted(set(rules), key=str.casefold)
 
 
 @dataclass
@@ -475,6 +481,10 @@ def _validate_remote_url(url: str) -> None:
         raise ValueError("Remote URL contains invalid whitespace or option-like input.")
     parsed = urlparse(url)
     if parsed.scheme in ("https", "ssh") and parsed.hostname:
+        if parsed.scheme == "https" and (parsed.username or parsed.password):
+            raise ValueError("Do not embed credentials in a remote URL; use your Git credential manager.")
+        if parsed.password:
+            raise ValueError("Do not embed passwords in SSH URLs.")
         return
     if re.fullmatch(r"[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+(?:\.git)?", url):
         return
@@ -533,12 +543,34 @@ def remote_clean(
         if manage_gitignore and removed["removed_count"]:
             ignore_file = clone / ".gitignore"
             existing = ignore_file.read_text(encoding="utf-8") if ignore_file.exists() else ""
-            if MANAGED_IGNORE_BEGIN not in existing:
-                block = "\n".join([MANAGED_IGNORE_BEGIN, *MANAGED_IGNORE_RULES, MANAGED_IGNORE_END])
-                ignore_file.write_text(
-                    existing.rstrip() + ("\n\n" if existing.strip() else "") + block + "\n",
-                    encoding="utf-8",
+            managed_rules = managed_ignore_rules(plan, removed["removed"])
+            if managed_rules:
+                lines = existing.splitlines()
+                begin = lines.index(MANAGED_IGNORE_BEGIN) if MANAGED_IGNORE_BEGIN in lines else -1
+                previous_rules = []
+                if begin >= 0:
+                    try:
+                        end = lines.index(MANAGED_IGNORE_END, begin + 1)
+                    except ValueError:
+                        # A malformed marker must never cause user-authored lines to be dropped.
+                        end = begin
+                    previous_rules = [
+                        line for line in lines[begin + 1:end]
+                        if line.strip() and not line.lstrip().startswith("#")
+                    ]
+                    lines = lines[:begin] + lines[end + 1:]
+                existing_lines = set(lines)
+                combined_rules = sorted(
+                    (set(previous_rules) | set(managed_rules)) - existing_lines,
+                    key=str.casefold,
                 )
+                if combined_rules:
+                    block = [MANAGED_IGNORE_BEGIN, *combined_rules, MANAGED_IGNORE_END]
+                    merged = "\n".join(lines).rstrip()
+                    ignore_file.write_text(
+                        merged + ("\n\n" if merged else "") + "\n".join(block) + "\n",
+                        encoding="utf-8",
+                    )
         status = _git(clone, "status", "--porcelain")
         if not status.stdout.strip():
             return {"scope": "remote", "changed": False,
@@ -556,7 +588,7 @@ def remote_clean(
         )
         if pushed.returncode != 0:
             raise RuntimeError(
-                f"Cleanup commit was created locally but push failed: {(pushed.stderr or pushed.stdout).strip()}"
+                f"Push failed; the temporary cleanup branch was not published: {(pushed.stderr or pushed.stdout).strip()}"
             )
         head = _git(clone, "rev-parse", "HEAD").stdout.strip()
         return {
