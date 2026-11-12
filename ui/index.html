@@ -41,6 +41,8 @@
               Register Svc
             </button>
           </div>
+          <button id="btn-open-scan-settings" class="btn btn-secondary" title="Configure the directories GitManager indexes">Scan Setup</button>
+          <button id="btn-open-cleaner" class="btn btn-secondary" title="Preview repository or system developer-cache cleanup">Developer Cleaner</button>
 
           <input
             id="scan-path-input"
@@ -74,6 +76,16 @@
               class="search-input"
               placeholder="Filter indexed repos by name, owner, email, or .git path..."
             />
+
+            <div class="filter-bar kind-filter-bar">
+              <div class="filter-label-row"><span class="section-caption">REPOSITORY TYPE</span></div>
+              <div class="segmented-control">
+                <button class="seg-btn active" type="button" data-repo-kind="projects">Projects (<span data-repo-kind-count>0</span>)</button>
+                <button class="seg-btn" type="button" data-repo-kind="dependencies">Dependencies (<span data-repo-kind-count>0</span>)</button>
+                <button class="seg-btn" type="button" data-repo-kind="all">All (<span data-repo-kind-count>0</span>)</button>
+              </div>
+              <p class="filter-note">Dependency repositories stay indexed but separate from your main project list.</p>
+            </div>
 
             <!-- Remote vs Local Smart Filter Bar -->
             <div class="filter-bar">
@@ -142,6 +154,116 @@
         </main>
       </div>
 
+
+      <!-- First-run workspace setup and scan-root preferences -->
+      <div id="setup-modal-backdrop" class="modal-backdrop hidden">
+        <section class="modal-card setup-modal-card" role="dialog" aria-modal="true" aria-labelledby="setup-modal-title">
+          <header class="modal-header setup-modal-header">
+            <div>
+              <h3 id="setup-modal-title">Set up your workspace</h3>
+              <p id="setup-modal-subtitle" class="setup-modal-subtitle">Choose the folders GitManager should index.</p>
+            </div>
+            <button id="btn-close-scan-setup" class="icon-close-btn" aria-label="Close setup">&times;</button>
+          </header>
+          <div class="modal-body setup-modal-body">
+            <div class="setup-roots-heading">
+              <div><strong>Scan folders</strong><span>GitManager scans inside each folder for Git repositories.</span></div>
+              <button id="btn-setup-smart-roots" class="btn btn-secondary" type="button">Use recommended folders</button>
+            </div>
+            <div id="setup-scan-root-list" class="setup-root-list">
+              <div class="setup-roots-empty">Loading scan folders…</div>
+            </div>
+            <div class="setup-add-root">
+              <button id="btn-setup-browse-root" class="btn btn-secondary" type="button">Browse folder…</button>
+              <input id="setup-manual-root" class="scan-input" type="text" placeholder="Or enter a path, e.g. D:/Project_Customs or D:/" />
+              <button id="btn-setup-add-root" class="btn btn-secondary" type="button">Add path</button>
+            </div>
+            <p class="setup-hint">Choose one or more project folders. A drive root such as D:/ is supported; scanning an entire drive can take longer. GitManager does not automatically scan every system drive.</p>
+            <div class="setup-options">
+              <label class="setup-option"><input id="setup-index-dependencies" type="checkbox" checked /> Index Git repositories found inside dependency folders too</label>
+              <label class="setup-option"><input id="setup-show-dependencies" type="checkbox" /> Show dependency repositories in the default Projects view</label>
+              <label class="setup-option"><input id="setup-include-hidden" type="checkbox" /> Include hidden folders when discovering repositories</label>
+              <div class="form-group setup-depth">
+                <label for="setup-scan-depth">Maximum scan depth</label>
+                <select id="setup-scan-depth" class="select-control">
+                  <option value="4">4 levels · faster</option>
+                  <option value="6">6 levels</option>
+                  <option value="8" selected>8 levels · recommended</option>
+                  <option value="10">10 levels</option>
+                  <option value="12">12 levels · deeper scan</option>
+                  <option value="16">16 levels · slow</option>
+                </select>
+              </div>
+            </div>
+            <div id="setup-modal-error" class="modal-error hidden"></div>
+          </div>
+          <footer class="modal-footer">
+            <button id="btn-save-scan-setup" class="btn btn-primary" type="button">Save &amp; Start Indexing</button>
+          </footer>
+        </section>
+      </div>
+
+
+      <!-- Preview-first developer cache cleaner -->
+      <div id="cleaner-modal-backdrop" class="modal-backdrop hidden">
+        <div class="modal-card cleaner-modal-card" role="dialog" aria-modal="true" aria-labelledby="cleaner-title">
+          <div class="modal-header">
+            <div>
+              <h3 id="cleaner-title">Developer Cleaner</h3>
+              <p class="cleaner-subtitle">Preview first. Nothing is removed until you type YES and apply.</p>
+            </div>
+            <button id="btn-close-cleaner" class="icon-close-btn" aria-label="Close">&times;</button>
+          </div>
+          <div class="modal-body cleaner-modal-body">
+            <div class="form-group">
+              <label for="cleaner-scope">Cleanup scope</label>
+              <select id="cleaner-scope" class="select-control">
+                <option value="repository">Selected local repository</option>
+                <option value="system">My developer caches (current user)</option>
+                <option value="remote">Remote repository (clone, clean, push a branch)</option>
+              </select>
+            </div>
+            <div id="cleaner-repository-fields" class="cleaner-fields">
+              <div class="form-group">
+                <label for="cleaner-repo-path">Local repository path</label>
+                <input id="cleaner-repo-path" class="scan-input" type="text" placeholder="Select a repository or enter its local path" />
+              </div>
+            </div>
+            <div id="cleaner-remote-fields" class="cleaner-fields hidden">
+              <div class="form-group">
+                <label for="cleaner-remote-url">Remote HTTPS / SSH URL</label>
+                <input id="cleaner-remote-url" class="scan-input" type="text" placeholder="https://github.com/owner/repository.git" />
+              </div>
+              <div class="form-group">
+                <label for="cleaner-remote-branch">Branch (blank = remote default branch)</label>
+                <input id="cleaner-remote-branch" class="scan-input" type="text" placeholder="main" />
+              </div>
+            </div>
+            <div class="cleaner-options">
+              <label class="cleaner-option"><input id="cleaner-include-dependencies" type="checkbox" /> Include project dependencies such as node_modules</label>
+              <label class="cleaner-option"><input id="cleaner-include-venvs" type="checkbox" /> Include validated Python virtual environments</label>
+              <label class="cleaner-option" id="cleaner-windows-junk-option"><input id="cleaner-include-windows-junk" type="checkbox" /> Include curated Windows system junk (not GPU/shader caches)</label>
+            </div>
+            <div id="cleaner-scope-note" class="cleaner-note">Local cleanup skips Git-tracked paths by default and never touches .git. Use the dependency option to include project node_modules.</div>
+            <div class="cleaner-actions">
+              <button id="btn-cleaner-preview" class="btn btn-primary">Preview cleanup</button>
+              <span id="cleaner-status" class="cleaner-status" role="status">Ready to preview</span>
+            </div>
+            <div id="cleaner-plan-output" class="cleaner-plan-output" aria-live="polite">
+              <div class="cleaner-empty">Choose a scope, then preview the exact paths and estimated space before applying anything.</div>
+            </div>
+            <div class="cleaner-confirm-row">
+              <div class="form-group">
+                <label for="cleaner-confirm">Type YES to enable deletion / remote push</label>
+                <input id="cleaner-confirm" class="scan-input" type="text" autocomplete="off" placeholder="YES" />
+              </div>
+              <button id="btn-cleaner-apply" class="btn btn-danger" disabled>Apply cleanup</button>
+            </div>
+            <p class="cleaner-footnote">Remote cleanup uses a temporary clone and pushes a new <code>gitmanager/clean/…</code> branch. It never pushes to the default branch. System cleanup only targets known cache paths in your current user profile; Windows system junk is separately opt-in.</p>
+          </div>
+        </div>
+      </div>
+
       <!-- Connect GitHub / GitLab Account Modal -->
       <div id="account-modal-backdrop" class="modal-backdrop hidden">
         <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -189,5 +311,6 @@
     </div>
 
     <script src="app.js"></script>
+    <script src="cleaner.js"></script>
   </body>
 </html>

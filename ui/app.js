@@ -189,6 +189,10 @@ let selectedCommitOid = null;
 let requestedFilter = "grouped";
 let indexGroupingMode = "folder";
 let searchQuery = "";
+let appPreferences = null;
+let dependencyRepoIds = new Set();
+let repositoryKindFilter = "projects";
+const ciStatusCache = new Map();
 
 async function tauriInvoke(cmd, args) {
   if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
@@ -260,6 +264,9 @@ function renderUpdateNotificationsTray() {
             <div class="update-alert-copy">
               <strong>${escapeHtml(promptText)}</strong>
               <span>Branch <code>${escapeHtml(upd.branch)}</code> is ${upd.commits_behind} commit(s) behind remote (${escapeHtml((upd.remote_oid || "").slice(0, 7))})</span>
+              ${upd.failure_message ? `<span class="update-alert-error">${escapeHtml(upd.automatic_attempt ? "Auto Update stopped safely: " : "Update failed: ")}${escapeHtml(upd.failure_message)}</span>` : ""}
+              ${upd.working_tree_clean === false ? '<span class="update-alert-note">Working tree has local changes; automatic update is disabled for this repository.</span>' : ""}
+              ${Number(upd.commits_ahead) > 0 ? '<span class="update-alert-note">Local branch has commits not on origin; update requires manual review.</span>' : ""}
             </div>
           </div>
           <div class="update-alert-actions">
@@ -302,9 +309,9 @@ function renderUpdateNotificationsTray() {
   });
 }
 
-async function acceptAndPullRepoUpdate(repoPath) {
+async function acceptAndPullRepoUpdate(repoPath, automatic = false) {
   pullingRepoPaths.add(repoPath);
-  setServiceCheckingVisual(true, `Updating ${repoPath}...`);
+  setServiceCheckingVisual(true, automatic ? `Auto-updating ${repoPath}...` : `Updating ${repoPath}...`);
   renderUpdateNotificationsTray();
 
   try {
@@ -312,8 +319,11 @@ async function acceptAndPullRepoUpdate(repoPath) {
     pendingUpdateAlerts = pendingUpdateAlerts.filter((u) => u.repo_path !== repoPath);
     await runMachineScan();
   } catch (err) {
-    // In browser demo preview mode, simulate successful fast-forward update
-    pendingUpdateAlerts = pendingUpdateAlerts.filter((u) => u.repo_path !== repoPath);
+    const alert = pendingUpdateAlerts.find((item) => item.repo_path === repoPath);
+    if (alert) {
+      alert.failure_message = String((err && err.message) || err || "Update failed");
+      alert.automatic_attempt = automatic;
+    }
   } finally {
     pullingRepoPaths.delete(repoPath);
     setServiceCheckingVisual(false, "Svc: Watching Remotes");
@@ -334,11 +344,30 @@ function setServiceCheckingVisual(isChecking, text) {
 }
 
 function pushRepoUpdateAlert(upd) {
-  const exists = pendingUpdateAlerts.some((u) => u.repo_path === upd.repo_path);
-  if (!exists) {
+  if (!upd || !upd.repo_path || pullingRepoPaths.has(upd.repo_path)) return;
+  const repo = allRepositories.find((item) => item.id === upd.repo_id);
+  const settings = repo ? repositoryAutomationSettings(repo) : null;
+  const safeForAutoUpdate =
+    repo &&
+    repo.source_kind === "local_scan" &&
+    settings &&
+    settings.autoUpdate === true &&
+    upd.working_tree_clean === true &&
+    Number(upd.commits_ahead) === 0;
+
+  const existing = pendingUpdateAlerts.find((item) => item.repo_path === upd.repo_path);
+  if (existing) {
+    Object.assign(existing, upd);
+  } else {
     pendingUpdateAlerts.push(upd);
-    renderUpdateNotificationsTray();
   }
+
+  if (safeForAutoUpdate) {
+    void acceptAndPullRepoUpdate(upd.repo_path, true);
+    return;
+  }
+
+  renderUpdateNotificationsTray();
 }
 
 function renderGitTreeGraph(container, commits, selectedOid, onSelectCommit) {
@@ -471,7 +500,13 @@ function renderGitTreeGraph(container, commits, selectedOid, onSelectCommit) {
 
 function computeFilteredRepositories() {
   const query = searchQuery.trim().toLowerCase();
-  const searchMatched = allRepositories.filter((r) => {
+  const kindMatched = allRepositories.filter((repo) => {
+    const isDependency = dependencyRepoIds.has(repo.id);
+    if (repositoryKindFilter === "projects") return !isDependency;
+    if (repositoryKindFilter === "dependencies") return isDependency;
+    return true;
+  });
+  const searchMatched = kindMatched.filter((r) => {
     if (!query) return true;
     return (
       r.name.toLowerCase().includes(query) ||
@@ -485,19 +520,12 @@ function computeFilteredRepositories() {
 
   const remoteRepos = searchMatched.filter((r) => r.has_remote);
   const localRepos = searchMatched.filter((r) => !r.has_remote);
-
   const remoteCount = remoteRepos.length;
   const localCount = localRepos.length;
 
   if (remoteCount === 0 || localCount === 0) {
-    return {
-      visibleRepos: searchMatched,
-      remoteCount,
-      localCount,
-      effectiveMode: "grouped_fallback"
-    };
+    return { visibleRepos: searchMatched, remoteCount, localCount, effectiveMode: "grouped_fallback" };
   }
-
   if (requestedFilter === "remote") {
     return { visibleRepos: remoteRepos, remoteCount, localCount, effectiveMode: "remote" };
   }
@@ -505,6 +533,19 @@ function computeFilteredRepositories() {
     return { visibleRepos: localRepos, remoteCount, localCount, effectiveMode: "local" };
   }
   return { visibleRepos: searchMatched, remoteCount, localCount, effectiveMode: "grouped" };
+}
+
+function renderRepositoryKindFilter() {
+  const projects = allRepositories.filter((repo) => !dependencyRepoIds.has(repo.id)).length;
+  const dependencies = dependencyRepoIds.size;
+  const allCount = allRepositories.length;
+  const values = { projects, dependencies, all: allCount };
+  document.querySelectorAll("[data-repo-kind]").forEach((button) => {
+    const kind = button.getAttribute("data-repo-kind");
+    button.classList.toggle("active", kind === repositoryKindFilter);
+    const count = button.querySelector("[data-repo-kind-count]");
+    if (count) count.textContent = String(values[kind] || 0);
+  });
 }
 
 function renderFilterBar(remoteCount, localCount, effectiveMode) {
@@ -519,7 +560,7 @@ function renderFilterBar(remoteCount, localCount, effectiveMode) {
   if (countRemoteEl) countRemoteEl.textContent = String(remoteCount);
   if (countLocalEl) countLocalEl.textContent = String(localCount);
 
-  document.querySelectorAll(".seg-btn").forEach((btn) => {
+  document.querySelectorAll("[data-filter]").forEach((btn) => {
     const mode = btn.getAttribute("data-filter");
     btn.classList.toggle("active", mode === requestedFilter);
   });
@@ -584,6 +625,12 @@ function renderRepositoryList() {
 
   const { visibleRepos, remoteCount, localCount, effectiveMode } = computeFilteredRepositories();
   renderFilterBar(remoteCount, localCount, effectiveMode);
+  renderRepositoryKindFilter();
+
+  if (selectedRepoId && !visibleRepos.some((repo) => repo.id === selectedRepoId)) {
+    selectedRepoId = null;
+    selectedCommitOid = null;
+  }
 
   if (visibleRepos.length === 0) {
     listContainer.innerHTML = `
@@ -595,9 +642,9 @@ function renderRepositoryList() {
     return;
   }
 
-  if (!selectedRepoId || !visibleRepos.some((r) => r.id === selectedRepoId)) {
-    selectedRepoId = visibleRepos[0].id;
-    selectedCommitOid = (visibleRepos[0].commits[0] && visibleRepos[0].commits[0].oid) || null;
+  if (selectedRepoId && !visibleRepos.some((r) => r.id === selectedRepoId)) {
+    selectedRepoId = null;
+    selectedCommitOid = null;
   }
 
   const groups = new Map();
@@ -682,6 +729,248 @@ function renderRepositoryList() {
   });
 }
 
+function repositoryFullName(repo) {
+  const remote = (repo.remotes || []).find((item) => item.name === "origin") || (repo.remotes || [])[0];
+  if (remote && remote.owner && remote.repo_slug) return remote.owner + "/" + remote.repo_slug;
+  return (repo.owner_name || "Local") + "/" + repo.name;
+}
+
+function latestCommitFor(repo) {
+  return (repo.commits || []).find((commit) => /^[a-f0-9]{7,40}$/i.test(commit.oid || "")) || null;
+}
+
+function ciStatusFromResponse(provider, data) {
+  let raw = "";
+  if (provider === "github") raw = String(data.state || "").toLowerCase();
+  else raw = String((Array.isArray(data) && data[0] && data[0].status) || "").toLowerCase();
+  const labels = {
+    success: ["Passing", "success"],
+    failure: ["Failing", "failure"],
+    failed: ["Failing", "failure"],
+    error: ["Error", "failure"],
+    pending: ["Pending", "pending"],
+    running: ["Running", "pending"],
+    created: ["Queued", "pending"],
+    waiting_for_resource: ["Queued", "pending"],
+    preparing: ["Queued", "pending"],
+    canceled: ["Canceled", "neutral"],
+    canceling: ["Stopping", "pending"],
+    skipped: ["Skipped", "neutral"],
+    manual: ["Manual", "neutral"]
+  };
+  if (!raw) return { label: "No CI run", state: "neutral" };
+  const mapped = labels[raw];
+  return mapped ? { label: mapped[0], state: mapped[1] } : { label: "Unknown", state: "neutral" };
+}
+
+async function fetchRepositoryCiStatus(repo) {
+  const commit = latestCommitFor(repo);
+  const remote = (repo.remotes || []).find((item) => item.name === "origin") || (repo.remotes || [])[0];
+  if (!commit || !remote || !remote.web_url) return { label: "Not available", state: "neutral" };
+  const provider = String(remote.provider || repo.primary_provider || "").toLowerCase();
+  let url;
+  try {
+    const parsed = new URL(remote.web_url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (provider === "github" && parsed.hostname === "github.com" && parts.length >= 2) {
+      url = "https://api.github.com/repos/" + encodeURIComponent(parts[0]) + "/" +
+        encodeURIComponent(parts[1].replace(/\.git$/i, "")) + "/commits/" +
+        encodeURIComponent(commit.oid) + "/status";
+    } else if (provider === "gitlab" && parsed.hostname === "gitlab.com" && parts.length >= 2) {
+      const projectPath = parts.join("/");
+      url = "https://gitlab.com/api/v4/projects/" + encodeURIComponent(projectPath) +
+        "/pipelines?sha=" + encodeURIComponent(commit.oid) + "&per_page=1&order_by=id&sort=desc";
+    } else {
+      return { label: "Not available", state: "neutral" };
+    }
+  } catch (_) {
+    return { label: "Not available", state: "neutral" };
+  }
+
+  const cacheKey = repo.id + ":" + commit.oid;
+  if (ciStatusCache.has(cacheKey)) return ciStatusCache.get(cacheKey);
+  try {
+    const response = await fetch(url, { headers: { Accept: "application/vnd.github+json" } });
+    if (response.status === 404) {
+      const none = { label: "No CI run", state: "neutral" };
+      ciStatusCache.set(cacheKey, none);
+      return none;
+    }
+    if (response.status === 403 || response.status === 429) {
+      return { label: "Rate limited", state: "neutral" };
+    }
+    if (!response.ok) return { label: "Unavailable", state: "neutral" };
+    const result = ciStatusFromResponse(provider, await response.json());
+    ciStatusCache.set(cacheKey, result);
+    return result;
+  } catch (_) {
+    return { label: "Offline", state: "neutral" };
+  }
+}
+
+function refreshDashboardCiStatuses(repositories) {
+  repositories.slice(0, 20).forEach((repo) => {
+    fetchRepositoryCiStatus(repo).then((status) => {
+      document.querySelectorAll(".dashboard-ci").forEach((element) => {
+        if (element.getAttribute("data-repo-id") === repo.id) {
+          element.textContent = status.label;
+          element.className = "dashboard-ci ci-" + status.state;
+        }
+      });
+    });
+  });
+}
+
+function renderRepositoryDashboard(container) {
+  const filter = computeFilteredRepositories();
+  const repositories = filter.visibleRepos;
+  const projectCount = allRepositories.length - dependencyRepoIds.size;
+  const dependencyCount = dependencyRepoIds.size;
+  const remoteCount = allRepositories.filter((repo) => repo.has_remote).length;
+  const roots = appPreferences && Array.isArray(appPreferences.scanRoots) ? appPreferences.scanRoots : [];
+
+  if (allRepositories.length === 0) {
+    container.innerHTML =
+      '<section class="dashboard-view">' +
+        '<div class="dashboard-welcome">' +
+          '<div class="dashboard-eyebrow">WORKSPACE</div>' +
+          '<h2>Your repositories, in one place</h2>' +
+          '<p>Choose the folders GitManager should index. Dependency repositories can still be indexed and kept separate from your main projects.</p>' +
+          '<button id="btn-dashboard-setup" class="btn btn-primary">Configure scan folders</button>' +
+        '</div>' +
+        '<div class="dashboard-empty"><strong>No repositories indexed yet</strong><span>Add a folder such as D:/Project_Customs or choose the recommended development folders.</span></div>' +
+      '</section>';
+    const setup = document.getElementById("btn-dashboard-setup");
+    if (setup) setup.addEventListener("click", () => openScanSetup(false));
+    return;
+  }
+
+  const cards = repositories.map((repo) => {
+    const icon = resolveRepoIconUrl(repo);
+    const fallback = fallbackRepoIconDataUri(repo.primary_provider, repo.name);
+    const commit = latestCommitFor(repo);
+    const commitTitle = commit ? commit.summary : "No local commit metadata";
+    const commitSha = commit ? commit.short_oid : "";
+    const commitDate = commit ? commit.date_iso : "";
+    const ci = repo.has_remote && commit ? "Checking…" : "Not available";
+    const ciState = repo.has_remote && commit ? "checking" : "neutral";
+    const isDependency = dependencyRepoIds.has(repo.id);
+    return '<button type="button" class="dashboard-repo-card" data-dashboard-repo-id="' + escapeHtml(repo.id) + '">' +
+      '<div class="dashboard-card-top">' +
+        '<img class="dashboard-card-icon" src="' + escapeHtml(icon) + '" alt="" onerror="this.onerror=null;this.src=\'' + fallback + '\';" />' +
+        '<div class="dashboard-card-heading"><strong>' + escapeHtml(repositoryFullName(repo)) + '</strong>' +
+          '<span>' + escapeHtml(repo.name) + (isDependency ? ' · Dependency' : '') + '</span></div>' +
+        '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider) + '">' + escapeHtml(repo.has_remote ? repo.primary_provider.toUpperCase() : "LOCAL") + '</span>' +
+      '</div>' +
+      '<div class="dashboard-card-commit"><span class="dashboard-label">LATEST COMMIT</span><strong>' + escapeHtml(commitTitle) + '</strong>' +
+        '<span>' + escapeHtml(commitSha + (commitDate ? " · " + commitDate : "")) + '</span></div>' +
+      '<div class="dashboard-card-footer"><span class="dashboard-branch">⎇ ' + escapeHtml(repo.current_branch || "Detached HEAD") + '</span>' +
+        '<span class="dashboard-ci ci-' + ciState + '" data-repo-id="' + escapeHtml(repo.id) + '">' + ci + '</span></div>' +
+    '</button>';
+  }).join("");
+
+  container.innerHTML =
+    '<section class="dashboard-view">' +
+      '<div class="dashboard-heading">' +
+        '<div><div class="dashboard-eyebrow">WORKSPACE OVERVIEW</div><h2>Repositories</h2>' +
+          '<p>' + escapeHtml(roots.length + " scan folder(s) · " + projectCount + " project(s) · " + dependencyCount + " dependency repo(s)") + '</p></div>' +
+        '<div class="dashboard-actions"><button id="btn-dashboard-scan" class="btn btn-secondary">Scan now</button>' +
+          '<button id="btn-dashboard-setup" class="btn btn-primary">Scan folders</button></div>' +
+      '</div>' +
+      '<div class="dashboard-stats">' +
+        '<div><strong>' + projectCount + '</strong><span>Projects</span></div>' +
+        '<div><strong>' + dependencyCount + '</strong><span>Dependency repos</span></div>' +
+        '<div><strong>' + remoteCount + '</strong><span>Remote-linked</span></div>' +
+      '</div>' +
+      '<div class="dashboard-card-grid">' + cards + '</div>' +
+    '</section>';
+
+  container.querySelectorAll("[data-dashboard-repo-id]").forEach((card) => {
+    card.addEventListener("click", () => {
+      selectedRepoId = card.getAttribute("data-dashboard-repo-id");
+      const selected = allRepositories.find((repo) => repo.id === selectedRepoId);
+      selectedCommitOid = selected && selected.commits[0] ? selected.commits[0].oid : null;
+      renderAll();
+    });
+  });
+  const setupButton = document.getElementById("btn-dashboard-setup");
+  if (setupButton) setupButton.addEventListener("click", () => openScanSetup(false));
+  const scanButton = document.getElementById("btn-dashboard-scan");
+  if (scanButton) scanButton.addEventListener("click", () => void runMachineScan());
+  refreshDashboardCiStatuses(repositories);
+}
+
+function repositoryAutomationSettings(repo) {
+  if (!appPreferences.repositorySettings) appPreferences.repositorySettings = {};
+  if (!appPreferences.repositorySettings[repo.id]) {
+    appPreferences.repositorySettings[repo.id] = {
+      autoUpdate: false,
+      keepRemoteClean: false,
+      commitClean: false
+    };
+  }
+  return appPreferences.repositorySettings[repo.id];
+}
+
+async function saveRepositoryAutoUpdate(repo, enabled, checkbox, status) {
+  const settings = repositoryAutomationSettings(repo);
+  const previous = Boolean(settings.autoUpdate);
+  settings.autoUpdate = enabled;
+  if (checkbox) checkbox.disabled = true;
+  if (status) status.textContent = "Saving…";
+  try {
+    appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
+    if (status) status.textContent = enabled
+      ? "Auto Update enabled · clean fast-forwards only"
+      : "Auto Update disabled";
+  } catch (error) {
+    settings.autoUpdate = previous;
+    if (checkbox) checkbox.checked = previous;
+    if (status) status.textContent = "Could not save: " + String((error && error.message) || error);
+  } finally {
+    if (checkbox) checkbox.disabled = false;
+  }
+}
+
+async function saveRepositoryCommitClean(repo, enabled, checkbox, status) {
+  const previous = Boolean(repositoryAutomationSettings(repo).commitClean);
+  if (enabled && !window.confirm(
+    "Install GitManager's pre-commit hook for this repository? It removes detected generated/dependency paths from the commit index while keeping their files on disk. Existing custom hooks will not be overwritten."
+  )) {
+    if (checkbox) checkbox.checked = previous;
+    return;
+  }
+
+  if (checkbox) checkbox.disabled = true;
+  if (status) status.textContent = enabled ? "Installing pre-commit hook…" : "Removing pre-commit hook…";
+  try {
+    const result = await tauriInvoke("set_repository_commit_clean", {
+      repoPath: repo.path,
+      enabled
+    });
+    repositoryAutomationSettings(repo).commitClean = enabled;
+    appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
+    if (status) status.textContent = result.message || (enabled ? "Commit Clean hook installed" : "Commit Clean hook removed");
+  } catch (error) {
+    try {
+      await tauriInvoke("set_repository_commit_clean", {
+        repoPath: repo.path,
+        enabled: previous
+      });
+    } catch (rollbackError) {
+      if (status) status.textContent = "Could not apply or roll back hook: " +
+        String((rollbackError && rollbackError.message) || rollbackError);
+    }
+    repositoryAutomationSettings(repo).commitClean = previous;
+    if (checkbox) checkbox.checked = previous;
+    if (status && !status.textContent.startsWith("Could not apply or roll back")) {
+      status.textContent = "Could not update Commit Clean: " + String((error && error.message) || error);
+    }
+  } finally {
+    if (checkbox) checkbox.disabled = false;
+  }
+}
+
 function renderSelectedRepositoryDetails() {
   const headerEl = document.getElementById("repo-detail-header");
   const treeContainer = document.getElementById("git-tree-container");
@@ -691,12 +980,15 @@ function renderSelectedRepositoryDetails() {
   if (!headerEl || !treeContainer || !inspectorEl) return;
 
   const repo = allRepositories.find((r) => r.id === selectedRepoId);
+  const mainPanel = document.querySelector(".main-panel");
   if (!repo) {
-    headerEl.innerHTML = `<div class="empty-header">Select a repository from the sidebar to inspect its Git Tree and metadata.</div>`;
+    if (mainPanel) mainPanel.classList.add("dashboard-mode");
+    renderRepositoryDashboard(headerEl);
     treeContainer.innerHTML = "";
     inspectorEl.innerHTML = "";
     return;
   }
+  if (mainPanel) mainPanel.classList.remove("dashboard-mode");
 
   const iconSrc = resolveRepoIconUrl(repo);
   const fallbackSrc = fallbackRepoIconDataUri(repo.primary_provider, repo.name);
@@ -737,6 +1029,7 @@ function renderSelectedRepositoryDetails() {
         </div>
       </div>
       <div class="selected-repo-actions">
+        <button id="btn-back-to-dashboard" class="btn btn-secondary" type="button">← Workspace</button>
         ${
           repo.web_url
             ? `<button id="btn-open-remote-url" class="btn btn-secondary" data-url="${escapeHtml(repo.web_url)}">
@@ -747,6 +1040,30 @@ function renderSelectedRepositoryDetails() {
       </div>
     </div>
   `;
+
+  const autoUpdateCheckbox = document.getElementById("repo-auto-update");
+  if (autoUpdateCheckbox) {
+    autoUpdateCheckbox.addEventListener("change", () => {
+      const status = document.getElementById("repo-auto-update-status");
+      void saveRepositoryAutoUpdate(repo, autoUpdateCheckbox.checked, autoUpdateCheckbox, status);
+    });
+  }
+  const commitCleanCheckbox = document.getElementById("repo-commit-clean");
+  if (commitCleanCheckbox) {
+    commitCleanCheckbox.addEventListener("change", () => {
+      const status = document.getElementById("repo-commit-clean-status");
+      void saveRepositoryCommitClean(repo, commitCleanCheckbox.checked, commitCleanCheckbox, status);
+    });
+  }
+
+  const backToDashboardBtn = document.getElementById("btn-back-to-dashboard");
+  if (backToDashboardBtn) {
+    backToDashboardBtn.addEventListener("click", () => {
+      selectedRepoId = null;
+      selectedCommitOid = null;
+      renderAll();
+    });
+  }
 
   const openRemoteBtn = document.getElementById("btn-open-remote-url");
   if (openRemoteBtn) {
@@ -841,6 +1158,21 @@ function renderSelectedRepositoryDetails() {
       </div>
     </div>
 
+    <div class="inspector-card-block automation-settings-card">
+      <h4 class="inspector-section-title">Repository Automation</h4>
+      <label class="repository-setting-option">
+        <input id="repo-auto-update" type="checkbox" ${repositoryAutomationSettings(repo).autoUpdate ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} />
+        <span><strong>Auto Update</strong><small>Automatically fast-forward when remote commits arrive, but only if this repository has no uncommitted files and no local-only commits.</small></span>
+      </label>
+      <div id="repo-auto-update-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).autoUpdate ? "Auto Update enabled · clean fast-forwards only" : "Auto Update is off for this repository") : "Available for locally indexed repositories only"}</div>
+      <label class="repository-setting-option">
+        <input id="repo-commit-clean" type="checkbox" ${repositoryAutomationSettings(repo).commitClean ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} />
+        <span><strong>Commit Clean</strong><small>Install a pre-commit hook that omits detected generated/dependency paths from commits while preserving the files in your working tree.</small></span>
+      </label>
+      <div id="repo-commit-clean-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).commitClean ? "Commit Clean hook enabled" : "Commit Clean hook is not installed") : "Available for locally indexed repositories only"}</div>
+      <p class="repository-setting-note">Auto Update requires the Background Service and only performs clean fast-forwards. Commit Clean uses the repository's default Git hooks folder and refuses to replace existing custom pre-commit hooks. Keep Remote Clean remains a separate follow-up workflow.</p>
+    </div>
+
     <div class="inspector-card-block">
       <h4 class="inspector-section-title">Configured Remotes (${repo.remotes.length})</h4>
       ${remotesHtml}
@@ -895,22 +1227,27 @@ async function runMachineScan(customRoot) {
   const scanBtn = document.getElementById("btn-scan-repos");
   if (scanBtn) {
     scanBtn.disabled = true;
-    scanBtn.textContent = "Scanning .git folders...";
+    scanBtn.textContent = "Scanning repositories…";
   }
 
   try {
-    const rootPaths = customRoot && customRoot.trim().length > 0 ? [customRoot.trim()] : [];
+    const rootPaths = customRoot && customRoot.trim().length > 0
+      ? [customRoot.trim()]
+      : (appPreferences && appPreferences.scanRoots) || [];
     const summary = await tauriInvoke("scan_machine_repositories", {
       rootPaths,
-      maxDepth: 6,
-      includeHiddenDirs: false,
+      maxDepth: (appPreferences && appPreferences.maxScanDepth) || 8,
+      includeHiddenDirs: Boolean(appPreferences && appPreferences.includeHiddenDirs),
+      indexDependencyRepositories: !appPreferences || appPreferences.indexDependencyRepositories !== false,
       filterMode: requestedFilter
     });
-    allRepositories = summary.repositories.length > 0 ? summary.repositories : DEMO_REPOSITORIES;
+    allRepositories = Array.isArray(summary.repositories) ? summary.repositories : [];
+    dependencyRepoIds = new Set(summary.dependencyRepoIds || []);
+    selectedRepoId = null;
+    selectedCommitOid = null;
   } catch (err) {
-    if (allRepositories.length === 0) {
-      allRepositories = [...DEMO_REPOSITORIES];
-    }
+    console.error("GitManager repository scan failed:", err);
+    if (allRepositories.length === 0) allRepositories = [];
   } finally {
     if (scanBtn) {
       scanBtn.disabled = false;
@@ -923,26 +1260,18 @@ async function runMachineScan(customRoot) {
 async function triggerManualUpdateCheck(customRoot) {
   setServiceCheckingVisual(true, "Svc: Checking Remotes...");
   try {
-    const rootPaths = customRoot && customRoot.trim().length > 0 ? [customRoot.trim()] : [];
+    const rootPaths = customRoot && customRoot.trim().length > 0
+      ? [customRoot.trim()]
+      : (appPreferences && appPreferences.scanRoots) || [];
     const updates = await tauriInvoke("check_repo_updates_now", { rootPaths });
     if (Array.isArray(updates) && updates.length > 0) {
       updates.forEach(pushRepoUpdateAlert);
     }
     setServiceCheckingVisual(false, `Svc: Checked (${updates.length} update(s))`);
   } catch (err) {
-    // Demo fallback notification so the user can preview the exact prompt & loading icon anywhere
-    const sampleRepo = allRepositories[0] || DEMO_REPOSITORIES[0];
-    pushRepoUpdateAlert({
-      repo_id: sampleRepo.id,
-      repo_name: sampleRepo.name,
-      repo_path: sampleRepo.path,
-      branch: sampleRepo.current_branch,
-      local_oid: "c100001",
-      remote_oid: "f987654",
-      commits_behind: 2,
-      prompt_message: `Hay you have ${sampleRepo.name} update do you want to update it?`
-    });
-    setServiceCheckingVisual(false, "Svc: Watching Remotes");
+    setServiceCheckingVisual(false, "Svc: Update check failed");
+    const note = document.getElementById("filter-status-note");
+    if (note) note.textContent = "Could not check remote updates: " + String((err && err.message) || err);
   }
 }
 
@@ -995,6 +1324,57 @@ function wireEventListeners() {
   const registerOsSvcBtn = document.getElementById("btn-register-os-service");
   const searchInput = document.getElementById("repo-search-input");
   const indexGroupSelect = document.getElementById("index-group-select");
+  const setupOpen = document.getElementById("btn-open-scan-settings");
+  const setupClose = document.getElementById("btn-close-scan-setup");
+  const setupModal = document.getElementById("setup-modal-backdrop");
+  const setupBrowse = document.getElementById("btn-setup-browse-root");
+  const setupAdd = document.getElementById("btn-setup-add-root");
+  const setupSmart = document.getElementById("btn-setup-smart-roots");
+  const setupManual = document.getElementById("setup-manual-root");
+  const setupSave = document.getElementById("btn-save-scan-setup");
+  const kindButtons = document.querySelectorAll("[data-repo-kind]");
+
+  if (setupOpen) setupOpen.addEventListener("click", () => openScanSetup(false));
+  if (setupClose) setupClose.addEventListener("click", () => {
+    if (appPreferences && !appPreferences.firstRunComplete) {
+      const smart = appPreferences.scanRoots || [];
+      if (!smart.length) {
+        appPreferences.scanRoots = [];
+        void loadRecommendedScanRoots().then(() => saveScanSetup());
+        return;
+      }
+      void saveScanSetup();
+      return;
+    }
+    setupModal.classList.add("hidden");
+  });
+  if (setupBrowse) setupBrowse.addEventListener("click", () => void browseForScanRoot());
+  if (setupAdd && setupManual) setupAdd.addEventListener("click", () => addScanRoot(setupManual.value));
+  if (setupManual) setupManual.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") addScanRoot(setupManual.value);
+  });
+  if (setupSmart) setupSmart.addEventListener("click", () => void loadRecommendedScanRoots());
+  if (setupSave) setupSave.addEventListener("click", () => void saveScanSetup());
+  if (setupModal) setupModal.addEventListener("click", (event) => {
+    if (event.target === setupModal && appPreferences && appPreferences.firstRunComplete) {
+      setupModal.classList.add("hidden");
+    }
+  });
+  const setupRootList = document.getElementById("setup-scan-root-list");
+  if (setupRootList) setupRootList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-root]");
+    if (!button) return;
+    const index = Number(button.getAttribute("data-remove-root"));
+    if (Number.isInteger(index)) {
+      appPreferences.scanRoots.splice(index, 1);
+      renderScanRootList();
+    }
+  });
+  kindButtons.forEach((button) => button.addEventListener("click", () => {
+    repositoryKindFilter = button.getAttribute("data-repo-kind") || "projects";
+    if (repositoryKindFilter === "dependencies") requestedFilter = "grouped";
+    renderAll();
+  }));
 
   if (checkUpdatesBtn) {
     checkUpdatesBtn.addEventListener("click", () => {
@@ -1055,7 +1435,7 @@ function wireEventListeners() {
     });
   }
 
-  document.querySelectorAll(".seg-btn").forEach((btn) => {
+  document.querySelectorAll("[data-filter]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const mode = btn.getAttribute("data-filter");
       if (mode) {
@@ -1124,8 +1504,160 @@ function wireEventListeners() {
   }
 }
 
+function updateScanRootSummary() {
+  const input = document.getElementById("scan-path-input");
+  if (!input) return;
+  const roots = (appPreferences && appPreferences.scanRoots) || [];
+  input.placeholder = roots.length
+    ? roots.length + " scan folder(s) configured — enter a path for a one-time scan…"
+    : "No scan folders configured — open Scan Setup…";
+}
+
+function renderScanRootList() {
+  const list = document.getElementById("setup-scan-root-list");
+  if (!list) return;
+  const roots = (appPreferences && appPreferences.scanRoots) || [];
+  if (!roots.length) {
+    list.innerHTML = '<div class="setup-roots-empty">No folders selected yet.</div>';
+    return;
+  }
+  list.innerHTML = roots.map((root, index) =>
+    '<div class="setup-root-item"><span class="setup-root-index">' + (index + 1) + '</span>' +
+    '<code title="' + escapeHtml(root) + '">' + escapeHtml(root) + '</code>' +
+    '<button type="button" class="setup-root-remove" data-remove-root="' + index + '" aria-label="Remove scan folder">Remove</button></div>'
+  ).join("");
+}
+
+function openScanSetup(isFirstRun) {
+  if (!appPreferences) {
+    appPreferences = {
+      scanRoots: [], maxScanDepth: 8, includeHiddenDirs: false,
+      indexDependencyRepositories: true, showDependencyRepositories: false,
+      firstRunComplete: false
+    };
+  }
+  const modal = document.getElementById("setup-modal-backdrop");
+  if (!modal) return;
+  const heading = document.getElementById("setup-modal-title");
+  const subtitle = document.getElementById("setup-modal-subtitle");
+  const save = document.getElementById("btn-save-scan-setup");
+  if (heading) heading.textContent = isFirstRun ? "Set up your workspace" : "Scan settings";
+  if (subtitle) subtitle.textContent = "Choose the folders GitManager should index. A drive root such as D:/ is allowed, but scanning a whole drive can take longer.";
+  if (save) save.textContent = isFirstRun ? "Save & Start Indexing" : "Save Settings & Rescan";
+  const depth = document.getElementById("setup-scan-depth");
+  const hidden = document.getElementById("setup-include-hidden");
+  const dependencies = document.getElementById("setup-index-dependencies");
+  const showDependencies = document.getElementById("setup-show-dependencies");
+  if (depth) depth.value = String(appPreferences.maxScanDepth || 8);
+  if (hidden) hidden.checked = Boolean(appPreferences.includeHiddenDirs);
+  if (dependencies) dependencies.checked = appPreferences.indexDependencyRepositories !== false;
+  if (showDependencies) showDependencies.checked = Boolean(appPreferences.showDependencyRepositories);
+  renderScanRootList();
+  modal.classList.remove("hidden");
+}
+
+function addScanRoot(value) {
+  const root = String(value || "").trim();
+  if (!root) return;
+  if (!appPreferences.scanRoots.some((existing) => existing.toLowerCase() === root.toLowerCase())) {
+    appPreferences.scanRoots.push(root);
+  }
+  const manual = document.getElementById("setup-manual-root");
+  if (manual) manual.value = "";
+  renderScanRootList();
+}
+
+async function browseForScanRoot() {
+  if (window.__TAURI__ && window.__TAURI__.dialog && window.__TAURI__.dialog.open) {
+    const selected = await window.__TAURI__.dialog.open({
+      directory: true,
+      multiple: false,
+      title: "Choose a folder to index in GitManager"
+    });
+    if (typeof selected === "string") addScanRoot(selected);
+  } else {
+    const manual = document.getElementById("setup-manual-root");
+    if (manual) manual.focus();
+  }
+}
+
+async function loadRecommendedScanRoots() {
+  try {
+    const roots = await tauriInvoke("get_default_scan_directories");
+    if (Array.isArray(roots) && roots.length) {
+      appPreferences.scanRoots = roots;
+      renderScanRootList();
+    }
+  } catch (error) {
+    console.warn("Could not load recommended scan folders:", error);
+  }
+}
+
+async function saveScanSetup() {
+  const save = document.getElementById("btn-save-scan-setup");
+  const depth = document.getElementById("setup-scan-depth");
+  const hidden = document.getElementById("setup-include-hidden");
+  const dependencies = document.getElementById("setup-index-dependencies");
+  const showDependencies = document.getElementById("setup-show-dependencies");
+  const error = document.getElementById("setup-modal-error");
+  if (error) {
+    error.classList.add("hidden");
+    error.textContent = "";
+  }
+  if (save) {
+    save.disabled = true;
+    save.textContent = "Saving…";
+  }
+  appPreferences.maxScanDepth = Number(depth && depth.value) || 8;
+  appPreferences.includeHiddenDirs = Boolean(hidden && hidden.checked);
+  appPreferences.indexDependencyRepositories = Boolean(dependencies && dependencies.checked);
+  appPreferences.showDependencyRepositories = Boolean(showDependencies && showDependencies.checked);
+  appPreferences.firstRunComplete = true;
+
+  try {
+    appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
+    repositoryKindFilter = appPreferences.showDependencyRepositories ? "all" : "projects";
+    updateScanRootSummary();
+    document.getElementById("setup-modal-backdrop").classList.add("hidden");
+    await runMachineScan();
+  } catch (err) {
+    if (error) {
+      error.textContent = String((err && err.message) || err || "Could not save scan settings.");
+      error.classList.remove("hidden");
+    }
+  } finally {
+    if (save) {
+      save.disabled = false;
+      save.textContent = "Save & Start Indexing";
+    }
+  }
+}
+
+async function initializeGitManager() {
+  try {
+    appPreferences = await tauriInvoke("load_app_preferences");
+  } catch (error) {
+    console.error("Could not load GitManager preferences:", error);
+    appPreferences = {
+      scanRoots: [],
+      maxScanDepth: 8,
+      includeHiddenDirs: false,
+      indexDependencyRepositories: true,
+      showDependencyRepositories: false,
+      firstRunComplete: false
+    };
+  }
+  repositoryKindFilter = appPreferences.showDependencyRepositories ? "all" : "projects";
+  updateScanRootSummary();
+  if (!appPreferences.firstRunComplete) {
+    openScanSetup(true);
+  } else {
+    void runMachineScan();
+  }
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   wireEventListeners();
   wireTauriBackgroundServiceEvents();
-  void runMachineScan();
+  void initializeGitManager();
 });

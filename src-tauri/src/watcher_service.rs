@@ -1,4 +1,4 @@
-use git2::{Direction, FetchOptions, Repository};
+use git2::{Direction, FetchOptions, Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
@@ -18,6 +18,8 @@ pub struct RepoUpdateNotification {
     pub local_oid: String,
     pub remote_oid: String,
     pub commits_behind: usize,
+    pub commits_ahead: usize,
+    pub working_tree_clean: bool,
     pub prompt_message: String, // "Hay you have <X-REPO_NAME> update do you want to update it?"
 }
 
@@ -44,6 +46,38 @@ impl Default for BackgroundWatcherControl {
             checking_now: Arc::new(AtomicBool::new(false)),
             os_service_registered: Arc::new(AtomicBool::new(false)),
         }
+    }
+}
+
+fn repository_worktree_is_clean(repo: &Repository) -> Result<bool, String> {
+    let mut status_options = StatusOptions::new();
+    status_options.include_untracked(true).recurse_untracked_dirs(true);
+    repo.statuses(Some(&mut status_options))
+        .map(|statuses| statuses.is_empty())
+        .map_err(|error| format!("Could not inspect repository status: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repository_worktree_is_clean;
+    use git2::Repository;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn untracked_files_make_a_worktree_ineligible_for_auto_update() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("gitmanager-update-check-{nonce}"));
+        fs::create_dir_all(&path).expect("create temporary repository directory");
+        let repo = Repository::init(&path).expect("initialize temporary Git repository");
+        assert!(repository_worktree_is_clean(&repo).expect("inspect empty worktree"));
+        fs::write(path.join("untracked.txt"), "keep this file").expect("write untracked fixture");
+        assert!(!repository_worktree_is_clean(&repo).expect("inspect untracked worktree"));
+        drop(repo);
+        fs::remove_dir_all(&path).expect("remove temporary repository directory");
     }
 }
 
@@ -90,15 +124,18 @@ pub fn check_single_repo_for_remote_update(repo_path: &Path) -> Option<RepoUpdat
     let refspec = format!("refs/heads/{0}:refs/remotes/origin/{0}", branch_name);
     let _ = remote.fetch(&[&refspec], Some(&mut fetch_opts), None);
 
-    let commits_behind = match repo.graph_ahead_behind(local_oid, remote_oid) {
-        Ok((_ahead, behind)) => {
+    let (commits_ahead, commits_behind) = match repo.graph_ahead_behind(local_oid, remote_oid) {
+        Ok((ahead, behind)) => {
             if behind == 0 {
                 return None;
             }
-            behind
+            (ahead, behind)
         }
-        Err(_) => 1, // Remote OID differs and isn't in local graph yet -> at least 1 new remote commit
+        // Unknown ancestry is never eligible for automatic updates.
+        Err(_) => (usize::MAX, 1),
     };
+
+    let working_tree_clean = repository_worktree_is_clean(&repo).unwrap_or(false);
 
     let canonical = std::fs::canonicalize(repo_path)
         .unwrap_or_else(|_| repo_path.to_path_buf())
@@ -118,6 +155,8 @@ pub fn check_single_repo_for_remote_update(repo_path: &Path) -> Option<RepoUpdat
         local_oid: local_oid.to_string(),
         remote_oid: remote_oid.to_string(),
         commits_behind,
+        commits_ahead,
+        working_tree_clean,
         prompt_message,
     })
 }
@@ -137,6 +176,8 @@ pub fn check_all_repos_for_updates(root_paths: Vec<String>) -> Vec<RepoUpdateNot
         root_paths: roots,
         max_depth: Some(5),
         include_hidden_dirs: Some(false),
+        // Background update polling is limited to primary project repositories.
+        index_dependency_repositories: Some(false),
     }) {
         Ok(list) => list,
         Err(_) => return Vec::new(),
@@ -154,12 +195,21 @@ pub fn check_all_repos_for_updates(root_paths: Vec<String>) -> Vec<RepoUpdateNot
 
 /// Pulls / fast-forwards the specified local repository from `origin/<branch>` when the user clicks "Update Now".
 pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
-    // Try native `git pull --ff-only` first for clean working tree update, fallback to libgit2 fast-forward
+    let repo = Repository::open(repo_path).map_err(|error| error.to_string())?;
+    let head = repo.head().map_err(|error| error.to_string())?;
+    if !head.is_branch() {
+        return Err("Detached HEAD cannot be automatically updated.".to_string());
+    }
+    if !repository_worktree_is_clean(&repo)? {
+        return Err("GitManager did not update this repository because it has uncommitted or untracked files. Commit or stash them first.".to_string());
+    }
+
+    // Prefer Git's explicit fast-forward-only pull. It must never create a merge commit.
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
         .arg("pull")
-        .arg("--rebase=false")
+        .arg("--ff-only")
         .output();
 
     if let Ok(out) = output {
@@ -193,6 +243,16 @@ pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
         .refname_to_id(&fetch_head_ref)
         .map_err(|e| format!("Could not resolve {}: {}", fetch_head_ref, e))?;
     let fetch_commit = repo.find_object(fetch_commit_oid, None).map_err(|e| e.to_string())?;
+    let local_oid = repo.head().map_err(|error| error.to_string())?
+        .target().ok_or_else(|| "Current branch has no commit.".to_string())?;
+    let (ahead, behind) = repo.graph_ahead_behind(local_oid, fetch_commit_oid)
+        .map_err(|error| format!("Could not verify fast-forward ancestry: {error}"))?;
+    if ahead > 0 {
+        return Err("GitManager refused to update because the local branch contains commits that are not on origin.".to_string());
+    }
+    if behind == 0 {
+        return Ok("Repository is already up to date.".to_string());
+    }
 
     repo.checkout_tree(&fetch_commit, None)
         .map_err(|e| format!("Checkout conflict during update: {}", e))?;
@@ -348,6 +408,7 @@ pub fn spawn_background_update_watcher(
     app_handle: AppHandle,
     enabled: Arc<AtomicBool>,
     checking_now: Arc<AtomicBool>,
+    scan_roots: Vec<String>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(120));
@@ -363,8 +424,9 @@ pub fn spawn_background_update_watcher(
                 "status": "Background Service scanning remotes for updates..."
             }));
 
-            let found_updates = tokio::task::spawn_blocking(|| {
-                check_all_repos_for_updates(Vec::new())
+            let roots = scan_roots.clone();
+            let found_updates = tokio::task::spawn_blocking(move || {
+                check_all_repos_for_updates(roots)
             })
             .await
             .unwrap_or_default();

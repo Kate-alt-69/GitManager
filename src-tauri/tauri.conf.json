@@ -25,7 +25,15 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis", "deb", "rpm", "appimage", "dmg", "app"],
+    "targets": [
+      "msi",
+      "nsis",
+      "deb",
+      "rpm",
+      "appimage",
+      "dmg",
+      "app"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -45,6 +53,9 @@
     },
     "macOS": {
       "minimumSystemVersion": "11.0"
+    },
+    "resources": {
+      "../tools/gitmanager_cleaner.py": "tools/gitmanager_cleaner.py"
     }
   }
 }

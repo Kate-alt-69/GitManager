@@ -58,3 +58,80 @@ Implemented in `src-tauri/src/watcher_service.rs` and `src-tauri/src/bin/git_man
    - Connect specific **GitHub** or **GitLab** accounts to view and filter remote repositories.
 5. **Smart Remote & Local Availability Filter**
    - Filter by **Remote** (available) and **Local** (no remote configured), with automatic fallback that **groups both into 1 unified view** whenever either side has `0` repositories.
+
+
+---
+
+## 4. Preview-first Developer Cleaner (tools/gitmanager_cleaner.py)
+
+GitManager includes a cross-platform Python helper based on the safe cache/project cleanup model from the DevToolchain-Clean PowerShell script.
+
+The Developer Cleaner button offers three scopes:
+
+- **Selected local repository** — detects generated outputs for Node.js, Rust, Python, .NET, Gradle, Maven, CMake, Dart/Flutter, and Zig projects inside the selected worktree. Git-tracked paths are skipped by default. node_modules, project package caches, and validated Python virtual environments are opt-in.
+- **Current-user developer caches** — checks known npm/pnpm/Yarn/Bun, Cargo/Rustup, pip/uv/Poetry, Go, Gradle, NuGet, and related cache locations. It does not scan entire drives or remove installed toolchains. Curated Windows update/temp/diagnostic folders are separately opt-in; GPU, shader, font, and thumbnail caches are not targeted.
+- **Remote repository** — clones the selected remote into a temporary directory, previews recognized generated/dependency paths, creates a commit with the message "gitManager | Cleaned repo of junk", and pushes a new gitmanager/clean/<timestamp> branch. It never pushes directly to the default branch.
+
+The UI always previews candidates and estimated size first. Applying cleanup requires the exact confirmation YES. Remote cleanup additionally requires a successful push; if permissions or credentials do not allow the push, the app reports the error instead of changing the remote default branch.
+
+### CLI examples
+
+    # Preview a local repository (no deletion)
+    python tools/gitmanager_cleaner.py plan --scope repository --path .
+
+    # Preview and include project dependencies such as node_modules
+    python tools/gitmanager_cleaner.py plan --scope repository --path . --include-dependencies
+
+    # Apply repository cleanup after reviewing the plan
+    python tools/gitmanager_cleaner.py apply --scope repository --path . --confirm YES
+
+    # Preview known developer caches under the current user profile
+    python tools/gitmanager_cleaner.py plan --scope system
+
+    # Apply current-user cache cleanup
+    python tools/gitmanager_cleaner.py apply --scope system --confirm YES
+
+    # Preview a remote repository
+    python tools/gitmanager_cleaner.py remote-plan --url https://github.com/owner/repository.git
+
+    # Push remote cleanup as a separate branch after explicit confirmation
+    python tools/gitmanager_cleaner.py remote-clean --url https://github.com/owner/repository.git --confirm YES --push
+
+Add --include-virtualenvs to include validated Python environments. --include-windows-junk is available only on Windows for the curated system-junk targets.
+
+### Per-repository exclusions and ignore rules
+
+A repository can add a .gitmanager-cleanignore file at its root with one relative path or glob pattern per line to exclude cleanup candidates for that repository. Existing .gitignore rules are reported in the preview, and remote cleanup appends a clearly marked GitManager-managed block to .gitignore only when it actually removes tracked generated outputs. Existing user-authored ignore rules are preserved.
+
+The cleaner needs Python 3.10 or newer on PATH (py -3.10, py -3, python3, or python). The native GitManager app remains Rust/Tauri; Python is only used when invoking the cleaner. Automatic commit hooks and unattended Keep Remote Clean scheduling are intentionally not enabled by this first cleaner integration.
+
+
+---
+
+## 5. Workspace Setup & Repository Dashboard
+
+On first launch, GitManager asks which directories to index. Add one or more folders such as `D:/Project_Customs`, or choose a drive root such as `D:/` when a broader scan is intended. GitManager persists these preferences in its per-user application configuration directory; it does not automatically scan every system drive.
+
+- **Configurable roots and depth** — add/remove scan folders, restore recommended development folders, and choose a scan depth from 2 to 16 (8 by default).
+- **Dependency repositories stay indexed** — Git repositories found inside known dependency/build folders are classified separately. The scanner limits how deeply it descends into those folders so it can find nested package repositories without crawling every file in a dependency tree.
+- **Projects / Dependencies / All** — the main workspace defaults to Projects. Switch to Dependencies or All to inspect the indexed package/vendor repositories.
+- **Repository cards** — show the remote owner/repository name when available, latest local commit summary, current branch, and CI status. Public GitHub commit status and GitLab pipeline APIs are queried for recent local commit SHAs; statuses can show unavailable when a project is private, has no public status, or the provider cannot be queried.
+- **Persistent setup** — change scan folders and discovery options later from Scan Setup in the toolbar.
+
+CI lookups are read-only and use public provider endpoints; they do not trigger or rerun pipelines.
+
+Per-repository Auto Update and unattended Keep Remote Clean / Commit Clean automation are not enabled by this dashboard stage. Those policies need their own explicit settings and safe execution flow before they can perform background pulls or remote writes.
+
+
+### Per-repository Auto Update
+
+Local repositories expose an **Auto Update** preference in their inspector. When enabled, the in-app watcher and standalone OS service may fast-forward that repository automatically only when the working tree is clean and the local branch has no commits missing from the remote. GitManager uses fast-forward-only update semantics; dirty or divergent repositories remain manual notifications. The background watcher uses the scan roots saved during first-run setup.
+
+Keep Remote Clean and Commit Clean remain separate follow-up features; they are not presented as active automation controls in this build.
+
+
+### Per-repository Commit Clean
+
+The repository inspector can install **Commit Clean** as a Git `pre-commit` hook for a locally indexed repository. On commit, it detects tracked generated/build/dependency paths and removes those paths from the Git index for that commit. It does **not** delete the files from the working tree. Exact paths are added to that repository's local `.git/info/exclude`, preserving the shared `.gitignore` and excluding those generated paths from future `git add .` operations.
+
+The hook requires Python 3.10 or newer. GitManager installs only into the repository's default `.git/hooks` directory, refuses custom `core.hooksPath` configurations, and will not overwrite an existing custom `pre-commit` hook. Disable Commit Clean in the same repository inspector to remove the GitManager-managed hook.
