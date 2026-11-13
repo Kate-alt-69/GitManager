@@ -37,7 +37,9 @@ provider adapter.
 The upstream `backupVersions: 5` setting is per-object history, not five
 consistent repository-wide restore points. GitManager maintains a separate
 per-repository/per-kind manifest index and retains the five newest complete
-restore points. Content-addressed blobs are shared between retained snapshots
+restore points. Repository identity uses the sanitized primary Git remote URL
+where available, so cloud restore points follow clones across checkout paths
+and machines. Content-addressed blobs are shared between retained snapshots
 and stale logical objects are removed only after the replacement index is
 published. Provider-side versioning or soft-delete policies may retain older
 physical object versions even after GitManager removes them from its active
@@ -62,6 +64,22 @@ index.
 
 A capture is staged and verified before its index entry is published. A failed
 or interrupted capture must not evict the last verified restore point.
+
+## Portable repository identity and disaster recovery
+
+For repositories with a configured Git remote, GitManager derives the archive
+identity from the sanitized `origin` URL (or the first configured remote when
+there is no `origin`). The identity does not depend on the checkout directory,
+so a clone opened on another disk or machine can find the same cloud restore
+points. Repositories without any remote remain local-path scoped.
+
+To recover a Remote Archive after both the working folder and Git host are
+unavailable, create an empty folder, run `git init`, and add the archived
+remote URL as `origin` (adding the URL to local Git config does not require the
+host to be online). Then use `gitm backups` to find the restore point and
+`gitm restore . --kind remote --id <snapshot-id> --yes`. The Remote Archive
+recreates the stored refs and sanitized remotes from its local/cloud archive.
+You can change or remove the remote later if the old host no longer exists.
 
 ## Recovery behavior
 

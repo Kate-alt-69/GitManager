@@ -205,7 +205,7 @@ pub fn capture_repository(
         return Err("The archive storage directory cannot be inside the repository being archived.".to_string());
     }
 
-    let repository_id = repository_id(&source);
+    let repository_id = repository_archive_id(&repository, &source)?;
     let _capture_lock = ArchiveCaptureLock::acquire(&root, &repository_id, kind)?;
     let repository_name = source.file_name()
         .and_then(|name| name.to_str())
@@ -402,7 +402,9 @@ pub fn list_repository_archives(
     kind: Option<&str>,
 ) -> Result<Vec<ArchiveSnapshot>, String> {
     let identity_path = repository_identity_path(repository_path)?;
-    let id = repository_id(&identity_path);
+    let repository = Repository::open(&identity_path)
+        .map_err(|error| format!("The selected path is not a readable Git repository: {error}"))?;
+    let id = repository_archive_id(&repository, &identity_path)?;
     let root = resolve_archive_root(archive_root)?;
     let _archive_lock = ArchiveCaptureLock::acquire(&root, &id, ArchiveKind::Local)?;
     let store = open_archive_store(&root)?;
@@ -436,7 +438,9 @@ pub fn restore_repository_archive(
 ) -> Result<ArchiveRestoreResult, String> {
     let kind = ArchiveKind::parse(kind_text)?;
     let identity_path = repository_identity_path(repository_path)?;
-    let repository_id = repository_id(&identity_path);
+    let repository = Repository::open(&identity_path)
+        .map_err(|error| format!("The selected path is not a readable Git repository: {error}"))?;
+    let repository_id = repository_archive_id(&repository, &identity_path)?;
     let destination = absolute_path(destination_path)?;
     let root = resolve_archive_root(archive_root)?;
     let normalized_destination = canonicalize_future_path(&destination)
@@ -1194,9 +1198,29 @@ fn repository_identity_path(path: &str) -> Result<PathBuf, String> {
 }
 
 fn repository_id(path: &Path) -> String {
-    let normalized = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    let normalized = normalized.to_ascii_lowercase();
     let digest = Sha256::digest(normalized.as_bytes());
     hex::encode(&digest[..16])
+}
+
+/// Cloud archive identity follows the repository's primary Git remote so a
+/// clone in another directory or on another machine sees the same restore
+/// points. Repositories without a remote remain scoped to their local path.
+fn repository_archive_id(repository: &Repository, path: &Path) -> Result<String, String> {
+    let remotes = collect_safe_remotes(repository)?;
+    let primary = remotes.iter()
+        .find(|remote| remote.name.eq_ignore_ascii_case("origin"))
+        .or_else(|| remotes.first());
+    if let Some(url) = primary.and_then(|remote| {
+        remote.fetch_url.as_deref().or(remote.push_url.as_deref())
+    }) {
+        let identity = format!("gitmanager-remote-v1\n{}", url.trim());
+        let digest = Sha256::digest(identity.as_bytes());
+        return Ok(hex::encode(&digest[..16]));
+    }
+    Ok(repository_id(path))
 }
 
 fn canonicalize_future_path(path: &Path) -> std::io::Result<PathBuf> {
@@ -1389,6 +1413,46 @@ mod tests {
         assert_eq!(fs::read_to_string(destination.join("tracked.txt")).unwrap(), "version-1");
         assert!(Repository::open(&destination).is_ok());
         assert!(!destination.join(".env").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repository_archive_identity_is_stable_across_clone_paths() {
+        let root = temp_root("stable-repository-id");
+        let first_path = root.join("clone-a");
+        let second_path = root.join("clone-b");
+        fs::create_dir_all(&first_path).unwrap();
+        fs::create_dir_all(&second_path).unwrap();
+        let first = Repository::init(&first_path).unwrap();
+        let second = Repository::init(&second_path).unwrap();
+        first.remote("origin", "https://github.com/acme/project.git").unwrap();
+        second.remote("origin", "https://github.com/acme/project.git").unwrap();
+        assert_eq!(
+            repository_archive_id(&first, &first_path).unwrap(),
+            repository_archive_id(&second, &second_path).unwrap()
+        );
+        second.remote("backup", "https://gitlab.com/acme/project.git").unwrap();
+        assert_eq!(
+            repository_archive_id(&first, &first_path).unwrap(),
+            repository_archive_id(&second, &second_path).unwrap(),
+            "origin is the stable identity even when a second remote is configured"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repositories_without_remotes_keep_a_path_scoped_identity() {
+        let root = temp_root("path-repository-id");
+        let first_path = root.join("project-a");
+        let second_path = root.join("project-b");
+        fs::create_dir_all(&first_path).unwrap();
+        fs::create_dir_all(&second_path).unwrap();
+        let first = Repository::init(&first_path).unwrap();
+        let second = Repository::init(&second_path).unwrap();
+        assert_ne!(
+            repository_archive_id(&first, &first_path).unwrap(),
+            repository_archive_id(&second, &second_path).unwrap()
+        );
         let _ = fs::remove_dir_all(root);
     }
 
