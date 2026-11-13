@@ -73,8 +73,24 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    if args[0] == "help" {
+        if let Some(command) = args.get(1) {
+            print_command_help(command);
+        } else {
+            print_help();
+        }
+        return Ok(());
+    }
+    if args.len() > 1
+        && matches!(args[1].as_str(), "--help" | "-h")
+        && args[0] != "cloud"
+    {
+        print_command_help(&args[0]);
+        return Ok(());
+    }
+
     match args[0].as_str() {
-        "--help" | "-h" | "help" => {
+        "--help" | "-h" => {
             print_help();
             Ok(())
         }
@@ -457,6 +473,47 @@ fn positional(args: &[String], index: usize) -> Option<&str> {
         cursor += 1;
     }
     None
+}
+
+fn command_help(command: &str) -> &'static str {
+    match command {
+        "backup" | "snapshot" =>
+            "gitm backup [PATH] --kind local|remote [--archive-root PATH]\n\
+             Save a complete Local or Remote repository restore point.\n\
+             Local includes working-tree changes; Remote also includes reachable Git history.\n",
+        "backups" | "list" | "history" =>
+            "gitm backups [PATH] [--kind local|remote] [--archive-root PATH]\n\
+             List retained restore points (up to five per repository and archive type).\n",
+        "restore" =>
+            "gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n\
+             Verify and restore a selected point. Existing destinations are preserved before replacement.\n\
+             Without --yes, no destination changes are made.\n",
+        "status" =>
+            "gitm status [PATH]\n\
+             Show the current branch, HEAD and working-tree changes.\n",
+        "log" | "history-commits" =>
+            "gitm log [PATH] [--limit N]\n\
+             Show recent commits (default 20, maximum 500).\n",
+        "branch" | "branches" =>
+            "gitm branches [PATH]\n\
+             List local and remote branches and mark the current branch.\n",
+        "remote" | "remotes" =>
+            "gitm remotes [PATH]\n\
+             Inspect remote names and credential-redacted fetch/push URLs.\n",
+        "cloud" =>
+            "gitm cloud status|sync|configure|disable [options]\n\
+             Use status to inspect configuration, sync for an explicit network transfer,\n\
+             configure --file provider.json to set a provider, or disable to stop syncing.\n",
+        "tui" =>
+            "gitm tui [--repo PATH]\n\
+             Open the keyboard-driven archive dashboard. Use arrows/WASD, Enter, Esc/Q,\n\
+             left/right in wide terminals, or click when SGR mouse is supported.\n",
+        _ => "Unknown command. Run gitm --help to list supported commands.\n",
+    }
+}
+
+fn print_command_help(command: &str) {
+    println!("{}", command_help(command));
 }
 
 fn print_help() {
@@ -873,6 +930,14 @@ fn print_snapshot(snapshot: &ArchiveSnapshot) {
 #[cfg(test)]
 mod tests {
     use super::positional;
+
+    #[test]
+    fn command_specific_help_documents_safe_restore_and_cloud_actions() {
+        assert!(super::command_help("restore").contains("Without --yes"));
+        assert!(super::command_help("cloud").contains("explicit network transfer"));
+        assert!(super::command_help("backup").contains("reachable Git history"));
+        assert!(super::command_help("not-a-command").contains("Unknown command"));
+    }
 
     #[test]
     fn terminal_clip_uses_display_width_for_wide_unicode() {
