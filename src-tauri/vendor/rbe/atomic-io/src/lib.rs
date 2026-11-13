@@ -1,0 +1,519 @@
+//! Global atomic I/O layer: "all writes/reads happen through the
+//! atomic writer." Shared between the main engine and the container
+//! runtime's sandboxed environments — two separate Cargo workspaces,
+//! same crate via relative path dependency. One implementation of
+//! "write this safely" to get right and keep correct, not two
+//! separate copies to keep in sync.
+//!
+//! Two real guarantees, scoped honestly:
+//! - [`AtomicIo::write_atomic`]: full-file replace is genuinely
+//!   atomic — write to a temp file in the same directory, `sync_all`,
+//!   then atomically replace the target. Unix additionally fsyncs the
+//!   containing directory after namespace changes; Windows uses
+//!   `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` so replacing an
+//!   existing target works and the move is flushed before success is
+//!   reported. A reader never observes a partially-written file, and
+//!   a crash mid-write leaves either the old or the committed file,
+//!   never a partially-written target.
+//! - [`AtomicIo::append_locked`] / [`AtomicIo::read`]: serialized via
+//!   an in-process per-path lock registry, which prevents corruption
+//!   from concurrent writers WITHIN THIS PROCESS. This does **not**
+//!   provide cross-process atomicity for appends — there's no OS
+//!   primitive for "atomically append N bytes" the way `rename` gives
+//!   full-replacement. Don't oversell this: append-style writes (a
+//!   log file) are safe against races between threads/tasks in this
+//!   process, not against a second process writing the same file at
+//!   the same time.
+//!
+//! [`AtomicIo::stats`] exposes running totals (bytes/ops) — the
+//! numbers the container environments' disk-abuse detection watches.
+
+use std::collections::HashMap;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IoStats {
+    pub bytes_written: u64,
+    pub bytes_read: u64,
+    pub write_ops: u64,
+    pub read_ops: u64,
+}
+
+struct Counters {
+    bytes_written: AtomicU64,
+    bytes_read: AtomicU64,
+    write_ops: AtomicU64,
+    read_ops: AtomicU64,
+}
+
+impl Default for Counters {
+    fn default() -> Self {
+        Self {
+            bytes_written: AtomicU64::new(0),
+            bytes_read: AtomicU64::new(0),
+            write_ops: AtomicU64::new(0),
+            read_ops: AtomicU64::new(0),
+        }
+    }
+}
+
+/// The global atomic I/O gate. One instance is meant to be shared
+/// (it's cheap to `Clone` — an `Arc` underneath) across everything
+/// that touches disk in a given process: the engine's vault and
+/// error-reporter, and each container environment's disk-write path.
+#[derive(Clone)]
+pub struct AtomicIo {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    counters: Counters,
+    // Per-path lock registry — serializes concurrent writers to the
+    // SAME file within this process. A `Mutex<HashMap<...>>` guards
+    // the registry itself; each entry is its own `Mutex<()>` so
+    // unrelated paths don't block each other. "Atomic GLOBAL
+    // reader/writer" means one shared gate for the whole process's
+    // I/O — not literally one lock serializing every unrelated file
+    // operation, which would make disk I/O from completely unrelated
+    // subsystems block on each other for no reason.
+    locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+}
+
+impl Default for AtomicIo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AtomicIo {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                counters: Counters::default(),
+                locks: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
+    pub fn stats(&self) -> IoStats {
+        IoStats {
+            bytes_written: self.inner.counters.bytes_written.load(Ordering::Relaxed),
+            bytes_read: self.inner.counters.bytes_read.load(Ordering::Relaxed),
+            write_ops: self.inner.counters.write_ops.load(Ordering::Relaxed),
+            read_ops: self.inner.counters.read_ops.load(Ordering::Relaxed),
+        }
+    }
+
+    fn lock_registry(&self) -> MutexGuard<'_, HashMap<PathBuf, Arc<Mutex<()>>>> {
+        match self.inner.locks.lock() {
+            Ok(locks) => locks,
+            Err(poisoned) => {
+                // The registry is only a cache of per-path locks. Throw it away
+                // after a panic rather than making all future I/O panic forever.
+                let mut locks = poisoned.into_inner();
+                locks.clear();
+                self.inner.locks.clear_poison();
+                locks
+            }
+        }
+    }
+
+    fn lock_for(&self, path: &Path) -> Arc<Mutex<()>> {
+        let key = path.to_path_buf();
+        let mut locks = self.lock_registry();
+        locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Atomically replaces the entire contents of `path` with `bytes`.
+    /// Creates the parent directory if it doesn't exist.
+    pub fn write_atomic(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let path_lock = self.lock_for(path);
+        let _guard = lock_recover(&path_lock);
+
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            create_dir_all_durable(parent)?;
+        }
+
+        let tmp_path = tmp_path_for(path);
+        {
+            let mut tmp_file = fs::File::create(&tmp_path)?;
+            tmp_file.write_all(bytes)?;
+            tmp_file.sync_all()?;
+        }
+        if let Err(error) = replace_atomic(&tmp_path, path) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+
+        self.inner
+            .counters
+            .bytes_written
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        self.inner
+            .counters
+            .write_ops
+            .fetch_add(1, Ordering::Relaxed);
+
+        Ok(())
+    }
+
+    /// Appends `bytes` to `path`, creating it if needed. Serialized
+    /// against other appends/writes to the same path *within this
+    /// process* — see the module doc comment's scoping note.
+    pub fn append_locked(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let path_lock = self.lock_for(path);
+        let _guard = lock_recover(&path_lock);
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        file.write_all(bytes)?;
+
+        self.inner
+            .counters
+            .bytes_written
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        self.inner
+            .counters
+            .write_ops
+            .fetch_add(1, Ordering::Relaxed);
+
+        Ok(())
+    }
+
+    /// Reads the full contents of `path`, through the same lock
+    /// registry as writes so a read can't observe a half-written
+    /// `append_locked` call from another task in this process.
+    pub fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        let path_lock = self.lock_for(path);
+        let _guard = lock_recover(&path_lock);
+
+        let bytes = fs::read(path)?;
+
+        self.inner
+            .counters
+            .bytes_read
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        self.inner.counters.read_ops.fetch_add(1, Ordering::Relaxed);
+
+        Ok(bytes)
+    }
+
+    /// Read untrusted host input under the normal I/O gate with a byte limit,
+    /// including a one-byte overflow probe if the file grows after stat. Account
+    /// consumed bytes even when the limit or a later I/O error rejects the read.
+    pub fn read_bounded(&self, path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
+        let path_lock = self.lock_for(path);
+        let _guard = lock_recover(&path_lock);
+        let mut bytes = Vec::new();
+        let limit = u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1);
+        let result = fs::File::open(path)?.take(limit).read_to_end(&mut bytes);
+        self.inner
+            .counters
+            .bytes_read
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        self.inner.counters.read_ops.fetch_add(1, Ordering::Relaxed);
+        result?;
+        if bytes.len() > maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "file exceeds bounded read limit",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    /// Opportunistic cleanup of the lock registry so a long-running
+    /// process touching many distinct paths doesn't grow it
+    /// unbounded. Call periodically from a supervised task — same
+    /// pattern as the engine's rate-limiter/IP-strike `sweep()`
+    /// methods. Only removes entries nothing is actively holding.
+    pub fn sweep_locks(&self) {
+        let mut locks = self.lock_registry();
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+}
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            mutex.clear_poison();
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn parent_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn create_dir_all_durable(path: &Path) -> io::Result<()> {
+    let mut missing = Vec::new();
+    let mut current = path.to_path_buf();
+    loop {
+        match fs::metadata(&current) {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("{} exists and is not a directory", current.display()),
+                    ));
+                }
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.push(current.clone());
+                let Some(parent) = current.parent() else {
+                    break;
+                };
+                if parent.as_os_str().is_empty() {
+                    break;
+                }
+                current = parent.to_path_buf();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    for directory in missing.iter().rev() {
+        sync_directory(parent_dir(directory))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[cfg(unix)]
+fn replace_atomic(source: &Path, target: &Path) -> io::Result<()> {
+    fs::rename(source, target)?;
+    sync_directory(parent_dir(target))
+}
+
+#[cfg(windows)]
+fn replace_atomic(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(path: &Path) -> io::Result<Vec<u16>> {
+        let mut value = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        if value.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "atomic-io path contains an embedded NUL",
+            ));
+        }
+        value.push(0);
+        Ok(value)
+    }
+
+    let source = wide(source)?;
+    let target = wide(target)?;
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+    // SAFETY: both buffers are owned, NUL-terminated UTF-16 paths and
+    // remain alive for the duration of the Win32 call.
+    let result = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), flags) };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn replace_atomic(source: &Path, target: &Path) -> io::Result<()> {
+    fs::rename(source, target)
+}
+
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "tmp".to_string());
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_name = format!(".{file_name}.{unique}.tmp");
+    match path.parent() {
+        Some(parent) => parent.join(tmp_name),
+        None => PathBuf::from(tmp_name),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("atomic-io-test-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn bounded_reads_enforce_the_limit_and_account_for_rejected_bytes() {
+        let dir = temp_dir("bounded-read");
+        let path = dir.join("input.bin");
+        let io = AtomicIo::new();
+        io.write_atomic(&path, b"0123456789").unwrap();
+        assert_eq!(
+            io.read_bounded(&path, 3).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(io.stats().bytes_read, 4);
+        assert_eq!(io.stats().read_ops, 1);
+        assert_eq!(io.read_bounded(&path, 10).unwrap(), b"0123456789");
+        assert_eq!(io.stats().bytes_read, 14);
+        assert_eq!(io.stats().read_ops, 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn write_then_read_round_trips() {
+        let dir = temp_dir("roundtrip");
+        let io = AtomicIo::new();
+        let path = dir.join("file.txt");
+        io.write_atomic(&path, b"hello world").unwrap();
+        let read_back = io.read(&path).unwrap();
+        assert_eq!(read_back, b"hello world");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_leaves_no_tmp_file_behind_on_success() {
+        let dir = temp_dir("no-tmp-leftover");
+        let io = AtomicIo::new();
+        let path = dir.join("file.txt");
+        io.write_atomic(&path, b"data").unwrap();
+        let entries: Vec<_> = fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the final file should remain, no .tmp"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_replaces_existing_target() {
+        let dir = temp_dir("replace-existing");
+        let io = AtomicIo::new();
+        let path = dir.join("file.txt");
+        io.write_atomic(&path, b"first").unwrap();
+        io.write_atomic(&path, b"second").unwrap();
+        assert_eq!(io.read(&path).unwrap(), b"second");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_creates_nested_parent_directories() {
+        let dir = temp_dir("nested-parent");
+        let io = AtomicIo::new();
+        let path = dir.join("a/b/c/file.txt");
+        io.write_atomic(&path, b"nested").unwrap();
+        assert_eq!(io.read(&path).unwrap(), b"nested");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_locked_accumulates() {
+        let dir = temp_dir("append");
+        let io = AtomicIo::new();
+        let path = dir.join("log.txt");
+        io.append_locked(&path, b"line1\n").unwrap();
+        io.append_locked(&path, b"line2\n").unwrap();
+        let contents = io.read(&path).unwrap();
+        assert_eq!(contents, b"line1\nline2\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stats_track_bytes_and_ops() {
+        let dir = temp_dir("stats");
+        let io = AtomicIo::new();
+        let path = dir.join("file.txt");
+        io.write_atomic(&path, b"12345").unwrap();
+        io.read(&path).unwrap();
+        let stats = io.stats();
+        assert_eq!(stats.bytes_written, 5);
+        assert_eq!(stats.bytes_read, 5);
+        assert_eq!(stats.write_ops, 1);
+        assert_eq!(stats.read_ops, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poisoned_path_lock_does_not_disable_future_io() {
+        let dir = temp_dir("poison-path");
+        let io = AtomicIo::new();
+        let path = dir.join("file.txt");
+        let path_lock = io.lock_for(&path);
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = path_lock.lock().unwrap();
+            panic!("intentional path lock poison");
+        }));
+        assert!(poisoned.is_err());
+        assert!(path_lock.is_poisoned());
+
+        io.write_atomic(&path, b"recovered").unwrap();
+        assert!(!path_lock.is_poisoned());
+        assert_eq!(io.read(&path).unwrap(), b"recovered");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poisoned_registry_is_discarded_instead_of_panicking() {
+        let dir = temp_dir("poison-registry");
+        let io = AtomicIo::new();
+        let path = dir.join("file.txt");
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = io.inner.locks.lock().unwrap();
+            panic!("intentional registry poison");
+        }));
+        assert!(poisoned.is_err());
+        assert!(io.inner.locks.is_poisoned());
+
+        io.write_atomic(&path, b"recovered").unwrap();
+        assert!(!io.inner.locks.is_poisoned());
+        assert_eq!(io.read(&path).unwrap(), b"recovered");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sweep_locks_removes_unreferenced_entries() {
+        let dir = temp_dir("sweep");
+        let io = AtomicIo::new();
+        let path = dir.join("file.txt");
+        io.write_atomic(&path, b"x").unwrap();
+        io.sweep_locks();
+        let locks = io.lock_registry();
+        assert!(locks.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
