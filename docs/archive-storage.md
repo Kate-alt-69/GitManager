@@ -103,11 +103,19 @@ or the desktop WebView runtime:
 
 ```text
 gitm
+gitm status .
+gitm log . --limit 25
+gitm branches .
+gitm remotes .
 gitm backup . --kind local
 gitm backup . --kind remote
 gitm backups . --kind local
 gitm restore . --id <snapshot-id> --kind local --to ../recovered --yes
 ```
+
+The inspection commands use Git's native repository data. Remote URLs are
+redacted before they are printed; use Git itself to inspect or change
+credential-related settings.
 
 The no-argument command opens a keyboard-driven TUI. It supports arrow keys,
 WASD, left/right navigation on wider terminals, Enter, Escape/Q, and optional

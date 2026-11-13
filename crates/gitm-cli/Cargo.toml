@@ -10,6 +10,8 @@ name = "gitm"
 path = "src/main.rs"
 
 [dependencies]
+url = "2"
+git2 = { version = "0.19", default-features = false, features = ["https", "ssh"] }
 unicode-width = "0.2"
 gitmanager-archive = { path = "../archive-core" }
 crossterm = "0.28"

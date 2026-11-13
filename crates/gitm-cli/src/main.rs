@@ -11,6 +11,7 @@ use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use git2::{BranchType, Repository, Sort, StatusOptions};
 use gitmanager_archive::{
     archive_cloud_storage_info, capture_repository, configure_archive_cloud_storage,
     default_archive_root, disable_archive_cloud_storage, list_repository_archives,
@@ -84,6 +85,10 @@ fn run() -> Result<(), String> {
         "backup" | "snapshot" => command_backup(&args[1..]),
         "backups" | "list" | "history" => command_list(&args[1..]),
         "restore" => command_restore(&args[1..]),
+        "status" => command_status(&args[1..]),
+        "log" | "history-commits" => command_log(&args[1..]),
+        "branch" | "branches" => command_branches(&args[1..]),
+        "remote" | "remotes" => command_remotes(&args[1..]),
         "cloud" => command_cloud(&args[1..]),
         "tui" => {
             let path = option_value(&args[1..], "--repo")
@@ -155,6 +160,172 @@ fn command_restore(args: &[String]) -> Result<(), String> {
     println!("Restored {} archive to {}", result.snapshot.id, result.destination);
     if let Some(path) = result.preserved_previous_path {
         println!("Previous destination preserved at {}", path);
+    }
+    Ok(())
+}
+
+fn repository_path_arg(args: &[String]) -> Result<PathBuf, String> {
+    let value = option_value(args, "--repo")
+        .or_else(|| positional(args, 0))
+        .map(PathBuf::from)
+        .unwrap_or(env::current_dir().map_err(|error| error.to_string())?);
+    Ok(value)
+}
+
+fn open_repository(args: &[String]) -> Result<(PathBuf, Repository), String> {
+    let path = repository_path_arg(args)?;
+    let canonical = path.canonicalize()
+        .map_err(|error| format!("Could not resolve repository path {}: {error}", path.display()))?;
+    let repository = Repository::open(&canonical)
+        .map_err(|error| format!("{} is not a readable Git repository: {error}", canonical.display()))?;
+    Ok((canonical, repository))
+}
+
+fn command_status(args: &[String]) -> Result<(), String> {
+    let (path, repository) = open_repository(args)?;
+    let branch = repository.head()
+        .ok()
+        .and_then(|head| head.shorthand().map(str::to_owned))
+        .unwrap_or_else(|| "(detached or unborn HEAD)".to_string());
+    let head = repository.head()
+        .ok()
+        .and_then(|head| head.target())
+        .map(|oid| oid.to_string())
+        .unwrap_or_else(|| "(no commit yet)".to_string());
+
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .renames_head_to_index(true)
+        .renames_index_to_workdir(true);
+    let statuses = repository.statuses(Some(&mut options))
+        .map_err(|error| format!("Could not read worktree status: {error}"))?;
+
+    println!("Repository: {}", path.display());
+    println!("Branch:     {branch}");
+    println!("HEAD:       {}", &head[..head.len().min(12)]);
+    println!("Worktree:   {} changed path(s)", statuses.len());
+    if statuses.is_empty() {
+        println!("Working tree clean.");
+    } else {
+        for entry in statuses.iter() {
+            let state = format!("{:?}", entry.status());
+            let file = entry.path().unwrap_or("<non-UTF-8 path>");
+            println!("{state:<28} {file}");
+        }
+    }
+    Ok(())
+}
+
+fn command_log(args: &[String]) -> Result<(), String> {
+    let (path, repository) = open_repository(args)?;
+    let limit = option_value(args, "--limit")
+        .map(|value| value.parse::<usize>().map_err(|_| "--limit must be an integer from 1 to 500.".to_string()))
+        .transpose()?
+        .unwrap_or(20);
+    if !(1..=500).contains(&limit) {
+        return Err("--limit must be between 1 and 500.".to_string());
+    }
+    let mut walk = repository.revwalk()
+        .map_err(|error| format!("Could not create commit history walk: {error}"))?;
+    walk.push_head().map_err(|error| format!("Repository has no readable HEAD: {error}"))?;
+    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .map_err(|error| format!("Could not sort commit history: {error}"))?;
+    println!("Recent commits · {} · {}", path.display(), limit);
+    let mut count = 0usize;
+    for oid in walk.take(limit) {
+        let oid = oid.map_err(|error| format!("Could not read commit reference: {error}"))?;
+        let commit = repository.find_commit(oid)
+            .map_err(|error| format!("Could not read commit {oid}: {error}"))?;
+        let author = commit.author();
+        let name = author.name().unwrap_or("Unknown author");
+        let email = author.email().unwrap_or("no email");
+        let summary = commit.summary().unwrap_or("(no commit message)");
+        let timestamp = commit.time().seconds();
+        println!("{}  {} <{}>  [{}]", &oid.to_string()[..12], name, email, timestamp);
+        println!("    {}", summary.lines().next().unwrap_or(""));
+        count += 1;
+    }
+    if count == 0 {
+        println!("No commits yet.");
+    }
+    Ok(())
+}
+
+fn command_branches(args: &[String]) -> Result<(), String> {
+    let (path, repository) = open_repository(args)?;
+    let mut branches = repository.branches(None)
+        .map_err(|error| format!("Could not list repository branches: {error}"))?
+        .map(|entry| {
+            let (branch, kind) = entry.map_err(|error| error.to_string())?;
+            let name = branch.name()
+                .map_err(|error| error.to_string())?
+                .unwrap_or("<non-UTF-8 branch>")
+                .to_string();
+            let current = branch.is_head();
+            Ok::<_, String>((name, kind, current))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    branches.sort_by(|left, right| left.0.cmp(&right.0));
+    println!("Branches · {}", path.display());
+    if branches.is_empty() {
+        println!("No branches found.");
+    }
+    for (name, kind, current) in branches {
+        let kind = match kind {
+            BranchType::Local => "local",
+            BranchType::Remote => "remote",
+        };
+        println!("{} {:<7} {}", if current { "*" } else { " " }, kind, name);
+    }
+    Ok(())
+}
+
+fn safe_remote_display(value: &str) -> String {
+    if let Ok(mut url) = url::Url::parse(value) {
+        if url.scheme() != "ssh" {
+            let _ = url.set_username("");
+        }
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+    if !value.contains("://") {
+        if let Some((user, destination)) = value.split_once('@') {
+            if destination.contains(':') && !destination.starts_with('/') {
+                let user = if user.is_empty() || user.contains(':') { "git" } else { user };
+                return format!("{user}@{destination}");
+            }
+        }
+    }
+    if value.contains("://") {
+        "<remote URL omitted: unable to safely redact credentials>".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn command_remotes(args: &[String]) -> Result<(), String> {
+    let (path, repository) = open_repository(args)?;
+    let remotes = repository.remotes()
+        .map_err(|error| format!("Could not list repository remotes: {error}"))?;
+    println!("Remotes · {}", path.display());
+    if remotes.is_empty() {
+        println!("No remotes configured.");
+    }
+    for name in remotes.iter().flatten() {
+        let remote = repository.find_remote(name)
+            .map_err(|error| format!("Could not inspect remote {name}: {error}"))?;
+        println!("{name}");
+        if let Some(url) = remote.url() {
+            println!("  fetch: {}", safe_remote_display(url));
+        }
+        if let Some(url) = remote.pushurl() {
+            println!("  push:  {}", safe_remote_display(url));
+        }
     }
     Ok(())
 }
@@ -279,12 +450,16 @@ fn positional(args: &[String], index: usize) -> Option<&str> {
 
 fn print_help() {
     println!(
-        "GitManager · gitm — native repository archive and recovery\n\
+        "GitManager · gitm — native repository and archive toolkit\n\
          Usage:\n\
            gitm                         Open the interactive TUI\n\
            gitm backup [PATH] --kind local|remote [--archive-root PATH]\n\
            gitm backups [PATH] [--kind local|remote] [--archive-root PATH]\n\
            gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n\
+           gitm status [PATH]\n\
+           gitm log [PATH] [--limit N]\n\
+           gitm branches [PATH]\n\
+           gitm remotes [PATH]\n\
            gitm cloud status|sync|configure|disable [options]\n\
            gitm tui [--repo PATH]\n\
            gitm --help | --version\n\
@@ -696,6 +871,34 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn remote_display_redacts_embedded_credentials_and_query_tokens() {
+        assert_eq!(
+            super::safe_remote_display("https://alice:secret@example.com/org/repo.git?token=hidden#frag"),
+            "https://example.com/org/repo.git"
+        );
+        assert_eq!(
+            super::safe_remote_display("alice@example.com:org/repo.git"),
+            "alice@example.com:org/repo.git"
+        );
+        assert_eq!(
+            super::safe_remote_display("alice:password@example.com:org/repo.git"),
+            "git@example.com:org/repo.git"
+        );
+        assert_eq!(
+            super::safe_remote_display("ssh://alice:password@example.com/org/repo.git"),
+            "ssh://alice@example.com/org/repo.git"
+        );
+    }
+
+    #[test]
+    fn unknown_remote_schemes_do_not_echo_possible_credentials() {
+        assert_eq!(
+            super::safe_remote_display("custom://user:pass@example.com/path?token=hidden"),
+            "custom://example.com/path"
+        );
+    }
+
     fn positional_arguments_skip_option_values() {
         let args = vec![
             "--kind".to_string(), "remote".to_string(),
