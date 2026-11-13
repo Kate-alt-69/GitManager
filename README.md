@@ -10,7 +10,7 @@
 
 - **Rust Toolchain Detection & Version Adaptation**:
   - Checks if `rustc` and `cargo` are installed in `PATH` or `~/.cargo/bin`.
-  - Compares the installed version against the baseline (`1.77.2`). If a **different version is already installed** on your machine (newer, custom/nightly, or older), `build.py` **automatically uses the version you already have installed** (or picks the best already-installed `rustup` toolchain if multiple exist locally) instead of failing or forcing a toolchain re-download.
+  - Compares the installed version against the workspace baseline (`1.88.0`, required by the filesystem watcher). If a **different version is already installed** on your machine (newer, custom/nightly, or older), `build.py` **automatically uses the version you already have installed** (or picks the best already-installed `rustup` toolchain if multiple exist locally) instead of failing or forcing a toolchain re-download.
 - **Pure-Rust `tauri-cli` (`cargo tauri`) Detection**:
   - Uses the Rust `cargo-tauri` crate binary if already installed, or builds/runs the Rust crate directly with `cargo build --release` / `cargo run` (pass `--install-tauri-cli` if you want `cargo install tauri-cli` run automatically).
 - **OS Native Library Check**:

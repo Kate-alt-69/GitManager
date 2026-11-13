@@ -399,6 +399,15 @@ async fn configure_archive_cloud_storage(
 }
 
 #[tauri::command]
+async fn disable_archive_cloud_storage(archive_root: String) -> Result<archive::ArchiveCloudStorageInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        archive::disable_archive_cloud_storage(Some(&archive_root))
+    })
+    .await
+    .map_err(|error| format!("Cloud archive configuration task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn sync_archive_cloud_storage(archive_root: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || archive::sync_archive_cloud_storage(Some(&archive_root)))
         .await
@@ -1040,6 +1049,7 @@ pub fn run() {
             get_default_archive_directory,
             get_archive_cloud_storage_info,
             configure_archive_cloud_storage,
+            disable_archive_cloud_storage,
             sync_archive_cloud_storage,
             capture_repository_archive,
             list_repository_archives,

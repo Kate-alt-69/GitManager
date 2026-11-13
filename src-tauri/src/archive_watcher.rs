@@ -93,13 +93,44 @@ fn watch_repository(
     local_enabled: bool,
     remote_enabled: bool,
 ) {
-    let watch_path = if trigger == "commit" {
-        std::path::PathBuf::from(git_dir)
-    } else {
-        std::path::PathBuf::from(&repository_path)
+    let repository_root = match std::fs::canonicalize(&repository_path) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("GitManager archive watcher: could not resolve repository {repository_path}: {error}");
+            return;
+        }
     };
-    if !watch_path.is_dir() {
+    let archive_root_path = match std::fs::canonicalize(&archive_root) {
+        Ok(path) => path,
+        Err(_) => std::path::PathBuf::from(&archive_root),
+    };
+    if archive_root_path == repository_root || archive_root_path.starts_with(&repository_root) {
+        eprintln!(
+            "GitManager archive watcher: refusing to watch {} because archive storage {} is inside it",
+            repository_root.display(),
+            archive_root_path.display()
+        );
         return;
+    }
+    let git_dir_path = std::path::PathBuf::from(git_dir);
+    let mut watch_targets = Vec::<(std::path::PathBuf, RecursiveMode)>::new();
+    if trigger == "commit" {
+        if !git_dir_path.is_dir() {
+            return;
+        }
+        // Git commits update HEAD/packed-refs directly and branch refs below
+        // refs/. Do not recursively watch the object database (often enormous).
+        watch_targets.push((git_dir_path.clone(), RecursiveMode::NonRecursive));
+        let refs = git_dir_path.join("refs");
+        if refs.is_dir() {
+            watch_targets.push((refs, RecursiveMode::Recursive));
+        }
+        let ref_logs = git_dir_path.join("logs").join("refs");
+        if ref_logs.is_dir() {
+            watch_targets.push((ref_logs, RecursiveMode::Recursive));
+        }
+    } else {
+        watch_targets.push((repository_root.clone(), RecursiveMode::Recursive));
     }
 
     let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
@@ -108,13 +139,15 @@ fn watch_repository(
     }) {
         Ok(watcher) => watcher,
         Err(error) => {
-            eprintln!("GitManager archive watcher: could not watch {}: {error}", watch_path.display());
+            eprintln!("GitManager archive watcher: could not initialize watcher for {}: {error}", repository_root.display());
             return;
         }
     };
-    if let Err(error) = watcher.watch(&watch_path, RecursiveMode::Recursive) {
-        eprintln!("GitManager archive watcher: could not register {}: {error}", watch_path.display());
-        return;
+    for (path, mode) in watch_targets {
+        if let Err(error) = watcher.watch(&path, mode) {
+            eprintln!("GitManager archive watcher: could not register {}: {error}", path.display());
+            return;
+        }
     }
 
     let mut last_change = None::<Instant>;
@@ -128,7 +161,19 @@ fn watch_repository(
                     continue;
                 }
                 if trigger == "change" {
-                    last_change = Some(Instant::now());
+                    // Git metadata changes are not project file edits. Ignoring
+                    // them prevents commits and ref updates from causing duplicate
+                    // Local/Remote change-trigger snapshots.
+                    let has_project_change = event.paths.is_empty() || event.paths.iter().any(|path| {
+                        path.strip_prefix(&repository_root)
+                            .ok()
+                            .is_some_and(|relative| {
+                                !relative.components().any(|component| component.as_os_str() == ".git")
+                            })
+                    });
+                    if has_project_change {
+                        last_change = Some(Instant::now());
+                    }
                 } else {
                     pending_commit = Some(Instant::now() + COMMIT_SETTLE);
                 }

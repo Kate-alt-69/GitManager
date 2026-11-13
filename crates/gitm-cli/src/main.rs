@@ -11,15 +11,17 @@ use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use gitmanager_archive::{
-    capture_repository, default_archive_root, list_repository_archives,
-    restore_repository_archive, ArchiveKind, ArchiveSnapshot,
+    archive_cloud_storage_info, capture_repository, configure_archive_cloud_storage,
+    default_archive_root, disable_archive_cloud_storage, list_repository_archives,
+    restore_repository_archive, sync_archive_cloud_storage, ArchiveKind, ArchiveSnapshot,
 };
 
-const MENU: [&str; 5] = [
+const MENU: [&str; 6] = [
     "Create Local Archive",
     "Create Remote Archive",
     "Browse Restore Points",
     "Show Archive Location",
+    "Cloud Storage: Status & Sync",
     "Exit",
 ];
 
@@ -53,6 +55,7 @@ fn run() -> Result<(), String> {
         "backup" | "snapshot" => command_backup(&args[1..]),
         "backups" | "list" | "history" => command_list(&args[1..]),
         "restore" => command_restore(&args[1..]),
+        "cloud" => command_cloud(&args[1..]),
         "tui" => {
             let path = option_value(&args[1..], "--repo")
                 .map(PathBuf::from)
@@ -127,6 +130,93 @@ fn command_restore(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn command_cloud(args: &[String]) -> Result<(), String> {
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    let archive_root = option_value(args, "--archive-root");
+    match action {
+        "status" => {
+            let root = archive_root.map(PathBuf::from).unwrap_or(default_archive_root()?);
+            let info = archive_cloud_storage_info(&root)?;
+            print_cloud_info(&info);
+            Ok(())
+        },
+        "sync" => {
+            let result = sync_archive_cloud_storage(archive_root)?;
+            println!("Cloud archive synchronization: {result}");
+            Ok(())
+        }
+        "configure" | "config" => {
+            let config_path = option_value(args, "--file")
+                .or_else(|| positional(args, 1))
+                .ok_or_else(|| "cloud configure requires --file <provider.json>.".to_string())?;
+            let contents = std::fs::read_to_string(config_path)
+                .map_err(|error| format!("Could not read provider config {config_path}: {error}"))?;
+            let info = configure_archive_cloud_storage(archive_root, &contents)?;
+            print_cloud_info(&info);
+            println!("Configuration saved. Run gitm cloud sync to test/publish the archive store.");
+            Ok(())
+        }
+        "disable" => {
+            let info = disable_archive_cloud_storage(archive_root)?;
+            print_cloud_info(&info);
+            Ok(())
+        }
+        "--help" | "-h" | "help" => {
+            print_cloud_help();
+            Ok(())
+        }
+        other => Err(format!("Unknown cloud action '{other}'. Run 'gitm cloud --help'.")),
+    }
+}
+
+fn print_cloud_status(root: &Path) -> Result<(), String> {
+    let info = archive_cloud_storage_info(root)?;
+    print_cloud_info(&info);
+    if info.configured {
+        println!("Sync: {}", sync_archive_cloud_storage(Some(&root.to_string_lossy()))?);
+    }
+    Ok(())
+}
+
+fn print_cloud_info(info: &gitmanager_archive::ArchiveCloudStorageInfo) {
+    if !info.configured {
+        println!("Cloud archive storage: not configured");
+        println!("{}", info.note);
+        return;
+    }
+    println!("Cloud archive storage: configured");
+    println!("Provider: {}", info.provider.as_deref().unwrap_or("unknown"));
+    println!("Target: {}", info.target.as_deref().unwrap_or("unknown"));
+    println!("Namespace: {}", info.namespace.as_deref().unwrap_or("unknown"));
+    println!("Bucket: {}", info.bucket.as_deref().unwrap_or("unknown"));
+    if info.auth_environment_variables.is_empty() {
+        println!("Authentication: no environment variables required");
+    } else {
+        println!("Required credential environment variables:");
+        for name in &info.auth_environment_variables {
+            println!("  {name}");
+        }
+    }
+    println!("{}", info.note);
+}
+
+fn print_cloud_help() {
+    println!(
+        "gitm cloud — configure and synchronize archive object storage\n\
+         Usage:\n\
+           gitm cloud status [--archive-root PATH]\n\
+           gitm cloud sync [--archive-root PATH]\n\
+           gitm cloud configure --file provider.json [--archive-root PATH]\n\
+           gitm cloud disable [--archive-root PATH]\n\
+         \n\
+         Provider configuration supports Cloud Node providers (S3, Supabase,\n\
+         Azure Blob, Google Cloud Storage, and generic HTTPS). The JSON stores\n\
+         environment-variable names only; put secret values in your OS environment.\n\
+         Google Cloud Storage is not Google Drive. A Drive Desktop-synced folder\n\
+         can be selected as the local archive path.\n"
+    );
+}
+
 fn option_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
     args.iter().position(|value| value == key)
         .and_then(|index| args.get(index + 1))
@@ -166,6 +256,7 @@ fn print_help() {
            gitm backup [PATH] --kind local|remote [--archive-root PATH]\n\
            gitm backups [PATH] [--kind local|remote] [--archive-root PATH]\n\
            gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n\
+           gitm cloud status|sync|configure|disable [options]\n\
            gitm tui [--repo PATH]\n\
            gitm --help | --version\n\
          \n\
@@ -229,6 +320,13 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                         };
                     }
                     3 => status = format!("Archive store: {}", default_archive_root()?.display()),
+                    4 => {
+                        let root = default_archive_root()?;
+                        match print_cloud_status(&root) {
+                            Ok(()) => status = "Cloud storage status checked.".to_string(),
+                            Err(error) => status = format!("Cloud sync: {error}"),
+                        }
+                    }
                     _ => break,
                 },
                 _ => {}

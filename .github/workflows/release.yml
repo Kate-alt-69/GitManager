@@ -108,6 +108,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-installers-${{ matrix.platform }}
-          path: target/release/bundle/**
+          path: |
+            target/release/bundle/**
+            target/release/gitm*
           if-no-files-found: error
           compression-level: 9

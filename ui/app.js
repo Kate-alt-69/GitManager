@@ -1801,7 +1801,19 @@ async function wireRepositoryArchivePanel(repo) {
   if (!list) return;
 
   const archiveRoot = (appPreferences && appPreferences.archiveRoot) || null;
+  const localArchiveEnabled = !appPreferences || appPreferences.archiveLocalEnabled !== false;
+  const remoteArchiveEnabled = !appPreferences || appPreferences.archiveRemoteEnabled !== false;
+  if (localButton) localButton.disabled = !localArchiveEnabled;
+  if (remoteButton) remoteButton.disabled = !remoteArchiveEnabled;
   const setStatus = (value) => { if (status) status.textContent = value; };
+  if (repo.source_kind !== "local_scan") {
+    if (localButton) localButton.disabled = true;
+    if (remoteButton) remoteButton.disabled = true;
+    if (refreshButton) refreshButton.disabled = true;
+    setStatus("Archives are available for repositories indexed from local folders.");
+    list.innerHTML = '<div class="kv-empty">This entry is a remote account repository, not a local working directory.</div>';
+    return;
+  }
 
   async function refresh() {
     if (refreshButton) refreshButton.disabled = true;
@@ -1857,7 +1869,7 @@ async function wireRepositoryArchivePanel(repo) {
       await refresh();
     } finally {
       if (button) {
-        button.disabled = false;
+        button.disabled = kind === "local" ? !localArchiveEnabled : !remoteArchiveEnabled;
         button.textContent = kind === "local" ? "Save Local Archive" : "Save Remote Archive";
       }
     }

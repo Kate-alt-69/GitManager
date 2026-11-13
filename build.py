@@ -5,7 +5,7 @@ Supports: Windows 10 & 11, Linux, and macOS (Zero Node.js / npm required).
 
 Features:
 1. Checks if Rust (`rustc` and `cargo`) is installed across PATH and `~/.cargo/bin`.
-2. Compares the installed Rust version against the target baseline (`1.77.2` for Tauri v2):
+2. Compares the installed Rust version against the workspace baseline (`1.88.0` required by the current filesystem watcher):
    - If a different version is already installed (whether newer, custom/nightly, or older),
      it automatically adapts and uses the ALREADY INSTALLED Rust toolchain on the machine
      instead of failing or forcing a toolchain re-download.
@@ -38,7 +38,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional, Tuple, List
 
-RECOMMENDED_RUST_VERSION = (1, 77, 2)
+RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
 
 
@@ -436,6 +436,99 @@ def check_os_system_dependencies() -> None:
             log_warn("`pkg-config` not found; skipping Linux `.pc` library version checks.")
 
 
+def resolve_rust_target_triple(toolchain_arg: str) -> str:
+    """Return the exact Rust target triple used for the GitManager sidecar."""
+    commands: List[List[str]] = []
+    if toolchain_arg.startswith("+") and shutil.which("rustup"):
+        toolchain = toolchain_arg[1:]
+        commands.append(["rustup", "run", toolchain, "rustc", "--print", "host-tuple"])
+        commands.append(["rustup", "run", toolchain, "rustc", "-vV"])
+    commands.append(["rustc", "--print", "host-tuple"])
+    commands.append(["rustc", "-vV"])
+    for command in commands:
+        code, stdout, _ = run_capture(command)
+        if code != 0 or not stdout:
+            continue
+        if "host-tuple" in command:
+            value = stdout.strip()
+            if value:
+                return value
+        match = re.search(r"(?m)^host:\s*(\S+)\s*$", stdout)
+        if match:
+            return match.group(1)
+    raise RuntimeError("Could not determine the Rust target triple for the gitm sidecar.")
+
+
+def build_gitm_sidecar(
+    project_root: Path,
+    toolchain_arg: str,
+    release: bool,
+) -> int:
+    """Build and stage the standalone Rust gitm executable for Tauri externalBin."""
+    cargo_cmd = ["cargo"]
+    if toolchain_arg:
+        cargo_cmd.append(toolchain_arg)
+    cargo_cmd.extend(["build", "--package", "gitm-cli", "--bin", "gitm"])
+    profile = "release" if release else "debug"
+    if release:
+        cargo_cmd.append("--release")
+
+    log_info(f"Building native gitm CLI sidecar: {' '.join(cargo_cmd)}")
+    result = subprocess.call(cargo_cmd, cwd=str(project_root))
+    if result != 0:
+        log_err("The standalone gitm CLI failed to build.")
+        return result
+
+    try:
+        host_triple = resolve_rust_target_triple(toolchain_arg)
+    except RuntimeError as error:
+        log_err(str(error))
+        return 1
+
+    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", project_root / "target"))
+    if not target_dir.is_absolute():
+        target_dir = project_root / target_dir
+    target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+    binary_triple = target_triple or host_triple
+    if target_triple:
+        binary_dir = target_dir / target_triple / profile
+    else:
+        binary_dir = target_dir / profile
+
+    executable_suffix = ".exe" if "windows" in binary_triple else ""
+    source = binary_dir / f"gitm{executable_suffix}"
+    if not source.is_file():
+        log_err(f"Cargo completed but the expected gitm binary is missing: {source}")
+        return 1
+
+    sidecar_dir = project_root / "src-tauri" / "binaries"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    destination = sidecar_dir / f"gitm-{binary_triple}{executable_suffix}"
+    try:
+        shutil.copy2(source, destination)
+    except OSError as error:
+        log_err(f"Could not stage gitm sidecar at {destination}: {error}")
+        return 1
+
+    # When CI has imported a production signing certificate, sign the sidecar
+    # before Tauri copies it into the application bundle.
+    if platform.system() == "Windows" and os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
+        sign_script = project_root / "tools" / "sign_windows_file.ps1"
+        if sign_script.is_file():
+            sign_cmd = [
+                "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-File", str(sign_script),
+                "-FilePath", str(destination),
+            ]
+            sign_rc = subprocess.call(sign_cmd, cwd=str(project_root))
+            if sign_rc != 0:
+                log_err("The gitm sidecar could not be signed with the configured certificate.")
+                return sign_rc
+
+    log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
+    return 0
+
+
 def run_build_or_dev(
     project_root: Path,
     mode: str,
@@ -461,6 +554,11 @@ def run_build_or_dev(
     if mode == "build" and not has_cargo_tauri:
         log_err("The Tauri CLI is required to create GitManager-Setup.exe. Install failed or pass --install-tauri-cli.")
         return 1
+
+    if mode in ("build", "dev"):
+        sidecar_result = build_gitm_sidecar(project_root, toolchain_arg, release)
+        if sidecar_result != 0:
+            return sidecar_result
 
     if has_cargo_tauri:
         cmd = ["cargo"]
@@ -518,8 +616,8 @@ def main() -> int:
         "mode",
         nargs="?",
         default="build",
-        choices=["deps", "check", "dev", "build", "prepare-runtime"],
-        help="Action: deps, check, dev, build (including the Windows setup installer), or prepare-runtime.",
+        choices=["deps", "check", "dev", "build", "prepare-runtime", "prepare-sidecar"],
+        help="Action: deps, check, dev, build, prepare-runtime, or prepare-sidecar.",
     )
     parser.add_argument(
         "--release",
@@ -565,6 +663,9 @@ def main() -> int:
         return 0
 
     is_release = not args.debug
+    if args.mode == "prepare-sidecar":
+        return build_gitm_sidecar(project_root, toolchain_arg, is_release)
+
     return run_build_or_dev(
         project_root=project_root,
         mode=args.mode,

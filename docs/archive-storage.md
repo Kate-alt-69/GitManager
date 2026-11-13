@@ -5,16 +5,18 @@
 GitManager maintains distinct archive types:
 
 - **Local Archive** preserves the current working copy and local edits, including
-  committed, uncommitted, and untracked project files.
-- **Remote Archive** preserves Git metadata as well as repository files. A
-  recovered Remote Archive can be opened as a Git repository and pushed to a
-  Git host again after credentials/remotes are reviewed.
+  committed, uncommitted, and untracked project files, but excludes Git metadata.
+- **Remote Archive** preserves working files and self-contained Git metadata,
+  including commits, refs and sanitized remote definitions. It can be opened as
+  a Git repository and pushed to a Git host again after credentials are reviewed.
 
 Both types exclude secret material by default. This includes `.env` and
 `.env.*` files except example/template files, common credential directories,
-private-key files, and common credential JSON files. Excluded paths must be
-reported to the user and configurable explicitly; a cloud copy must not silently
-collect environment secrets.
+private-key files, common credential JSON files, and Git credential-bearing
+configuration/hooks. The excluded paths are recorded in each restore-point
+summary. Remote Archive stores safe remote names and sanitized fetch/push URLs
+separately so it can recreate remotes without copying `.git/config` or its
+credential helpers.
 
 ## RBE Cloud Node storage
 
@@ -23,7 +25,8 @@ GitManager vendors the RBE `cloud-node`, `atomic-io`, and
 source copy, not a floating Git dependency. The existing content-addressed
 storage, durable writes, provider authentication, resumable transfer, and
 provider-history implementation are the base for GitManager's repository
-archive layer.
+archive layer. The complete upstream Apache-2.0 license and a source notice
+are included beside the vendored crates.
 
 Cloud Node currently supports Amazon S3, Supabase Storage, Azure Blob Storage,
 Google Cloud Storage, and generic HTTPS object storage. Google Cloud Storage is
@@ -32,34 +35,48 @@ filesystem destination, while direct Google Drive API support needs a separate
 provider adapter.
 
 The upstream `backupVersions: 5` setting is per-object history, not five
-consistent repository-wide restore points. GitManager must maintain its own
-transactional repository snapshot index and apply a five-point retention rule
-to the complete archive. Provider-side history/object pruning must also be
-implemented before claiming that remote object storage itself is capped at five
-complete copies.
+consistent repository-wide restore points. GitManager maintains a separate
+per-repository/per-kind manifest index and retains the five newest complete
+restore points. Content-addressed blobs are shared between retained snapshots
+and stale logical objects are removed only after the replacement index is
+published. Provider-side versioning or soft-delete policies may retain older
+physical object versions even after GitManager removes them from its active
+logical view.
 
 ## Capture triggers
 
-- **On commit** captures a repository state after its Git HEAD changes.
-- **On change** waits for a quiet/debounce interval before capturing, so an
-  editor save sequence does not create a restore point per low-level write.
-- Manual capture remains available from GitManager and `gitm`.
+- **After Git commits** watches the repository Git metadata and checks that
+  HEAD actually changed. It watches HEAD/refs, not the potentially huge object
+  database.
+- **After file changes settle** watches discovered repositories and waits for
+  the configured quiet period before capturing. Git metadata-only events are
+  ignored so a commit does not cause duplicate change-trigger snapshots.
+- **Manual only** disables background capture. Manual capture remains available
+  in the desktop repository panel and in `gitm`.
+
+The watcher is limited to discovered Git worktrees and 256 repositories per
+process. It refuses to start for a repository whose archive directory is nested
+inside that repository. Archive capture/restore operations for one repository
+are serialized so Local and Remote writes cannot race the shared Cloud Node
+index.
 
 A capture is staged and verified before its index entry is published. A failed
 or interrupted capture must not evict the last verified restore point.
 
 ## Recovery behavior
 
-Restore previews the archive type, repository identity, timestamp, branch/HEAD,
-file count, size, and excluded paths. Restoring to an existing non-empty
-directory requires explicit confirmation. The current destination is preserved
-before replacement by default. Remote Archive restore recovers Git data, not
-authentication secrets; credentials must be set up again.
+The restore panel shows archive type, snapshot time, branch/HEAD, file count,
+size and excluded paths. Restoring to an existing non-empty directory requires
+explicit confirmation. The current destination is preserved before replacement
+by default. Remote Archive restores the repository's configured remotes from
+sanitized URLs; authentication secrets and Git credential helpers must be set
+up again. Remote Archive currently refuses linked worktrees and repositories
+that depend on external Git object alternates, because those are not
+self-contained recovery sources.
 
 Five restore points are a retention policy, not a full disaster-recovery
 guarantee. A local archive destination should be on a different physical device;
 a cloud provider should be independent of the source machine and disk.
-
 
 ## `gitm` native CLI
 
@@ -77,7 +94,38 @@ gitm restore . --id <snapshot-id> --kind local --to ../recovered --yes
 The no-argument command opens a keyboard-driven TUI. It supports arrow keys and
 WASD, Enter, Escape/Q, and an ASCII mode for older/dumb terminals
 (`GITM_ASCII=1`). Use `--archive-root PATH` to select another local folder,
-including a Google Drive Desktop-synced folder. The RBE Cloud Node provider
-engine is vendored for object-storage synchronization; direct Google Drive API
-authentication is separate from Google Cloud Storage and is not implied by GCS
-support.
+including a Google Drive, OneDrive, or Dropbox Desktop-synced folder.
+
+Cloud object storage can be configured with `gitm cloud configure --file
+provider.json`, checked with `gitm cloud status`, synchronized with
+`gitm cloud sync`, and disabled with `gitm cloud disable`. The vendored RBE
+Cloud Node provider layer supports Amazon S3, Supabase Storage, Azure Blob
+Storage, Google Cloud Storage, and a generic HTTPS object-storage endpoint.
+Configuration stores environment-variable names only; put the actual secret
+values in the operating system environment before syncing.
+
+Google Cloud Storage is not Google Drive. Selecting a Google Drive Desktop
+folder stores a local archive in that folder and lets Google's own sync client
+replicate it; direct Google Drive API support is not implied.
+
+## Cloud provider configuration example
+
+This example configures a generic HTTPS endpoint with a bearer token supplied
+through an environment variable:
+
+```json
+{
+  "kind": "http",
+  "namespace": "gitmanager",
+  "bucket": "repository-archives",
+  "endpoint": "https://storage.example.com",
+  "auth": {
+    "mode": "bearer",
+    "bearerTokenEnv": "GITMANAGER_ARCHIVE_TOKEN"
+  }
+}
+```
+
+Set `GITMANAGER_ARCHIVE_TOKEN` in the current user's environment. The token
+value is never written into GitManager's cloud settings. See the RBE Cloud Node
+provider configuration for provider-specific fields and authentication modes.

@@ -5,7 +5,11 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use atomic_io::AtomicIo;
-use cloud_node::{CloudNodeSettings, CloudNodeStore, is_default_secret_path};
+use cloud_node::{
+    synchronize_provider, CloudNodeSettings, CloudNodeStore, ProviderAuthMode, ProviderClient,
+    ProviderKind, ProviderSyncResult, is_default_secret_path,
+};
+use fs2::FileExt;
 use git2::Repository;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,6 +21,7 @@ const MAX_INDEX_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EXCLUDED_PATHS: usize = 4096;
 const COPY_BUFFER_BYTES: usize = 1024 * 1024;
+const CLOUD_NODE_SETTINGS_FILE: &str = "cloud-node.settings.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -90,7 +95,17 @@ struct SnapshotManifest {
     kind: ArchiveKind,
     directories: Vec<String>,
     files: Vec<SnapshotFile>,
+    #[serde(default)]
+    remotes: Vec<SnapshotRemote>,
     excluded_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SnapshotRemote {
+    name: String,
+    fetch_url: Option<String>,
+    push_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +124,49 @@ struct ScannedFile {
     relative_path: String,
     size: u64,
     mode: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveCloudStorageInfo {
+    pub configured: bool,
+    pub provider: Option<String>,
+    pub namespace: Option<String>,
+    pub bucket: Option<String>,
+    pub target: Option<String>,
+    pub auth_environment_variables: Vec<String>,
+    pub note: String,
+}
+
+struct ArchiveCaptureLock {
+    file: File,
+}
+
+impl ArchiveCaptureLock {
+    fn acquire(root: &Path, repository_id: &str, _kind: ArchiveKind) -> Result<Self, String> {
+        let lock_dir = root.join(".locks");
+        fs::create_dir_all(&lock_dir)
+            .map_err(|error| format!("Could not create archive lock directory: {error}"))?;
+        // Local and Remote snapshots share a Cloud Node store. Serialize all
+        // operations for one repository to protect index and sync-plan updates.
+        let path = lock_dir.join(format!("{repository_id}.lock"));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|error| format!("Could not open repository archive lock: {error}"))?;
+        file.try_lock_exclusive().map_err(|_| {
+            "Another GitManager archive operation is already running for this repository.".to_string()
+        })?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for ArchiveCaptureLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
 }
 
 pub fn default_archive_root() -> Result<PathBuf, String> {
@@ -132,6 +190,9 @@ pub fn capture_repository(
         .map_err(|error| format!("Could not resolve repository path: {error}"))?;
     let repository = Repository::open(&source)
         .map_err(|error| format!("The selected path is not a readable Git repository: {error}"))?;
+    if kind == ArchiveKind::Remote {
+        validate_remote_archive_source(&source)?;
+    }
     if repository.is_bare() {
         return Err("Bare repositories cannot be archived as working repositories.".to_string());
     }
@@ -145,6 +206,7 @@ pub fn capture_repository(
     }
 
     let repository_id = repository_id(&source);
+    let _capture_lock = ArchiveCaptureLock::acquire(&root, &repository_id, kind)?;
     let repository_name = source.file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("repository")
@@ -155,9 +217,17 @@ pub fn capture_repository(
         .unwrap_or("HEAD")
         .to_string();
     let head_oid = head.and_then(|value| value.target()).map(|oid| oid.to_string());
+    let remotes = if kind == ArchiveKind::Remote {
+        collect_safe_remotes(&repository)?
+    } else {
+        Vec::new()
+    };
     let timestamp = now_ms()?;
     let snapshot_id = format!("{}-{}", timestamp, unique_suffix());
     let store = open_archive_store(&root)?;
+    // Pull remote-ahead restore points before local retention/index updates.
+    // An offline machine can still create a local restore point from its verified cache.
+    let _ = sync_archive_provider(&root, &store);
     let staging = root.join(".staging").join(&repository_id).join(&snapshot_id);
     fs::create_dir_all(&staging)
         .map_err(|error| format!("Could not create archive staging directory: {error}"))?;
@@ -216,6 +286,7 @@ pub fn capture_repository(
         kind,
         directories,
         files,
+        remotes,
         excluded_paths: excluded_paths.clone(),
     };
     manifest.directories.sort();
@@ -317,6 +388,9 @@ pub fn capture_repository(
     }
 
     let _ = fs::remove_dir_all(&staging);
+    if let Err(error) = sync_archive_provider(&root, &store) {
+        eprintln!("GitManager archive saved locally; cloud synchronization is pending: {error}");
+    }
     Ok(snapshot)
 }
 
@@ -328,7 +402,9 @@ pub fn list_repository_archives(
     let identity_path = repository_identity_path(repository_path)?;
     let id = repository_id(&identity_path);
     let root = resolve_archive_root(archive_root)?;
+    let _archive_lock = ArchiveCaptureLock::acquire(&root, &id, ArchiveKind::Local)?;
     let store = open_archive_store(&root)?;
+    let _ = sync_archive_provider(&root, &store);
     let kinds = match kind {
         Some(value) => vec![ArchiveKind::parse(value)?],
         None => vec![ArchiveKind::Local, ArchiveKind::Remote],
@@ -361,7 +437,23 @@ pub fn restore_repository_archive(
     let repository_id = repository_id(&identity_path);
     let destination = absolute_path(destination_path)?;
     let root = resolve_archive_root(archive_root)?;
+    let normalized_destination = canonicalize_future_path(&destination)
+        .map_err(|error| format!("Could not resolve restore destination: {error}"))?;
+    if normalized_destination == root
+        || normalized_destination.starts_with(&root)
+        || root.starts_with(&normalized_destination)
+    {
+        return Err("Restore destination cannot overlap the archive storage directory. Choose a separate folder.".to_string());
+    }
+    if fs::symlink_metadata(&destination)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err("Restore destination cannot be a symbolic link.".to_string());
+    }
+    let _restore_lock = ArchiveCaptureLock::acquire(&root, &repository_id, kind)?;
     let store = open_archive_store(&root)?;
+    let _ = sync_archive_provider(&root, &store);
     let index_path = local_index_path(&root, &repository_id, kind);
     let index = read_index(&index_path, &store, &index_logical_path(&repository_id, kind))?;
     let snapshot = index.snapshots.into_iter()
@@ -434,6 +526,48 @@ pub fn restore_repository_archive(
         return Err("Restore destination is not empty. Preview the restore and confirm replacement explicitly.".to_string());
     }
 
+    // Finish repository setup in staging before touching the current destination.
+    // This keeps any Git/config/remotes failure from leaving a partially activated
+    // restore and makes the final directory swap the last state-changing step.
+    let mut initialized_git = false;
+    if kind == ArchiveKind::Local {
+        let current_git = destination.join(".git");
+        let current_git_is_real_directory = fs::symlink_metadata(&current_git)
+            .map(|metadata| metadata.file_type().is_dir())
+            .unwrap_or(false);
+        if non_empty && current_git_is_real_directory {
+            copy_directory_tree(&current_git, &stage.join(".git"))
+                .map_err(|error| format!("Could not preserve existing Git metadata in restore staging: {error}"))?;
+        }
+        if !stage.join(".git").exists() {
+            Repository::init(&stage)
+                .map_err(|error| format!("Could not initialize Git metadata in restore staging: {error}"))?;
+            initialized_git = true;
+        }
+    } else {
+        let git_dir = stage.join(".git");
+        write_minimal_git_config(&git_dir.join("config"))
+            .map_err(|error| format!("Could not initialize staged Git configuration: {error}"))?;
+        let restored_repository = Repository::open(&stage)
+            .map_err(|error| format!("Staged Git metadata could not be opened: {error}"))?;
+        for remote in &manifest.remotes {
+            let fetch_url = remote.fetch_url.as_deref().ok_or_else(|| {
+                format!("Remote {} has no safe fetch URL in the archive manifest.", remote.name)
+            })?;
+            if restored_repository.find_remote(&remote.name).is_ok() {
+                restored_repository.remote_set_url(&remote.name, fetch_url)
+                    .map_err(|error| format!("Could not restore Git remote {} in staging: {error}", remote.name))?;
+            } else {
+                restored_repository.remote(&remote.name, fetch_url)
+                    .map_err(|error| format!("Could not restore Git remote {} in staging: {error}", remote.name))?;
+            }
+            if let Some(push_url) = remote.push_url.as_deref() {
+                restored_repository.remote_set_pushurl(&remote.name, Some(push_url))
+                    .map_err(|error| format!("Could not restore Git push URL for {} in staging: {error}", remote.name))?;
+            }
+        }
+    }
+
     let backup_path = if non_empty {
         Some(parent.join(format!(
             ".{}.gitmanager-before-restore-{}",
@@ -445,13 +579,18 @@ pub fn restore_repository_archive(
     };
     if let Some(backup) = &backup_path {
         if backup.exists() {
+            let _ = fs::remove_dir_all(&stage);
             return Err(format!("Refusing to overwrite an existing safety copy: {}", backup.display()));
         }
-        fs::rename(&destination, backup)
-            .map_err(|error| format!("Could not preserve the current destination before restore: {error}"))?;
+        if let Err(error) = fs::rename(&destination, backup) {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(format!("Could not preserve the current destination before restore: {error}"));
+        }
     } else if existing {
-        fs::remove_dir(&destination)
-            .map_err(|error| format!("Could not remove the empty restore destination: {error}"))?;
+        if let Err(error) = fs::remove_dir(&destination) {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(format!("Could not remove the empty restore destination: {error}"));
+        }
     }
 
     if let Err(error) = fs::rename(&stage, &destination) {
@@ -461,35 +600,114 @@ pub fn restore_repository_archive(
         let _ = fs::remove_dir_all(&stage);
         return Err(format!("Could not activate restored repository: {error}"));
     }
-
-    let mut initialized_git = false;
-    if kind == ArchiveKind::Local {
-        if let Some(backup) = &backup_path {
-            let old_git = backup.join(".git");
-            if old_git.is_dir() {
-                copy_directory_tree(&old_git, &destination.join(".git"))
-                    .map_err(|error| format!("Files restored, but existing Git metadata could not be copied: {error}"))?;
-            }
-        }
-        if !destination.join(".git").exists() {
-            Repository::init(&destination)
-                .map_err(|error| format!("Files restored, but Git initialization failed: {error}"))?;
-            initialized_git = true;
-        }
-    } else {
-        let git_dir = destination.join(".git");
-        write_minimal_git_config(&git_dir.join("config"))
-            .map_err(|error| format!("Files restored, but Git configuration could not be initialized: {error}"))?;
-        Repository::open(&destination)
-            .map_err(|error| format!("Restored Git metadata could not be opened: {error}"))?;
-    }
-
     Ok(ArchiveRestoreResult {
         snapshot,
         destination: destination.to_string_lossy().to_string(),
         preserved_previous_path: backup_path.map(|path| path.to_string_lossy().to_string()),
         initialized_git_repository: initialized_git,
     })
+}
+
+fn collect_safe_remotes(repository: &Repository) -> Result<Vec<SnapshotRemote>, String> {
+    let names = repository.remotes()
+        .map_err(|error| format!("Could not enumerate Git remotes: {error}"))?;
+    let mut result = Vec::new();
+    for name in names.iter().flatten() {
+        let remote = repository.find_remote(name)
+            .map_err(|error| format!("Could not read Git remote {name}: {error}"))?;
+        let fetch_url = remote.url()
+            .map(sanitize_remote_url)
+            .transpose()?;
+        let push_url = remote.pushurl()
+            .map(sanitize_remote_url)
+            .transpose()?;
+        if fetch_url.is_some() || push_url.is_some() {
+            result.push(SnapshotRemote {
+                name: name.to_string(),
+                fetch_url,
+                push_url,
+            });
+        }
+    }
+    result.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(result)
+}
+
+fn sanitize_remote_url(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() || value.chars().any(char::is_control) {
+        return Err("Git remote URL is empty or contains control characters.".to_string());
+    }
+    if let Ok(mut url) = url::Url::parse(value) {
+        // SSH usernames identify the remote account (commonly "git") and are
+        // not passwords. Keep them, but always discard a URL password. For all
+        // other schemes, remove user-info entirely.
+        if url.scheme() != "ssh" {
+            let _ = url.set_username("");
+        }
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        return Ok(url.to_string());
+    }
+
+    // SCP-style SSH remotes do not parse as standard URLs. Preserve a normal
+    // account name, but discard a username field that embeds a password.
+    if let Some((user, destination)) = value.split_once('@') {
+        if destination.contains(':') && !destination.starts_with('/') {
+            let safe_user = if user.is_empty() || user.contains(':') { "git" } else { user };
+            return Ok(format!("{safe_user}@{destination}"));
+        }
+    }
+    if value.contains("://") {
+        return Err("Git remote URL could not be safely sanitized; remove embedded credentials and retry.".to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn validate_remote_archive_source(source: &Path) -> Result<(), String> {
+    let marker = source.join(".git");
+    if marker.is_file() {
+        return Err("Remote Archive requires a self-contained .git directory; linked worktrees keep Git metadata outside the worktree.".to_string());
+    }
+    if !marker.is_dir() {
+        return Err("Remote Archive requires a repository-local .git directory.".to_string());
+    }
+    for alternate in [
+        marker.join("objects").join("info").join("alternates"),
+        marker.join("objects").join("info").join("http-alternates"),
+    ] {
+        if alternate.is_file() {
+            let bytes = fs::read(&alternate)
+                .map_err(|error| format!("Could not inspect Git object alternates: {error}"))?;
+            if !bytes.is_empty() {
+                return Err(format!(
+                    "Remote Archive cannot be self-contained because {} references external Git objects. Remove the alternates dependency or repack the repository first.",
+                    alternate.strip_prefix(source).unwrap_or(&alternate).display()
+                ));
+            }
+        }
+    }
+
+    // A nested .git marker is normally a submodule/worktree pointer. Its
+    // repository metadata lives outside this parent repository's .git folder,
+    // so copying only the parent object database would not be self-contained.
+    let root_git = marker;
+    let walker = WalkDir::new(source)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| entry.path() != root_git);
+    for entry in walker {
+        let entry = entry.map_err(|error| {
+            format!("Could not inspect nested Git metadata for Remote Archive: {error}")
+        })?;
+        if entry.file_name() == std::ffi::OsStr::new(".git") {
+            return Err(format!(
+                "Remote Archive does not support nested Git repositories or submodules yet: {}",
+                entry.path().strip_prefix(source).unwrap_or(entry.path()).display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn scan_repository(
@@ -560,7 +778,11 @@ fn is_git_sensitive_path(relative: &Path) -> bool {
     if remaining.is_empty() {
         return false;
     }
-    matches!(remaining[0].as_str(), "config" | "config.lock" | "index.lock" | "hooks")
+    matches!(
+        remaining[0].as_str(),
+        "config" | "config.lock" | "config.worktree" | "config.worktree.lock" |
+        "index.lock" | "hooks"
+    )
 }
 
 fn blob_prefix(repository_id: &str, kind: ArchiveKind) -> String {
@@ -597,25 +819,235 @@ fn resolve_archive_root(value: Option<&str>) -> Result<PathBuf, String> {
         .map_err(|error| format!("Could not resolve archive storage directory: {error}"))
 }
 
-fn open_archive_store(root: &Path) -> Result<CloudNodeStore, String> {
-    let store_root = root.join(".cloud-node");
+fn default_archive_cloud_settings(root: &Path) -> Result<CloudNodeSettings, String> {
     let settings: CloudNodeSettings = serde_json::from_value(serde_json::json!({
         "formatVersion": 1,
         "node": {
             "id": "gitmanager-archives",
             "mode": "archive",
-            "storageRoot": store_root,
+            "storageRoot": root.join(".cloud-node"),
             "backupVersions": MAX_RESTORE_POINTS,
             "preserveOriginal": true,
             "videoChunkBytes": 4194304
         }
     })).map_err(|error| format!("Could not initialize archive storage settings: {error}"))?;
+    settings.validate().map_err(|error| error.to_string())?;
+    Ok(settings)
+}
+
+fn load_archive_cloud_settings(root: &Path) -> Result<CloudNodeSettings, String> {
+    let path = root.join(CLOUD_NODE_SETTINGS_FILE);
+    if path.is_file() {
+        let settings = CloudNodeSettings::load(&path)
+            .map_err(|error| format!("Could not load cloud archive settings: {error}"))?;
+        let expected = root.join(".cloud-node");
+        if settings.node.storage_root != expected {
+            return Err("Cloud archive storageRoot must remain inside GitManager's archive directory.".to_string());
+        }
+        Ok(settings)
+    } else {
+        default_archive_cloud_settings(root)
+    }
+}
+
+fn open_archive_store(root: &Path) -> Result<CloudNodeStore, String> {
+    let settings = load_archive_cloud_settings(root)?;
     CloudNodeStore::open(&settings)
         .map_err(|error| format!("Could not open the Cloud Node archive store: {error}"))
 }
 
+fn sync_archive_provider(
+    root: &Path,
+    store: &CloudNodeStore,
+) -> Result<Option<ProviderSyncResult>, String> {
+    let settings = load_archive_cloud_settings(root)?;
+    if settings.provider.is_none() {
+        return Ok(None);
+    }
+    let _sync_lock = ArchiveCaptureLock::acquire(root, "cloud-provider-sync", ArchiveKind::Local)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Could not start cloud archive runtime: {error}"))?;
+    runtime.block_on(synchronize_provider(&settings, store))
+        .map(Some)
+        .map_err(|error| format!("Cloud archive provider synchronization failed: {error}"))
+}
+
+pub fn configure_archive_cloud_storage(
+    archive_root: Option<&str>,
+    provider_json: &str,
+) -> Result<ArchiveCloudStorageInfo, String> {
+    let root = resolve_archive_root(archive_root)?;
+    let provider: serde_json::Value = serde_json::from_str(provider_json)
+        .map_err(|error| format!("Cloud provider configuration is invalid JSON: {error}"))?;
+    if !provider.is_object() {
+        return Err("Cloud provider configuration must be a JSON object.".to_string());
+    }
+    let settings_json = serde_json::json!({
+        "formatVersion": 1,
+        "node": {
+            "id": "gitmanager-archives",
+            "mode": "archive",
+            "storageRoot": root.join(".cloud-node"),
+            "backupVersions": MAX_RESTORE_POINTS,
+            "preserveOriginal": true,
+            "videoChunkBytes": 4194304
+        },
+        "provider": provider
+    });
+    let settings: CloudNodeSettings = serde_json::from_value(settings_json.clone())
+        .map_err(|error| format!("Cloud provider configuration is not supported: {error}"))?;
+    settings.validate().map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&settings_json)
+        .map_err(|error| format!("Could not serialize cloud archive settings: {error}"))?;
+    AtomicIo::new().write_atomic(&root.join(CLOUD_NODE_SETTINGS_FILE), &bytes)
+        .map_err(|error| format!("Could not publish cloud archive settings: {error}"))?;
+    archive_cloud_storage_info(&root)
+}
+
+pub fn disable_archive_cloud_storage(
+    archive_root: Option<&str>,
+) -> Result<ArchiveCloudStorageInfo, String> {
+    let root = resolve_archive_root(archive_root)?;
+    let path = root.join(CLOUD_NODE_SETTINGS_FILE);
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| format!("Could not disable cloud archive storage: {error}"))?;
+    }
+    archive_cloud_storage_info(&root)
+}
+
+pub fn archive_cloud_storage_info(root: &Path) -> Result<ArchiveCloudStorageInfo, String> {
+    let root = resolve_archive_root(Some(&root.to_string_lossy()))?;
+    let settings = load_archive_cloud_settings(&root)?;
+    let Some(provider) = settings.provider.as_ref() else {
+        return Ok(ArchiveCloudStorageInfo {
+            configured: false,
+            provider: None,
+            namespace: None,
+            bucket: None,
+            target: None,
+            auth_environment_variables: Vec::new(),
+            note: "Archives are local-only. A Google Drive/OneDrive desktop-synced folder can be selected as a local archive destination.".to_string(),
+        });
+    };
+    let provider_name = match provider.kind {
+        ProviderKind::AmazonS3 => "amazon-s3",
+        ProviderKind::Supabase => "supabase",
+        ProviderKind::AzureBlob => "azure-blob",
+        ProviderKind::GoogleCloudStorage => "google-cloud-storage",
+        ProviderKind::Http => "http",
+    }.to_string();
+    let auth = &provider.auth;
+    let mut env_names = Vec::<String>::new();
+    let mut push_env = |value: Option<&str>, fallback: &str| {
+        let name = value.unwrap_or(fallback);
+        if !env_names.iter().any(|existing| existing == name) {
+            env_names.push(name.to_string());
+        }
+    };
+    match provider.kind {
+        ProviderKind::AmazonS3 => {
+            push_env(
+                auth.access_key_env.as_deref().or(provider.access_key_env.as_deref()),
+                "RBE_CN_PROV_AMAZON_ACCESS_KEY",
+            );
+            push_env(
+                auth.secret_key_env.as_deref().or(provider.secret_key_env.as_deref()),
+                "RBE_CN_PROV_AMAZON_SECRET_KEY",
+            );
+            push_env(
+                auth.session_token_env.as_deref().or(provider.session_token_env.as_deref()),
+                "RBE_CN_PROV_AMAZON_SESSION_TOKEN",
+            );
+        }
+        ProviderKind::Supabase => match auth.mode {
+            ProviderAuthMode::Bearer => push_env(
+                auth.bearer_token_env.as_deref().or(provider.credential_env.as_deref()),
+                "RBE_CN_PROV_SUPABASE_API_KEY",
+            ),
+            ProviderAuthMode::Header => push_env(
+                auth.header_value_env.as_deref().or(provider.credential_env.as_deref()),
+                "RBE_CN_PROV_HTTP_HEADER_VALUE",
+            ),
+            _ => push_env(
+                auth.api_key_env.as_deref().or(provider.credential_env.as_deref()),
+                "RBE_CN_PROV_SUPABASE_API_KEY",
+            ),
+        },
+        ProviderKind::AzureBlob => push_env(
+            auth.sas_token_env.as_deref().or(provider.credential_env.as_deref()),
+            "RBE_CN_PROV_AZURE_SAS_TOKEN",
+        ),
+        ProviderKind::GoogleCloudStorage => push_env(
+            auth.oauth_token_env
+                .as_deref()
+                .or(auth.bearer_token_env.as_deref())
+                .or(provider.credential_env.as_deref()),
+            "RBE_CN_PROV_GOOGLE_OAUTH_TOKEN",
+        ),
+        ProviderKind::Http => match auth.mode {
+            ProviderAuthMode::None => {}
+            ProviderAuthMode::Auto => push_env(
+                auth.bearer_token_env.as_deref().or(provider.credential_env.as_deref()),
+                "RBE_CN_PROV_HTTP_BEARER_TOKEN",
+            ),
+            ProviderAuthMode::ApiKey => push_env(
+                auth.api_key_env.as_deref(),
+                "RBE_CN_PROV_HTTP_API_KEY",
+            ),
+            ProviderAuthMode::Bearer | ProviderAuthMode::OAuthBearer => push_env(
+                auth.bearer_token_env.as_deref().or(auth.oauth_token_env.as_deref()),
+                "RBE_CN_PROV_HTTP_BEARER_TOKEN",
+            ),
+            ProviderAuthMode::Basic => {
+                push_env(auth.username_env.as_deref(), "RBE_CN_PROV_HTTP_USERNAME");
+                push_env(auth.password_env.as_deref(), "RBE_CN_PROV_HTTP_PASSWORD");
+            }
+            ProviderAuthMode::Header => push_env(
+                auth.header_value_env.as_deref().or(provider.credential_env.as_deref()),
+                "RBE_CN_PROV_HTTP_HEADER_VALUE",
+            ),
+            ProviderAuthMode::AwsSigV4 => {
+                push_env(auth.access_key_env.as_deref(), "RBE_CN_PROV_AMAZON_ACCESS_KEY");
+                push_env(auth.secret_key_env.as_deref(), "RBE_CN_PROV_AMAZON_SECRET_KEY");
+            }
+            ProviderAuthMode::AzureSas => push_env(
+                auth.sas_token_env.as_deref().or(provider.credential_env.as_deref()),
+                "RBE_CN_PROV_AZURE_SAS_TOKEN",
+            ),
+        },
+    }
+    drop(push_env);
+    let target = ProviderClient::new(provider)
+        .map(|client| client.target_description())
+        .map_err(|error| error.to_string())?;
+    Ok(ArchiveCloudStorageInfo {
+        configured: true,
+        provider: Some(provider_name),
+        namespace: Some(provider.namespace.clone()),
+        bucket: Some(provider.bucket.clone()),
+        target: Some(target),
+        auth_environment_variables: env_names,
+        note: "Only environment-variable names are saved in GitManager settings. Secret values remain in your OS environment and are not copied into archives.".to_string(),
+    })
+}
+pub fn sync_archive_cloud_storage(archive_root: Option<&str>) -> Result<String, String> {
+    let root = resolve_archive_root(archive_root)?;
+    let store = open_archive_store(&root)?;
+    match sync_archive_provider(&root, &store)? {
+        Some(result) => Ok(format!("{:?}", result.action)),
+        None => Ok("local-only".to_string()),
+    }
+}
+
 fn read_index(path: &Path, store: &CloudNodeStore, logical_path: &str) -> Result<ArchiveIndex, String> {
-    let bytes = if path.is_file() {
+    let cloud_bytes = store.read_logical_file(logical_path, MAX_INDEX_BYTES)
+        .map_err(|error| format!("Could not recover archive index from Cloud Node: {error}"))?;
+    let bytes = if let Some(bytes) = cloud_bytes {
+        bytes
+    } else if path.is_file() {
         let metadata = fs::metadata(path)
             .map_err(|error| format!("Could not inspect archive index: {error}"))?;
         if metadata.len() > MAX_INDEX_BYTES {
@@ -623,11 +1055,7 @@ fn read_index(path: &Path, store: &CloudNodeStore, logical_path: &str) -> Result
         }
         fs::read(path).map_err(|error| format!("Could not read archive index: {error}"))?
     } else {
-        match store.read_logical_file(logical_path, MAX_INDEX_BYTES)
-            .map_err(|error| format!("Could not recover archive index from Cloud Node: {error}"))? {
-            Some(bytes) => bytes,
-            None => return Ok(ArchiveIndex { format_version: ARCHIVE_FORMAT_VERSION, snapshots: Vec::new() }),
-        }
+        return Ok(ArchiveIndex { format_version: ARCHIVE_FORMAT_VERSION, snapshots: Vec::new() });
     };
     let index: ArchiveIndex = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Archive index is invalid JSON: {error}"))?;
@@ -682,6 +1110,26 @@ fn validate_manifest(manifest: &SnapshotManifest, snapshot: &ArchiveSnapshot) ->
             return Err(format!("Restore-point manifest has an invalid content address: {}", file.relative_path));
         }
     }
+    let mut remote_names = HashSet::new();
+    for remote in &manifest.remotes {
+        if remote.name.is_empty()
+            || remote.name.len() > 128
+            || remote.name.chars().any(char::is_control)
+            || remote.name.contains('/')
+            || remote.name.contains('\\')
+            || !remote_names.insert(remote.name.as_str())
+        {
+            return Err("Restore-point manifest contains an invalid or duplicate remote name.".to_string());
+        }
+        for url in [remote.fetch_url.as_deref(), remote.push_url.as_deref()].into_iter().flatten() {
+            if sanitize_remote_url(url)? != url {
+                return Err(format!("Restore-point manifest contains an unsanitized credential-bearing remote URL for {}.", remote.name));
+            }
+        }
+    }
+    if snapshot.kind == ArchiveKind::Local && !manifest.remotes.is_empty() {
+        return Err("Local Archive manifest must not contain Git remote configuration.".to_string());
+    }
     for directory in &manifest.directories {
         let path = validate_relative_path(directory)?;
         if snapshot.kind == ArchiveKind::Local && starts_with_git_directory(path) {
@@ -735,6 +1183,28 @@ fn repository_id(path: &Path) -> String {
     let normalized = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
     let digest = Sha256::digest(normalized.as_bytes());
     hex::encode(&digest[..16])
+}
+
+fn canonicalize_future_path(path: &Path) -> std::io::Result<PathBuf> {
+    if path.exists() {
+        return fs::canonicalize(path);
+    }
+    let mut missing = Vec::<std::ffi::OsString>::new();
+    let mut ancestor = path;
+    while !ancestor.exists() {
+        let name = ancestor.file_name().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "restore path has no existing ancestor")
+        })?;
+        missing.push(name.to_os_string());
+        ancestor = ancestor.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "restore path has no existing ancestor")
+        })?;
+    }
+    let mut resolved = fs::canonicalize(ancestor)?;
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 fn absolute_path(path: &str) -> Result<PathBuf, String> {
@@ -909,33 +1379,200 @@ mod tests {
     }
 
     #[test]
-    fn remote_archive_restores_git_history_without_git_credentials_config() {
+    fn remote_archive_restores_history_and_only_sanitized_remote_urls() {
         let root = temp_root("remote");
         let repository_path = root.join("repository");
+        let archive_root = root.join("archives");
         fs::create_dir_all(&repository_path).unwrap();
         let repo = Repository::init(&repository_path).unwrap();
         commit_file(&repo, "README.md", "first commit");
+        repo.remote(
+            "origin",
+            "https://alice:fetch-secret@github.com/acme/project.git?access_token=query-secret#private",
+        ).unwrap();
+        repo.config().unwrap().set_str(
+            "remote.origin.pushurl",
+            "https://bob:push-secret@github.com/acme/project.git?token=push-query-secret",
+        ).unwrap();
+
         let snapshot = capture_repository(
             repository_path.to_str().unwrap(),
-            Some(root.join("archives").to_str().unwrap()),
+            Some(archive_root.to_str().unwrap()),
             "remote",
         ).unwrap();
+        let store = open_archive_store(&archive_root).unwrap();
+        let manifest = read_manifest(&store, &snapshot).unwrap();
+        assert_eq!(
+            manifest.remotes[0].fetch_url.as_deref(),
+            Some("https://github.com/acme/project.git")
+        );
+        assert_eq!(
+            manifest.remotes[0].push_url.as_deref(),
+            Some("https://github.com/acme/project.git")
+        );
+        let serialized = serde_json::to_string(&manifest).unwrap();
+        for secret in ["fetch-secret", "push-secret", "query-secret", "private"] {
+            assert!(!serialized.contains(secret));
+        }
 
         let destination = root.join("remote-restored");
         restore_repository_archive(
             repository_path.to_str().unwrap(),
             destination.to_str().unwrap(),
-            Some(root.join("archives").to_str().unwrap()),
+            Some(archive_root.to_str().unwrap()),
             "remote",
             &snapshot.id,
             false,
         ).unwrap();
         let restored = Repository::open(&destination).unwrap();
         assert!(restored.head().is_ok());
+        let restored_remote = restored.find_remote("origin").unwrap();
+        assert_eq!(restored_remote.url(), Some("https://github.com/acme/project.git"));
+        assert_eq!(restored_remote.pushurl(), Some("https://github.com/acme/project.git"));
         let config = fs::read_to_string(destination.join(".git").join("config")).unwrap();
-        assert!(!config.contains("credential"));
+        for secret in ["fetch-secret", "push-secret", "query-secret"] {
+            assert!(!config.contains(secret));
+        }
         assert_eq!(fs::read_to_string(destination.join("README.md")).unwrap(), "first commit");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_archive_rejects_external_git_object_alternates() {
+        let root = temp_root("alternates");
+        let repository_path = root.join("repository");
+        fs::create_dir_all(&repository_path).unwrap();
+        let _repo = Repository::init(&repository_path).unwrap();
+        let alternates = repository_path.join(".git/objects/info/alternates");
+        fs::write(&alternates, root.join("external-objects").to_string_lossy().as_bytes()).unwrap();
+        assert!(validate_remote_archive_source(&repository_path).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archive_cloud_provider_config_stores_environment_names_not_secret_values() {
+        let root = temp_root("provider-config");
+        let provider = r#"{
+            "kind": "http",
+            "namespace": "gitmanager-test",
+            "bucket": "archive-store",
+            "endpoint": "https://example.invalid",
+            "auth": {
+                "mode": "bearer",
+                "bearerTokenEnv": "GITMANAGER_TEST_TOKEN"
+            }
+        }"#;
+        let info = configure_archive_cloud_storage(
+            Some(root.to_str().unwrap()),
+            provider,
+        ).unwrap();
+        assert!(info.configured);
+        assert_eq!(info.provider.as_deref(), Some("http"));
+        assert!(info.auth_environment_variables.iter().any(|name| name == "GITMANAGER_TEST_TOKEN"));
+        let settings = fs::read_to_string(root.join(CLOUD_NODE_SETTINGS_FILE)).unwrap();
+        assert!(settings.contains("GITMANAGER_TEST_TOKEN"));
+        assert!(!settings.contains("secret-value"));
+        assert!(!settings.contains("bearer-secret"));
+        let disabled = disable_archive_cloud_storage(Some(root.to_str().unwrap())).unwrap();
+        assert!(!disabled.configured);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archive_cloud_info_reports_provider_default_environment_names() {
+        let root = temp_root("provider-defaults");
+        let provider = r#"{
+            "kind": "amazon-s3",
+            "namespace": "gitmanager-test",
+            "bucket": "archive-store",
+            "region": "us-east-1",
+            "auth": {
+                "mode": "aws-sig-v4",
+                "accessKeyEnv": "GITMANAGER_CUSTOM_ACCESS"
+            }
+        }"#;
+        configure_archive_cloud_storage(Some(root.to_str().unwrap()), provider).unwrap();
+        let info = archive_cloud_storage_info(&root).unwrap();
+        assert!(info.auth_environment_variables.iter().any(|name| name == "GITMANAGER_CUSTOM_ACCESS"));
+        assert!(info.auth_environment_variables.iter().any(|name| name == "RBE_CN_PROV_AMAZON_SECRET_KEY"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_archive_rejects_nested_git_metadata() {
+        let root = temp_root("nested-git");
+        let repository_path = root.join("repository");
+        fs::create_dir_all(&repository_path).unwrap();
+        let _repo = Repository::init(&repository_path).unwrap();
+        let nested = repository_path.join("vendor/submodule");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join(".git"), "gitdir: ../../.git/modules/submodule").unwrap();
+        assert!(validate_remote_archive_source(&repository_path).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restore_refuses_archive_root_and_ancestor_destinations() {
+        let root = temp_root("restore-overlap");
+        let repository_path = root.join("repository");
+        let archive_root = root.join("archives");
+        fs::create_dir_all(&repository_path).unwrap();
+        let repo = Repository::init(&repository_path).unwrap();
+        commit_file(&repo, "README.md", "safe");
+        let snapshot = capture_repository(
+            repository_path.to_str().unwrap(),
+            Some(archive_root.to_str().unwrap()),
+            "local",
+        ).unwrap();
+        assert!(restore_repository_archive(
+            repository_path.to_str().unwrap(),
+            archive_root.to_str().unwrap(),
+            Some(archive_root.to_str().unwrap()),
+            "local",
+            &snapshot.id,
+            true,
+        ).is_err());
+        assert!(restore_repository_archive(
+            repository_path.to_str().unwrap(),
+            root.to_str().unwrap(),
+            Some(archive_root.to_str().unwrap()),
+            "local",
+            &snapshot.id,
+            true,
+        ).is_err());
+        assert!(archive_root.join(".cloud-node").is_dir());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archive_capture_lock_serializes_one_repository_across_archive_types() {
+        let root = temp_root("lock");
+        let first = ArchiveCaptureLock::acquire(&root, "repository-id", ArchiveKind::Local).unwrap();
+        assert!(ArchiveCaptureLock::acquire(&root, "repository-id", ArchiveKind::Remote).is_err());
+        drop(first);
+        let second = ArchiveCaptureLock::acquire(&root, "repository-id", ArchiveKind::Remote).unwrap();
+        drop(second);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_url_sanitizer_handles_https_credentials_and_scp_style_urls() {
+        assert_eq!(
+            sanitize_remote_url("https://alice:secret@example.com/org/repo.git?token=hidden#frag").unwrap(),
+            "https://example.com/org/repo.git"
+        );
+        assert_eq!(
+            sanitize_remote_url("alice@example.com:org/repo.git").unwrap(),
+            "alice@example.com:org/repo.git"
+        );
+        assert_eq!(
+            sanitize_remote_url("alice:password@example.com:org/repo.git").unwrap(),
+            "git@example.com:org/repo.git"
+        );
+        assert_eq!(
+            sanitize_remote_url("ssh://alice:password@example.com/org/repo.git").unwrap(),
+            "ssh://alice@example.com/org/repo.git"
+        );
     }
 
     #[test]
