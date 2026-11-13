@@ -17,13 +17,12 @@ modify, push to, or depend on a live branch of the RBE repository.
 
 ## GitManager modifications
 
-The following vendored file contains GitManager-specific changes in addition to
-the original RBE implementation:
+GitManager modifies `cloud-node/src/local_sync.rs` to exclude common environment
+secrets, credentials and private keys by default for its archive integration.
+The change is marked in the affected source file.
 
-- `cloud-node/src/local_sync.rs`: excludes common secret/credential files by
-  default and adds verified logical-file read/restore and retention helpers
-  used by repository snapshots.
-
-The modifications are marked in the affected source file. The remainder of the
-vendored source is retained from the upstream copy. Upstream updates must be
-reviewed and copied deliberately.
+The bounded logical-file read, SHA-256 verification, staged restore and
+logical-object removal APIs are already provided by the upstream
+`cloud-node/src/store.rs`; GitManager consumes those APIs without duplicating
+them. The remainder of the vendored source is retained from the upstream copy.
+Upstream updates must be reviewed and copied deliberately.

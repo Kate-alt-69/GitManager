@@ -1635,7 +1635,6 @@ function renderSelectedRepositoryDetails() {
     });
   }
 
-  wireRepositoryArchivePanel(repo);
   const visibleCommits = commitsForSelectedBranch(repo);
   if (selectedCommitOid && !visibleCommits.some((commit) => commit.oid === selectedCommitOid)) {
     selectedCommitOid = visibleCommits[0] ? visibleCommits[0].oid : null;
@@ -1790,6 +1789,7 @@ function renderSelectedRepositoryDetails() {
         : ""
     }
   `;
+  void wireRepositoryArchivePanel(repo);
 }
 
 async function wireRepositoryArchivePanel(repo) {
