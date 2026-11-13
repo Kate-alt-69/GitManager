@@ -126,6 +126,45 @@
                 </select>
               </div>
             </div>
+
+            <section class="setup-archive-section">
+              <div class="setup-roots-heading">
+                <div>
+                  <strong>Repository archives</strong>
+                  <span>Keep up to five complete restore points for each archive type.</span>
+                </div>
+              </div>
+              <div class="setup-archive-path-row">
+                <label for="setup-archive-root">Archive storage folder</label>
+                <div class="setup-add-root">
+                  <input id="setup-archive-root" class="scan-input" type="text" placeholder="Choose a folder on another drive or a cloud-synced drive…" />
+                  <button id="btn-setup-browse-archive-root" class="btn btn-secondary" type="button">Browse…</button>
+                </div>
+                <small>Choose a Google Drive for desktop, OneDrive, Dropbox, or external-drive folder to have that local archive synchronized by the provider's own client.</small>
+              </div>
+              <div class="setup-options setup-archive-options">
+                <label class="setup-option"><input id="setup-archive-local" type="checkbox" checked /> Local Archive — working files, including uncommitted and untracked changes</label>
+                <label class="setup-option"><input id="setup-archive-remote" type="checkbox" checked /> Remote Archive — working files plus Git history and refs, without credential config</label>
+                <div class="form-group setup-depth">
+                  <label for="setup-archive-trigger">Automatic capture</label>
+                  <select id="setup-archive-trigger" class="select-control">
+                    <option value="manual">Manual only</option>
+                    <option value="commit">After Git commits</option>
+                    <option value="change">After file changes settle</option>
+                  </select>
+                </div>
+                <div class="form-group setup-depth">
+                  <label for="setup-archive-quiet">Quiet period for change capture</label>
+                  <select id="setup-archive-quiet" class="select-control">
+                    <option value="500">500 ms — frequent snapshots</option>
+                    <option value="1500" selected>1.5 seconds — recommended</option>
+                    <option value="3000">3 seconds — fewer snapshots</option>
+                    <option value="5000">5 seconds — large projects</option>
+                  </select>
+                </div>
+              </div>
+              <p class="setup-hint">Environment secrets such as .env files, private keys, and credential folders are excluded by default. Cloud provider credentials are never stored in these archives.</p>
+            </section>
             <div id="setup-modal-error" class="modal-error hidden"></div>
           </div>
           <footer class="modal-footer">

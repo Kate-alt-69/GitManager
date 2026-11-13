@@ -1635,6 +1635,7 @@ function renderSelectedRepositoryDetails() {
     });
   }
 
+  wireRepositoryArchivePanel(repo);
   const visibleCommits = commitsForSelectedBranch(repo);
   if (selectedCommitOid && !visibleCommits.some((commit) => commit.oid === selectedCommitOid)) {
     selectedCommitOid = visibleCommits[0] ? visibleCommits[0].oid : null;
@@ -1721,6 +1722,19 @@ function renderSelectedRepositoryDetails() {
       </div>
     </div>
 
+
+    <div class="inspector-card-block gitmanager-archive-panel">
+      <h4 class="inspector-section-title">Repository Archives</h4>
+      <p class="archive-panel-note">Five restore points maximum per type · common secrets excluded by default.</p>
+      <div class="archive-action-row">
+        <button id="btn-capture-local-archive" class="btn btn-secondary" type="button">Save Local Archive</button>
+        <button id="btn-capture-remote-archive" class="btn btn-secondary" type="button">Save Remote Archive</button>
+        <button id="btn-refresh-repo-archives" class="btn btn-secondary" type="button">Refresh</button>
+      </div>
+      <div id="repo-archive-status" class="repository-setting-status" role="status">Loading saved restore points…</div>
+      <div id="repo-archive-list" class="repo-archive-list"></div>
+    </div>
+
     <div class="inspector-card-block automation-settings-card">
       <h4 class="inspector-section-title">Repository Local Settings</h4>
       <label class="repository-setting-option"><input id="repo-auto-update" type="checkbox" ${repositoryAutomationSettings(repo).autoUpdate ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} /><span><strong>Auto Update</strong><small>Fast-forward only when this repository is clean and has no local-only commits.</small></span></label>
@@ -1776,6 +1790,114 @@ function renderSelectedRepositoryDetails() {
         : ""
     }
   `;
+}
+
+async function wireRepositoryArchivePanel(repo) {
+  const localButton = document.getElementById("btn-capture-local-archive");
+  const remoteButton = document.getElementById("btn-capture-remote-archive");
+  const refreshButton = document.getElementById("btn-refresh-repo-archives");
+  const status = document.getElementById("repo-archive-status");
+  const list = document.getElementById("repo-archive-list");
+  if (!list) return;
+
+  const archiveRoot = (appPreferences && appPreferences.archiveRoot) || null;
+  const setStatus = (value) => { if (status) status.textContent = value; };
+
+  async function refresh() {
+    if (refreshButton) refreshButton.disabled = true;
+    try {
+      const snapshots = await tauriInvoke("list_repository_archives", {
+        repoPath: repo.path,
+        kind: null,
+        archiveRoot
+      });
+      if (!Array.isArray(snapshots) || snapshots.length === 0) {
+        list.innerHTML = '<div class="kv-empty">No restore points yet. Save a Local or Remote Archive to start.</div>';
+        return;
+      }
+      list.innerHTML = snapshots.map((snapshot) => {
+        const date = snapshot.capturedAt ? new Date(snapshot.capturedAt).toLocaleString() : snapshot.id;
+        const type = snapshot.kind === "remote" ? "Remote" : "Local";
+        const excluded = Array.isArray(snapshot.excludedPaths) ? snapshot.excludedPaths.length : 0;
+        return '<div class="repo-archive-item">' +
+          '<div class="repo-archive-item-main">' +
+            '<strong>' + escapeHtml(type + ' · ' + date) + '</strong>' +
+            '<code>' + escapeHtml(snapshot.id) + '</code>' +
+            '<small>' + Number(snapshot.fileCount || 0).toLocaleString() + ' files · ' +
+              Number(snapshot.directoryCount || 0).toLocaleString() + ' folders · ' +
+              Number(snapshot.sourceBytes || 0).toLocaleString() + ' source bytes · ' +
+              excluded + ' excluded path(s)</small>' +
+          '</div>' +
+          '<button class="btn btn-secondary" type="button" data-archive-restore="' +
+            escapeHtml(snapshot.id) + '" data-archive-kind="' + escapeHtml(snapshot.kind) + '">Restore</button>' +
+        '</div>';
+      }).join("");
+    } catch (error) {
+      list.innerHTML = '<div class="kv-empty">Could not load restore points: ' +
+        escapeHtml((error && error.message) || error) + '</div>';
+    } finally {
+      if (refreshButton) refreshButton.disabled = false;
+    }
+  }
+
+  async function capture(kind, button) {
+    if (button) { button.disabled = true; button.textContent = "Saving…"; }
+    setStatus("Capturing " + kind + " repository archive…");
+    try {
+      const snapshot = await tauriInvoke("capture_repository_archive", {
+        repoPath: repo.path,
+        kind,
+        archiveRoot
+      });
+      setStatus("Saved " + kind + " restore point · " + snapshot.fileCount +
+        " files · " + Number(snapshot.storedBytes || 0).toLocaleString() + " new bytes stored.");
+      await refresh();
+    } catch (error) {
+      setStatus("Archive capture: " + String((error && error.message) || error));
+      await refresh();
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = kind === "local" ? "Save Local Archive" : "Save Remote Archive";
+      }
+    }
+  }
+
+  if (localButton) localButton.onclick = () => void capture("local", localButton);
+  if (remoteButton) remoteButton.onclick = () => void capture("remote", remoteButton);
+  if (refreshButton) refreshButton.onclick = () => void refresh();
+  list.onclick = async (event) => {
+    const button = event.target.closest("[data-archive-restore]");
+    if (!button) return;
+    const snapshotId = button.getAttribute("data-archive-restore");
+    const kind = button.getAttribute("data-archive-kind");
+    if (!snapshotId || !kind) return;
+    const accepted = window.confirm(
+      "Restore this " + kind + " archive? GitManager will verify the contents and move the current repository folder aside before replacement."
+    );
+    if (!accepted) return;
+    button.disabled = true;
+    setStatus("Verifying and restoring " + snapshotId + "…");
+    try {
+      const result = await tauriInvoke("restore_repository_archive", {
+        repoPath: repo.path,
+        destinationPath: repo.path,
+        snapshotId,
+        kind,
+        archiveRoot,
+        confirmReplace: true
+      });
+      setStatus("Restored " + result.snapshot.id + ". Previous repository: " +
+        (result.preservedPreviousPath || "not needed") + ".");
+      await runMachineScan();
+    } catch (error) {
+      setStatus("Restore failed: " + String((error && error.message) || error));
+    } finally {
+      button.disabled = false;
+      await refresh();
+    }
+  };
+  await refresh();
 }
 
 function renderAll() {
@@ -1922,6 +2044,7 @@ function wireEventListeners() {
   const setupClose = document.getElementById("btn-close-scan-setup");
   const setupModal = document.getElementById("setup-modal-backdrop");
   const setupBrowse = document.getElementById("btn-setup-browse-root");
+  const archiveBrowse = document.getElementById("btn-setup-browse-archive-root");
   const setupAdd = document.getElementById("btn-setup-add-root");
   const setupSmart = document.getElementById("btn-setup-smart-roots");
   const setupManual = document.getElementById("setup-manual-root");
@@ -1954,6 +2077,7 @@ function wireEventListeners() {
     setupModal.classList.add("hidden");
   });
   if (setupBrowse) setupBrowse.addEventListener("click", () => void browseForScanRoot());
+  if (archiveBrowse) archiveBrowse.addEventListener("click", () => void browseForArchiveRoot());
   if (setupAdd && setupManual) setupAdd.addEventListener("click", () => addScanRoot(setupManual.value));
   if (setupManual) setupManual.addEventListener("keydown", (event) => {
     if (event.key === "Enter") addScanRoot(setupManual.value);
@@ -2153,10 +2277,20 @@ function openScanSetup(isFirstRun) {
   const hidden = document.getElementById("setup-include-hidden");
   const dependencies = document.getElementById("setup-index-dependencies");
   const showDependencies = document.getElementById("setup-show-dependencies");
+  const archiveRoot = document.getElementById("setup-archive-root");
+  const archiveLocal = document.getElementById("setup-archive-local");
+  const archiveRemote = document.getElementById("setup-archive-remote");
+  const archiveTrigger = document.getElementById("setup-archive-trigger");
+  const archiveQuiet = document.getElementById("setup-archive-quiet");
   if (depth) depth.value = String(appPreferences.maxScanDepth || 8);
   if (hidden) hidden.checked = Boolean(appPreferences.includeHiddenDirs);
   if (dependencies) dependencies.checked = appPreferences.indexDependencyRepositories !== false;
   if (showDependencies) showDependencies.checked = appPreferences.showDependencyRepositories !== false;
+  if (archiveRoot) archiveRoot.value = appPreferences.archiveRoot || "";
+  if (archiveLocal) archiveLocal.checked = appPreferences.archiveLocalEnabled !== false;
+  if (archiveRemote) archiveRemote.checked = appPreferences.archiveRemoteEnabled !== false;
+  if (archiveTrigger) archiveTrigger.value = appPreferences.archiveTrigger || "manual";
+  if (archiveQuiet) archiveQuiet.value = String(appPreferences.archiveQuietMs || 1500);
   renderScanRootList();
   modal.classList.remove("hidden");
 }
@@ -2186,6 +2320,21 @@ async function browseForScanRoot() {
   }
 }
 
+async function browseForArchiveRoot() {
+  const input = document.getElementById("setup-archive-root");
+  const dialog = window.__TAURI__ && window.__TAURI__.dialog;
+  if (!dialog || !dialog.open) {
+    if (input) input.focus();
+    return;
+  }
+  const selected = await dialog.open({
+    multiple: false,
+    directory: true,
+    title: "Choose GitManager archive storage folder"
+  });
+  if (typeof selected === "string" && input) input.value = selected;
+}
+
 async function loadRecommendedScanRoots() {
   try {
     const roots = await tauriInvoke("get_default_scan_directories");
@@ -2204,6 +2353,11 @@ async function saveScanSetup() {
   const hidden = document.getElementById("setup-include-hidden");
   const dependencies = document.getElementById("setup-index-dependencies");
   const showDependencies = document.getElementById("setup-show-dependencies");
+  const archiveRoot = document.getElementById("setup-archive-root");
+  const archiveLocal = document.getElementById("setup-archive-local");
+  const archiveRemote = document.getElementById("setup-archive-remote");
+  const archiveTrigger = document.getElementById("setup-archive-trigger");
+  const archiveQuiet = document.getElementById("setup-archive-quiet");
   const error = document.getElementById("setup-modal-error");
   if (error) {
     error.classList.add("hidden");
@@ -2217,6 +2371,11 @@ async function saveScanSetup() {
   appPreferences.includeHiddenDirs = Boolean(hidden && hidden.checked);
   appPreferences.indexDependencyRepositories = Boolean(dependencies && dependencies.checked);
   appPreferences.showDependencyRepositories = Boolean(showDependencies && showDependencies.checked);
+  appPreferences.archiveRoot = String(archiveRoot && archiveRoot.value || appPreferences.archiveRoot || "").trim();
+  appPreferences.archiveLocalEnabled = Boolean(archiveLocal && archiveLocal.checked);
+  appPreferences.archiveRemoteEnabled = Boolean(archiveRemote && archiveRemote.checked);
+  appPreferences.archiveTrigger = String(archiveTrigger && archiveTrigger.value || "manual");
+  appPreferences.archiveQuietMs = Number(archiveQuiet && archiveQuiet.value) || 1500;
   appPreferences.firstRunComplete = true;
 
   try {
