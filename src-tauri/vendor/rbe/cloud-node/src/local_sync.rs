@@ -141,85 +141,6 @@ impl CloudNodeStore {
         })
     }
 
-    /// Reads a small active Cloud Node file after verifying its stored payload hash.
-    /// This is intended for bounded snapshot/index metadata, not repository payloads.
-    pub fn read_logical_file(
-        &self,
-        logical_path: &str,
-        max_bytes: u64,
-    ) -> anyhow::Result<Option<Vec<u8>>> {
-        validate_archive_logical_path(logical_path)?;
-        let plan = self.sync_plan()?;
-        let Some(object) = plan.ordered().find(|object| object.logical_path == logical_path) else {
-            return Ok(None);
-        };
-        if object.kind != BlobKind::File {
-            anyhow::bail!("Cloud Node logical path is not a regular file: {logical_path}");
-        }
-        let payload = object.payload_path.as_ref().ok_or_else(|| anyhow::anyhow!("Cloud Node logical file is missing its payload"))?;
-        if fs::metadata(payload)?.len() > max_bytes {
-            anyhow::bail!("Cloud Node logical file exceeds the configured read limit");
-        }
-        if sha256_file(payload)? != object.content_sha256 {
-            anyhow::bail!("Cloud Node logical file failed its content hash check");
-        }
-        Ok(Some(fs::read(payload)?))
-    }
-
-    pub fn verify_logical_file(&self, logical_path: &str, expected_sha256: &str) -> anyhow::Result<bool> {
-        validate_archive_logical_path(logical_path)?;
-        let plan = self.sync_plan()?;
-        let Some(object) = plan.ordered().find(|object| object.logical_path == logical_path) else { return Ok(false); };
-        if object.kind != BlobKind::File || hex::encode(object.content_sha256) != expected_sha256 { return Ok(false); }
-        let Some(payload) = object.payload_path.as_ref() else { return Ok(false); };
-        Ok(sha256_file(payload)? == object.content_sha256)
-    }
-
-    pub fn restore_logical_file(&self, logical_path: &str, destination: &Path, expected_sha256: &str) -> anyhow::Result<bool> {
-        validate_archive_logical_path(logical_path)?;
-        let plan = self.sync_plan()?;
-        let Some(object) = plan.ordered().find(|object| object.logical_path == logical_path) else { return Ok(false); };
-        if object.kind != BlobKind::File || hex::encode(object.content_sha256) != expected_sha256 {
-            anyhow::bail!("Cloud Node restore object does not match the requested file digest");
-        }
-        let source = object.payload_path.as_ref().ok_or_else(|| anyhow::anyhow!("Cloud Node restore object has no payload"))?;
-        if sha256_file(source)? != object.content_sha256 { anyhow::bail!("Cloud Node restore object failed its payload hash check"); }
-        let parent = destination.parent().ok_or_else(|| anyhow::anyhow!("Cloud Node restore destination has no parent"))?;
-        durable::create_dir_all(parent)?;
-        let temporary = destination.with_extension(format!("gitmanager-restore-{}.part", std::process::id()));
-        if temporary.exists() { durable::remove_file(&temporary)?; }
-        fs::copy(source, &temporary)?;
-        File::open(&temporary)?.sync_all()?;
-        if sha256_file(&temporary)? != object.content_sha256 { let _ = durable::remove_file(&temporary); anyhow::bail!("Cloud Node restored payload failed verification"); }
-        durable::rename(&temporary, destination)?;
-        Ok(true)
-    }
-
-    /// Remove one active logical file from the Cloud Node snapshot tree.
-    /// Used by archive retention only after a replacement snapshot is published.
-    pub fn remove_logical_path(&self, logical_path: &str) -> anyhow::Result<bool> {
-        if logical_path.is_empty()
-            || logical_path.starts_with('/')
-            || logical_path.contains('\\')
-            || logical_path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
-        {
-            anyhow::bail!("Cloud Node logical path is not canonical");
-        }
-        let plan = self.sync_plan()?;
-        for object in plan.ordered() {
-            if object.logical_path != logical_path {
-                continue;
-            }
-            remove_active_object(self, object)?;
-            let backup = self.summary().backup.join(hex::encode(object.object_key));
-            if backup.exists() {
-                durable::remove_dir_all(&backup)?;
-            }
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
     pub fn sync_local_directory(
         &self,
         directory: &Path,
@@ -610,15 +531,6 @@ pub fn is_default_secret_path(relative: &Path) -> bool {
         Path::new(name).extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase).as_deref(),
         Some("pem" | "key" | "p12" | "pfx" | "keystore" | "jks")
     )
-}
-
-fn validate_archive_logical_path(value: &str) -> anyhow::Result<()> {
-    if value.is_empty() || value.starts_with('/') || value.contains('\\')
-        || value.split('/').any(|part| part.is_empty() || part == "." || part == ".." || part.contains(':'))
-    {
-        anyhow::bail!("Cloud Node archive logical path is not canonical");
-    }
-    Ok(())
 }
 
 fn remove_active_object(store: &CloudNodeStore, object: &SyncObject) -> anyhow::Result<()> {

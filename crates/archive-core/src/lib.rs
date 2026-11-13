@@ -1,14 +1,15 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use atomic_io::AtomicIo;
 use cloud_node::{CloudNodeSettings, CloudNodeStore, is_default_secret_path};
 use git2::Repository;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 
 const ARCHIVE_FORMAT_VERSION: u16 = 1;
 const MAX_RESTORE_POINTS: usize = 5;
@@ -299,9 +300,6 @@ pub fn capture_repository(
     }
     for old in removed {
         let _ = store.remove_logical_path(&old.manifest_logical_path);
-    }
-    for file in manifest.files.iter() {
-        let _ = file;
     }
     // The active Cloud Node set is the union of the retained restore points.
     // List the old manifest before pruning to discover no-longer-referenced blobs.
@@ -723,16 +721,8 @@ fn write_index_atomic(path: &Path, index: &ArchiveIndex) -> Result<(), String> {
     if bytes.len() as u64 > MAX_INDEX_BYTES {
         return Err("Archive index exceeds the 2 MiB safety limit.".to_string());
     }
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, bytes)
-        .map_err(|error| format!("Could not write staged archive index: {error}"))?;
-    File::open(&temporary)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| format!("Could not flush staged archive index: {error}"))?;
-    if let Err(error) = fs::rename(&temporary, path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("Could not publish archive index atomically: {error}"));
-    }
+    AtomicIo::new().write_atomic(path, &bytes)
+        .map_err(|error| format!("Could not publish archive index atomically: {error}"))?;
     Ok(())
 }
 

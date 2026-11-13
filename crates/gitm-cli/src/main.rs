@@ -210,7 +210,7 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                         match capture_repository(&repository.to_string_lossy(), None, kind) {
                             Ok(snapshot) => status = format!(
                                 "Saved {} · {} files · {}",
-                                snapshot.id, snapshot.file_count, human_bytes(snapshot.archive_bytes)
+                                snapshot.id, snapshot.file_count, human_bytes(snapshot.stored_bytes)
                             ),
                             Err(error) => status = format!("Capture failed: {error}"),
                         }
@@ -428,9 +428,9 @@ fn print_snapshot(snapshot: &ArchiveSnapshot) {
     println!("Saved {} archive {}", snapshot.kind.as_str(), snapshot.id);
     println!("Repository: {}", snapshot.repository_path);
     println!("Branch: {}", snapshot.branch);
-    println!("Files: {} · source: {} · compressed: {}",
+    println!("Files: {} · source: {} · new blob bytes: {}",
         snapshot.file_count, human_bytes(snapshot.source_bytes), human_bytes(snapshot.archive_bytes));
-    println!("SHA-256: {}", snapshot.sha256);
+    println!("SHA-256: {}", snapshot.manifest_sha256);
     println!("Location: {}", snapshot.manifest_logical_path);
     if !snapshot.excluded_paths.is_empty() {
         println!("Excluded secret/special paths: {}", snapshot.excluded_paths.len());

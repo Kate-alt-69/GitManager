@@ -117,6 +117,127 @@ impl CloudNodeStore {
         }
     }
 
+    /// Verifies an active file object by direct object-key lookup. This avoids
+    /// rebuilding the full sync plan for every file in a large repository scan.
+    pub fn verify_logical_file(
+        &self,
+        logical_path: &str,
+        expected_sha256: &str,
+    ) -> anyhow::Result<bool> {
+        let Some((manifest, payload)) = self.active_file_payload(logical_path)? else {
+            return Ok(false);
+        };
+        if hex::encode(manifest.content_sha256) != expected_sha256 {
+            return Ok(false);
+        }
+        Ok(file_matches(&payload, manifest.content_sha256, manifest.logical_size)?)
+    }
+
+    /// Reads a bounded metadata object from the active Cloud Node store.
+    pub fn read_logical_file(
+        &self,
+        logical_path: &str,
+        max_bytes: u64,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        let Some((manifest, payload)) = self.active_file_payload(logical_path)? else {
+            return Ok(None);
+        };
+        if manifest.logical_size > max_bytes {
+            anyhow::bail!("Cloud Node logical file exceeds the configured read limit");
+        }
+        if !file_matches(&payload, manifest.content_sha256, manifest.logical_size)? {
+            anyhow::bail!("Cloud Node logical file failed its content hash check");
+        }
+        Ok(Some(fs::read(payload)?))
+    }
+
+    /// Restores an active content-addressed file to a staging tree without
+    /// materializing the complete payload in memory.
+    pub fn restore_logical_file(
+        &self,
+        logical_path: &str,
+        destination: &Path,
+        expected_sha256: &str,
+    ) -> anyhow::Result<bool> {
+        let Some((manifest, source)) = self.active_file_payload(logical_path)? else {
+            return Ok(false);
+        };
+        if hex::encode(manifest.content_sha256) != expected_sha256 {
+            anyhow::bail!("Cloud Node restore object does not match the requested file digest");
+        }
+        if !file_matches(&source, manifest.content_sha256, manifest.logical_size)? {
+            anyhow::bail!("Cloud Node restore object failed its payload hash check");
+        }
+        let parent = destination.parent().ok_or_else(|| {
+            anyhow::anyhow!("Cloud Node restore destination has no parent")
+        })?;
+        durable::create_dir_all(parent)?;
+        let temporary = destination.with_extension(format!(
+            "gitmanager-restore-{}.part",
+            std::process::id()
+        ));
+        if temporary.exists() {
+            durable::remove_file(&temporary)?;
+        }
+        fs::copy(&source, &temporary)?;
+        File::open(&temporary)?.sync_all()?;
+        if !file_matches(&temporary, manifest.content_sha256, manifest.logical_size)? {
+            let _ = durable::remove_file(&temporary);
+            anyhow::bail!("Cloud Node restored payload failed verification");
+        }
+        durable::rename(&temporary, destination)?;
+        Ok(true)
+    }
+
+    /// Removes an active logical object and its object-level recovery history.
+    /// Repository archive pruning calls this only after a new index is durable.
+    pub fn remove_logical_path(&self, logical_path: &str) -> anyhow::Result<bool> {
+        let logical_path = normalize_logical_path(logical_path)?;
+        let object_key = object_key(BlobKind::File, &logical_path);
+        let object_hex = hex::encode(object_key);
+        let object_dir = self.storage.join(&object_hex);
+        if !object_dir.exists() {
+            return Ok(false);
+        }
+        durable::remove_dir_all(&object_dir)?;
+        let backup = self.backup.join(&object_hex);
+        if backup.exists() {
+            durable::remove_dir_all(&backup)?;
+        }
+        let priority = self.root.join("priority").join(format!("{object_hex}.level"));
+        if priority.is_file() {
+            durable::remove_file(priority)?;
+        }
+        Ok(true)
+    }
+
+    fn active_file_payload(
+        &self,
+        logical_path: &str,
+    ) -> anyhow::Result<Option<(BlobManifest, PathBuf)>> {
+        let logical_path = normalize_logical_path(logical_path)?;
+        let key = object_key(BlobKind::File, &logical_path);
+        let object_dir = self.storage.join(hex::encode(key));
+        let manifest_path = object_dir.join(BlobKind::File.manifest_name());
+        let Some(manifest) = read_manifest_if_present(&manifest_path)? else {
+            return Ok(None);
+        };
+        if manifest.kind != BlobKind::File
+            || manifest.object_key != key
+            || manifest.logical_path != logical_path
+        {
+            anyhow::bail!("Cloud Node file manifest identity mismatch at {}", manifest_path.display());
+        }
+        let payload = object_dir
+            .join("versions")
+            .join(hex::encode(manifest.content_sha256))
+            .join("payload");
+        if !payload.is_file() {
+            anyhow::bail!("Cloud Node file payload is missing at {}", payload.display());
+        }
+        Ok(Some((manifest, payload)))
+    }
+
     pub fn store_file(&self, source: &Path, logical_path: &str) -> anyhow::Result<StoredObject> {
         self.store_regular(source, logical_path, BlobKind::File)
     }
