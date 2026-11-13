@@ -10,7 +10,7 @@ use cloud_node::{
     ProviderKind, ProviderSyncResult, is_default_secret_path,
 };
 use fs2::FileExt;
-use git2::Repository;
+use git2::{Repository, TreeWalkMode, TreeWalkResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
@@ -77,6 +77,14 @@ pub struct ArchiveRestoreResult {
     pub destination: String,
     pub preserved_previous_path: Option<String>,
     pub initialized_git_repository: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteHistorySafetyCache {
+    format_version: u16,
+    refs_fingerprint: String,
+    safe: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -207,6 +215,9 @@ pub fn capture_repository(
 
     let repository_id = repository_archive_id(&repository, &source)?;
     let _capture_lock = ArchiveCaptureLock::acquire(&root, &repository_id, kind)?;
+    if kind == ArchiveKind::Remote {
+        validate_remote_archive_history(&repository, &root, &repository_id)?;
+    }
     let repository_name = source.file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("repository")
@@ -674,6 +685,134 @@ fn sanitize_remote_url(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+fn remote_refs_fingerprint(repository: &Repository) -> Result<String, String> {
+    let mut entries = Vec::<String>::new();
+    let references = repository.references()
+        .map_err(|error| format!("Could not enumerate Git refs for Remote Archive security check: {error}"))?;
+    for reference in references {
+        let reference = reference
+            .map_err(|error| format!("Could not read a Git ref for Remote Archive security check: {error}"))?;
+        let name = reference.name().unwrap_or("<non-UTF-8 ref>");
+        let resolved = reference.resolve()
+            .map_err(|error| format!("Could not resolve Git ref {name} for Remote Archive security check: {error}"))?;
+        let target = resolved.target()
+            .map(|oid| oid.to_string())
+            .unwrap_or_else(|| "<no direct target>".to_string());
+        entries.push(format!("{name}={target}"));
+    }
+    if let Ok(head) = repository.head() {
+        entries.push(format!(
+            "HEAD:{}={}",
+            head.name().unwrap_or("<detached>"),
+            head.target().map(|oid| oid.to_string()).unwrap_or_else(|| "<unborn>".to_string())
+        ));
+    }
+    entries.sort();
+    Ok(sha256_bytes(entries.join("\n").as_bytes()))
+}
+
+/// Refuse to copy the raw Git object database when reachable history contains
+/// paths which the normal archive scanner excludes. Otherwise a committed
+/// .env/credential file would bypass the working-tree secret filter through
+/// historical blobs inside .git/objects.
+fn validate_remote_archive_history(
+    repository: &Repository,
+    archive_root: &Path,
+    repository_id: &str,
+) -> Result<(), String> {
+    let fingerprint = remote_refs_fingerprint(repository)?;
+    let cache_path = archive_root
+        .join("repositories")
+        .join(repository_id)
+        .join("remote")
+        .join("history-safety.json");
+    if let Ok(bytes) = fs::read(&cache_path) {
+        if bytes.len() <= 4096 {
+            if let Ok(cache) = serde_json::from_slice::<RemoteHistorySafetyCache>(&bytes) {
+                if cache.format_version == 1 && cache.refs_fingerprint == fingerprint {
+                    return if cache.safe {
+                        Ok(())
+                    } else {
+                        Err("Remote Archive is blocked because this repository's reachable Git history contains an excluded secret path. Remove it from every reachable commit (rewrite history) before retrying.".to_string())
+                    };
+                }
+            }
+        }
+    }
+
+    let mut walker = repository.revwalk()
+        .map_err(|error| format!("Could not inspect Git history for Remote Archive: {error}"))?;
+    let references = repository.references()
+        .map_err(|error| format!("Could not enumerate Git refs for Remote Archive: {error}"))?;
+    let mut pushed = false;
+    for reference in references {
+        let reference = reference
+            .map_err(|error| format!("Could not read a Git ref for Remote Archive: {error}"))?;
+        if let Ok(commit) = reference.peel_to_commit() {
+            walker.push(commit.id())
+                .map_err(|error| format!("Could not walk Git history for Remote Archive: {error}"))?;
+            pushed = true;
+        }
+    }
+    if !pushed {
+        if let Ok(head) = repository.head() {
+            if let Ok(commit) = head.peel_to_commit() {
+                walker.push(commit.id())
+                    .map_err(|error| format!("Could not walk Git HEAD for Remote Archive: {error}"))?;
+            }
+        }
+    }
+    walker.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|error| format!("Could not sort Git history for Remote Archive: {error}"))?;
+
+    let mut seen_trees = HashSet::new();
+    let mut unsafe_path = None::<String>;
+    for oid in walker {
+        let oid = oid.map_err(|error| format!("Could not read a Git history object for Remote Archive: {error}"))?;
+        let commit = repository.find_commit(oid)
+            .map_err(|error| format!("Could not read Git commit {oid} for Remote Archive: {error}"))?;
+        let tree = commit.tree()
+            .map_err(|error| format!("Could not read tree for Git commit {oid}: {error}"))?;
+        if !seen_trees.insert(tree.id()) {
+            continue;
+        }
+        tree.walk(TreeWalkMode::PreOrder, |root, entry| {
+            let relative = format!("{root}{}", entry.name().unwrap_or(""));
+            if is_default_secret_path(Path::new(&relative)) {
+                unsafe_path = Some(relative);
+                TreeWalkResult::Abort
+            } else {
+                TreeWalkResult::Ok
+            }
+        }).map_err(|error| format!("Could not inspect a Git history tree for Remote Archive: {error}"))?;
+        if unsafe_path.is_some() {
+            break;
+        }
+    }
+
+    let current_fingerprint = remote_refs_fingerprint(repository)?;
+    if current_fingerprint != fingerprint {
+        return Err("Git refs changed while the Remote Archive security scan was running. Retry the archive.".to_string());
+    }
+    let safe = unsafe_path.is_none();
+    let cache = RemoteHistorySafetyCache {
+        format_version: 1,
+        refs_fingerprint: fingerprint,
+        safe,
+    };
+    let bytes = serde_json::to_vec(&cache)
+        .map_err(|error| format!("Could not serialize Remote Archive security cache: {error}"))?;
+    AtomicIo::new().write_atomic(&cache_path, &bytes)
+        .map_err(|error| format!("Could not save Remote Archive security cache: {error}"))?;
+
+    if let Some(path) = unsafe_path {
+        return Err(format!(
+            "Remote Archive is blocked: reachable Git history contains excluded secret path '{path}'. Remove it from every reachable commit (rewrite history) before retrying. No archive was created."
+        ));
+    }
+    Ok(())
+}
+
 fn validate_remote_archive_source(source: &Path) -> Result<(), String> {
     let marker = source.join(".git");
     if marker.is_file() {
@@ -791,7 +930,7 @@ fn is_git_sensitive_path(relative: &Path) -> bool {
     matches!(
         remaining[0].as_str(),
         "config" | "config.lock" | "config.worktree" | "config.worktree.lock" |
-        "index.lock" | "hooks"
+        "index.lock" | "hooks" | "logs" | "rr-cache" | "modules" | "worktrees"
     )
 }
 
@@ -1455,6 +1594,36 @@ mod tests {
             repository_archive_id(&first, &first_path).unwrap(),
             repository_archive_id(&second, &second_path).unwrap()
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_archive_omits_reflogs_rerere_and_nested_git_module_metadata() {
+        assert!(is_git_sensitive_path(Path::new(".git/logs/HEAD")));
+        assert!(is_git_sensitive_path(Path::new(".git/rr-cache/abcd/postimage")));
+        assert!(is_git_sensitive_path(Path::new(".git/modules/lib/config")));
+        assert!(is_git_sensitive_path(Path::new(".git/worktrees/other/HEAD")));
+    }
+
+    #[test]
+    fn remote_archive_refuses_secret_paths_in_reachable_git_history_and_caches_scan() {
+        let root = temp_root("secret-history");
+        let repository_path = root.join("repository");
+        let archive_root = root.join("archives");
+        fs::create_dir_all(&repository_path).unwrap();
+        let repo = Repository::init(&repository_path).unwrap();
+        fs::create_dir_all(repository_path.join("config")).unwrap();
+        commit_file(&repo, ".env.example", "SAFE_TEMPLATE=1");
+        assert!(validate_remote_archive_history(&repo, &archive_root, "secret-history-id").is_ok());
+        let cache_path = archive_root.join("repositories/secret-history-id/remote/history-safety.json");
+        assert!(cache_path.is_file());
+
+        commit_file(&repo, "config/.env.production", "SECRET=never-copy");
+        let error = validate_remote_archive_history(&repo, &archive_root, "secret-history-id").unwrap_err();
+        assert!(error.contains("config/.env.production"));
+        assert!(!error.contains("never-copy"));
+        assert!(validate_remote_archive_history(&repo, &archive_root, "secret-history-id").is_err());
+        assert!(!archive_root.join(".cloud-node").exists());
         let _ = fs::remove_dir_all(root);
     }
 

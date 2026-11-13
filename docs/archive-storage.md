@@ -16,7 +16,21 @@ private-key files, common credential JSON files, and Git credential-bearing
 configuration/hooks. The excluded paths are recorded in each restore-point
 summary. Remote Archive stores safe remote names and sanitized fetch/push URLs
 separately so it can recreate remotes without copying `.git/config` or its
-credential helpers.
+credential helpers. It also omits Git reflogs, rerere caches, linked-worktree
+metadata and nested Git module stores.
+
+Before copying `.git`, Remote Archive scans the trees of every commit reachable
+from repository refs. If a reachable historical tree contains an excluded
+secret path (for example `.env.production` or `.ssh/id_ed25519`), capture is
+refused before any archive data is written. Remove the path from all reachable
+history (rewrite the affected commits), then retry. The scan is cached against
+the repository's ref fingerprint and is repeated when refs change.
+
+This is a path-based protection, not a secret-content scanner: credentials pasted
+into ordinary source files cannot be reliably detected. Unreachable/dangling Git
+objects may also remain in the raw local object database after a history rewrite;
+expire reflogs and run `git gc --prune=now` before making a strict Remote Archive
+when you need those unreferenced objects physically removed.
 
 ## RBE Cloud Node storage
 

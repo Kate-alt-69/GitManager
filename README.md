@@ -189,7 +189,7 @@ GitManager vendors the RBE Cloud Node storage engine under
 Archive data is stored as content-addressed file blobs plus immutable manifests,
 so unchanged content is shared across snapshots. Local and Remote Archives are
 separate; each retains up to five complete restore points per repository/type.
-Secret-bearing `.env`/credential/private-key paths are excluded by default. Archive identity follows the sanitized Git remote where available, so cloud restore points survive checkout-path changes.
+Secret-bearing `.env`/credential/private-key paths are excluded by default. Remote Archives are refused when those paths exist in reachable Git history. Archive identity follows the sanitized Git remote where available, so cloud restore points survive checkout-path changes.
 
 The standalone Rust `gitm` CLI provides repository status, commit history,
 branches, remotes, backup, cloud synchronization, and restore, plus an
