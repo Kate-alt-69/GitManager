@@ -138,7 +138,8 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
         log_err(f"Bundled Python failed its isolated startup check: {err or out or code}")
         return 1
 
-    log_ok(f"Verified python.org CPython {out} embeddable runtime ({archive_path.stat().st_size if archive_path.exists() else 'downloaded'} bytes downloaded).")
+    runtime_bytes = sum(path.stat().st_size for path in runtime_dir.iterdir() if path.is_file())
+    log_ok(f"Verified python.org CPython {out} embeddable runtime ({runtime_bytes:,} bytes extracted).")
     return 0
 
 

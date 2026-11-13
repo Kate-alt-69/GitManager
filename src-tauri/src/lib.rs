@@ -36,7 +36,7 @@ pub struct AppState {
     pub watcher: BackgroundWatcherControl,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RepositoryPreferences {
     pub auto_update: bool,
@@ -754,6 +754,128 @@ async fn cleaner_apply(
 }
 
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowsSigningCertificate {
+    thumbprint: String,
+    subject: String,
+    not_after: String,
+}
+
+#[cfg(target_os = "windows")]
+fn run_signing_powershell(script: &str) -> Result<Value, String> {
+    let mut command = hidden_command("powershell.exe");
+    command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .env("POWERSHELL_TELEMETRY_OPTOUT", "1");
+    let output = command.output().map_err(|error| format!("Could not start PowerShell: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() { format!("PowerShell exited with {}.", output.status) } else { stderr });
+    }
+    if output.stdout.is_empty() { return Ok(Value::Array(Vec::new())); }
+    serde_json::from_slice(&output.stdout).map_err(|error| format!("Certificate query returned invalid JSON: {error}"))
+}
+
+#[tauri::command]
+fn list_windows_signing_certificates() -> Result<Vec<WindowsSigningCertificate>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+$now = Get-Date
+$items = @(Get-ChildItem -Path Cert:\CurrentUser\My | Where-Object {
+    $_.HasPrivateKey -and $_.NotBefore -le $now -and $_.NotAfter -gt $now -and
+    (@($_.EnhancedKeyUsageList | ForEach-Object { $_.ObjectId.Value }) -contains '1.3.6.1.5.5.7.3.3')
+} | ForEach-Object {
+    [PSCustomObject]@{ thumbprint = $_.Thumbprint; subject = $_.Subject; notAfter = $_.NotAfter.ToString('yyyy-MM-dd') }
+})
+ConvertTo-Json -InputObject $items -Compress -Depth 2
+"#;
+        let value = run_signing_powershell(script)?;
+        if value.is_null() { return Ok(Vec::new()); }
+        if let Some(items) = value.as_array() {
+            return items.iter().cloned()
+                .map(|item| serde_json::from_value(item).map_err(|error| format!("Invalid certificate result: {error}")))
+                .collect();
+        }
+        return Ok(vec![serde_json::from_value(value)
+            .map_err(|error| format!("Invalid certificate result: {error}"))?]);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Windows Authenticode signing is available only on Windows.".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn find_windows_signtool() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for env_name in ["ProgramFiles(x86)", "ProgramFiles"] {
+        let root = match std::env::var_os(env_name) { Some(value) => PathBuf::from(value), None => continue };
+        let bin_root = root.join("Windows Kits").join("10").join("bin");
+        let entries = match fs::read_dir(bin_root) { Ok(value) => value, Err(_) => continue };
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("x64").join("signtool.exe");
+            if candidate.is_file() { candidates.push(candidate); }
+        }
+    }
+    candidates.sort_by(|left, right| right.to_string_lossy().cmp(&left.to_string_lossy()));
+    candidates.into_iter().next()
+}
+
+#[tauri::command]
+fn sign_windows_installer(installer_path: String, thumbprint: String) -> Result<Value, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let clean_thumbprint = thumbprint.chars().filter(|character| character.is_ascii_hexdigit()).collect::<String>();
+        if clean_thumbprint.len() != 40 {
+            return Err("Select a valid SHA-1 thumbprint from the current-user Code Signing certificate store.".to_string());
+        }
+        let path = fs::canonicalize(&installer_path).map_err(|error| format!("Could not resolve installer file: {error}"))?;
+        if !path.is_file() || !matches!(path.extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase().as_str(), "exe" | "msi") {
+            return Err("Choose a Windows .exe or .msi installer file.".to_string());
+        }
+        let certificates = list_windows_signing_certificates()?;
+        if !certificates.iter().any(|certificate| certificate.thumbprint.eq_ignore_ascii_case(&clean_thumbprint)) {
+            return Err("The selected certificate is missing, expired, has no private key, or lacks Code Signing usage.".to_string());
+        }
+        let signtool = find_windows_signtool()
+            .ok_or_else(|| "Windows SDK SignTool was not found. Install the Windows 10/11 SDK signing tools.".to_string())?;
+
+        let mut sign = hidden_command(&signtool);
+        sign.args(["sign", "/sha1", &clean_thumbprint, "/fd", "SHA256",
+            "/tr", "https://timestamp.digicert.com", "/td", "SHA256",
+            "/d", "GitManager", "/du", "https://github.com/Kate-alt-69/GitManager"])
+            .arg(&path);
+        let signed = sign.output().map_err(|error| format!("Could not start SignTool: {error}"))?;
+        if !signed.status.success() {
+            let stderr = String::from_utf8_lossy(&signed.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&signed.stdout).trim().to_string();
+            return Err(format!("SignTool could not sign the installer: {}", if stderr.is_empty() { stdout } else { stderr }));
+        }
+
+        let mut verify = hidden_command(&signtool);
+        verify.args(["verify", "/pa", "/v"]).arg(&path);
+        let verified = verify.output().map_err(|error| format!("Could not verify signed installer: {error}"))?;
+        let stdout = String::from_utf8_lossy(&verified.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&verified.stderr).trim().to_string();
+        Ok(serde_json::json!({
+            "path": path.to_string_lossy(),
+            "thumbprint": clean_thumbprint,
+            "signatureCreated": true,
+            "chainTrusted": verified.status.success(),
+            "verification": if stdout.is_empty() { stderr } else { stdout }
+        }))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (installer_path, thumbprint);
+        Err("Windows Authenticode signing is available only on Windows.".to_string())
+    }
+}
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -781,6 +903,8 @@ pub fn run() {
             load_repository_settings,
             save_repository_settings,
             get_commit_details,
+            list_windows_signing_certificates,
+            sign_windows_installer,
             scan_machine_repositories,
             inspect_repository,
             detect_github_identity,

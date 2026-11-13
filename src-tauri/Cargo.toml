@@ -2,8 +2,8 @@
 name = "git-manager"
 version = "1.0.0"
 description = "Cross-platform Pure-Rust Native Git Repository Manager, Git Tree Visualizer & Background Update Service built with Rust and Tauri v2 (Windows 10/11, Linux, macOS)"
-authors = ["GitManager Contributors"]
-license = "MIT"
+authors = ["Kastrick"]
+license = "Apache-2.0"
 repository = "https://github.com/gitmanager/git-manager"
 edition = "2021"
 default-run = "git-manager"

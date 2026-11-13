@@ -183,17 +183,43 @@ def _project_kinds(directory: Path) -> set[str]:
 
 
 def _custom_exclusions(repo: Path) -> list[str]:
-    file = repo / ".gitmanager-cleanignore"
-    if not file.is_file() or _is_linklike(file):
-        return []
-    try:
-        return [
-            line.strip()
-            for line in file.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        ]
-    except OSError:
-        return []
+    """Merge legacy text exclusions with this worktree's private GitManager settings."""
+    patterns: list[str] = []
+    legacy_file = repo / ".gitmanager-cleanignore"
+    if legacy_file.is_file() and not _is_linklike(legacy_file):
+        try:
+            patterns.extend(
+                line.strip()
+                for line in legacy_file.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            )
+        except OSError:
+            pass
+
+    settings_ref = _git(repo, "rev-parse", "--git-path", "info/gitmanager-settings.json")
+    if settings_ref.returncode == 0 and settings_ref.stdout.strip():
+        settings_file = Path(settings_ref.stdout.strip())
+        if not settings_file.is_absolute():
+            settings_file = repo / settings_file
+        if settings_file.is_file() and not _is_linklike(settings_file):
+            try:
+                if settings_file.stat().st_size <= 64 * 1024:
+                    import json
+                    value = json.loads(settings_file.read_text(encoding="utf-8"))
+                    stored = value.get("cleanerExcludePatterns", []) if isinstance(value, dict) else []
+                    if isinstance(stored, list):
+                        for pattern in stored[:256]:
+                            if not isinstance(pattern, str):
+                                continue
+                            candidate = pattern.strip().replace("\\\\", "/")
+                            if not candidate or candidate.startswith("/") or ".." in candidate.split("/"):
+                                continue
+                            patterns.append(candidate)
+            except (OSError, ValueError, TypeError):
+                pass
+
+    # Preserve order while avoiding repeated patterns from both compatibility sources.
+    return list(dict.fromkeys(patterns))[:256]
 
 
 def _matches_exclusion(relative: str, patterns: Iterable[str]) -> bool:
