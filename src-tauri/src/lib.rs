@@ -1,4 +1,5 @@
 mod process_utils;
+pub mod archive;
 pub mod git_info;
 pub mod remote_providers;
 pub mod scanner;
@@ -318,6 +319,37 @@ fn save_app_preferences(
         let _ = fs::remove_file(&backup);
     }
     Ok(preferences)
+}
+
+#[tauri::command]
+async fn capture_repository_archive(
+    repo_path: String,
+    kind: String,
+) -> Result<archive::ArchiveSnapshot, String> {
+    tokio::task::spawn_blocking(move || archive::capture_repository(&repo_path, None, &kind))
+        .await.map_err(|error| format!("Archive capture task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_repository_archives(
+    repo_path: String,
+    kind: Option<String>,
+) -> Result<Vec<archive::ArchiveSnapshot>, String> {
+    tokio::task::spawn_blocking(move || archive::list_repository_archives(&repo_path, None, kind.as_deref()))
+        .await.map_err(|error| format!("Archive listing task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn restore_repository_archive(
+    repo_path: String,
+    snapshot_id: String,
+    kind: String,
+    confirm_replace: bool,
+) -> Result<archive::ArchiveRestoreResult, String> {
+    tokio::task::spawn_blocking(move || archive::restore_repository_archive(
+        &repo_path, None, &kind, &snapshot_id, confirm_replace
+    ))
+    .await.map_err(|error| format!("Archive restore task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -916,6 +948,9 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             get_default_scan_directories,
+            capture_repository_archive,
+            list_repository_archives,
+            restore_repository_archive,
             get_application_directories,
             load_app_preferences,
             save_app_preferences,

@@ -61,8 +61,8 @@ pub use format::{
     BlobKind, BlobManifest, ByteRangeChange, ChunkRef, FolderEntry, BLOB_FORMAT_VERSION,
 };
 pub use local_sync::{
-    load_local_sync_settings, LocalDirectoryRestoreResult, LocalDirectoryStatus,
-    LocalDirectorySyncResult, LocalSyncSettings,
+    is_default_secret_path, load_local_sync_settings, LocalDirectoryRestoreResult,
+    LocalDirectoryStatus, LocalDirectorySyncResult, LocalSyncSettings,
 };
 pub use protocol::{Frame, FrameKind, CN_PROTOCOL, MAX_FRAME_BYTES};
 #[cfg(feature = "client")]

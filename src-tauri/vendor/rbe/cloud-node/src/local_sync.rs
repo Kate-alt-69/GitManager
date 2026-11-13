@@ -141,6 +141,31 @@ impl CloudNodeStore {
         })
     }
 
+    /// Remove one active logical file from the Cloud Node snapshot tree.
+    /// Used by archive retention only after a replacement snapshot is published.
+    pub fn remove_logical_path(&self, logical_path: &str) -> anyhow::Result<bool> {
+        if logical_path.is_empty()
+            || logical_path.starts_with('/')
+            || logical_path.contains('\\')
+            || logical_path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            anyhow::bail!("Cloud Node logical path is not canonical");
+        }
+        let plan = self.sync_plan()?;
+        for object in plan.ordered() {
+            if object.logical_path != logical_path {
+                continue;
+            }
+            remove_active_object(self, object)?;
+            let backup = self.summary().backup.join(hex::encode(object.object_key));
+            if backup.exists() {
+                durable::remove_dir_all(&backup)?;
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub fn sync_local_directory(
         &self,
         directory: &Path,
