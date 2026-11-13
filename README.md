@@ -194,5 +194,9 @@ Secret-bearing `.env`/credential/private-key paths are excluded by default. Remo
 The standalone Rust `gitm` CLI provides repository status, commit history,
 branches, remotes, backup, cloud synchronization, and restore, plus an
 arrow/WASD keyboard TUI without requiring Node.js or the desktop WebView.
+Cloud Node providers can also be configured and synchronized from
+**Scan Setup → Repository archives**; provider secrets stay in OS environment
+variables, while Google Drive/OneDrive desktop-sync folders work as local archive
+destinations.
 
 See [docs/archive-storage.md](docs/archive-storage.md).

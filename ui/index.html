@@ -164,6 +164,33 @@
                 </div>
               </div>
               <p class="setup-hint">Environment secrets such as .env files, private keys, and credential folders are excluded by default. Cloud provider credentials are never stored in these archives.</p>
+              <div class="setup-cloud-provider">
+                <div class="setup-roots-heading">
+                  <div>
+                    <strong>Cloud object storage</strong>
+                    <span>Optional Cloud Node provider sync, independent of a Drive-synced folder.</span>
+                  </div>
+                </div>
+                <label for="setup-cloud-provider-json">Provider configuration (JSON)</label>
+                <textarea id="setup-cloud-provider-json" class="setup-cloud-provider-json" rows="7" spellcheck="false" placeholder='{
+  "kind": "http",
+  "namespace": "gitmanager",
+  "bucket": "repository-archives",
+  "endpoint": "https://storage.example.com",
+  "auth": {
+    "mode": "bearer",
+    "bearerTokenEnv": "GITMANAGER_ARCHIVE_TOKEN"
+  }
+}'></textarea>
+                <small>Paste one Cloud Node provider object. Use environment-variable names such as <code>bearerTokenEnv</code>, never paste a token or password. Supported providers include S3, Supabase, Azure Blob, Google Cloud Storage and generic HTTPS.</small>
+                <div class="setup-cloud-actions">
+                  <button id="btn-configure-archive-cloud" class="btn btn-secondary" type="button">Configure provider</button>
+                  <button id="btn-check-archive-cloud" class="btn btn-secondary" type="button">Check status</button>
+                  <button id="btn-sync-archive-cloud" class="btn btn-secondary" type="button">Sync now</button>
+                  <button id="btn-disable-archive-cloud" class="btn btn-secondary" type="button">Disable</button>
+                </div>
+                <div id="setup-cloud-status" class="setup-cloud-status" role="status">Cloud object storage is optional. Configure a provider to enable remote synchronization.</div>
+              </div>
             </section>
             <div id="setup-modal-error" class="modal-error hidden"></div>
           </div>

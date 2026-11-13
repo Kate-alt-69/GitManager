@@ -2057,6 +2057,10 @@ function wireEventListeners() {
   const setupModal = document.getElementById("setup-modal-backdrop");
   const setupBrowse = document.getElementById("btn-setup-browse-root");
   const archiveBrowse = document.getElementById("btn-setup-browse-archive-root");
+  const cloudConfigure = document.getElementById("btn-configure-archive-cloud");
+  const cloudCheck = document.getElementById("btn-check-archive-cloud");
+  const cloudSync = document.getElementById("btn-sync-archive-cloud");
+  const cloudDisable = document.getElementById("btn-disable-archive-cloud");
   const setupAdd = document.getElementById("btn-setup-add-root");
   const setupSmart = document.getElementById("btn-setup-smart-roots");
   const setupManual = document.getElementById("setup-manual-root");
@@ -2090,6 +2094,10 @@ function wireEventListeners() {
   });
   if (setupBrowse) setupBrowse.addEventListener("click", () => void browseForScanRoot());
   if (archiveBrowse) archiveBrowse.addEventListener("click", () => void browseForArchiveRoot());
+  if (cloudConfigure) cloudConfigure.addEventListener("click", () => void configureArchiveCloudProvider());
+  if (cloudCheck) cloudCheck.addEventListener("click", () => void refreshArchiveCloudStatus());
+  if (cloudSync) cloudSync.addEventListener("click", () => void syncArchiveCloudProvider());
+  if (cloudDisable) cloudDisable.addEventListener("click", () => void disableArchiveCloudProvider());
   if (setupAdd && setupManual) setupAdd.addEventListener("click", () => addScanRoot(setupManual.value));
   if (setupManual) setupManual.addEventListener("keydown", (event) => {
     if (event.key === "Enter") addScanRoot(setupManual.value);
@@ -2305,6 +2313,7 @@ function openScanSetup(isFirstRun) {
   if (archiveQuiet) archiveQuiet.value = String(appPreferences.archiveQuietMs || 1500);
   renderScanRootList();
   modal.classList.remove("hidden");
+  void refreshArchiveCloudStatus();
 }
 
 function addScanRoot(value) {
@@ -2356,6 +2365,134 @@ async function loadRecommendedScanRoots() {
     }
   } catch (error) {
     console.warn("Could not load recommended scan folders:", error);
+  }
+}
+
+function currentArchiveRootForCloud() {
+  const input = document.getElementById("setup-archive-root");
+  return String(input && input.value || (appPreferences && appPreferences.archiveRoot) || "").trim();
+}
+
+function setArchiveCloudStatus(message, isError = false) {
+  const status = document.getElementById("setup-cloud-status");
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle("is-error", Boolean(isError));
+}
+
+function setArchiveCloudBusy(busy) {
+  for (const id of [
+    "btn-configure-archive-cloud",
+    "btn-check-archive-cloud",
+    "btn-sync-archive-cloud",
+    "btn-disable-archive-cloud"
+  ]) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = busy;
+  }
+}
+
+function formatArchiveCloudInfo(info) {
+  if (!info || !info.configured) {
+    return "Cloud object storage is not configured. " +
+      String((info && info.note) || "Local archives remain available.");
+  }
+  const variables = Array.isArray(info.authEnvironmentVariables)
+    ? info.authEnvironmentVariables.join(", ")
+    : "";
+  return "Configured: " + String(info.provider || "provider") +
+    " · " + String(info.target || info.bucket || "remote target") +
+    "\nCredential environment variables: " + (variables || "none") +
+    "\n" + String(info.note || "");
+}
+
+async function refreshArchiveCloudStatus() {
+  setArchiveCloudBusy(true);
+  setArchiveCloudStatus("Checking Cloud Node provider configuration…");
+  try {
+    const info = await tauriInvoke("get_archive_cloud_storage_info", {
+      archiveRoot: currentArchiveRootForCloud()
+    });
+    setArchiveCloudStatus(formatArchiveCloudInfo(info));
+  } catch (error) {
+    setArchiveCloudStatus("Could not read cloud configuration: " +
+      String((error && error.message) || error), true);
+  } finally {
+    setArchiveCloudBusy(false);
+  }
+}
+
+async function configureArchiveCloudProvider() {
+  const editor = document.getElementById("setup-cloud-provider-json");
+  const raw = String(editor && editor.value || "").trim();
+  if (!raw) {
+    setArchiveCloudStatus("Paste a provider JSON object before configuring cloud storage.", true);
+    if (editor) editor.focus();
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    setArchiveCloudStatus("Provider JSON is invalid: " + error.message, true);
+    return;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    setArchiveCloudStatus("Provider configuration must be one JSON object.", true);
+    return;
+  }
+
+  setArchiveCloudBusy(true);
+  setArchiveCloudStatus("Validating and saving Cloud Node provider settings…");
+  try {
+    const info = await tauriInvoke("configure_archive_cloud_storage", {
+      archiveRoot: currentArchiveRootForCloud(),
+      providerJson: raw
+    });
+    setArchiveCloudStatus("Provider configuration saved. " + formatArchiveCloudInfo(info));
+  } catch (error) {
+    setArchiveCloudStatus("Could not configure cloud storage: " +
+      String((error && error.message) || error), true);
+  } finally {
+    setArchiveCloudBusy(false);
+  }
+}
+
+async function syncArchiveCloudProvider() {
+  setArchiveCloudBusy(true);
+  setArchiveCloudStatus("Synchronizing content-addressed archive objects with the configured provider…");
+  try {
+    const result = await tauriInvoke("sync_archive_cloud_storage", {
+      archiveRoot: currentArchiveRootForCloud()
+    });
+    setArchiveCloudStatus("Cloud archive synchronization: " + String(result) +
+      ". Local restore points remain available if the provider is offline.");
+  } catch (error) {
+    setArchiveCloudStatus("Cloud synchronization failed. Local archives are unchanged: " +
+      String((error && error.message) || error), true);
+  } finally {
+    setArchiveCloudBusy(false);
+  }
+}
+
+async function disableArchiveCloudProvider() {
+  const accepted = window.confirm(
+    "Disable Cloud Node synchronization for this archive folder? Existing local and remote provider objects will not be deleted."
+  );
+  if (!accepted) return;
+  setArchiveCloudBusy(true);
+  setArchiveCloudStatus("Disabling cloud synchronization…");
+  try {
+    const info = await tauriInvoke("disable_archive_cloud_storage", {
+      archiveRoot: currentArchiveRootForCloud()
+    });
+    setArchiveCloudStatus("Cloud synchronization disabled. Existing provider objects were not deleted. " +
+      formatArchiveCloudInfo(info));
+  } catch (error) {
+    setArchiveCloudStatus("Could not disable cloud synchronization: " +
+      String((error && error.message) || error), true);
+  } finally {
+    setArchiveCloudBusy(false);
   }
 }
 

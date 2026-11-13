@@ -1981,3 +1981,59 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   .repo-archive-item { align-items: flex-start; flex-direction: column; }
   .setup-archive-path-row .setup-add-root { grid-template-columns: 1fr; }
 }
+
+
+/* Cloud Node provider configuration in first-run archive setup */
+.setup-cloud-provider {
+  display: grid;
+  gap: 9px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border, #30363d);
+}
+.setup-cloud-provider > label {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text, #e6edf3);
+}
+.setup-cloud-provider-json {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  padding: 11px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 9px;
+  background: var(--input-bg, rgba(0, 0, 0, 0.16));
+  color: var(--text, #e6edf3);
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  tab-size: 2;
+}
+.setup-cloud-provider-json:focus {
+  outline: none;
+  border-color: var(--accent, #388bfd);
+  box-shadow: 0 0 0 2px rgba(56, 139, 253, 0.16);
+}
+.setup-cloud-provider > small {
+  color: var(--muted, #8b949e);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.setup-cloud-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.setup-cloud-status {
+  padding: 9px 11px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  color: var(--muted, #8b949e);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.setup-cloud-status.is-error {
+  border-color: rgba(218, 54, 51, 0.48);
+  color: var(--danger, #f85149);
+}

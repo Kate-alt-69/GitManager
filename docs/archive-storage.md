@@ -56,6 +56,22 @@ not Google Drive: a Google Drive Desktop-synced folder can be used as a local
 filesystem destination, while direct Google Drive API support needs a separate
 provider adapter.
 
+The desktop **Scan Setup → Repository archives → Cloud object storage** section
+accepts one provider JSON object. Use **Configure provider** to validate and save
+it, **Check status** to inspect the target and required credential environment
+variable names, **Sync now** to perform an explicit synchronization/retry, and
+**Disable** to stop future synchronization. Disabling removes only the local
+provider configuration; it does not delete objects already stored by the
+provider. Repository captures attempt cloud synchronization automatically
+after their local restore point has been committed. If the provider is offline,
+the local archive remains saved and can be synchronized later.
+
+Provider credentials must be set in the current user's operating-system
+environment. The JSON stores environment-variable names only; never paste raw
+tokens, passwords, private keys or service-account JSON into provider
+configuration. The desktop status panel reports the names GitManager expects
+for the selected provider/authentication mode.
+
 The upstream `backupVersions: 5` setting is per-object history, not five
 consistent repository-wide restore points. GitManager maintains a separate
 per-repository/per-kind manifest index and retains the five newest complete

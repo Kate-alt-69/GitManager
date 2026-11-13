@@ -908,11 +908,17 @@ fn validate_remote_archive_history(
             continue;
         }
         tree.walk(TreeWalkMode::PreOrder, |root, entry| {
+            if unsafe_path.is_some() {
+                return TreeWalkResult::Skip;
+            }
             let relative = format!("{root}{}", entry.name().unwrap_or(""))
                 .replace('\\', "/");
             if is_default_secret_path(Path::new(&relative)) {
                 unsafe_path = Some(relative);
-                TreeWalkResult::Abort
+                // libgit2 reports TreeWalkResult::Abort as a traversal error.
+                // Skip this entry's subtree instead, then stop after walk()
+                // returns normally so the concrete offending path is retained.
+                TreeWalkResult::Skip
             } else {
                 TreeWalkResult::Ok
             }
