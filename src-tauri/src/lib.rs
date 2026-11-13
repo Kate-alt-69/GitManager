@@ -450,7 +450,7 @@ async fn pull_repository_update(
 }
 
 #[tauri::command]
-fn control_background_service(
+async fn control_background_service(
     enable_in_app: Option<bool>,
     install_os_service: Option<bool>,
     state: State<'_, AppState>,
@@ -460,7 +460,9 @@ fn control_background_service(
     }
 
     if install_os_service == Some(true) {
-        let _ = register_os_background_service()?;
+        tokio::task::spawn_blocking(register_os_background_service)
+            .await
+            .map_err(|error| format!("Background service registration task failed: {error}"))??;
         state
             .watcher
             .os_service_registered
