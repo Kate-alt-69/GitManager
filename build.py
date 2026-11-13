@@ -116,9 +116,15 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
                     except ValueError:
                         log_err(f"Python runtime archive contains an unsafe path: {member.filename}")
                         return 1
-                if runtime_dir.exists():
-                    shutil.rmtree(runtime_dir)
                 runtime_dir.mkdir(parents=True, exist_ok=True)
+                # Keep the tracked directory marker so later repository status remains clean.
+                for existing in runtime_dir.iterdir():
+                    if existing.name == ".keep":
+                        continue
+                    if existing.is_dir() and not existing.is_symlink():
+                        shutil.rmtree(existing)
+                    else:
+                        existing.unlink()
                 archive.extractall(runtime_dir)
         except (OSError, zipfile.BadZipFile) as exc:
             log_err(f"Could not extract the verified Python runtime: {exc}")

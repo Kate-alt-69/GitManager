@@ -12,4 +12,5 @@ src-tauri/gen/
 Thumbs.db
 
 # Prepared Windows embedded runtime (downloaded and checksum-verified by build.py)
-tools/runtime/python/
+tools/runtime/python/*
+!tools/runtime/python/.keep
