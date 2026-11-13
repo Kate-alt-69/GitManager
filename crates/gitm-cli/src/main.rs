@@ -15,7 +15,7 @@ use git2::{BranchType, Repository, Sort, StatusOptions};
 use gitmanager_archive::{
     archive_cloud_storage_info, capture_repository, configure_archive_cloud_storage,
     default_archive_root, disable_archive_cloud_storage, list_repository_archives,
-    restore_repository_archive, sync_archive_cloud_storage, ArchiveKind, ArchiveSnapshot,
+    restore_repository_archive, sync_archive_cloud_storage, ArchiveSnapshot,
 };
 
 const MENU: [&str; 6] = [
@@ -369,13 +369,14 @@ fn command_cloud(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn print_cloud_status(root: &Path) -> Result<(), String> {
+fn cloud_status_summary(root: &Path) -> Result<String, String> {
     let info = archive_cloud_storage_info(root)?;
-    print_cloud_info(&info);
-    if info.configured {
-        println!("Sync: {}", sync_archive_cloud_storage(Some(&root.to_string_lossy()))?);
+    if !info.configured {
+        return Ok(format!("Cloud storage not configured · {}", info.note));
     }
-    Ok(())
+    let provider = info.provider.as_deref().unwrap_or("unknown");
+    let sync = sync_archive_cloud_storage(Some(&root.to_string_lossy()))?;
+    Ok(format!("{provider} cloud storage · {sync}"))
 }
 
 fn print_cloud_info(info: &gitmanager_archive::ArchiveCloudStorageInfo) {
@@ -480,8 +481,8 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
     let mut status = "Ready · choose an archive action".to_string();
     let mut pending_restore: Option<ArchiveSnapshot> = None;
 
+    draw(&mut terminal, &repository, screen, selected, &snapshots, &status, pending_restore.as_ref())?;
     loop {
-        draw(&mut terminal, &repository, screen, selected, &snapshots, &status, pending_restore.as_ref())?;
         if !event::poll(Duration::from_millis(250)).map_err(|error| error.to_string())? {
             continue;
         }
@@ -513,9 +514,16 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                         Screen::ConfirmRestore => {}
                     }
                 }
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                    draw(&mut terminal, &repository, screen, selected, &snapshots, &status, pending_restore.as_ref())?;
+                }
                 continue;
             }
             Event::Key(key) => key,
+            Event::Resize(_, _) => {
+                draw(&mut terminal, &repository, screen, selected, &snapshots, &status, pending_restore.as_ref())?;
+                continue;
+            }
             _ => continue,
         };
         if key.kind != KeyEventKind::Press {
@@ -562,10 +570,10 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                     3 => status = format!("Archive store: {}", default_archive_root()?.display()),
                     4 => {
                         let root = default_archive_root()?;
-                        match print_cloud_status(&root) {
-                            Ok(()) => status = "Cloud storage status checked.".to_string(),
-                            Err(error) => status = format!("Cloud sync: {error}"),
-                        }
+                        status = match cloud_status_summary(&root) {
+                            Ok(summary) => summary,
+                            Err(error) => format!("Cloud sync failed: {error}"),
+                        };
                     }
                     _ => break,
                 },
@@ -620,6 +628,7 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                 _ => {}
             },
         }
+        draw(&mut terminal, &repository, screen, selected, &snapshots, &status, pending_restore.as_ref())?;
     }
     Ok(())
 }
@@ -871,7 +880,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn remote_display_redacts_embedded_credentials_and_query_tokens() {
         assert_eq!(
             super::safe_remote_display("https://alice:secret@example.com/org/repo.git?token=hidden#frag"),
@@ -899,6 +907,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn positional_arguments_skip_option_values() {
         let args = vec![
             "--kind".to_string(), "remote".to_string(),

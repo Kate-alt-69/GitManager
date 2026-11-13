@@ -185,6 +185,7 @@ async fn sync_parent_async(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root(label: &str) -> PathBuf {
