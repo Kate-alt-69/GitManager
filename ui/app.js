@@ -497,7 +497,7 @@ function renderRepositoryCiPanel(repo) {
   const panel = document.getElementById("repo-ci-detail-panel");
   if (!panel) return;
   panel.innerHTML =
-    '<div class="repo-ci-panel-heading"><div><span class="dashboard-eyebrow">CONTINUOUS INTEGRATION</span><h3>Checks for latest HEAD commit</h3></div>' +
+    '<div class="repo-ci-panel-heading"><div><span class="dashboard-eyebrow">CONTINUOUS INTEGRATION</span><h3>Checks for ' + escapeHtml(repo.current_branch || "HEAD") + '</h3></div>' +
     '<button type="button" id="btn-refresh-repo-ci" class="btn btn-secondary">Refresh checks</button></div>' +
     '<div class="repo-ci-summary"><span class="ci-state-dot ci-neutral"></span><strong>Loading CI status…</strong></div>' +
     '<div class="repo-ci-check-list"><div class="ci-empty-state">Fetching individual check runs and jobs…</div></div>';
@@ -540,11 +540,10 @@ function updateRepositoryCiPanel(repo, details) {
 
 function renderGitTreeGraph(container, commits, selectedOid, onSelectCommit, branches) {
   if (!commits || commits.length === 0) {
-    container.innerHTML = `
-      <div class="empty-tree-state">
-        <p>No commits found in this repository yet (empty or unborn HEAD).</p>
-      </div>
-    `;
+    const message = selectedBranchName
+      ? "No loaded commit history is available for " + selectedBranchName + ". Its tip may be outside the initial history window."
+      : "No commits found in this repository yet (empty or unborn HEAD).";
+    container.innerHTML = '<div class="empty-tree-state"><p>' + escapeHtml(message) + '</p></div>';
     return;
   }
 
