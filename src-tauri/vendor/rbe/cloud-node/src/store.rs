@@ -1,10 +1,9 @@
-// GitManager vendor modification (2026-11-13):
-// Direct logical-file lookup, verification, restore and removal helpers were
-// added for repository archive manifests/blobs. The upstream RBE source is
-// retained otherwise; see ../NOTICE.md for provenance and license status.
+// GitManager Windows compatibility patch (2026-11-13):
+// Open copied files with write access before FlushFileBuffers/sync_all.
+// See ../NOTICE.md for upstream provenance and vendor patch details.
 
 use std::collections::VecDeque;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -185,7 +184,7 @@ impl CloudNodeStore {
             durable::remove_file(&temporary)?;
         }
         fs::copy(&source, &temporary)?;
-        File::open(&temporary)?.sync_all()?;
+        OpenOptions::new().write(true).open(&temporary)?.sync_all()?;
         if !file_matches(&temporary, manifest.content_sha256, manifest.logical_size)? {
             let _ = durable::remove_file(&temporary);
             anyhow::bail!("Cloud Node restored payload failed verification");
@@ -952,7 +951,7 @@ fn copy_exact(source: &Path, target: &Path) -> anyhow::Result<()> {
         durable::remove_file(&part)?;
     }
     fs::copy(source, &part)?;
-    File::open(&part)?.sync_all()?;
+    OpenOptions::new().write(true).open(&part)?.sync_all()?;
     commit_part(&part, target)
 }
 

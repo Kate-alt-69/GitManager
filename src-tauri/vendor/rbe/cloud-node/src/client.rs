@@ -369,7 +369,7 @@ async fn materialize_cached_resource(
         durable::remove_file_async(&part).await?;
     }
     tokio::fs::copy(source, &part).await?;
-    tokio::fs::File::open(&part).await?.sync_all().await?;
+    tokio::fs::OpenOptions::new().write(true).open(&part).await?.sync_all().await?;
     if !cached_file_matches(&part, expected_sha256, source_size).await? {
         let _ = durable::remove_file_async(&part).await;
         anyhow::bail!(
@@ -417,7 +417,7 @@ async fn write_cache_ready_marker(cache_root: &Path, header: SyncPlanHeader) -> 
         durable::remove_file_async(&part).await?;
     }
     tokio::fs::write(&part, header.encode()).await?;
-    tokio::fs::File::open(&part).await?.sync_all().await?;
+    tokio::fs::OpenOptions::new().write(true).open(&part).await?.sync_all().await?
     if target.exists() {
         durable::remove_file_async(&target).await?;
     }

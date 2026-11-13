@@ -206,7 +206,7 @@ mod tests {
         let part = nested.join("value.part");
         let target = nested.join("value");
         fs::write(&part, b"durable").unwrap();
-        File::open(&part).unwrap().sync_all().unwrap();
+        OpenOptions::new().write(true).open(&part).unwrap().sync_all().unwrap();
         sync_parent(&part).unwrap();
         rename(&part, &target).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"durable");

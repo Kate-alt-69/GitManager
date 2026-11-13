@@ -684,7 +684,7 @@ fn copy_file_via_part(source: &Path, target: &Path) -> anyhow::Result<()> {
         durable::remove_file(&part)?;
     }
     fs::copy(source, &part)?;
-    File::open(&part)?.sync_all()?;
+    OpenOptions::new().write(true).open(&part)?.sync_all()?;
     if target.exists() {
         durable::remove_file(target)?;
     }
@@ -1248,7 +1248,7 @@ mod tests {
         let part = transfer_part_path(&target).unwrap();
         fs::create_dir_all(part.parent().unwrap()).unwrap();
         fs::write(&part, &payload).unwrap();
-        File::open(&part).unwrap().sync_all().unwrap();
+        OpenOptions::new().write(true).open(&part).unwrap().sync_all().unwrap();
         drop(receiver);
 
         let mut receiver =

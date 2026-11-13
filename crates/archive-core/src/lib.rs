@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -249,7 +249,9 @@ pub fn capture_repository(
             let staged_file = staging.join(format!("file-{index}.blob"));
             fs::copy(&item.source, &staged_file)
                 .map_err(|error| format!("Could not stage {}: {error}", item.relative_path))?;
-            File::open(&staged_file)
+            OpenOptions::new()
+                .write(true)
+                .open(&staged_file)
                 .and_then(|file| file.sync_all())
                 .map_err(|error| format!("Could not flush staged file {}: {error}", item.relative_path))?;
             let staged_hash = sha256_file(&staged_file)
