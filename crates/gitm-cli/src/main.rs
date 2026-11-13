@@ -284,6 +284,16 @@ fn command_branches(args: &[String]) -> Result<(), String> {
 }
 
 fn safe_remote_display(value: &str) -> String {
+    // SCP-style SSH remotes can parse as opaque URI schemes (for example
+    // "alice:password@host:path"). Normalize them before generic URL parsing.
+    if !value.contains("://") {
+        if let Some((user, destination)) = value.split_once('@') {
+            if destination.contains(':') && !destination.starts_with('/') {
+                let safe_user = if user.is_empty() || user.contains(':') { "git" } else { user };
+                return format!("{safe_user}@{destination}");
+            }
+        }
+    }
     if let Ok(mut url) = url::Url::parse(value) {
         if url.scheme() != "ssh" {
             let _ = url.set_username("");
@@ -867,7 +877,7 @@ mod tests {
     #[test]
     fn terminal_clip_uses_display_width_for_wide_unicode() {
         assert_eq!(super::clip("界A", 3), "界A");
-        assert_eq!(super::clip("界ABC", 5), "界...");
+        assert_eq!(super::clip("界ABCD", 5), "界...");
         assert_eq!(super::pad_to_width("界A", 4), "界A ");
     }
 
