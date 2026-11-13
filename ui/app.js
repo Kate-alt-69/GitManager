@@ -191,7 +191,13 @@ let indexGroupingMode = "folder";
 let searchQuery = "";
 let appPreferences = null;
 let dependencyRepoIds = new Set();
-let repositoryKindFilter = "projects";
+let repositoryKindFilter = "all";
+let activePage = "repositories";
+let applicationDirectories = null;
+let selectedBranchName = null;
+let branchFilterMode = "all";
+let branchSearchQuery = "";
+let branchStateRepoId = null;
 const ciStatusCache = new Map();
 
 async function tauriInvoke(cmd, args) {
@@ -370,13 +376,174 @@ function pushRepoUpdateAlert(upd) {
   renderUpdateNotificationsTray();
 }
 
-function renderGitTreeGraph(container, commits, selectedOid, onSelectCommit) {
+function branchesForRepository(repo) {
+  return (repo.branches || []).slice().sort((a, b) => {
+    if (a.is_head !== b.is_head) return a.is_head ? -1 : 1;
+    if (a.is_remote !== b.is_remote) return a.is_remote ? 1 : -1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function renderBranchNavigation(repo) {
+  const container = document.getElementById("git-branch-toolbar");
+  if (!container) return;
+  if (branchStateRepoId !== repo.id) {
+    branchStateRepoId = repo.id;
+    selectedBranchName = null;
+    branchFilterMode = "all";
+    branchSearchQuery = "";
+  }
+
+  const allBranches = branchesForRepository(repo);
+  const localCount = allBranches.filter((branch) => !branch.is_remote).length;
+  const remoteCount = allBranches.filter((branch) => branch.is_remote).length;
+  const query = branchSearchQuery.trim().toLowerCase();
+  const visibleBranches = allBranches.filter((branch) => {
+    if (branchFilterMode === "local" && branch.is_remote) return false;
+    if (branchFilterMode === "remote" && !branch.is_remote) return false;
+    return !query || branch.name.toLowerCase().includes(query) || String(branch.upstream || "").toLowerCase().includes(query);
+  });
+
+  if (!allBranches.length) {
+    container.innerHTML = '<div class="branch-toolbar-empty">No branch references are available for this repository.</div>';
+    return;
+  }
+
+  const filters = [
+    ["all", "All", allBranches.length],
+    ["local", "Local", localCount],
+    ["remote", "Remote", remoteCount]
+  ].map(([mode, label, count]) =>
+    '<button type="button" class="branch-filter-button ' + (branchFilterMode === mode ? 'active' : '') +
+    '" data-branch-filter="' + mode + '" aria-pressed="' + (branchFilterMode === mode ? 'true' : 'false') + '">' +
+    label + '<span>' + count + '</span></button>'
+  ).join("");
+
+  const pills = visibleBranches.map((branch) => {
+    const active = selectedBranchName === branch.name;
+    const kind = branch.is_remote ? "Remote" : "Local";
+    const tracking = branch.upstream ? "Tracks " + branch.upstream : kind + " branch";
+    return '<button type="button" class="branch-pill ' + (active ? 'active' : '') + (branch.is_head ? ' is-head' : '') +
+      '" data-branch-name="' + escapeHtml(branch.name) + '" title="' + escapeHtml(tracking) + '" aria-pressed="' + (active ? 'true' : 'false') + '">' +
+      '<span class="branch-pill-kind">' + kind + '</span><strong>' + escapeHtml(branch.name) + '</strong>' +
+      (branch.is_head ? '<span class="branch-head-label">HEAD</span>' : '') +
+      (branch.upstream ? '<small>' + escapeHtml(branch.upstream) + '</small>' : '') + '</button>';
+  }).join("");
+
+  container.innerHTML =
+    '<div class="branch-toolbar-top"><div><strong>Branches</strong><span>' + allBranches.length + ' refs · Select a branch to focus its history</span></div>' +
+    '<label class="branch-search"><span class="sr-only">Search branches</span><input id="branch-search-input" type="search" value="' +
+      escapeHtml(branchSearchQuery) + '" placeholder="Find branch…" /></label></div>' +
+    '<div class="branch-filter-row">' + filters +
+      '<button type="button" class="branch-filter-button branch-reset-button ' + (!selectedBranchName ? 'active' : '') +
+      '" data-branch-reset aria-pressed="' + (!selectedBranchName ? 'true' : 'false') + '">All history</button></div>' +
+    '<div class="branch-pill-list">' + (pills || '<span class="branch-toolbar-empty">No branches match this filter.</span>') + '</div>';
+
+  const search = document.getElementById("branch-search-input");
+  if (search) search.addEventListener("input", () => {
+    branchSearchQuery = search.value;
+    renderBranchNavigation(repo);
+    const replacement = document.getElementById("branch-search-input");
+    if (replacement) {
+      replacement.focus();
+      replacement.setSelectionRange(replacement.value.length, replacement.value.length);
+    }
+  });
+
+  container.querySelectorAll("[data-branch-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      branchFilterMode = button.getAttribute("data-branch-filter") || "all";
+      if (selectedBranchName) {
+        const selected = allBranches.find((branch) => branch.name === selectedBranchName);
+        if (selected && ((branchFilterMode === "local" && selected.is_remote) || (branchFilterMode === "remote" && !selected.is_remote))) {
+          selectedBranchName = null;
+        }
+      }
+      renderSelectedRepositoryDetails();
+    });
+  });
+  container.querySelectorAll("[data-branch-name]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const name = button.getAttribute("data-branch-name");
+      selectedBranchName = selectedBranchName === name ? null : name;
+      renderSelectedRepositoryDetails();
+    });
+  });
+  const reset = container.querySelector("[data-branch-reset]");
+  if (reset) reset.addEventListener("click", () => {
+    selectedBranchName = null;
+    renderSelectedRepositoryDetails();
+  });
+}
+
+function commitsForSelectedBranch(repo) {
+  if (!selectedBranchName) return repo.commits || [];
+  const branch = (repo.branches || []).find((item) => item.name === selectedBranchName);
+  if (!branch || !branch.target_oid) return [];
+  const byOid = new Map((repo.commits || []).map((commit) => [commit.oid, commit]));
+  const visited = new Set();
+  const pending = [branch.target_oid];
+  while (pending.length) {
+    const oid = pending.pop();
+    if (!oid || visited.has(oid)) continue;
+    visited.add(oid);
+    const commit = byOid.get(oid);
+    if (commit) (commit.parents || []).forEach((parent) => pending.push(parent));
+  }
+  return (repo.commits || []).filter((commit) => visited.has(commit.oid));
+}
+
+function renderRepositoryCiPanel(repo) {
+  const panel = document.getElementById("repo-ci-detail-panel");
+  if (!panel) return;
+  panel.innerHTML =
+    '<div class="repo-ci-panel-heading"><div><span class="dashboard-eyebrow">CONTINUOUS INTEGRATION</span><h3>Checks for ' + escapeHtml(repo.current_branch || "HEAD") + '</h3></div>' +
+    '<button type="button" id="btn-refresh-repo-ci" class="btn btn-secondary">Refresh checks</button></div>' +
+    '<div class="repo-ci-summary"><span class="ci-state-dot ci-neutral"></span><strong>Loading CI status…</strong></div>' +
+    '<div class="repo-ci-check-list"><div class="ci-empty-state">Fetching individual check runs and jobs…</div></div>';
+  const refresh = document.getElementById("btn-refresh-repo-ci");
+  if (refresh) refresh.addEventListener("click", () => {
+    refresh.disabled = true;
+    refresh.textContent = "Refreshing…";
+    void loadRepositoryCi(repo, true).then((details) => {
+      if (selectedRepoId !== repo.id) return;
+      updateRepositoryCiPanel(repo, details);
+    }).finally(() => {
+      if (refresh.isConnected) {
+        refresh.disabled = false;
+        refresh.textContent = "Refresh checks";
+      }
+    });
+  });
+
+  void fetchRepositoryCiDetails(repo, false).then((details) => {
+    if (selectedRepoId === repo.id) updateRepositoryCiPanel(repo, details);
+  });
+}
+
+function updateRepositoryCiPanel(repo, details) {
+  const panel = document.getElementById("repo-ci-detail-panel");
+  if (!panel || selectedRepoId !== repo.id) return;
+  const summary = panel.querySelector(".repo-ci-summary");
+  const list = panel.querySelector(".repo-ci-check-list");
+  if (summary) {
+    summary.innerHTML = '<span class="ci-state-dot ci-' + details.state + '"></span><strong class="ci-' +
+      details.state + '">' + escapeHtml(details.label) + '</strong><span>' +
+      details.checks.length + ' individual check(s)</span>' +
+      (details.checkedAt ? '<time>Updated ' + escapeHtml(formatCiTimestamp(details.checkedAt)) + '</time>' : '');
+  }
+  if (list) {
+    list.innerHTML = renderCiCheckRows(details) +
+      (details.message && details.checks.length ? '<p class="ci-source-note">' + escapeHtml(details.message) + '</p>' : '');
+  }
+}
+
+function renderGitTreeGraph(container, commits, selectedOid, onSelectCommit, branches) {
   if (!commits || commits.length === 0) {
-    container.innerHTML = `
-      <div class="empty-tree-state">
-        <p>No commits found in this repository yet (empty or unborn HEAD).</p>
-      </div>
-    `;
+    const message = selectedBranchName
+      ? "No loaded commit history is available for " + selectedBranchName + ". Its tip may be outside the initial history window."
+      : "No commits found in this repository yet (empty or unborn HEAD).";
+    container.innerHTML = '<div class="empty-tree-state"><p>' + escapeHtml(message) + '</p></div>';
     return;
   }
 
@@ -384,6 +551,7 @@ function renderGitTreeGraph(container, commits, selectedOid, onSelectCommit) {
   const laneSpacing = 22;
   const leftPad = 20;
 
+  const branchTypeByName = new Map((branches || []).map((branch) => [branch.name, Boolean(branch.is_remote)]));
   const maxLane = commits.reduce((max, c) => Math.max(max, c.lane || 0), 0);
   const svgWidth = Math.max(90, leftPad * 2 + (maxLane + 1) * laneSpacing);
   const svgHeight = commits.length * rowHeight;
@@ -449,7 +617,7 @@ function renderGitTreeGraph(container, commits, selectedOid, onSelectCommit) {
 
       const branchBadges = (commit.branches || [])
         .map((b) => {
-          const isRemote = b.includes("origin/") || b.includes("remotes/");
+          const isRemote = branchTypeByName.has(b) ? branchTypeByName.get(b) : (b.includes("origin/") || b.includes("remotes/"));
           const cls = isRemote ? "ref-badge ref-remote" : "ref-badge ref-branch";
           return `<span class="${cls}" style="border-color:${laneColor}">${escapeHtml(b)}</span>`;
         })
@@ -591,34 +759,91 @@ function renderFilterBar(remoteCount, localCount, effectiveMode) {
 }
 
 function renderConnectedAccountsBar() {
-  const bar = document.getElementById("connected-accounts-bar");
-  if (!bar) return;
+  const container = document.getElementById("accounts-connected-list");
+  if (!container) return;
   if (connectedAccounts.length === 0) {
-    bar.classList.add("hidden");
-    bar.innerHTML = "";
+    container.innerHTML = '<div class="empty-list-state account-empty"><strong>No accounts connected</strong><span>Connect GitHub or GitLab to browse remote repositories here.</span></div>';
     return;
   }
-  bar.classList.remove("hidden");
-  bar.innerHTML = `
-    <div class="accounts-strip-title">CONNECTED ACCOUNTS</div>
-    <div class="accounts-strip-list">
-      ${connectedAccounts
-        .map(
-          (acc) => `
-        <div class="account-chip" title="${escapeHtml(acc.email)}">
-          <img src="${escapeHtml(acc.avatar_url)}" alt="${escapeHtml(acc.account_login)}" class="account-chip-avatar" />
-          <div class="account-chip-text">
-            <strong>${escapeHtml(acc.display_name)}</strong>
-            <span>${escapeHtml(acc.provider.toUpperCase())} • @${escapeHtml(acc.account_login)} (${acc.repositories.length})</span>
-          </div>
-        </div>
-      `
-        )
-        .join("")}
-    </div>
-  `;
+  container.innerHTML = connectedAccounts.map((account) => {
+    const avatar = account.avatar_url || fallbackRepoIconDataUri(account.provider, account.account_login);
+    return '<article class="connected-account-card"><img src="' + escapeHtml(avatar) + '" alt="" class="account-chip-avatar" />' +
+      '<div class="account-chip-text"><strong>' + escapeHtml(account.display_name || account.account_login) + '</strong><span>' +
+      escapeHtml(String(account.provider || "").toUpperCase()) + ' · @' + escapeHtml(account.account_login) + '</span></div>' +
+      '<span class="account-repo-count">' + (account.repositories || []).length + ' repos</span></article>';
+  }).join("");
 }
 
+function setActivePage(page) {
+  if (!["repositories", "accounts", "settings"].includes(page)) return;
+  activePage = page;
+  document.querySelectorAll(".app-page").forEach((section) => {
+    const active = section.id === "page-" + page;
+    section.classList.toggle("hidden", !active);
+    section.classList.toggle("active", active);
+  });
+  document.querySelectorAll("[data-page]").forEach((tab) => {
+    const active = tab.getAttribute("data-page") === page;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+}
+
+function getRepositoryById(id) {
+  return allRepositories.find((repo) => repo.id === id) ||
+    connectedAccounts.flatMap((account) => account.repositories || []).find((repo) => repo.id === id) ||
+    null;
+}
+
+function renderAccountsPage() {
+  const container = document.getElementById("accounts-repositories-list");
+  const count = document.getElementById("accounts-repository-count");
+  if (!container) return;
+  const repositories = connectedAccounts.flatMap((account) => account.repositories || []);
+  if (count) count.textContent = repositories.length + " repositories";
+  if (!repositories.length) {
+    container.innerHTML = '<div class="empty-list-state account-empty"><strong>No remote repositories to show</strong><span>Connect an account to fetch its repositories. Private repositories require a provider token.</span></div>';
+    return;
+  }
+  container.innerHTML = repositories.map((repo) => {
+    const latest = latestCommitFor(repo);
+    return '<button type="button" class="dashboard-repo-card account-repo-card" data-account-repo-id="' + escapeHtml(repo.id) + '">' +
+      '<div class="dashboard-card-top"><img class="dashboard-card-icon" src="' + escapeHtml(resolveRepoIconUrl(repo)) + '" alt="" />' +
+      '<div class="dashboard-card-heading"><strong>' + escapeHtml(repositoryFullName(repo)) + '</strong><span>' + escapeHtml(repo.name || "") + '</span></div>' +
+      '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(String(repo.primary_provider || "REMOTE").toUpperCase()) + '</span></div>' +
+      '<div class="dashboard-card-commit"><span class="dashboard-label">REMOTE REPOSITORY</span><strong>' + escapeHtml(repo.description || (latest ? latest.summary : "Repository discovered through account")) + '</strong>' +
+      '<span>' + escapeHtml(repo.web_url || "") + '</span></div><div class="dashboard-card-footer"><span class="dashboard-branch">⎇ ' +
+      escapeHtml(repo.current_branch || repo.default_branch || "Default branch unavailable") + '</span><span class="dashboard-ci ci-neutral">Remote</span></div></button>';
+  }).join("");
+  container.querySelectorAll("[data-account-repo-id]").forEach((card) => {
+    card.addEventListener("click", () => {
+      const id = card.getAttribute("data-account-repo-id");
+      if (!id) return;
+      selectedRepoId = id;
+      selectedBranchName = null;
+      branchStateRepoId = null;
+      const repo = getRepositoryById(id);
+      const selectedHead = repo ? latestCommitFor(repo) : null;
+      selectedCommitOid = selectedHead ? selectedHead.oid : null;
+      setActivePage("repositories");
+      renderSelectedRepositoryDetails();
+    });
+  });
+}
+
+function renderSettingsPage() {
+  const roots = appPreferences && Array.isArray(appPreferences.scanRoots) ? appPreferences.scanRoots : [];
+  const rootSummary = document.getElementById("settings-scan-root-summary");
+  if (rootSummary) rootSummary.textContent = roots.length ? roots.length + " scan folder(s) · " + roots.join("  •  ") : "No scan folders configured yet.";
+  [
+    ["settings-config-path", applicationDirectories && applicationDirectories.configDir],
+    ["settings-data-path", applicationDirectories && applicationDirectories.dataDir],
+    ["settings-software-root", applicationDirectories && applicationDirectories.softwareRoot]
+  ].forEach(([id, value]) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = value || "Unavailable";
+  });
+}
 function renderRepositoryList() {
   const listContainer = document.getElementById("repo-list-container");
   if (!listContainer) return;
@@ -721,7 +946,7 @@ function renderRepositoryList() {
       const id = cardEl.getAttribute("data-repo-id");
       if (id) {
         selectedRepoId = id;
-        const repo = allRepositories.find((r) => r.id === id);
+        const repo = getRepositoryById(id);
         selectedCommitOid = (repo && repo.commits[0] && repo.commits[0].oid) || null;
         renderAll();
       }
@@ -736,94 +961,284 @@ function repositoryFullName(repo) {
 }
 
 function latestCommitFor(repo) {
-  return (repo.commits || []).find((commit) => /^[a-f0-9]{7,40}$/i.test(commit.oid || "")) || null;
+  const commits = repo.commits || [];
+  return commits.find((commit) => commit.is_head && /^[a-f0-9]{7,40}$/i.test(commit.oid || "")) ||
+    commits.find((commit) => /^[a-f0-9]{7,40}$/i.test(commit.oid || "")) || null;
 }
 
-function ciStatusFromResponse(provider, data) {
-  let raw = "";
-  if (provider === "github") raw = String(data.state || "").toLowerCase();
-  else raw = String((Array.isArray(data) && data[0] && data[0].status) || "").toLowerCase();
-  const labels = {
-    success: ["Passing", "success"],
-    failure: ["Failing", "failure"],
-    failed: ["Failing", "failure"],
-    error: ["Error", "failure"],
-    pending: ["Pending", "pending"],
-    running: ["Running", "pending"],
-    created: ["Queued", "pending"],
-    waiting_for_resource: ["Queued", "pending"],
-    preparing: ["Queued", "pending"],
-    canceled: ["Canceled", "neutral"],
-    canceling: ["Stopping", "pending"],
-    skipped: ["Skipped", "neutral"],
-    manual: ["Manual", "neutral"]
+function ciStateFor(status, conclusion) {
+  const raw = String(conclusion || status || "").toLowerCase();
+  if (raw === "success") return { label: "Passed", state: "success" };
+  if (["failure", "failed", "error", "action_required", "timed_out", "startup_failure", "stale"].includes(raw)) {
+    return { label: "Failed", state: "failure" };
+  }
+  if (["pending", "running", "in_progress", "queued", "requested", "waiting", "waiting_for_resource", "preparing", "canceling", "created", "scheduled"].includes(raw)) {
+    return { label: raw === "queued" || raw === "requested" ? "Queued" : "Running", state: "pending" };
+  }
+  if (["canceled", "cancelled"].includes(raw)) return { label: "Canceled", state: "neutral" };
+  if (raw === "skipped") return { label: "Skipped", state: "neutral" };
+  if (raw === "manual") return { label: "Manual", state: "neutral" };
+  if (raw === "neutral") return { label: "Neutral", state: "neutral" };
+  return { label: raw ? "Unknown" : "No status", state: "neutral" };
+}
+
+function summarizeCiChecks(checks, message) {
+  const counts = { success: 0, failure: 0, pending: 0, neutral: 0 };
+  checks.forEach((check) => { counts[check.state] = (counts[check.state] || 0) + 1; });
+  let state = "neutral";
+  let label = "No CI checks";
+  if (counts.failure) {
+    state = "failure";
+    label = counts.failure + " failing";
+  } else if (counts.pending) {
+    state = "pending";
+    label = counts.pending + " running";
+  } else if (counts.success) {
+    state = "success";
+    label = counts.success + "/" + checks.length + " passed";
+  }
+  if (!checks.length && message) label = "CI unavailable";
+  else if (checks.length && counts.neutral === checks.length) label = checks.length + " skipped / neutral";
+  return {
+    state,
+    label,
+    checks,
+    counts,
+    message: message || "",
+    checkedAt: new Date().toISOString()
   };
-  if (!raw) return { label: "No CI run", state: "neutral" };
-  const mapped = labels[raw];
-  return mapped ? { label: mapped[0], state: mapped[1] } : { label: "Unknown", state: "neutral" };
 }
 
-async function fetchRepositoryCiStatus(repo) {
+async function fetchJsonResponse(url, headers) {
+  const response = await fetch(url, { headers: headers || { Accept: "application/json" } });
+  let body = null;
+  try { body = await response.json(); } catch (_) {}
+  return { response, body };
+}
+
+function githubCiCheckFromRun(run) {
+  const mapped = ciStateFor(run.status, run.conclusion);
+  return {
+    name: run.name || (run.app && run.app.name) || "GitHub check",
+    provider: (run.app && run.app.name) || "GitHub Actions",
+    state: mapped.state,
+    label: mapped.label,
+    description: run.output && run.output.title ? run.output.title : (run.output && run.output.summary ? run.output.summary : ""),
+    url: run.html_url || "",
+    timestamp: run.completed_at || run.started_at || run.created_at || ""
+  };
+}
+
+function githubCiCheckFromStatus(status) {
+  const mapped = ciStateFor(status.state, null);
+  return {
+    name: status.context || "Commit status",
+    provider: "Commit status",
+    state: mapped.state,
+    label: mapped.label,
+    description: status.description || "",
+    url: status.target_url || "",
+    timestamp: status.created_at || ""
+  };
+}
+
+async function fetchGithubCiDetails(owner, name, commit) {
+  const base = "https://api.github.com/repos/" + encodeURIComponent(owner) + "/" +
+    encodeURIComponent(name) + "/commits/" + encodeURIComponent(commit.oid);
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+  const results = await Promise.all([
+    fetchJsonResponse(base + "/check-runs?per_page=100", headers),
+    fetchJsonResponse(base + "/status", headers)
+  ]);
+  const runResult = results[0];
+  const statusResult = results[1];
+  const checks = [];
+  if (runResult.response.ok && runResult.body && Array.isArray(runResult.body.check_runs)) {
+    runResult.body.check_runs.forEach((run) => checks.push(githubCiCheckFromRun(run)));
+  }
+  if (statusResult.response.ok && statusResult.body && Array.isArray(statusResult.body.statuses)) {
+    statusResult.body.statuses.forEach((status) => checks.push(githubCiCheckFromStatus(status)));
+  }
+
+  let message = "";
+  if (!runResult.response.ok && !statusResult.response.ok) {
+    const codes = [runResult.response.status, statusResult.response.status];
+    if (codes.includes(403) || codes.includes(429)) message = "GitHub API rate limit or access restriction.";
+    else if (codes.every((code) => code === 404)) message = "Checks are unavailable for this repository or commit.";
+    else message = "GitHub could not return CI details (HTTP " + codes.join("/") + ").";
+  } else if (!runResult.response.ok || !statusResult.response.ok) {
+    message = "Some check sources could not be loaded.";
+  }
+  return summarizeCiChecks(checks, message);
+}
+
+async function fetchGitlabCiDetails(projectPath, commit) {
+  const encodedProject = encodeURIComponent(projectPath);
+  const pipelineUrl = "https://gitlab.com/api/v4/projects/" + encodedProject +
+    "/pipelines?sha=" + encodeURIComponent(commit.oid) + "&per_page=1&order_by=id&sort=desc";
+  const pipelineResult = await fetchJsonResponse(pipelineUrl);
+  if (!pipelineResult.response.ok) {
+    const message = pipelineResult.response.status === 403 || pipelineResult.response.status === 401
+      ? "GitLab CI details are not public or require access."
+      : "GitLab could not return pipeline details (HTTP " + pipelineResult.response.status + ").";
+    return summarizeCiChecks([], message);
+  }
+
+  const pipeline = Array.isArray(pipelineResult.body) ? pipelineResult.body[0] : null;
+  if (!pipeline) return summarizeCiChecks([], "No GitLab pipeline was found for this commit.");
+
+  const jobsUrl = "https://gitlab.com/api/v4/projects/" + encodedProject +
+    "/pipelines/" + encodeURIComponent(String(pipeline.id)) + "/jobs?per_page=100";
+  const jobsResult = await fetchJsonResponse(jobsUrl);
+  const checks = [];
+  if (jobsResult.response.ok && Array.isArray(jobsResult.body)) {
+    jobsResult.body.forEach((job) => {
+      const mapped = ciStateFor(job.status, null);
+      checks.push({
+        name: job.name || "Pipeline job",
+        provider: job.stage || "GitLab CI",
+        state: mapped.state,
+        label: mapped.label,
+        description: job.failure_reason || "",
+        url: job.web_url || pipeline.web_url || "",
+        timestamp: job.finished_at || job.started_at || job.created_at || ""
+      });
+    });
+  }
+
+  if (!checks.length) {
+    const mapped = ciStateFor(pipeline.status, null);
+    checks.push({
+      name: "Pipeline #" + pipeline.id,
+      provider: "GitLab CI",
+      state: mapped.state,
+      label: mapped.label,
+      description: jobsResult.response.ok ? "No individual jobs were returned." : "Job details are not available.",
+      url: pipeline.web_url || "",
+      timestamp: pipeline.updated_at || pipeline.created_at || ""
+    });
+  }
+  const message = jobsResult.response.ok ? "" : "Pipeline summary loaded; individual job details were unavailable.";
+  return summarizeCiChecks(checks, message);
+}
+
+function fetchRepositoryCiDetails(repo, forceRefresh) {
   const commit = latestCommitFor(repo);
   const remote = (repo.remotes || []).find((item) => item.name === "origin") || (repo.remotes || [])[0];
-  if (!commit || !remote || !remote.web_url) return { label: "Not available", state: "neutral" };
-  const provider = String(remote.provider || repo.primary_provider || "").toLowerCase();
-  let url;
-  try {
-    const parsed = new URL(remote.web_url);
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    if (provider === "github" && parsed.hostname === "github.com" && parts.length >= 2) {
-      url = "https://api.github.com/repos/" + encodeURIComponent(parts[0]) + "/" +
-        encodeURIComponent(parts[1].replace(/\.git$/i, "")) + "/commits/" +
-        encodeURIComponent(commit.oid) + "/status";
-    } else if (provider === "gitlab" && parsed.hostname === "gitlab.com" && parts.length >= 2) {
-      const projectPath = parts.join("/");
-      url = "https://gitlab.com/api/v4/projects/" + encodeURIComponent(projectPath) +
-        "/pipelines?sha=" + encodeURIComponent(commit.oid) + "&per_page=1&order_by=id&sort=desc";
-    } else {
-      return { label: "Not available", state: "neutral" };
-    }
-  } catch (_) {
-    return { label: "Not available", state: "neutral" };
+  if (!commit || !remote || !remote.web_url) {
+    return Promise.resolve(summarizeCiChecks([], !commit ? "No local HEAD commit is available." : "No supported remote CI provider is configured."));
   }
 
   const cacheKey = repo.id + ":" + commit.oid;
+  if (forceRefresh) ciStatusCache.delete(cacheKey);
   if (ciStatusCache.has(cacheKey)) return ciStatusCache.get(cacheKey);
-  try {
-    const response = await fetch(url, { headers: { Accept: "application/vnd.github+json" } });
-    if (response.status === 404) {
-      const none = { label: "No CI run", state: "neutral" };
-      ciStatusCache.set(cacheKey, none);
-      return none;
+
+  const provider = String(remote.provider || repo.primary_provider || "").toLowerCase();
+  const request = (async () => {
+    try {
+      const parsed = new URL(remote.web_url);
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if (provider === "github" && parsed.hostname === "github.com" && parts.length >= 2) {
+        return await fetchGithubCiDetails(parts[0], parts[1].replace(/\.git$/i, ""), commit);
+      }
+      if (provider === "gitlab" && parsed.hostname === "gitlab.com" && parts.length >= 2) {
+        return await fetchGitlabCiDetails(parts.join("/"), commit);
+      }
+      return summarizeCiChecks([], "Individual CI details are not yet supported for this remote host.");
+    } catch (error) {
+      return summarizeCiChecks([], "Could not load CI details: " + String((error && error.message) || error));
     }
-    if (response.status === 403 || response.status === 429) {
-      return { label: "Rate limited", state: "neutral" };
-    }
-    if (!response.ok) return { label: "Unavailable", state: "neutral" };
-    const result = ciStatusFromResponse(provider, await response.json());
-    ciStatusCache.set(cacheKey, result);
-    return result;
-  } catch (_) {
-    return { label: "Offline", state: "neutral" };
+  })();
+  ciStatusCache.set(cacheKey, request);
+  return request;
+}
+
+function formatCiTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function renderCiCheckRows(details) {
+  if (!details.checks.length) {
+    return '<div class="ci-empty-state">' + escapeHtml(details.message || "No individual checks were reported for this commit.") + '</div>';
   }
+  const priority = { failure: 0, pending: 1, success: 2, neutral: 3 };
+  const ordered = details.checks.slice().sort((a, b) => (priority[a.state] - priority[b.state]) || a.name.localeCompare(b.name));
+  return ordered.map((check) => {
+    const contents = '<span class="ci-state-dot ci-' + escapeHtml(check.state) + '" aria-hidden="true"></span>' +
+      '<span class="ci-check-copy"><strong>' + escapeHtml(check.name) + '</strong><small>' +
+      escapeHtml(check.provider || "CI") + (check.description ? " · " + escapeHtml(check.description) : "") +
+      '</small></span><span class="ci-check-result ci-' + escapeHtml(check.state) + '">' + escapeHtml(check.label) + '</span>' +
+      (check.timestamp ? '<time>' + escapeHtml(formatCiTimestamp(check.timestamp)) + '</time>' : '');
+    if (check.url && /^https:\/\//i.test(check.url)) {
+      return '<a class="ci-check-row" href="' + escapeHtml(check.url) + '" target="_blank" rel="noopener noreferrer">' + contents + '</a>';
+    }
+    return '<div class="ci-check-row">' + contents + '</div>';
+  }).join("");
+}
+
+function updateCiCard(repo, details) {
+  document.querySelectorAll("[data-ci-repo-id]").forEach((element) => {
+    if (element.getAttribute("data-ci-repo-id") !== repo.id) return;
+    element.textContent = details.label;
+    element.className = "dashboard-ci ci-" + details.state;
+    element.setAttribute("aria-label", "CI status: " + details.label);
+  });
+  document.querySelectorAll("[data-ci-dot-repo-id]").forEach((element) => {
+    if (element.getAttribute("data-ci-dot-repo-id") === repo.id) {
+      element.className = "ci-state-dot ci-" + details.state;
+    }
+  });
+  document.querySelectorAll("[data-ci-count-repo-id]").forEach((element) => {
+    if (element.getAttribute("data-ci-count-repo-id") === repo.id) {
+      element.textContent = details.checks.length ? details.checks.length + " checks" : "Details";
+    }
+  });
+  document.querySelectorAll("[data-ci-list-repo-id]").forEach((element) => {
+    if (element.getAttribute("data-ci-list-repo-id") === repo.id) {
+      element.innerHTML = renderCiCheckRows(details) + (details.message && details.checks.length
+        ? '<p class="ci-source-note">' + escapeHtml(details.message) + '</p>'
+        : "");
+    }
+  });
+}
+
+async function loadRepositoryCi(repo, forceRefresh) {
+  document.querySelectorAll("[data-ci-list-repo-id]").forEach((element) => {
+    if (element.getAttribute("data-ci-list-repo-id") === repo.id) element.innerHTML = '<div class="ci-empty-state">Loading individual checks…</div>';
+  });
+  const details = await fetchRepositoryCiDetails(repo, Boolean(forceRefresh));
+  updateCiCard(repo, details);
+  return details;
 }
 
 function refreshDashboardCiStatuses(repositories) {
-  repositories.slice(0, 20).forEach((repo) => {
-    fetchRepositoryCiStatus(repo).then((status) => {
-      document.querySelectorAll(".dashboard-ci").forEach((element) => {
-        if (element.getAttribute("data-repo-id") === repo.id) {
-          element.textContent = status.label;
-          element.className = "dashboard-ci ci-" + status.state;
-        }
-      });
-    });
-  });
+  // Eagerly inspect a small first page; other cards load checks on expansion to bound public API usage.
+  const targets = repositories.slice(0, 12);
+  let index = 0;
+  const worker = async () => {
+    while (index < targets.length) {
+      const repo = targets[index++];
+      const details = await fetchRepositoryCiDetails(repo, false);
+      updateCiCard(repo, details);
+    }
+  };
+  const workerCount = Math.min(4, targets.length);
+  const workers = [];
+  for (let i = 0; i < workerCount; i++) workers.push(worker());
+  Promise.all(workers).catch((error) => console.warn("Could not refresh repository CI status:", error));
 }
 
 function renderRepositoryDashboard(container) {
   const filter = computeFilteredRepositories();
   const repositories = filter.visibleRepos;
+  renderFilterBar(filter.remoteCount, filter.localCount, filter.effectiveMode);
+  renderRepositoryKindFilter();
   const projectCount = allRepositories.length - dependencyRepoIds.size;
   const dependencyCount = dependencyRepoIds.size;
   const remoteCount = allRepositories.filter((repo) => repo.has_remote).length;
@@ -832,13 +1247,9 @@ function renderRepositoryDashboard(container) {
   if (allRepositories.length === 0) {
     container.innerHTML =
       '<section class="dashboard-view">' +
-        '<div class="dashboard-welcome">' +
-          '<div class="dashboard-eyebrow">WORKSPACE</div>' +
-          '<h2>Your repositories, in one place</h2>' +
-          '<p>Choose the folders GitManager should index. Dependency repositories can still be indexed and kept separate from your main projects.</p>' +
-          '<button id="btn-dashboard-setup" class="btn btn-primary">Configure scan folders</button>' +
-        '</div>' +
-        '<div class="dashboard-empty"><strong>No repositories indexed yet</strong><span>Add a folder such as D:/Project_Customs or choose the recommended development folders.</span></div>' +
+        '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2><p>Your local Git projects will appear here.</p></div>' +
+        '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
+        '<div class="dashboard-empty"><strong>No repositories indexed yet</strong><span>Add a project folder or choose the recommended development folders to begin.</span></div>' +
       '</section>';
     const setup = document.getElementById("btn-dashboard-setup");
     if (setup) setup.addEventListener("click", () => openScanSetup(false));
@@ -849,57 +1260,105 @@ function renderRepositoryDashboard(container) {
     const icon = resolveRepoIconUrl(repo);
     const fallback = fallbackRepoIconDataUri(repo.primary_provider, repo.name);
     const commit = latestCommitFor(repo);
-    const commitTitle = commit ? commit.summary : "No local commit metadata";
+    const commitTitle = commit ? commit.summary : "No local HEAD commit";
     const commitSha = commit ? commit.short_oid : "";
     const commitDate = commit ? commit.date_iso : "";
-    const ci = repo.has_remote && commit ? "Checking…" : "Not available";
-    const ciState = repo.has_remote && commit ? "checking" : "neutral";
+    const branchCount = (repo.branches || []).length;
     const isDependency = dependencyRepoIds.has(repo.id);
-    return '<button type="button" class="dashboard-repo-card" data-dashboard-repo-id="' + escapeHtml(repo.id) + '">' +
-      '<div class="dashboard-card-top">' +
-        '<img class="dashboard-card-icon" src="' + escapeHtml(icon) + '" alt="" onerror="this.onerror=null;this.src=\'' + fallback + '\';" />' +
-        '<div class="dashboard-card-heading"><strong>' + escapeHtml(repositoryFullName(repo)) + '</strong>' +
-          '<span>' + escapeHtml(repo.name) + (isDependency ? ' · Dependency' : '') + '</span></div>' +
-        '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider) + '">' + escapeHtml(repo.has_remote ? repo.primary_provider.toUpperCase() : "LOCAL") + '</span>' +
-      '</div>' +
-      '<div class="dashboard-card-commit"><span class="dashboard-label">LATEST COMMIT</span><strong>' + escapeHtml(commitTitle) + '</strong>' +
-        '<span>' + escapeHtml(commitSha + (commitDate ? " · " + commitDate : "")) + '</span></div>' +
-      '<div class="dashboard-card-footer"><span class="dashboard-branch">⎇ ' + escapeHtml(repo.current_branch || "Detached HEAD") + '</span>' +
-        '<span class="dashboard-ci ci-' + ciState + '" data-repo-id="' + escapeHtml(repo.id) + '">' + ci + '</span></div>' +
-    '</button>';
+    const provider = repo.has_remote ? String(repo.primary_provider || "remote").toUpperCase() : "LOCAL";
+    const dirty = Number(repo.dirty_files_count || 0);
+    return '<article class="repo-card">' +
+      '<button type="button" class="repo-card-open" data-dashboard-repo-id="' + escapeHtml(repo.id) + '">' +
+        '<span class="repo-card-top">' +
+          '<img class="repo-card-icon" src="' + escapeHtml(icon) + '" alt="" onerror="this.onerror=null;this.src=\'' + fallback + '\';" />' +
+          '<span class="repo-card-heading"><strong>' + escapeHtml(repositoryFullName(repo)) + '</strong><small>' +
+            escapeHtml(repo.owner_name || "Local repository") + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
+          '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(provider) + '</span>' +
+        '</span>' +
+        '<span class="repo-card-commit"><span class="dashboard-label">LATEST COMMIT</span><strong>' + escapeHtml(commitTitle) + '</strong>' +
+          '<small>' + escapeHtml(commitSha + (commitDate ? " · " + commitDate : "")) + '</small></span>' +
+        '<span class="repo-card-meta"><span class="repo-card-branch">⑂ ' + escapeHtml(repo.current_branch || "Detached HEAD") + '</span>' +
+          '<span>' + branchCount + ' branch' + (branchCount === 1 ? '' : 'es') + '</span>' +
+          '<span class="' + (dirty ? 'repo-dirty' : 'repo-clean') + '">' + (dirty ? dirty + ' changed' : 'Working tree clean') + '</span></span>' +
+      '</button>' +
+      '<details class="repo-ci-details" data-ci-expand data-repo-id="' + escapeHtml(repo.id) + '">' +
+        '<summary><span class="ci-state-dot ci-neutral" data-ci-dot-repo-id="' + escapeHtml(repo.id) + '" aria-hidden="true"></span>' +
+          '<span class="dashboard-ci ci-neutral" data-ci-repo-id="' + escapeHtml(repo.id) + '" aria-label="CI status">Load CI status</span>' +
+          '<span class="ci-detail-count" data-ci-count-repo-id="' + escapeHtml(repo.id) + '">View checks</span></summary>' +
+        '<div class="ci-check-list" data-ci-list-repo-id="' + escapeHtml(repo.id) + '"><div class="ci-empty-state">Expand to load individual CI checks.</div></div>' +
+      '</details>' +
+    '</article>';
   }).join("");
+
+  if (repositories.length === 0) {
+    container.innerHTML = '<section class="dashboard-view"><div class="dashboard-empty"><strong>No repositories match these filters</strong><span>Try another repository type, availability filter or search term.</span></div></section>';
+    return;
+  }
+
+  const groups = new Map();
+  repositories.forEach((repo, index) => {
+    let groupKey = repo.parent_folder || "Repositories";
+    if (indexGroupingMode === "git_dir") {
+      groupKey = repo.git_dir || groupKey;
+    } else if (indexGroupingMode === "provider") {
+      groupKey = repo.has_remote ? "Remote (" + String(repo.primary_provider || "remote").toUpperCase() + ")" : "Local Only (No Remote)";
+    }
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey).push(cards[index]);
+  });
+  const cardSections = Array.from(groups.entries()).map(([groupName, groupCards]) =>
+    '<section class="repo-group-modern"><div class="repo-group-modern-heading"><strong>' + escapeHtml(groupName) +
+    '</strong><span>' + groupCards.length + ' repos</span></div><div class="dashboard-card-grid repo-card-grid">' +
+    groupCards.join("") + '</div></section>'
+  ).join("");
 
   container.innerHTML =
     '<section class="dashboard-view">' +
       '<div class="dashboard-heading">' +
-        '<div><div class="dashboard-eyebrow">WORKSPACE OVERVIEW</div><h2>Repositories</h2>' +
+        '<div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2>' +
           '<p>' + escapeHtml(roots.length + " scan folder(s) · " + projectCount + " project(s) · " + dependencyCount + " dependency repo(s)") + '</p></div>' +
         '<div class="dashboard-actions"><button id="btn-dashboard-scan" class="btn btn-secondary">Scan now</button>' +
-          '<button id="btn-dashboard-setup" class="btn btn-primary">Scan folders</button></div>' +
+          '<button id="btn-dashboard-setup" class="btn btn-secondary">Scan folders</button></div>' +
       '</div>' +
       '<div class="dashboard-stats">' +
         '<div><strong>' + projectCount + '</strong><span>Projects</span></div>' +
-        '<div><strong>' + dependencyCount + '</strong><span>Dependency repos</span></div>' +
+        '<div><strong>' + dependencyCount + '</strong><span>Dependencies</span></div>' +
         '<div><strong>' + remoteCount + '</strong><span>Remote-linked</span></div>' +
       '</div>' +
-      '<div class="dashboard-card-grid">' + cards + '</div>' +
+      cardSections +
     '</section>';
 
-  container.querySelectorAll("[data-dashboard-repo-id]").forEach((card) => {
-    card.addEventListener("click", () => {
-      selectedRepoId = card.getAttribute("data-dashboard-repo-id");
-      const selected = allRepositories.find((repo) => repo.id === selectedRepoId);
-      selectedCommitOid = selected && selected.commits[0] ? selected.commits[0].oid : null;
+  container.querySelectorAll("[data-dashboard-repo-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedRepoId = button.getAttribute("data-dashboard-repo-id");
+      const selected = getRepositoryById(selectedRepoId);
+      const selectedHead = selected ? latestCommitFor(selected) : null;
+      selectedCommitOid = selectedHead ? selectedHead.oid : null;
+      selectedBranchName = null;
+      branchStateRepoId = null;
       renderAll();
     });
   });
+
+  container.querySelectorAll("[data-ci-expand]").forEach((detailsElement) => {
+    detailsElement.addEventListener("toggle", () => {
+      if (!detailsElement.open || detailsElement.dataset.loaded === "true") return;
+      const repo = getRepositoryById(detailsElement.getAttribute("data-repo-id"));
+      if (!repo) return;
+      detailsElement.dataset.loaded = "true";
+      void loadRepositoryCi(repo, false).catch((error) => {
+        detailsElement.dataset.loaded = "false";
+        console.warn("Could not load individual CI checks:", error);
+      });
+    });
+  });
+
   const setupButton = document.getElementById("btn-dashboard-setup");
   if (setupButton) setupButton.addEventListener("click", () => openScanSetup(false));
   const scanButton = document.getElementById("btn-dashboard-scan");
   if (scanButton) scanButton.addEventListener("click", () => void runMachineScan());
   refreshDashboardCiStatuses(repositories);
 }
-
 function repositoryAutomationSettings(repo) {
   if (!appPreferences.repositorySettings) appPreferences.repositorySettings = {};
   if (!appPreferences.repositorySettings[repo.id]) {
@@ -979,19 +1438,26 @@ function renderSelectedRepositoryDetails() {
 
   if (!headerEl || !treeContainer || !inspectorEl) return;
 
-  const repo = allRepositories.find((r) => r.id === selectedRepoId);
-  const mainPanel = document.querySelector(".main-panel");
+  const repo = getRepositoryById(selectedRepoId);
+  const detailView = document.getElementById("repository-detail-view");
+  const homeView = document.getElementById("repo-home-content");
   if (!repo) {
-    if (mainPanel) mainPanel.classList.add("dashboard-mode");
-    renderRepositoryDashboard(headerEl);
+    if (detailView) detailView.classList.add("hidden");
+    if (homeView) {
+      homeView.classList.remove("hidden");
+      renderRepositoryDashboard(homeView);
+    }
     treeContainer.innerHTML = "";
     inspectorEl.innerHTML = "";
     return;
   }
-  if (mainPanel) mainPanel.classList.remove("dashboard-mode");
+  if (homeView) homeView.classList.add("hidden");
+  if (detailView) detailView.classList.remove("hidden");
 
   const iconSrc = resolveRepoIconUrl(repo);
   const fallbackSrc = fallbackRepoIconDataUri(repo.primary_provider, repo.name);
+  renderRepositoryCiPanel(repo);
+  renderBranchNavigation(repo);
 
   headerEl.innerHTML = `
     <div class="selected-repo-banner">
@@ -1078,14 +1544,19 @@ function renderSelectedRepositoryDetails() {
     });
   }
 
+  const visibleCommits = commitsForSelectedBranch(repo);
+  if (selectedCommitOid && !visibleCommits.some((commit) => commit.oid === selectedCommitOid)) {
+    selectedCommitOid = visibleCommits[0] ? visibleCommits[0].oid : null;
+  }
   if (treeStatsBadge) {
-    treeStatsBadge.textContent = `${repo.commits.length} commits • ${repo.branches.length} refs`;
+    const focusLabel = selectedBranchName ? " · " + selectedBranchName : " · all branches";
+    treeStatsBadge.textContent = visibleCommits.length + " commits · " + (repo.branches || []).length + " branches" + focusLabel;
   }
 
-  renderGitTreeGraph(treeContainer, repo.commits, selectedCommitOid, (clickedCommit) => {
+  renderGitTreeGraph(treeContainer, visibleCommits, selectedCommitOid, (clickedCommit) => {
     selectedCommitOid = clickedCommit.oid;
     renderSelectedRepositoryDetails();
-  });
+  }, repo.branches || []);
 
   const selectedCommit =
     repo.commits.find((c) => c.oid === selectedCommitOid) || repo.commits[0] || null;
@@ -1219,8 +1690,10 @@ function renderSelectedRepositoryDetails() {
 function renderAll() {
   renderUpdateNotificationsTray();
   renderConnectedAccountsBar();
-  renderRepositoryList();
+  renderAccountsPage();
+  renderSettingsPage();
   renderSelectedRepositoryDetails();
+  setActivePage(activePage);
 }
 
 async function runMachineScan(customRoot) {
@@ -1241,7 +1714,7 @@ async function runMachineScan(customRoot) {
       indexDependencyRepositories: !appPreferences || appPreferences.indexDependencyRepositories !== false,
       filterMode: requestedFilter
     });
-    allRepositories = Array.isArray(summary.repositories) ? summary.repositories : [];
+    allRepositories = Array.isArray(summary.repositories) ? summary.repositories.filter((repo) => repo.source_kind === "local_scan") : [];
     dependencyRepoIds = new Set(summary.dependencyRepoIds || []);
     selectedRepoId = null;
     selectedCommitOid = null;
@@ -1290,11 +1763,7 @@ async function connectRemoteProviderAccount(provider, username, token) {
   );
   connectedAccounts.push(summary);
 
-  for (const remoteRepo of summary.repositories) {
-    if (!allRepositories.some((r) => r.id === remoteRepo.id)) {
-      allRepositories.push(remoteRepo);
-    }
-  }
+
 }
 
 function wireTauriBackgroundServiceEvents() {
@@ -1317,6 +1786,12 @@ function wireTauriBackgroundServiceEvents() {
 }
 
 function wireEventListeners() {
+  document.querySelectorAll("[data-page]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const page = tab.getAttribute("data-page");
+      if (page) setActivePage(page);
+    });
+  });
   const scanInput = document.getElementById("scan-path-input");
   const browseBtn = document.getElementById("btn-browse-folder");
   const scanBtn = document.getElementById("btn-scan-repos");
@@ -1532,7 +2007,7 @@ function openScanSetup(isFirstRun) {
   if (!appPreferences) {
     appPreferences = {
       scanRoots: [], maxScanDepth: 8, includeHiddenDirs: false,
-      indexDependencyRepositories: true, showDependencyRepositories: false,
+      indexDependencyRepositories: true, showDependencyRepositories: true,
       firstRunComplete: false
     };
   }
@@ -1551,7 +2026,7 @@ function openScanSetup(isFirstRun) {
   if (depth) depth.value = String(appPreferences.maxScanDepth || 8);
   if (hidden) hidden.checked = Boolean(appPreferences.includeHiddenDirs);
   if (dependencies) dependencies.checked = appPreferences.indexDependencyRepositories !== false;
-  if (showDependencies) showDependencies.checked = Boolean(appPreferences.showDependencyRepositories);
+  if (showDependencies) showDependencies.checked = appPreferences.showDependencyRepositories !== false;
   renderScanRootList();
   modal.classList.remove("hidden");
 }
@@ -1616,7 +2091,7 @@ async function saveScanSetup() {
 
   try {
     appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
-    repositoryKindFilter = appPreferences.showDependencyRepositories ? "all" : "projects";
+    repositoryKindFilter = appPreferences.showDependencyRepositories !== false ? "all" : "projects";
     updateScanRootSummary();
     document.getElementById("setup-modal-backdrop").classList.add("hidden");
     await runMachineScan();
@@ -1634,6 +2109,11 @@ async function saveScanSetup() {
 }
 
 async function initializeGitManager() {
+  try {
+    applicationDirectories = await tauriInvoke("get_application_directories");
+  } catch (error) {
+    console.warn("Could not resolve GitManager storage directories:", error);
+  }
   try {
     appPreferences = await tauriInvoke("load_app_preferences");
   } catch (error) {

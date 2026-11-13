@@ -65,21 +65,61 @@ impl Default for AppPreferences {
             max_scan_depth: 8,
             include_hidden_dirs: false,
             index_dependency_repositories: true,
-            show_dependency_repositories: false,
+            show_dependency_repositories: true,
             repository_settings: HashMap::new(),
             first_run_complete: false,
         }
     }
 }
 
-fn preferences_file(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let directory = app_handle
-        .path()
-        .app_config_dir()
-        .map_err(|error| format!("Could not resolve GitManager config directory: {error}"))?;
-    fs::create_dir_all(&directory)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplicationDirectories {
+    software_root: String,
+    config_dir: String,
+    data_dir: String,
+}
+
+fn application_directories() -> Result<ApplicationDirectories, String> {
+    let local_data = dirs::data_local_dir()
+        .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
+    let software_root = local_data.join("kastrick's_software");
+    let config_dir = software_root.join("config").join("GitManager");
+    let data_dir = software_root.join("data").join("GitManager");
+
+    fs::create_dir_all(&config_dir)
         .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
-    Ok(directory.join("preferences.json"))
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Could not create GitManager data directory: {error}"))?;
+
+    Ok(ApplicationDirectories {
+        software_root: software_root.to_string_lossy().to_string(),
+        config_dir: config_dir.to_string_lossy().to_string(),
+        data_dir: data_dir.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn get_application_directories() -> Result<ApplicationDirectories, String> {
+    application_directories()
+}
+
+fn preferences_file(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let directories = application_directories()?;
+    let path = PathBuf::from(directories.config_dir).join("preferences.json");
+
+    // Migrate the previous Tauri-managed preferences file once, without deleting the old copy.
+    if !path.exists() {
+        if let Ok(legacy_directory) = app_handle.path().app_config_dir() {
+            let legacy_file = legacy_directory.join("preferences.json");
+            if legacy_file.is_file() {
+                fs::copy(&legacy_file, &path)
+                    .map_err(|error| format!("Could not migrate existing GitManager preferences: {error}"))?;
+            }
+        }
+    }
+
+    Ok(path)
 }
 
 #[tauri::command]
@@ -158,16 +198,31 @@ fn save_app_preferences(
 
     let path = preferences_file(&app_handle)?;
     let temporary = path.with_extension("json.tmp");
+    let backup = path.with_extension("json.bak");
     let content = serde_json::to_vec_pretty(&preferences)
         .map_err(|error| format!("Could not serialize GitManager preferences: {error}"))?;
     fs::write(&temporary, content)
         .map_err(|error| format!("Could not write GitManager preferences: {error}"))?;
-    if path.exists() {
-        fs::remove_file(&path)
-            .map_err(|error| format!("Could not replace GitManager preferences: {error}"))?;
+
+    // Keep the previous valid file recoverable if the final rename fails.
+    let had_previous = path.exists();
+    if had_previous {
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|error| format!("Could not clear the old preferences backup: {error}"))?;
+        }
+        fs::rename(&path, &backup)
+            .map_err(|error| format!("Could not stage the previous preferences file: {error}"))?;
     }
-    fs::rename(&temporary, &path)
-        .map_err(|error| format!("Could not save GitManager preferences: {error}"))?;
+    if let Err(error) = fs::rename(&temporary, &path) {
+        if had_previous {
+            let _ = fs::rename(&backup, &path);
+        }
+        return Err(format!("Could not save GitManager preferences: {error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
+    }
     Ok(preferences)
 }
 
@@ -195,19 +250,8 @@ fn scan_machine_repositories(
         index_dependency_repositories,
     })?;
 
-    let mut combined = local_repos;
-    if let Ok(accounts) = state.connected_accounts.lock() {
-        for acc in accounts.iter() {
-            for r in &acc.repositories {
-                let already_cloned = combined.iter().any(|local| {
-                    local.web_url.as_deref() == r.web_url.as_deref() && r.web_url.is_some()
-                });
-                if !already_cloned {
-                    combined.push(r.clone());
-                }
-            }
-        }
-    }
+    // Local scan results are the local-machine library; remote account results belong in Accounts.
+    let combined = local_repos;
 
     if let Ok(mut cache) = state.cached_repos.lock() {
         *cache = combined.clone();
@@ -626,6 +670,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             get_default_scan_directories,
+            get_application_directories,
             load_app_preferences,
             save_app_preferences,
             scan_machine_repositories,

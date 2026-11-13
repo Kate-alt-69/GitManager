@@ -1,6 +1,6 @@
-# GitManager — Pure-Rust + Tauri v2 Native Git Explorer & Background Update Service
+# GitManager — Native Git Workspace
 
-**GitManager** is a native cross-platform desktop Git repository manager, interactive **Git Commit Tree** visualizer, and **Background Repository Update Service** built in **100% Rust** using the **Rust `tauri` v2 crate** (with `withGlobalTauri: true` serving `ui/` directly — **zero Node.js, npm, or Vite required**) for **Windows 10 & 11**, **Linux**, and **macOS**.
+**GitManager** is a cross-platform Rust desktop application for local Git repositories, remote provider accounts, commit history and background repository updates. It uses top-and-bottom tab navigation with no permanent sidebar. The Repositories page is the local-machine homepage; GitHub/GitLab account repositories live separately under Accounts. The current Tauri 2 shell is the portable host while the Windows-specific wl_ui hosting contract is prepared for its upcoming WinUI 3 / Win32 backends.
 
 ---
 
@@ -135,3 +135,23 @@ Keep Remote Clean and Commit Clean remain separate follow-up features; they are 
 The repository inspector can install **Commit Clean** as a Git `pre-commit` hook for a locally indexed repository. On commit, it detects tracked generated/build/dependency paths and removes those paths from the Git index for that commit. It does **not** delete the files from the working tree. Exact paths are added to that repository's local `.git/info/exclude`, preserving the shared `.gitignore` and excluding those generated paths from future `git add .` operations.
 
 The hook requires Python 3.10 or newer. GitManager installs only into the repository's default `.git/hooks` directory, refuses custom `core.hooksPath` configurations, and will not overwrite an existing custom `pre-commit` hook. Disable Commit Clean in the same repository inspector to remove the GitManager-managed hook.
+
+
+## 6. Per-user application storage and installation
+
+GitManager keeps the application install directory separate from user configuration and data.
+
+On Windows, the NSIS setup installer is current-user only and installs the application under:
+
+    %LOCALAPPDATA%\kastrick's_software\GitManager\
+
+Configuration and data live beside the application under the same Kastrick software root:
+
+    %LOCALAPPDATA%\kastrick's_software\config\GitManager\
+    %LOCALAPPDATA%\kastrick's_software\data\GitManager\
+
+On Linux and macOS, the same folder layout is rooted in the platform's user-local data directory. GitManager migrates the existing preferences file from its previous Tauri config directory on first launch and leaves the source copy untouched.
+
+The setup finish screen offers **Continue using GitManager** (launch the app) and a separate desktop-shortcut option. Uninstalling the application does not target the config/data siblings.
+
+Release builds use size-focused Cargo settings (size optimization, LTO, one codegen unit and symbol stripping), and Tokio is built with only the runtime/time features used by this application. This is an optimization baseline; final installer sizes must still be measured from actual Windows/Linux/macOS release artifacts.

@@ -8,152 +8,76 @@
   </head>
   <body>
     <div id="app" class="app-shell">
-      <!-- Top Action & Scan Bar -->
       <header class="topbar">
         <div class="brand">
           <div class="brand-logo" aria-hidden="true">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1">
-              <circle cx="6" cy="6" r="3"></circle>
-              <circle cx="18" cy="6" r="3"></circle>
-              <circle cx="6" cy="18" r="3"></circle>
-              <path d="M6 9v6"></path>
-              <path d="M18 9a9 9 0 0 1-9 9"></path>
+              <circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle>
+              <path d="M6 9v6"></path><path d="M18 9a9 9 0 0 1-9 9"></path>
             </svg>
           </div>
-          <div>
-            <h1 class="brand-title">GitManager</h1>
-            <span class="brand-subtitle">Pure Rust + Tauri v2 Crate • Background Update Service (`svchost` / Daemon)</span>
-          </div>
+          <div><h1 class="brand-title">GitManager</h1><span class="brand-subtitle">Your local repositories, accounts and Git workspace</span></div>
         </div>
-
-        <div class="scan-controls">
-          <!-- Background Service & Clear Loading Indicator Pill -->
-          <div id="service-status-pill" class="service-status-pill" title="Background Repo Update Watcher Service (Windows svchost/sc.exe • Linux systemd • macOS launchd)">
-            <svg id="service-spinner-icon" class="loading-spinner active-spin" width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity="0.25" stroke-width="3"></circle>
-              <path d="M12 3a9 9 0 0 1 9 9" stroke="#58a6ff" stroke-width="3" stroke-linecap="round"></path>
-            </svg>
-            <span id="service-status-text">Svc: Watching Remotes</span>
-            <button id="btn-check-updates-now" class="btn-mini" title="Check all repos for remote updates right now">
-              Check Updates
-            </button>
-            <button id="btn-register-os-service" class="btn-mini" title="Register OS Background Service (sc.exe / svchost on Windows, systemd on Linux, launchd on macOS)">
-              Register Svc
-            </button>
-          </div>
-          <button id="btn-open-scan-settings" class="btn btn-secondary" title="Configure the directories GitManager indexes">Scan Setup</button>
-          <button id="btn-open-cleaner" class="btn btn-secondary" title="Preview repository or system developer-cache cleanup">Developer Cleaner</button>
-
-          <input
-            id="scan-path-input"
-            type="text"
-            class="scan-input"
-            placeholder="Scan root folder (leave blank for default Projects/Home folders)..."
-          />
-          <button id="btn-browse-folder" class="btn btn-secondary" title="Pick a folder to index">
-            Browse Folder
-          </button>
-          <button id="btn-scan-repos" class="btn btn-primary">
-            Scan for .git Repos
-          </button>
-          <button id="btn-open-accounts" class="btn btn-accent">
-            Connect GitHub / GitLab
-          </button>
+        <div id="service-status-pill" class="service-status-pill" title="Background repository update service">
+          <svg id="service-spinner-icon" class="loading-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity="0.25" stroke-width="3"></circle>
+            <path d="M12 3a9 9 0 0 1 9 9" stroke="#58a6ff" stroke-width="3" stroke-linecap="round"></path>
+          </svg><span id="service-status-text">Svc: Starting…</span>
         </div>
       </header>
-
-      <!-- Live Background Service Update Notification Banner Container -->
+      <nav class="top-tab-row" aria-label="Main navigation" role="tablist">
+        <button class="app-tab active" type="button" role="tab" aria-selected="true" data-page="repositories"><span class="tab-glyph" aria-hidden="true">⌂</span><span>Repositories</span></button>
+        <button class="app-tab" type="button" role="tab" aria-selected="false" data-page="accounts"><span class="tab-glyph" aria-hidden="true">◎</span><span>Accounts</span></button>
+        <button class="app-tab" type="button" role="tab" aria-selected="false" data-page="settings"><span class="tab-glyph" aria-hidden="true">⚙</span><span>Settings</span></button>
+      </nav>
       <div id="update-notifications-tray" class="update-notifications-tray"></div>
-
-      <!-- Main 3-Pane Workspace -->
-      <div class="workspace-grid">
-        <!-- Left Sidebar: Indexed Repositories & Smart Remote/Local Filtering -->
-        <aside class="sidebar">
-          <div class="sidebar-controls">
-            <input
-              id="repo-search-input"
-              type="search"
-              class="search-input"
-              placeholder="Filter indexed repos by name, owner, email, or .git path..."
-            />
-
-            <div class="filter-bar kind-filter-bar">
-              <div class="filter-label-row"><span class="section-caption">REPOSITORY TYPE</span></div>
-              <div class="segmented-control">
-                <button class="seg-btn active" type="button" data-repo-kind="projects">Projects (<span data-repo-kind-count>0</span>)</button>
-                <button class="seg-btn" type="button" data-repo-kind="dependencies">Dependencies (<span data-repo-kind-count>0</span>)</button>
-                <button class="seg-btn" type="button" data-repo-kind="all">All (<span data-repo-kind-count>0</span>)</button>
+      <main class="app-main">
+        <section id="page-repositories" class="app-page active" role="tabpanel" aria-label="Repositories">
+          <div class="repo-page-controls">
+            <div class="repo-search-wrap"><label class="sr-only" for="repo-search-input">Search local repositories</label><input id="repo-search-input" type="search" class="search-input" placeholder="Search repositories, owners or local paths…" /></div>
+            <div class="repo-filter-row">
+              <div class="segmented-control kind-filter-bar" aria-label="Repository category">
+                <button class="seg-btn active" type="button" data-repo-kind="projects">Projects <span data-repo-kind-count>0</span></button>
+                <button class="seg-btn" type="button" data-repo-kind="dependencies">Dependencies <span data-repo-kind-count>0</span></button>
+                <button class="seg-btn" type="button" data-repo-kind="all">All <span data-repo-kind-count>0</span></button>
               </div>
-              <p class="filter-note">Dependency repositories stay indexed but separate from your main project list.</p>
+              <div class="segmented-control availability-filter" role="group" aria-label="Remote availability">
+                <button id="filter-btn-grouped" class="seg-btn active" type="button" data-filter="grouped">All <span id="count-all">0</span></button>
+                <button id="filter-btn-remote" class="seg-btn" type="button" data-filter="remote">Remote <span id="count-remote">0</span></button>
+                <button id="filter-btn-local" class="seg-btn" type="button" data-filter="local">Local <span id="count-local">0</span></button>
+              </div>
+              <span id="filter-fallback-badge" class="fallback-pill hidden">Unified view</span>
             </div>
-
-            <!-- Remote vs Local Smart Filter Bar -->
-            <div class="filter-bar">
-              <div class="filter-label-row">
-                <span class="section-caption">AVAILABILITY FILTER</span>
-                <span id="filter-fallback-badge" class="fallback-pill hidden">
-                  Auto-Grouped into 1
-                </span>
-              </div>
-              <div class="segmented-control" role="tablist">
-                <button id="filter-btn-grouped" class="seg-btn active" data-filter="grouped">
-                  All / Grouped (<span id="count-all">0</span>)
-                </button>
-                <button id="filter-btn-remote" class="seg-btn" data-filter="remote">
-                  Remote (<span id="count-remote">0</span>)
-                </button>
-                <button id="filter-btn-local" class="seg-btn" data-filter="local">
-                  Local (<span id="count-local">0</span>)
-                </button>
-              </div>
-              <p id="filter-status-note" class="filter-note">
-                Showing both Remote &amp; Local repositories.
-              </p>
-            </div>
-
-            <!-- Indexing Group By Selector -->
-            <div class="index-mode-row">
-              <label for="index-group-select" class="section-caption">INDEX BY:</label>
-              <select id="index-group-select" class="select-control">
-                <option value="folder">Parent Folder</option>
-                <option value="git_dir">.git Folder Location</option>
-                <option value="provider">Remote Provider (GitHub / GitLab / Local)</option>
-              </select>
+            <div class="repo-filter-footer">
+              <p id="filter-status-note" class="filter-note">Showing repositories discovered on this machine.</p>
+              <label class="index-mode-row" for="index-group-select"><span>Group by</span><select id="index-group-select" class="select-control"><option value="folder">Parent folder</option><option value="git_dir">.git location</option><option value="provider">Remote provider</option></select></label>
             </div>
           </div>
-
-          <!-- Connected Remote Accounts Strip -->
-          <div id="connected-accounts-bar" class="connected-accounts-bar hidden"></div>
-
-          <!-- Indexed Repository List -->
-          <div id="repo-list-container" class="repo-list-container"></div>
-        </aside>
-
-        <!-- Center & Right Pane: Selected Repository Header, Inspector Card & Full Git Tree -->
-        <main class="main-panel">
-          <div id="repo-detail-header" class="repo-detail-header"></div>
-
-          <div class="content-split">
-            <!-- Full Interactive Git Commit Graph Tree -->
-            <section class="git-tree-section">
-              <div class="panel-Subheader">
-                <h2>Full Git Commit Tree</h2>
-                <span id="tree-stats-badge" class="badge-pill">0 commits</span>
-              </div>
-              <div id="git-tree-container" class="git-tree-container"></div>
-            </section>
-
-            <!-- Repository & Selected Commit Metadata Inspector -->
-            <aside class="inspector-section">
-              <div class="panel-Subheader">
-                <h2>Repository &amp; .git Inspector</h2>
-              </div>
-              <div id="repo-inspector-card" class="inspector-body"></div>
-            </aside>
+          <div id="repo-home-content" class="repo-home-content"></div>
+          <section id="repository-detail-view" class="repository-detail-view hidden" aria-label="Repository details">
+            <div id="repo-detail-header" class="repo-detail-header"></div>
+            <section id="repo-ci-detail-panel" class="repo-ci-detail-panel" aria-label="Continuous integration checks"></section>
+            <div class="content-split">
+              <section class="git-tree-section"><div class="panel-Subheader"><h2>Commit history</h2><span id="tree-stats-badge" class="badge-pill">0 commits</span></div><div id="git-branch-toolbar" class="git-branch-toolbar"></div><div id="git-tree-container" class="git-tree-container"></div></section>
+              <aside class="inspector-section"><div class="panel-Subheader"><h2>Repository details</h2></div><div id="repo-inspector-card" class="inspector-body"></div></aside>
+            </div>
+          </section>
+        </section>
+        <section id="page-accounts" class="app-page hidden" role="tabpanel" aria-label="Accounts">
+          <div class="page-heading"><div><div class="dashboard-eyebrow">REMOTE PROVIDERS</div><h2>Accounts</h2><p>Connect GitHub and GitLab to browse repositories associated with your accounts. Remote repositories stay separate from the local repository library.</p></div><button id="btn-open-accounts" class="btn btn-primary" type="button">＋ Connect account</button></div>
+          <section class="page-section"><div class="section-heading"><div><h3>Connected accounts</h3><p>Connections are held for this app session. Provider tokens are not written into GitManager config.</p></div></div><div id="accounts-connected-list" class="accounts-connected-list"></div></section>
+          <section class="page-section"><div class="section-heading"><div><h3>Remote repositories</h3><p>Repositories returned by your connected provider accounts.</p></div><span id="accounts-repository-count" class="badge-pill">0 repositories</span></div><div id="accounts-repositories-list" class="dashboard-card-grid accounts-repository-grid"></div></section>
+        </section>
+        <section id="page-settings" class="app-page hidden" role="tabpanel" aria-label="Settings">
+          <div class="page-heading"><div><div class="dashboard-eyebrow">GITMANAGER</div><h2>Settings</h2><p>Manage discovery, background updates, maintenance tools and where GitManager stores its files.</p></div></div>
+          <div class="settings-grid">
+            <section class="settings-card settings-card-wide"><div class="settings-card-heading"><div><h3>Repository discovery</h3><p>Choose which folders GitManager scans for local Git repositories.</p></div><span class="settings-icon">⌕</span></div><div id="settings-scan-root-summary" class="settings-value">Loading scan folders…</div><div class="settings-actions"><button id="btn-open-scan-settings" class="btn btn-secondary" type="button">Configure folders</button><button id="btn-scan-repos" class="btn btn-primary" type="button">Scan now</button></div><div class="quick-scan-row"><input id="scan-path-input" type="text" class="scan-input" placeholder="Optional one-time scan folder…" /><button id="btn-browse-folder" class="btn btn-secondary" type="button">Browse</button></div></section>
+            <section class="settings-card"><div class="settings-card-heading"><div><h3>Background updates</h3><p>Check remotes and register the user-level background service.</p></div><span class="settings-icon">↻</span></div><p class="settings-value" id="settings-service-description">The service checks configured local repositories for safe fast-forward updates.</p><div class="settings-actions"><button id="btn-check-updates-now" class="btn btn-secondary" type="button">Check updates</button><button id="btn-register-os-service" class="btn btn-secondary" type="button">Enable background service</button></div></section>
+            <section class="settings-card"><div class="settings-card-heading"><div><h3>Developer cleaner</h3><p>Preview generated files and developer caches before cleaning them.</p></div><span class="settings-icon">⌁</span></div><p class="settings-value">Nothing is removed until you inspect a preview and explicitly confirm the action.</p><div class="settings-actions"><button id="btn-open-cleaner" class="btn btn-secondary" type="button">Open Developer Cleaner</button></div></section>
+            <section class="settings-card settings-card-wide"><div class="settings-card-heading"><div><h3>Storage locations</h3><p>Per-user application files. Configuration and data stay outside the install directory.</p></div><span class="settings-icon">▤</span></div><div class="path-row"><span>Configuration</span><code id="settings-config-path">Resolving…</code></div><div class="path-row"><span>Application data</span><code id="settings-data-path">Resolving…</code></div><div class="path-row"><span>Software root</span><code id="settings-software-root">Resolving…</code></div></section>
           </div>
-        </main>
-      </div>
-
+        </section>
+      </main>
 
       <!-- First-run workspace setup and scan-root preferences -->
       <div id="setup-modal-backdrop" class="modal-backdrop hidden">
@@ -181,7 +105,7 @@
             <p class="setup-hint">Choose one or more project folders. A drive root such as D:/ is supported; scanning an entire drive can take longer. GitManager does not automatically scan every system drive.</p>
             <div class="setup-options">
               <label class="setup-option"><input id="setup-index-dependencies" type="checkbox" checked /> Index Git repositories found inside dependency folders too</label>
-              <label class="setup-option"><input id="setup-show-dependencies" type="checkbox" /> Show dependency repositories in the default Projects view</label>
+              <label class="setup-option"><input id="setup-show-dependencies" type="checkbox" checked /> Include dependency repositories in the default repository view</label>
               <label class="setup-option"><input id="setup-include-hidden" type="checkbox" /> Include hidden folders when discovering repositories</label>
               <div class="form-group setup-depth">
                 <label for="setup-scan-depth">Maximum scan depth</label>
@@ -308,6 +232,11 @@
           </div>
         </div>
       </div>
+      <nav class="bottom-tab-bar" aria-label="Main navigation" role="tablist">
+        <button class="bottom-tab active" type="button" role="tab" aria-selected="true" data-page="repositories"><span aria-hidden="true">⌂</span><small>Repositories</small></button>
+        <button class="bottom-tab" type="button" role="tab" aria-selected="false" data-page="accounts"><span aria-hidden="true">◎</span><small>Accounts</small></button>
+        <button class="bottom-tab" type="button" role="tab" aria-selected="false" data-page="settings"><span aria-hidden="true">⚙</span><small>Settings</small></button>
+      </nav>
     </div>
 
     <script src="app.js"></script>
