@@ -453,7 +453,13 @@ function renderBranchNavigation(repo) {
   container.querySelectorAll("[data-branch-filter]").forEach((button) => {
     button.addEventListener("click", () => {
       branchFilterMode = button.getAttribute("data-branch-filter") || "all";
-      renderBranchNavigation(repo);
+      if (selectedBranchName) {
+        const selected = allBranches.find((branch) => branch.name === selectedBranchName);
+        if (selected && ((branchFilterMode === "local" && selected.is_remote) || (branchFilterMode === "remote" && !selected.is_remote))) {
+          selectedBranchName = null;
+        }
+      }
+      renderSelectedRepositoryDetails();
     });
   });
   container.querySelectorAll("[data-branch-name]").forEach((button) => {
@@ -528,7 +534,7 @@ function updateRepositoryCiPanel(repo, details) {
   }
   if (list) {
     list.innerHTML = renderCiCheckRows(details) +
-      (details.message ? '<p class="ci-source-note">' + escapeHtml(details.message) + '</p>' : '');
+      (details.message && details.checks.length ? '<p class="ci-source-note">' + escapeHtml(details.message) + '</p>' : '');
   }
 }
 
@@ -1196,7 +1202,9 @@ function updateCiCard(repo, details) {
   });
   document.querySelectorAll("[data-ci-list-repo-id]").forEach((element) => {
     if (element.getAttribute("data-ci-list-repo-id") === repo.id) {
-      element.innerHTML = renderCiCheckRows(details);
+      element.innerHTML = renderCiCheckRows(details) + (details.message && details.checks.length
+        ? '<p class="ci-source-note">' + escapeHtml(details.message) + '</p>'
+        : "");
     }
   });
 }
