@@ -86,6 +86,8 @@ struct RemoteHistorySafetyCache {
     refs_fingerprint: String,
     #[serde(default)]
     known_commit_tips: Vec<String>,
+    #[serde(default)]
+    unsafe_path: Option<String>,
     safe: bool,
 }
 
@@ -851,6 +853,10 @@ fn validate_remote_archive_history(
                     if cache.refs_fingerprint == fingerprint {
                         return if cache.safe {
                             Ok(())
+                        } else if let Some(path) = cache.unsafe_path.as_deref() {
+                            Err(format!(
+                                "Remote Archive is blocked: reachable Git history contains excluded secret path '{path}'. Remove it from every reachable commit (rewrite history) before retrying. No archive was created."
+                            ))
                         } else {
                             Err("Remote Archive is blocked because this repository's reachable Git history contains an excluded secret path. Remove it from every reachable commit (rewrite history) before retrying.".to_string())
                         };
@@ -902,7 +908,8 @@ fn validate_remote_archive_history(
             continue;
         }
         tree.walk(TreeWalkMode::PreOrder, |root, entry| {
-            let relative = format!("{root}{}", entry.name().unwrap_or(""));
+            let relative = format!("{root}{}", entry.name().unwrap_or(""))
+                .replace('\\', "/");
             if is_default_secret_path(Path::new(&relative)) {
                 unsafe_path = Some(relative);
                 TreeWalkResult::Abort
@@ -940,6 +947,7 @@ fn validate_remote_archive_history(
         format_version: 2,
         refs_fingerprint: fingerprint,
         known_commit_tips,
+        unsafe_path: unsafe_path.clone(),
         safe,
     };
     let bytes = serde_json::to_vec(&cache)
@@ -1065,6 +1073,13 @@ fn scan_repository(
 
 fn starts_with_git_directory(relative: &Path) -> bool {
     relative.components().next().is_some_and(|part| part.as_os_str() == ".git")
+}
+
+fn is_allowed_git_objects_directory(relative: &Path) -> bool {
+    let normalized = relative.to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    matches!(normalized.as_str(), ".git/objects" | ".git/objects/pack")
 }
 
 fn is_git_objects_directory(relative: &Path) -> bool {
@@ -1474,8 +1489,12 @@ fn validate_manifest(manifest: &SnapshotManifest, snapshot: &ArchiveSnapshot) ->
         if snapshot.kind == ArchiveKind::Local && starts_with_git_directory(path) {
             return Err("Local Archive manifest unexpectedly contains .git.".to_string());
         }
+        let allowed_pack_container = snapshot.kind == ArchiveKind::Remote
+            && is_allowed_git_objects_directory(path);
         if is_default_secret_path(path)
-            || (snapshot.kind == ArchiveKind::Remote && is_git_sensitive_path(path))
+            || (snapshot.kind == ArchiveKind::Remote
+                && is_git_sensitive_path(path)
+                && !allowed_pack_container)
         {
             return Err(format!("Restore-point manifest contains a restricted directory: {directory}"));
         }
@@ -1834,6 +1853,9 @@ mod tests {
     #[test]
     fn remote_git_metadata_filter_only_allows_generated_pack_and_index_files() {
         assert!(is_git_sensitive_path(Path::new(".git/index")));
+        assert!(is_allowed_git_objects_directory(Path::new(".git/objects")));
+        assert!(is_allowed_git_objects_directory(Path::new(".git/objects/pack")));
+        assert!(!is_allowed_git_objects_directory(Path::new(".git/objects/info")));
         assert!(is_git_sensitive_path(Path::new(".git/objects/loose-object")));
         assert!(is_git_sensitive_path(Path::new(".git/objects/pack/multi-pack-index")));
         assert!(is_git_sensitive_path(Path::new(".git/objects/info/alternates")));
@@ -1858,7 +1880,12 @@ mod tests {
         let error = validate_remote_archive_history(&repo, &archive_root, "secret-history-id").unwrap_err();
         assert!(error.contains("config/.env.production"));
         assert!(!error.contains("never-copy"));
-        assert!(validate_remote_archive_history(&repo, &archive_root, "secret-history-id").is_err());
+        let cached_error = validate_remote_archive_history(
+            &repo,
+            &archive_root,
+            "secret-history-id",
+        ).unwrap_err();
+        assert!(cached_error.contains("config/.env.production"));
         assert!(!archive_root.join(".cloud-node").exists());
         let _ = fs::remove_dir_all(root);
     }
