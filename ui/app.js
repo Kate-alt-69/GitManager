@@ -185,6 +185,7 @@ let connectedAccounts = [];
 let pendingUpdateAlerts = [];
 let pullingRepoPaths = new Set();
 let selectedRepoId = null;
+let repositoryScanInProgress = false;
 let selectedCommitOid = null;
 let requestedFilter = "grouped";
 let indexGroupingMode = "folder";
@@ -202,7 +203,7 @@ let githubIdentity = null;
 let activeCommitHoverKey = null;
 const ciStatusCache = new Map();
 const repositorySettingsCache = new Map();
-const repositorySettingsLoading = new Set();
+const repositorySettingsLoading = new Map();
 const commitDetailsCache = new Map();
 
 async function tauriInvoke(cmd, args) {
@@ -876,11 +877,16 @@ function renderAccountsPage() {
 }
 
 function renderSettingsPage() {
-  if (!document.getElementById("signing-certificates-loaded")) {
+  if (activePage === "settings" && !document.getElementById("signing-certificates-loaded")) {
     const marker=document.createElement("span"); marker.id="signing-certificates-loaded"; marker.hidden=true; document.body.appendChild(marker);
     void refreshWindowsSigningCertificates();
   }
   const roots = appPreferences && Array.isArray(appPreferences.scanRoots) ? appPreferences.scanRoots : [];
+  const scanButton = document.getElementById("btn-scan-repos");
+  if (scanButton) {
+    scanButton.disabled = repositoryScanInProgress;
+    scanButton.textContent = repositoryScanInProgress ? "Scanning…" : "Scan now";
+  }
   const rootSummary = document.getElementById("settings-scan-root-summary");
   if (rootSummary) rootSummary.textContent = roots.length ? roots.length + " scan folder(s) · " + roots.join("  •  ") : "No scan folders configured yet.";
   [
@@ -1297,7 +1303,11 @@ function renderRepositoryDashboard(container) {
       '<section class="dashboard-view">' +
         '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2><p>Your local Git projects will appear here.</p></div>' +
         '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
-        '<div class="dashboard-empty"><strong>No repositories indexed yet</strong><span>Add a project folder or choose the recommended development folders to begin.</span></div>' +
+        '<div class="dashboard-empty ' + (repositoryScanInProgress ? 'dashboard-scan-empty' : '') + '">' +
+          '<strong>' + (repositoryScanInProgress ? 'Scanning your folders…' : 'No repositories indexed yet') + '</strong>' +
+          '<span>' + (repositoryScanInProgress ? 'GitManager is indexing Git folders in the background. You can keep using the app while this runs.' : 'Add a project folder or choose the recommended development folders to begin.') + '</span>' +
+          (repositoryScanInProgress ? '<span class="dashboard-scan-progress" aria-hidden="true"><i></i><i></i><i></i></span>' : '') +
+        '</div>' +
       '</section>';
     const setup = document.getElementById("btn-dashboard-setup");
     if (setup) setup.addEventListener("click", () => openScanSetup(false));
@@ -1318,7 +1328,7 @@ function renderRepositoryDashboard(container) {
     return '<article class="repo-card">' +
       '<button type="button" class="repo-card-open" data-dashboard-repo-id="' + escapeHtml(repo.id) + '">' +
         '<span class="repo-card-top">' +
-          '<img class="repo-card-icon" src="' + escapeHtml(icon) + '" alt="" onerror="this.onerror=null;this.src=\\'' + fallback + '\\';" />' +
+          '<img class="repo-card-icon" src="' + escapeHtml(icon) + '" alt="" data-fallback="' + escapeHtml(fallback) + '" />' +
           '<span class="repo-card-heading"><strong>' + escapeHtml(repo.name || repositoryFullName(repo)) + '</strong><small>' +
             escapeHtml(repositoryFullName(repo)) + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
           '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(provider) + '</span>' +
@@ -1337,7 +1347,7 @@ function renderRepositoryDashboard(container) {
         '<div class="ci-check-list" data-ci-list-repo-id="' + escapeHtml(repo.id) + '"><div class="ci-empty-state">Expand to load individual CI checks.</div></div>' +
       '</details>' +
     '</article>';
-  }).join("");  }).join("");
+  }).join("");
 
   if (repositories.length === 0) {
     container.innerHTML = '<section class="dashboard-view"><div class="dashboard-empty"><strong>No repositories match these filters</strong><span>Try another repository type, availability filter or search term.</span></div></section>';
@@ -1366,7 +1376,8 @@ function renderRepositoryDashboard(container) {
       '<div class="dashboard-heading">' +
         '<div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2>' +
           '<p>' + escapeHtml(roots.length + " scan folder(s) · " + projectCount + " project(s) · " + dependencyCount + " dependency repo(s)") + '</p></div>' +
-        '<div class="dashboard-actions"><button id="btn-dashboard-scan" class="btn btn-secondary">Scan now</button>' +
+        '<div class="dashboard-actions"><button id="btn-dashboard-scan" class="btn btn-secondary" ' + (repositoryScanInProgress ? 'disabled' : '') + '>' +
+          (repositoryScanInProgress ? 'Scanning…' : 'Scan now') + '</button>' +
           '<button id="btn-dashboard-setup" class="btn btn-secondary">Scan folders</button></div>' +
       '</div>' +
       '<div class="dashboard-stats">' +
@@ -1377,6 +1388,11 @@ function renderRepositoryDashboard(container) {
       cardSections +
     '</section>';
 
+  container.querySelectorAll(".repo-card-icon").forEach((image) => {
+    image.addEventListener("error", () => {
+      if (image.dataset.fallback) image.src = image.dataset.fallback;
+    }, { once: true });
+  });
   container.querySelectorAll("[data-dashboard-repo-id]").forEach((button) => {
     button.addEventListener("click", () => {
       selectedRepoId = button.getAttribute("data-dashboard-repo-id");
@@ -1419,18 +1435,23 @@ function repositoryAutomationSettings(repo) {
   return Object.assign(defaultRepositoryLocalSettings(), legacy || {});
 }
 async function ensureRepositoryLocalSettings(repo) {
-  if (!repo || repo.source_kind !== "local_scan" || repositorySettingsCache.has(repo.path) || repositorySettingsLoading.has(repo.path)) return;
-  repositorySettingsLoading.add(repo.path);
-  try {
-    const settings = await tauriInvoke("load_repository_settings", { repoPath:repo.path, repoId:repo.id });
-    repositorySettingsCache.set(repo.path, Object.assign(defaultRepositoryLocalSettings(), settings || {}));
-  } catch (error) {
-    console.warn("Could not load repository-local settings:", error);
-    repositorySettingsCache.set(repo.path, defaultRepositoryLocalSettings());
-  } finally {
-    repositorySettingsLoading.delete(repo.path);
-    if (selectedRepoId === repo.id) renderSelectedRepositoryDetails();
-  }
+  if (!repo || repo.source_kind !== "local_scan" || repositorySettingsCache.has(repo.path)) return;
+  const inFlight = repositorySettingsLoading.get(repo.path);
+  if (inFlight) return inFlight;
+  const task = (async () => {
+    try {
+      const settings = await tauriInvoke("load_repository_settings", { repoPath: repo.path, repoId: repo.id });
+      repositorySettingsCache.set(repo.path, Object.assign(defaultRepositoryLocalSettings(), settings || {}));
+    } catch (error) {
+      console.warn("Could not load repository-local settings:", error);
+      repositorySettingsCache.set(repo.path, defaultRepositoryLocalSettings());
+    } finally {
+      repositorySettingsLoading.delete(repo.path);
+      if (selectedRepoId === repo.id) renderSelectedRepositoryDetails();
+    }
+  })();
+  repositorySettingsLoading.set(repo.path, task);
+  return task;
 }
 async function persistRepositoryLocalSettings(repo, status) {
   const settings = repositoryAutomationSettings(repo);
@@ -1767,11 +1788,14 @@ function renderAll() {
 }
 
 async function runMachineScan(customRoot) {
+  if (repositoryScanInProgress) return;
+  repositoryScanInProgress = true;
   const scanBtn = document.getElementById("btn-scan-repos");
   if (scanBtn) {
     scanBtn.disabled = true;
     scanBtn.textContent = "Scanning repositories…";
   }
+  renderAll();
 
   try {
     const rootPaths = customRoot && customRoot.trim().length > 0
@@ -1792,9 +1816,10 @@ async function runMachineScan(customRoot) {
     console.error("GitManager repository scan failed:", err);
     if (allRepositories.length === 0) allRepositories = [];
   } finally {
+    repositoryScanInProgress = false;
     if (scanBtn) {
       scanBtn.disabled = false;
-      scanBtn.textContent = "Scan for .git Repos";
+      scanBtn.textContent = "Scan now";
     }
     renderAll();
   }
