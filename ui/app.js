@@ -818,7 +818,8 @@ function renderAccountsPage() {
       selectedBranchName = null;
       branchStateRepoId = null;
       const repo = getRepositoryById(id);
-      selectedCommitOid = repo && repo.commits && repo.commits[0] ? repo.commits[0].oid : null;
+      const selectedHead = repo ? latestCommitFor(repo) : null;
+      selectedCommitOid = selectedHead ? selectedHead.oid : null;
       setActivePage("repositories");
       renderSelectedRepositoryDetails();
     });
@@ -966,7 +967,7 @@ function ciStateFor(status, conclusion) {
   if (["failure", "failed", "error", "action_required", "timed_out", "startup_failure", "stale"].includes(raw)) {
     return { label: "Failed", state: "failure" };
   }
-  if (["pending", "running", "in_progress", "queued", "requested", "waiting", "waiting_for_resource", "preparing", "canceling"].includes(raw)) {
+  if (["pending", "running", "in_progress", "queued", "requested", "waiting", "waiting_for_resource", "preparing", "canceling", "created", "scheduled"].includes(raw)) {
     return { label: raw === "queued" || raw === "requested" ? "Queued" : "Running", state: "pending" };
   }
   if (["canceled", "cancelled"].includes(raw)) return { label: "Canceled", state: "neutral" };
@@ -991,6 +992,8 @@ function summarizeCiChecks(checks, message) {
     state = "success";
     label = counts.success + "/" + checks.length + " passed";
   }
+  if (!checks.length && message) label = "CI unavailable";
+  else if (checks.length && counts.neutral === checks.length) label = checks.length + " skipped / neutral";
   return {
     state,
     label,
@@ -1208,7 +1211,8 @@ async function loadRepositoryCi(repo, forceRefresh) {
 }
 
 function refreshDashboardCiStatuses(repositories) {
-  const targets = repositories.slice(0, 24);
+  // Eagerly inspect a small first page; other cards load checks on expansion to bound public API usage.
+  const targets = repositories.slice(0, 12);
   let index = 0;
   const worker = async () => {
     while (index < targets.length) {
@@ -1297,7 +1301,8 @@ function renderRepositoryDashboard(container) {
     button.addEventListener("click", () => {
       selectedRepoId = button.getAttribute("data-dashboard-repo-id");
       const selected = getRepositoryById(selectedRepoId);
-      selectedCommitOid = selected && selected.commits && selected.commits[0] ? selected.commits[0].oid : null;
+      const selectedHead = selected ? latestCommitFor(selected) : null;
+      selectedCommitOid = selectedHead ? selectedHead.oid : null;
       selectedBranchName = null;
       branchStateRepoId = null;
       renderAll();
