@@ -10,7 +10,7 @@ use cloud_node::{
     ProviderKind, ProviderSyncResult, is_default_secret_path,
 };
 use fs2::FileExt;
-use git2::{Repository, TreeWalkMode, TreeWalkResult};
+use git2::{Oid, Repository, TreeWalkMode, TreeWalkResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
@@ -84,6 +84,8 @@ pub struct ArchiveRestoreResult {
 struct RemoteHistorySafetyCache {
     format_version: u16,
     refs_fingerprint: String,
+    #[serde(default)]
+    known_commit_tips: Vec<String>,
     safe: bool,
 }
 
@@ -685,6 +687,27 @@ fn sanitize_remote_url(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+fn remote_commit_tips(repository: &Repository) -> Result<Vec<String>, String> {
+    let references = repository.references()
+        .map_err(|error| format!("Could not enumerate Git refs for Remote Archive security check: {error}"))?;
+    let mut tips = Vec::<String>::new();
+    for reference in references {
+        let reference = reference
+            .map_err(|error| format!("Could not read a Git ref for Remote Archive security check: {error}"))?;
+        if let Ok(commit) = reference.peel_to_commit() {
+            tips.push(commit.id().to_string());
+        }
+    }
+    if let Ok(head) = repository.head() {
+        if let Ok(commit) = head.peel_to_commit() {
+            tips.push(commit.id().to_string());
+        }
+    }
+    tips.sort();
+    tips.dedup();
+    Ok(tips)
+}
+
 fn remote_refs_fingerprint(repository: &Repository) -> Result<String, String> {
     let mut entries = Vec::<String>::new();
     let references = repository.references()
@@ -721,20 +744,25 @@ fn validate_remote_archive_history(
     repository_id: &str,
 ) -> Result<(), String> {
     let fingerprint = remote_refs_fingerprint(repository)?;
+    let current_tips = remote_commit_tips(repository)?;
     let cache_path = archive_root
         .join("repositories")
         .join(repository_id)
         .join("remote")
         .join("history-safety.json");
+    let mut previous_cache = None::<RemoteHistorySafetyCache>;
     if let Ok(bytes) = fs::read(&cache_path) {
-        if bytes.len() <= 4096 {
+        if bytes.len() <= 1024 * 1024 {
             if let Ok(cache) = serde_json::from_slice::<RemoteHistorySafetyCache>(&bytes) {
-                if cache.format_version == 1 && cache.refs_fingerprint == fingerprint {
-                    return if cache.safe {
-                        Ok(())
-                    } else {
-                        Err("Remote Archive is blocked because this repository's reachable Git history contains an excluded secret path. Remove it from every reachable commit (rewrite history) before retrying.".to_string())
-                    };
+                if cache.format_version == 2 {
+                    if cache.refs_fingerprint == fingerprint {
+                        return if cache.safe {
+                            Ok(())
+                        } else {
+                            Err("Remote Archive is blocked because this repository's reachable Git history contains an excluded secret path. Remove it from every reachable commit (rewrite history) before retrying.".to_string())
+                        };
+                    }
+                    previous_cache = Some(cache);
                 }
             }
         }
@@ -742,23 +770,27 @@ fn validate_remote_archive_history(
 
     let mut walker = repository.revwalk()
         .map_err(|error| format!("Could not inspect Git history for Remote Archive: {error}"))?;
-    let references = repository.references()
-        .map_err(|error| format!("Could not enumerate Git refs for Remote Archive: {error}"))?;
-    let mut pushed = false;
-    for reference in references {
-        let reference = reference
-            .map_err(|error| format!("Could not read a Git ref for Remote Archive: {error}"))?;
-        if let Ok(commit) = reference.peel_to_commit() {
-            walker.push(commit.id())
+    let old_tips = previous_cache.as_ref()
+        .filter(|cache| cache.safe)
+        .map(|cache| cache.known_commit_tips.as_slice())
+        .unwrap_or(&[]);
+    for tip in &current_tips {
+        if !old_tips.iter().any(|known| known == tip) {
+            let oid = Oid::from_str(tip)
+                .map_err(|error| format!("Cached Git commit id is invalid: {error}"))?;
+            walker.push(oid)
                 .map_err(|error| format!("Could not walk Git history for Remote Archive: {error}"))?;
-            pushed = true;
         }
     }
-    if !pushed {
-        if let Ok(head) = repository.head() {
-            if let Ok(commit) = head.peel_to_commit() {
-                walker.push(commit.id())
-                    .map_err(|error| format!("Could not walk Git HEAD for Remote Archive: {error}"))?;
+    // Previously verified ref tips are safe traversal boundaries. Hiding each
+    // one lets Git walk only new commits added since the last successful scan.
+    // After a failed scan, do not use these boundaries: a formerly unsafe
+    // commit may still be reachable through a different ref.
+    for tip in old_tips {
+        if let Ok(oid) = Oid::from_str(tip) {
+            if repository.find_commit(oid).is_ok() {
+                walker.hide(oid)
+                    .map_err(|error| format!("Could not bound the incremental Git history scan: {error}"))?;
             }
         }
     }
@@ -795,9 +827,26 @@ fn validate_remote_archive_history(
         return Err("Git refs changed while the Remote Archive security scan was running. Retry the archive.".to_string());
     }
     let safe = unsafe_path.is_none();
+    let mut known_commit_tips = if safe {
+        previous_cache
+            .filter(|cache| cache.safe)
+            .map(|cache| cache.known_commit_tips)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    known_commit_tips.extend(current_tips);
+    known_commit_tips.sort();
+    known_commit_tips.dedup();
+    // Avoid an unbounded per-repository cache if a repo accumulates many ref tips.
+    if known_commit_tips.len() > 4096 {
+        known_commit_tips = known_commit_tips.into_iter().rev().take(2048).collect();
+        known_commit_tips.sort();
+    }
     let cache = RemoteHistorySafetyCache {
-        format_version: 1,
+        format_version: 2,
         refs_fingerprint: fingerprint,
+        known_commit_tips,
         safe,
     };
     let bytes = serde_json::to_vec(&cache)
