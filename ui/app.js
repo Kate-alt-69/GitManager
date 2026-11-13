@@ -198,7 +198,12 @@ let selectedBranchName = null;
 let branchFilterMode = "all";
 let branchSearchQuery = "";
 let branchStateRepoId = null;
+let githubIdentity = null;
+let activeCommitHoverKey = null;
 const ciStatusCache = new Map();
+const repositorySettingsCache = new Map();
+const repositorySettingsLoading = new Set();
+const commitDetailsCache = new Map();
 
 async function tauriInvoke(cmd, args) {
   if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
@@ -427,6 +432,7 @@ function renderBranchNavigation(repo) {
       '" data-branch-name="' + escapeHtml(branch.name) + '" title="' + escapeHtml(tracking) + '" aria-pressed="' + (active ? 'true' : 'false') + '">' +
       '<span class="branch-pill-kind">' + kind + '</span><strong>' + escapeHtml(branch.name) + '</strong>' +
       (branch.is_head ? '<span class="branch-head-label">HEAD</span>' : '') +
+      (branch.is_default ? '<span class="branch-default-label">DEFAULT</span>' : '') +
       (branch.upstream ? '<small>' + escapeHtml(branch.upstream) + '</small>' : '') + '</button>';
   }).join("");
 
@@ -666,6 +672,44 @@ function renderGitTreeGraph(container, commits, selectedOid, onSelectCommit, bra
   });
 }
 
+function positionCommitHoverCard(event) {
+  const tooltip=document.getElementById("commit-hover-card"); if(!tooltip || tooltip.classList.contains("hidden")) return;
+  const margin=12, offset=16, width=tooltip.offsetWidth||340, height=tooltip.offsetHeight||180;
+  const x=event.clientX+offset+width>window.innerWidth-margin?event.clientX-width-offset:event.clientX+offset;
+  const y=event.clientY+offset+height>window.innerHeight-margin?Math.max(margin,window.innerHeight-height-margin):event.clientY+offset;
+  tooltip.style.left=Math.max(margin,x)+"px"; tooltip.style.top=Math.max(margin,y)+"px";
+}
+function commitHoverMarkup(details) {
+  return '<div class="commit-hover-heading"><strong>'+escapeHtml(details.summary)+'</strong><code>'+escapeHtml(details.shortOid)+'</code></div>'+
+    '<div class="commit-hover-author">'+escapeHtml(details.authorName)+' · '+escapeHtml(details.authorEmail)+'</div>'+
+    '<div class="commit-hover-message">'+escapeHtml(details.message||details.summary)+'</div>'+
+    '<div class="commit-hover-meta"><span>'+escapeHtml(details.authoredAt)+'</span><span>'+details.filesChanged+' files</span><span class="commit-hover-add">+'+details.insertions+'</span><span class="commit-hover-del">−'+details.deletions+'</span></div>'+
+    '<code class="commit-hover-sha">'+escapeHtml(details.oid)+'</code>';
+}
+function wireCommitHoverDetails(container) {
+  if(!container||container.dataset.commitHoverWired==="true")return;
+  container.dataset.commitHoverWired="true";
+  container.addEventListener("pointerover",async(event)=>{
+    const target=event.target&&event.target.closest?event.target.closest("[data-oid]"):null;
+    if(!target||!container.contains(target))return;
+    const oid=target.getAttribute("data-oid"),repo=getRepositoryById(selectedRepoId);
+    if(!oid||!repo||repo.source_kind!=="local_scan")return;
+    const key=repo.path+"::"+oid;if(activeCommitHoverKey===key)return;activeCommitHoverKey=key;
+    const tooltip=document.getElementById("commit-hover-card");if(!tooltip)return;
+    tooltip.innerHTML='<div class="commit-hover-loading">Loading commit details…</div>';tooltip.classList.remove("hidden");positionCommitHoverCard(event);
+    try{
+      let details=commitDetailsCache.get(key);
+      if(!details){details=await tauriInvoke("get_commit_details",{repoPath:repo.path,oid});commitDetailsCache.set(key,details);}
+      if(activeCommitHoverKey!==key)return;tooltip.innerHTML=commitHoverMarkup(details);positionCommitHoverCard(event);
+    }catch(error){if(activeCommitHoverKey===key)tooltip.innerHTML='<div class="commit-hover-loading">Could not load commit details: '+escapeHtml((error&&error.message)||error)+'</div>';}
+  });
+  container.addEventListener("pointermove",(event)=>{if(activeCommitHoverKey)positionCommitHoverCard(event);});
+  container.addEventListener("pointerout",(event)=>{
+    const current=event.target&&event.target.closest?event.target.closest("[data-oid]"):null;
+    const next=event.relatedTarget&&event.relatedTarget.closest?event.relatedTarget.closest("[data-oid]"):null;
+    if(current&&current!==next){activeCommitHoverKey=null;const tooltip=document.getElementById("commit-hover-card");if(tooltip)tooltip.classList.add("hidden");}
+  });
+}
 function computeFilteredRepositories() {
   const query = searchQuery.trim().toLowerCase();
   const kindMatched = allRepositories.filter((repo) => {
@@ -832,6 +876,10 @@ function renderAccountsPage() {
 }
 
 function renderSettingsPage() {
+  if (!document.getElementById("signing-certificates-loaded")) {
+    const marker=document.createElement("span"); marker.id="signing-certificates-loaded"; marker.hidden=true; document.body.appendChild(marker);
+    void refreshWindowsSigningCertificates();
+  }
   const roots = appPreferences && Array.isArray(appPreferences.scanRoots) ? appPreferences.scanRoots : [];
   const rootSummary = document.getElementById("settings-scan-root-summary");
   if (rootSummary) rootSummary.textContent = roots.length ? roots.length + " scan folder(s) · " + roots.join("  •  ") : "No scan folders configured yet.";
@@ -1270,25 +1318,26 @@ function renderRepositoryDashboard(container) {
     return '<article class="repo-card">' +
       '<button type="button" class="repo-card-open" data-dashboard-repo-id="' + escapeHtml(repo.id) + '">' +
         '<span class="repo-card-top">' +
-          '<img class="repo-card-icon" src="' + escapeHtml(icon) + '" alt="" onerror="this.onerror=null;this.src=\'' + fallback + '\';" />' +
-          '<span class="repo-card-heading"><strong>' + escapeHtml(repositoryFullName(repo)) + '</strong><small>' +
-            escapeHtml(repo.owner_name || "Local repository") + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
+          '<img class="repo-card-icon" src="' + escapeHtml(icon) + '" alt="" onerror="this.onerror=null;this.src=\\'' + fallback + '\\';" />' +
+          '<span class="repo-card-heading"><strong>' + escapeHtml(repo.name || repositoryFullName(repo)) + '</strong><small>' +
+            escapeHtml(repositoryFullName(repo)) + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
           '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(provider) + '</span>' +
         '</span>' +
-        '<span class="repo-card-commit"><span class="dashboard-label">LATEST COMMIT</span><strong>' + escapeHtml(commitTitle) + '</strong>' +
-          '<small>' + escapeHtml(commitSha + (commitDate ? " · " + commitDate : "")) + '</small></span>' +
-        '<span class="repo-card-meta"><span class="repo-card-branch">⑂ ' + escapeHtml(repo.current_branch || "Detached HEAD") + '</span>' +
-          '<span>' + branchCount + ' branch' + (branchCount === 1 ? '' : 'es') + '</span>' +
+        '<span class="repo-card-commit"><strong>' + escapeHtml(repo.owner_name || "Local repository") + '</strong>' +
+          '<small title="' + escapeHtml(commitTitle) + '">' + escapeHtml(commitTitle) + '</small>' +
+          '<small class="repo-card-commit-meta">' + escapeHtml(commitSha + (commitDate ? " · " + commitDate : "")) + '</small></span>' +
+        '<span class="repo-card-status-row"><span class="repo-card-branch">⑂ ' + escapeHtml(repo.current_branch || "Detached HEAD") + '</span>' +
+          '<span class="repo-card-ci"><span class="ci-state-dot ci-neutral" data-ci-dot-repo-id="' + escapeHtml(repo.id) + '" aria-hidden="true"></span>' +
+          '<span class="dashboard-ci ci-neutral" data-ci-repo-id="' + escapeHtml(repo.id) + '" aria-label="CI status">Checking CI…</span></span></span>' +
+        '<span class="repo-card-meta"><span>' + branchCount + ' branches</span>' +
           '<span class="' + (dirty ? 'repo-dirty' : 'repo-clean') + '">' + (dirty ? dirty + ' changed' : 'Working tree clean') + '</span></span>' +
       '</button>' +
       '<details class="repo-ci-details" data-ci-expand data-repo-id="' + escapeHtml(repo.id) + '">' +
-        '<summary><span class="ci-state-dot ci-neutral" data-ci-dot-repo-id="' + escapeHtml(repo.id) + '" aria-hidden="true"></span>' +
-          '<span class="dashboard-ci ci-neutral" data-ci-repo-id="' + escapeHtml(repo.id) + '" aria-label="CI status">Load CI status</span>' +
-          '<span class="ci-detail-count" data-ci-count-repo-id="' + escapeHtml(repo.id) + '">View checks</span></summary>' +
+        '<summary><span class="ci-detail-count" data-ci-count-repo-id="' + escapeHtml(repo.id) + '">View individual checks</span></summary>' +
         '<div class="ci-check-list" data-ci-list-repo-id="' + escapeHtml(repo.id) + '"><div class="ci-empty-state">Expand to load individual CI checks.</div></div>' +
       '</details>' +
     '</article>';
-  }).join("");
+  }).join("");  }).join("");
 
   if (repositories.length === 0) {
     container.innerHTML = '<section class="dashboard-view"><div class="dashboard-empty"><strong>No repositories match these filters</strong><span>Try another repository type, availability filter or search term.</span></div></section>';
@@ -1359,77 +1408,94 @@ function renderRepositoryDashboard(container) {
   if (scanButton) scanButton.addEventListener("click", () => void runMachineScan());
   refreshDashboardCiStatuses(repositories);
 }
-function repositoryAutomationSettings(repo) {
-  if (!appPreferences.repositorySettings) appPreferences.repositorySettings = {};
-  if (!appPreferences.repositorySettings[repo.id]) {
-    appPreferences.repositorySettings[repo.id] = {
-      autoUpdate: false,
-      keepRemoteClean: false,
-      commitClean: false
-    };
-  }
-  return appPreferences.repositorySettings[repo.id];
+function defaultRepositoryLocalSettings() {
+  return { autoUpdate:false, keepRemoteClean:false, commitClean:false,
+    cleanerIncludeDependencies:false, cleanerIncludeVirtualenvs:false, cleanerExcludePatterns:[] };
 }
-
-async function saveRepositoryAutoUpdate(repo, enabled, checkbox, status) {
+function repositoryAutomationSettings(repo) {
+  const cached = repositorySettingsCache.get(repo.path);
+  if (cached) return cached;
+  const legacy = appPreferences && appPreferences.repositorySettings && appPreferences.repositorySettings[repo.id];
+  return Object.assign(defaultRepositoryLocalSettings(), legacy || {});
+}
+async function ensureRepositoryLocalSettings(repo) {
+  if (!repo || repo.source_kind !== "local_scan" || repositorySettingsCache.has(repo.path) || repositorySettingsLoading.has(repo.path)) return;
+  repositorySettingsLoading.add(repo.path);
+  try {
+    const settings = await tauriInvoke("load_repository_settings", { repoPath:repo.path, repoId:repo.id });
+    repositorySettingsCache.set(repo.path, Object.assign(defaultRepositoryLocalSettings(), settings || {}));
+  } catch (error) {
+    console.warn("Could not load repository-local settings:", error);
+    repositorySettingsCache.set(repo.path, defaultRepositoryLocalSettings());
+  } finally {
+    repositorySettingsLoading.delete(repo.path);
+    if (selectedRepoId === repo.id) renderSelectedRepositoryDetails();
+  }
+}
+async function persistRepositoryLocalSettings(repo, status) {
   const settings = repositoryAutomationSettings(repo);
-  const previous = Boolean(settings.autoUpdate);
+  if (status) status.textContent = "Saving local settings…";
+  try {
+    const saved = await tauriInvoke("save_repository_settings", { repoPath:repo.path, settings });
+    repositorySettingsCache.set(repo.path, Object.assign(defaultRepositoryLocalSettings(), saved || settings));
+    if (status) status.textContent = "Saved in .git/info/gitmanager-settings.json · local to this repository";
+    return true;
+  } catch (error) {
+    if (status) status.textContent = "Could not save local settings: " + String((error && error.message) || error);
+    return false;
+  }
+}
+async function saveRepositoryAutoUpdate(repo, enabled, checkbox, status) {
+  const settings = repositoryAutomationSettings(repo), previous = Boolean(settings.autoUpdate);
   settings.autoUpdate = enabled;
   if (checkbox) checkbox.disabled = true;
   if (status) status.textContent = "Saving…";
   try {
-    appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
-    if (status) status.textContent = enabled
-      ? "Auto Update enabled · clean fast-forwards only"
-      : "Auto Update disabled";
+    const saved = await tauriInvoke("save_repository_settings", { repoPath:repo.path, settings });
+    repositorySettingsCache.set(repo.path, Object.assign(defaultRepositoryLocalSettings(), saved || settings));
+    if (status) status.textContent = enabled ? "Auto Update enabled · clean fast-forwards only" : "Auto Update disabled";
   } catch (error) {
     settings.autoUpdate = previous;
     if (checkbox) checkbox.checked = previous;
     if (status) status.textContent = "Could not save: " + String((error && error.message) || error);
-  } finally {
-    if (checkbox) checkbox.disabled = false;
-  }
+  } finally { if (checkbox) checkbox.disabled = false; }
 }
-
 async function saveRepositoryCommitClean(repo, enabled, checkbox, status) {
-  const previous = Boolean(repositoryAutomationSettings(repo).commitClean);
-  if (enabled && !window.confirm(
-    "Install GitManager's pre-commit hook for this repository? It removes detected generated/dependency paths from the commit index while keeping their files on disk. Existing custom hooks will not be overwritten."
-  )) {
+  const settings = repositoryAutomationSettings(repo), previous = Boolean(settings.commitClean);
+  if (enabled && !window.confirm("Install GitManager's pre-commit hook for this repository? It keeps generated/dependency files on disk and leaves them out of commits. Existing custom hooks will not be overwritten.")) {
     if (checkbox) checkbox.checked = previous;
     return;
   }
-
   if (checkbox) checkbox.disabled = true;
   if (status) status.textContent = enabled ? "Installing pre-commit hook…" : "Removing pre-commit hook…";
   try {
-    const result = await tauriInvoke("set_repository_commit_clean", {
-      repoPath: repo.path,
-      enabled
-    });
-    repositoryAutomationSettings(repo).commitClean = enabled;
-    appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
+    const result = await tauriInvoke("set_repository_commit_clean", { repoPath:repo.path, enabled });
+    settings.commitClean = enabled;
+    const saved = await tauriInvoke("save_repository_settings", { repoPath:repo.path, settings });
+    repositorySettingsCache.set(repo.path, Object.assign(defaultRepositoryLocalSettings(), saved || settings));
     if (status) status.textContent = result.message || (enabled ? "Commit Clean hook installed" : "Commit Clean hook removed");
   } catch (error) {
-    try {
-      await tauriInvoke("set_repository_commit_clean", {
-        repoPath: repo.path,
-        enabled: previous
-      });
-    } catch (rollbackError) {
-      if (status) status.textContent = "Could not apply or roll back hook: " +
-        String((rollbackError && rollbackError.message) || rollbackError);
-    }
-    repositoryAutomationSettings(repo).commitClean = previous;
+    try { await tauriInvoke("set_repository_commit_clean", { repoPath:repo.path, enabled:previous }); }
+    catch (rollbackError) { if (status) status.textContent = "Could not apply or roll back hook: " + String((rollbackError && rollbackError.message) || rollbackError); }
+    settings.commitClean = previous;
     if (checkbox) checkbox.checked = previous;
-    if (status && !status.textContent.startsWith("Could not apply or roll back")) {
-      status.textContent = "Could not update Commit Clean: " + String((error && error.message) || error);
-    }
-  } finally {
-    if (checkbox) checkbox.disabled = false;
-  }
+    if (status && !status.textContent.startsWith("Could not apply or roll back")) status.textContent = "Could not update Commit Clean: " + String((error && error.message) || error);
+  } finally { if (checkbox) checkbox.disabled = false; }
 }
-
+async function saveRepositoryCleanerSettings(repo) {
+  const settings = repositoryAutomationSettings(repo);
+  const dependencies = document.getElementById("repo-cleaner-dependencies");
+  const virtualenvs = document.getElementById("repo-cleaner-virtualenvs");
+  const exclusions = document.getElementById("repo-cleaner-exclusions");
+  const status = document.getElementById("repo-local-settings-status");
+  settings.cleanerIncludeDependencies = Boolean(dependencies && dependencies.checked);
+  settings.cleanerIncludeVirtualenvs = Boolean(virtualenvs && virtualenvs.checked);
+  settings.cleanerExcludePatterns = String(exclusions && exclusions.value || "").split(/\r?\n/).map((line)=>line.trim()).filter(Boolean).slice(0,256);
+  const button = document.getElementById("btn-save-repo-local-settings");
+  if (button) button.disabled = true;
+  try { await persistRepositoryLocalSettings(repo, status); }
+  finally { if (button) button.disabled = false; }
+}
 function renderSelectedRepositoryDetails() {
   const headerEl = document.getElementById("repo-detail-header");
   const treeContainer = document.getElementById("git-tree-container");
@@ -1453,6 +1519,7 @@ function renderSelectedRepositoryDetails() {
   }
   if (homeView) homeView.classList.add("hidden");
   if (detailView) detailView.classList.remove("hidden");
+  if (repo.source_kind === "local_scan") void ensureRepositoryLocalSettings(repo);
 
   const iconSrc = resolveRepoIconUrl(repo);
   const fallbackSrc = fallbackRepoIconDataUri(repo.primary_provider, repo.name);
@@ -1522,6 +1589,9 @@ function renderSelectedRepositoryDetails() {
     });
   }
 
+  const saveLocalSettingsButton = document.getElementById("btn-save-repo-local-settings");
+  if (saveLocalSettingsButton) saveLocalSettingsButton.addEventListener("click", () => void saveRepositoryCleanerSettings(repo));
+
   const backToDashboardBtn = document.getElementById("btn-back-to-dashboard");
   if (backToDashboardBtn) {
     backToDashboardBtn.addEventListener("click", () => {
@@ -1557,6 +1627,7 @@ function renderSelectedRepositoryDetails() {
     selectedCommitOid = clickedCommit.oid;
     renderSelectedRepositoryDetails();
   }, repo.branches || []);
+  wireCommitHoverDetails(treeContainer);
 
   const selectedCommit =
     repo.commits.find((c) => c.oid === selectedCommitOid) || repo.commits[0] || null;
@@ -1630,18 +1701,17 @@ function renderSelectedRepositoryDetails() {
     </div>
 
     <div class="inspector-card-block automation-settings-card">
-      <h4 class="inspector-section-title">Repository Automation</h4>
-      <label class="repository-setting-option">
-        <input id="repo-auto-update" type="checkbox" ${repositoryAutomationSettings(repo).autoUpdate ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} />
-        <span><strong>Auto Update</strong><small>Automatically fast-forward when remote commits arrive, but only if this repository has no uncommitted files and no local-only commits.</small></span>
-      </label>
-      <div id="repo-auto-update-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).autoUpdate ? "Auto Update enabled · clean fast-forwards only" : "Auto Update is off for this repository") : "Available for locally indexed repositories only"}</div>
-      <label class="repository-setting-option">
-        <input id="repo-commit-clean" type="checkbox" ${repositoryAutomationSettings(repo).commitClean ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} />
-        <span><strong>Commit Clean</strong><small>Install a pre-commit hook that omits detected generated/dependency paths from commits while preserving the files in your working tree.</small></span>
-      </label>
+      <h4 class="inspector-section-title">Repository Local Settings</h4>
+      <label class="repository-setting-option"><input id="repo-auto-update" type="checkbox" ${repositoryAutomationSettings(repo).autoUpdate ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} /><span><strong>Auto Update</strong><small>Fast-forward only when this repository is clean and has no local-only commits.</small></span></label>
+      <div id="repo-auto-update-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).autoUpdate ? "Auto Update enabled · clean fast-forwards only" : "Auto Update is off") : "Available for locally indexed repositories only"}</div>
+      <label class="repository-setting-option"><input id="repo-commit-clean" type="checkbox" ${repositoryAutomationSettings(repo).commitClean ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} /><span><strong>Commit Clean</strong><small>Use a pre-commit hook to omit generated files from commits without deleting them.</small></span></label>
       <div id="repo-commit-clean-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).commitClean ? "Commit Clean hook enabled" : "Commit Clean hook is not installed") : "Available for locally indexed repositories only"}</div>
-      <p class="repository-setting-note">Auto Update requires the Background Service and only performs clean fast-forwards. Commit Clean uses the repository's default Git hooks folder and refuses to replace existing custom pre-commit hooks. Keep Remote Clean remains a separate follow-up workflow.</p>
+      <label class="repository-setting-option"><input id="repo-cleaner-dependencies" type="checkbox" ${repositoryAutomationSettings(repo).cleanerIncludeDependencies ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} /><span><strong>Include dependencies in Cleaner</strong><small>Allow preview to include dependency folders such as node_modules.</small></span></label>
+      <label class="repository-setting-option"><input id="repo-cleaner-virtualenvs" type="checkbox" ${repositoryAutomationSettings(repo).cleanerIncludeVirtualenvs ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} /><span><strong>Include Python virtual environments</strong><small>Allow validated virtual environments in this repository's cleanup preview.</small></span></label>
+      <div class="repository-local-exclusions"><label for="repo-cleaner-exclusions">Cleaner exclusions</label><textarea id="repo-cleaner-exclusions" rows="4" placeholder=".next/&#10;generated/*.lock" ${repo.source_kind !== "local_scan" ? "disabled" : ""}>${escapeHtml((repositoryAutomationSettings(repo).cleanerExcludePatterns || []).join("\n"))}</textarea><small>One relative path or glob per line. Stored only in .git/info/gitmanager-settings.json and never committed.</small></div>
+      <div class="settings-actions"><button id="btn-save-repo-local-settings" class="btn btn-secondary" type="button" ${repo.source_kind !== "local_scan" ? "disabled" : ""}>Save local settings</button></div>
+      <div id="repo-local-settings-status" class="repository-setting-status" role="status">Saved separately for this repository.</div>
+      <p class="repository-setting-note">Settings live under this repository's Git info directory, not in the worktree. Auto Update requires the Background Service. Existing custom hooks are never overwritten.</p>
     </div>
 
     <div class="inspector-card-block">
@@ -1785,6 +1855,30 @@ function wireTauriBackgroundServiceEvents() {
   }
 }
 
+async function refreshWindowsSigningCertificates() {
+  const select=document.getElementById("signing-certificate-select"),status=document.getElementById("signing-status");if(!select)return;
+  select.disabled=true;if(status)status.textContent="Reading CurrentUser Code Signing certificates…";
+  try{
+    const certificates=await tauriInvoke("list_windows_signing_certificates");
+    select.innerHTML='<option value="">Choose a certificate…</option>'+(certificates||[]).map((certificate)=>
+      '<option value="'+escapeHtml(certificate.thumbprint)+'">'+escapeHtml(certificate.subject)+' · expires '+escapeHtml(certificate.notAfter)+'</option>').join("");
+    if(status)status.textContent=certificates&&certificates.length?certificates.length+" usable Code Signing certificate(s) found.":"No valid Code Signing certificate with a private key was found in CurrentUser\\My.";
+  }catch(error){select.innerHTML='<option value="">Certificates unavailable</option>';if(status)status.textContent=String((error&&error.message)||error);}
+  finally{select.disabled=false;}
+}
+async function signSelectedWindowsInstaller() {
+  const select=document.getElementById("signing-certificate-select"),path=document.getElementById("signing-installer-path");
+  const button=document.getElementById("btn-sign-windows-installer"),status=document.getElementById("signing-status");
+  const thumbprint=select&&select.value,installerPath=path&&path.value.trim();
+  if(!thumbprint||!installerPath){if(status)status.textContent="Choose a certificate and GitManager-Setup.exe first.";return;}
+  if(button){button.disabled=true;button.textContent="Signing…";}if(status)status.textContent="Creating SHA-256 Authenticode signature and timestamp…";
+  try{
+    const result=await tauriInvoke("sign_windows_installer",{installerPath,thumbprint});
+    if(status)status.textContent=result.chainTrusted?"Signature created and trust chain verified. SmartScreen reputation may still build over time.":"Signature created, but Windows could not verify the trust chain. This may be a self-signed or untrusted certificate.";
+  }catch(error){if(status)status.textContent="Signing failed: "+String((error&&error.message)||error);}
+  finally{if(button){button.disabled=false;button.textContent="Sign installer";}}
+}
+
 function wireEventListeners() {
   document.querySelectorAll("[data-page]").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -1808,6 +1902,17 @@ function wireEventListeners() {
   const setupManual = document.getElementById("setup-manual-root");
   const setupSave = document.getElementById("btn-save-scan-setup");
   const kindButtons = document.querySelectorAll("[data-repo-kind]");
+  const refreshSigningButton=document.getElementById("btn-refresh-signing-certs");
+  const browseSigningButton=document.getElementById("btn-browse-signing-installer");
+  const signInstallerButton=document.getElementById("btn-sign-windows-installer");
+  const signingPath=document.getElementById("signing-installer-path");
+  if(refreshSigningButton)refreshSigningButton.addEventListener("click",()=>void refreshWindowsSigningCertificates());
+  if(signInstallerButton)signInstallerButton.addEventListener("click",()=>void signSelectedWindowsInstaller());
+  if(browseSigningButton)browseSigningButton.addEventListener("click",async()=>{
+    const dialog=window.__TAURI__&&window.__TAURI__.dialog;if(!dialog||!dialog.open){if(signingPath)signingPath.focus();return;}
+    const selected=await dialog.open({multiple:false,directory:false,title:"Choose the production GitManager setup installer",filters:[{name:"Windows installer",extensions:["exe","msi"]}]});
+    if(typeof selected==="string"&&signingPath)signingPath.value=selected;
+  });
 
   if (setupOpen) setupOpen.addEventListener("click", () => openScanSetup(false));
   if (setupClose) setupClose.addEventListener("click", () => {
@@ -1950,7 +2055,7 @@ function wireEventListeners() {
       const username = (usernameInput && usernameInput.value.trim()) || "";
       const token = (tokenInput && tokenInput.value.trim()) || "";
 
-      if (!username && !token) {
+      if (!username && !token && provider !== "github") {
         if (errorBox) {
           errorBox.textContent = "Please enter an account username or personal access token.";
           errorBox.classList.remove("hidden");
@@ -2108,6 +2213,19 @@ async function saveScanSetup() {
   }
 }
 
+async function autoConnectGitHubIdentity() {
+  try {
+    const identity=await tauriInvoke("detect_github_identity"); if(!identity||!identity.login)return;
+    githubIdentity=identity;
+    const summary=await tauriInvoke("connect_git_account",{provider:"github",usernameOrHost:"",accessToken:null});
+    connectedAccounts=connectedAccounts.filter((account)=>!(account.provider===summary.provider&&account.account_login.toLowerCase()===summary.account_login.toLowerCase()));
+    connectedAccounts.push(summary);
+    renderConnectedAccountsBar(); renderAccountsPage();
+  } catch (_) {
+    // A missing GitHub CLI session is normal; manual connection remains available.
+  }
+}
+
 async function initializeGitManager() {
   try {
     applicationDirectories = await tauriInvoke("get_application_directories");
@@ -2134,6 +2252,7 @@ async function initializeGitManager() {
   } else {
     void runMachineScan();
   }
+  void autoConnectGitHubIdentity();
 }
 
 window.addEventListener("DOMContentLoaded", () => {
