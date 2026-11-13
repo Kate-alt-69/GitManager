@@ -522,12 +522,16 @@ fn resolve_cleaner_script(app_handle: &AppHandle) -> Result<PathBuf, String> {
 
 #[cfg(target_os = "windows")]
 fn resolve_bundled_python(app_handle: &AppHandle) -> Option<PathBuf> {
-    if let Ok(directories) = application_directories() {
-        let installed = PathBuf::from(directories.data_dir).join("runtime").join("python").join("python.exe");
-        if installed.is_file() { return Some(installed); }
-    }
+    // Release installers already extract the pinned runtime into the app's resource
+    // directory. Prefer that copy; the per-user data location is a safe migration/
+    // development fallback and never a machine-wide Python installation.
     app_handle.path().resolve("python/python.exe", BaseDirectory::Resource)
         .ok().filter(|path| path.is_file())
+        .or_else(|| {
+            application_directories().ok().map(|directories| {
+                PathBuf::from(directories.data_dir).join("runtime").join("python").join("python.exe")
+            }).filter(|path| path.is_file())
+        })
 }
 
 fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value, String> {

@@ -106,7 +106,7 @@ Add --include-virtualenvs to include validated Python environments. --include-wi
 
 A repository can add a .gitmanager-cleanignore file at its root with one relative path or glob pattern per line to exclude cleanup candidates for that repository. Existing .gitignore rules are reported in the preview, and remote cleanup appends a clearly marked GitManager-managed block to .gitignore only when it actually removes tracked generated outputs. Existing user-authored ignore rules are preserved.
 
-The cleaner needs Python 3.10 or newer on PATH (py -3.10, py -3, python3, or python). The native GitManager app remains Rust/Tauri; Python is only used when invoking the cleaner. Automatic commit hooks and unattended Keep Remote Clean scheduling are intentionally not enabled by this first cleaner integration.
+The Windows setup installer includes a pinned, checksum-verified CPython 3.14.10 embeddable runtime as an app-local resource. The NSIS post-install hook runs after the installer has extracted the application files and verifies that the private interpreter starts successfully. GitManager launches that bundled runtime without opening a console window; it does not install Python machine-wide or modify PATH. Development builds can prepare the same runtime with `python build.py prepare-runtime`. Linux and macOS use an installed Python 3.10+ interpreter for cleaner operations. Python remains isolated to the Developer Cleaner; the desktop app itself is Rust/Tauri.
 
 
 ---
