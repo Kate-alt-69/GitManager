@@ -777,8 +777,7 @@ fn run_signing_powershell(script: &str) -> Result<Value, String> {
     serde_json::from_slice(&output.stdout).map_err(|error| format!("Certificate query returned invalid JSON: {error}"))
 }
 
-#[tauri::command]
-fn list_windows_signing_certificates() -> Result<Vec<WindowsSigningCertificate>, String> {
+fn read_windows_signing_certificates() -> Result<Vec<WindowsSigningCertificate>, String> {
     #[cfg(target_os = "windows")]
     {
         let script = r#"
@@ -808,6 +807,13 @@ ConvertTo-Json -InputObject $items -Compress -Depth 2
     }
 }
 
+#[tauri::command]
+async fn list_windows_signing_certificates() -> Result<Vec<WindowsSigningCertificate>, String> {
+    tokio::task::spawn_blocking(read_windows_signing_certificates)
+        .await
+        .map_err(|error| format!("Certificate discovery task failed: {error}"))?
+}
+
 #[cfg(target_os = "windows")]
 fn find_windows_signtool() -> Option<PathBuf> {
     let mut candidates = Vec::new();
@@ -824,8 +830,7 @@ fn find_windows_signtool() -> Option<PathBuf> {
     candidates.into_iter().next()
 }
 
-#[tauri::command]
-fn sign_windows_installer(installer_path: String, thumbprint: String) -> Result<Value, String> {
+fn sign_windows_installer_blocking(installer_path: String, thumbprint: String) -> Result<Value, String> {
     #[cfg(target_os = "windows")]
     {
         let clean_thumbprint = thumbprint.chars().filter(|character| character.is_ascii_hexdigit()).collect::<String>();
@@ -836,7 +841,7 @@ fn sign_windows_installer(installer_path: String, thumbprint: String) -> Result<
         if !path.is_file() || !matches!(path.extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase().as_str(), "exe" | "msi") {
             return Err("Choose a Windows .exe or .msi installer file.".to_string());
         }
-        let certificates = list_windows_signing_certificates()?;
+        let certificates = read_windows_signing_certificates()?;
         if !certificates.iter().any(|certificate| certificate.thumbprint.eq_ignore_ascii_case(&clean_thumbprint)) {
             return Err("The selected certificate is missing, expired, has no private key, or lacks Code Signing usage.".to_string());
         }
@@ -875,6 +880,13 @@ fn sign_windows_installer(installer_path: String, thumbprint: String) -> Result<
     }
 }
 
+
+#[tauri::command]
+async fn sign_windows_installer(installer_path: String, thumbprint: String) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || sign_windows_installer_blocking(installer_path, thumbprint))
+        .await
+        .map_err(|error| format!("Installer signing task failed: {error}"))?
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
