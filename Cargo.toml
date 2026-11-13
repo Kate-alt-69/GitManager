@@ -4,6 +4,8 @@ members = [
     "src-tauri/vendor/rbe/atomic-io",
     "src-tauri/vendor/rbe/storage-sync-journal",
     "src-tauri/vendor/rbe/cloud-node",
+    "crates/archive-core",
+    "crates/gitm-cli",
 ]
 resolver = "2"
 
