@@ -1237,6 +1237,8 @@ function refreshDashboardCiStatuses(repositories) {
 function renderRepositoryDashboard(container) {
   const filter = computeFilteredRepositories();
   const repositories = filter.visibleRepos;
+  renderFilterBar(filter.remoteCount, filter.localCount, filter.effectiveMode);
+  renderRepositoryKindFilter();
   const projectCount = allRepositories.length - dependencyRepoIds.size;
   const dependencyCount = dependencyRepoIds.size;
   const remoteCount = allRepositories.filter((repo) => repo.has_remote).length;
@@ -1288,6 +1290,28 @@ function renderRepositoryDashboard(container) {
     '</article>';
   }).join("");
 
+  if (repositories.length === 0) {
+    container.innerHTML = '<section class="dashboard-view"><div class="dashboard-empty"><strong>No repositories match these filters</strong><span>Try another repository type, availability filter or search term.</span></div></section>';
+    return;
+  }
+
+  const groups = new Map();
+  repositories.forEach((repo, index) => {
+    let groupKey = repo.parent_folder || "Repositories";
+    if (indexGroupingMode === "git_dir") {
+      groupKey = repo.git_dir || groupKey;
+    } else if (indexGroupingMode === "provider") {
+      groupKey = repo.has_remote ? "Remote (" + String(repo.primary_provider || "remote").toUpperCase() + ")" : "Local Only (No Remote)";
+    }
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey).push(cards[index]);
+  });
+  const cardSections = Array.from(groups.entries()).map(([groupName, groupCards]) =>
+    '<section class="repo-group-modern"><div class="repo-group-modern-heading"><strong>' + escapeHtml(groupName) +
+    '</strong><span>' + groupCards.length + ' repos</span></div><div class="dashboard-card-grid repo-card-grid">' +
+    groupCards.join("") + '</div></section>'
+  ).join("");
+
   container.innerHTML =
     '<section class="dashboard-view">' +
       '<div class="dashboard-heading">' +
@@ -1301,7 +1325,7 @@ function renderRepositoryDashboard(container) {
         '<div><strong>' + dependencyCount + '</strong><span>Dependencies</span></div>' +
         '<div><strong>' + remoteCount + '</strong><span>Remote-linked</span></div>' +
       '</div>' +
-      '<div class="dashboard-card-grid repo-card-grid">' + cards + '</div>' +
+      cardSections +
     '</section>';
 
   container.querySelectorAll("[data-dashboard-repo-id]").forEach((button) => {
