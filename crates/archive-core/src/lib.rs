@@ -34,7 +34,7 @@ impl ArchiveKind {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
             Self::Remote => "remote",

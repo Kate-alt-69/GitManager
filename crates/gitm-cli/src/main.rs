@@ -132,7 +132,27 @@ fn option_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
 }
 
 fn positional(args: &[String], index: usize) -> Option<&str> {
-    args.iter().filter(|value| !value.starts_with('-')).nth(index).map(String::as_str)
+    let mut found = 0usize;
+    let mut cursor = 0usize;
+    while cursor < args.len() {
+        let value = &args[cursor];
+        if value.starts_with('-') {
+            if !value.contains('=') && cursor + 1 < args.len()
+                && !args[cursor + 1].starts_with('-')
+            {
+                cursor += 2;
+            } else {
+                cursor += 1;
+            }
+            continue;
+        }
+        if found == index {
+            return Some(value.as_str());
+        }
+        found += 1;
+        cursor += 1;
+    }
+    None
 }
 
 fn print_help() {
@@ -287,7 +307,7 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(io::stdout(), crossterm::cursor::Show, LeaveAlternateScreen, ResetColor);
+        let _ = execute!(io::stdout(), crossterm::cursor::Show, LeaveAlternateScreen);
     }
 }
 
@@ -369,7 +389,10 @@ fn draw(
     if color {
         queue!(stdout, SetForegroundColor(Color::DarkGrey)).map_err(|error| error.to_string())?;
     }
-    queue!(stdout, Print(top), ResetColor, Print("\r\n")).map_err(|error| error.to_string())?;
+    queue!(stdout, Print(top), Print("\r\n")).map_err(|error| error.to_string())?;
+    if color {
+        queue!(stdout, ResetColor).map_err(|error| error.to_string())?;
+    }
     for row in rows {
         let clipped = clip(&row, inner);
         let padded = format!("{clipped:<inner$}");
@@ -378,14 +401,20 @@ fn draw(
         } else if color && row.contains("❯") {
             queue!(stdout, SetForegroundColor(Color::Yellow)).map_err(|error| error.to_string())?;
         }
-        queue!(stdout, Print(format!("{vertical} {padded} {vertical}\r\n")), ResetColor)
+        queue!(stdout, Print(format!("{vertical} {padded} {vertical}\r\n")))
             .map_err(|error| error.to_string())?;
+        if color {
+            queue!(stdout, ResetColor).map_err(|error| error.to_string())?;
+        }
     }
     let bottom = format!("{bottom_left}{}{bottom_right}", horizontal.repeat(width.saturating_sub(2)));
     if color {
         queue!(stdout, SetForegroundColor(Color::DarkGrey)).map_err(|error| error.to_string())?;
     }
-    queue!(stdout, Print(bottom), ResetColor).map_err(|error| error.to_string())?;
+    queue!(stdout, Print(bottom)).map_err(|error| error.to_string())?;
+    if color {
+        queue!(stdout, ResetColor).map_err(|error| error.to_string())?;
+    }
     stdout.flush().map_err(|error| error.to_string())
 }
 
