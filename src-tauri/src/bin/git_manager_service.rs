@@ -14,15 +14,16 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-const APP_CONFIG_DIR: &str = "com.gitmanager.desktop";
-
 fn load_user_scan_roots() -> Vec<String> {
-    let config_root = match dirs::config_dir() {
+    let data_root = match dirs::data_local_dir() {
         Some(path) => path,
         None => return Vec::new(),
     };
-    let file_path = config_root
-        .join(APP_CONFIG_DIR)
+    // Match the desktop app's per-user Local AppData layout exactly.
+    let file_path = data_root
+        .join("kastrick's_software")
+        .join("config")
+        .join("GitManager")
         .join("preferences.json");
     let content = match fs::read_to_string(file_path) {
         Ok(value) if value.len() <= 256 * 1024 => value,
