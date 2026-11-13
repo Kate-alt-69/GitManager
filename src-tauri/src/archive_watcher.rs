@@ -282,15 +282,9 @@ fn add_watch_target(
 }
 
 fn apply_event(repositories: &mut [WatchedRepository], event: &Event, trigger: &str) {
+    // An event without paths cannot be attributed safely. Ignoring it is
+    // preferable to scheduling every repository and causing a snapshot storm.
     if event.paths.is_empty() {
-        let now = Instant::now();
-        for repository in repositories {
-            if trigger == "change" {
-                repository.last_change = Some(now);
-            } else {
-                repository.pending_commit = Some(now + COMMIT_SETTLE);
-            }
-        }
         return;
     }
 
@@ -369,8 +363,31 @@ fn capture_enabled_archives(
 
 #[cfg(test)]
 mod tests {
-    use super::is_project_file_event;
-    use std::path::Path;
+    use super::{apply_event, is_project_file_event, WatchedRepository};
+    use notify::{Event, EventKind};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn pathless_filesystem_events_do_not_schedule_every_repository() {
+        let repository = WatchedRepository {
+            path: "/projects/sample".to_string(),
+            root: PathBuf::from("/projects/sample"),
+            git_dir: PathBuf::from("/projects/sample/.git"),
+            archive_root: "/backups".to_string(),
+            local_enabled: true,
+            remote_enabled: true,
+            last_change: None,
+            pending_commit: None,
+            last_head: None,
+            capture_in_progress: false,
+        };
+        let mut repositories = vec![repository];
+        let event = Event::new(EventKind::Any);
+        apply_event(&mut repositories, &event, "change");
+        apply_event(&mut repositories, &event, "commit");
+        assert!(repositories[0].last_change.is_none());
+        assert!(repositories[0].pending_commit.is_none());
+    }
 
     #[test]
     fn file_changes_in_git_metadata_do_not_trigger_change_archives() {

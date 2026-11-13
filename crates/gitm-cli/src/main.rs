@@ -109,6 +109,7 @@ fn run() -> Result<(), String> {
         "log" | "history-commits" => command_log(&args[1..]),
         "branch" | "branches" => command_branches(&args[1..]),
         "remote" | "remotes" => command_remotes(&args[1..]),
+        "cleaner" => command_cleaner(&args[1..]),
         "cloud" => command_cloud(&args[1..]),
         "tui" => {
             let path = option_value(&args[1..], "--repo")
@@ -632,6 +633,219 @@ fn command_remotes(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn cleaner_script_path() -> Result<PathBuf, String> {
+    let mut bases = Vec::<PathBuf>::new();
+    if let Ok(executable) = env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            bases.extend(parent.ancestors().take(6).map(Path::to_path_buf));
+        }
+    }
+    if let Ok(current) = env::current_dir() {
+        bases.extend(current.ancestors().take(4).map(Path::to_path_buf));
+    }
+    let mut unique = Vec::<PathBuf>::new();
+    for base in bases {
+        if !unique.contains(&base) {
+            unique.push(base);
+        }
+    }
+    for base in bases {
+        for relative in [
+            Path::new("resources/tools/gitmanager_cleaner.py"),
+            Path::new("tools/gitmanager_cleaner.py"),
+            Path::new("../tools/gitmanager_cleaner.py"),
+        ] {
+            let candidate = base.join(relative);
+            if candidate.is_file() {
+                return candidate.canonicalize().map_err(|error| error.to_string());
+            }
+        }
+    }
+    Err("Could not find the bundled tools/gitmanager_cleaner.py resource. Run gitm from a GitManager installation or source checkout.".to_string())
+}
+
+fn bundled_python_executable() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut bases = Vec::<PathBuf>::new();
+        if let Ok(executable) = env::current_exe() {
+            if let Some(parent) = executable.parent() {
+                bases.extend(parent.ancestors().take(6).map(Path::to_path_buf));
+            }
+        }
+        for base in bases {
+            for relative in [
+                Path::new("resources/python/python.exe"),
+                Path::new("python/python.exe"),
+            ] {
+                let candidate = base.join(relative);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn run_cleaner_helper(args: &[String]) -> Result<serde_json::Value, String> {
+    let script = cleaner_script_path()?;
+    let mut interpreters = Vec::<(String, Vec<String>)>::new();
+    if let Some(python) = bundled_python_executable() {
+        interpreters.push((python.to_string_lossy().to_string(), vec!["-I".to_string()]));
+    }
+    #[cfg(target_os = "windows")]
+    interpreters.extend([
+        ("py".to_string(), vec!["-3.10".to_string(), "-I".to_string()]),
+        ("py".to_string(), vec!["-3".to_string(), "-I".to_string()]),
+        ("python".to_string(), vec!["-I".to_string()]),
+    ]);
+    #[cfg(not(target_os = "windows"))]
+    interpreters.extend([
+        ("python3".to_string(), Vec::new()),
+        ("python".to_string(), Vec::new()),
+    ]);
+
+    let mut last_error = String::new();
+    for (executable, prefix) in interpreters {
+        let version = std::process::Command::new(&executable)
+            .args(&prefix)
+            .args(["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 3)"])
+            .output();
+        match version {
+            Ok(output) if output.status.success() => {}
+            Ok(_) => {
+                last_error = format!("{executable} must be Python 3.10 or newer.");
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                last_error = format!("Could not check {executable}: {error}");
+                continue;
+            }
+        }
+        let output = std::process::Command::new(&executable)
+            .args(&prefix)
+            .arg(&script)
+            .args(args)
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .map_err(|error| format!("Could not start {executable}: {error}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Err(if !stderr.is_empty() { stderr } else if !stdout.is_empty() { stdout } else { format!("Cleaner exited with {}", output.status) });
+        }
+        return serde_json::from_slice(&output.stdout)
+            .map_err(|error| format!("Cleaner returned invalid JSON: {error}"));
+    }
+    Err(if last_error.is_empty() {
+        "No compatible Python 3.10+ runtime was found. The Windows installer includes a private runtime; source checkouts need Python 3.10+ on PATH.".to_string()
+    } else { last_error })
+}
+
+fn command_cleaner(args: &[String]) -> Result<(), String> {
+    let action = args.first().map(String::as_str).unwrap_or("help");
+    let tail = &args[1..];
+    let mut script_args = Vec::<String>::new();
+    match action {
+        "preview" | "plan" | "apply" => {
+            let scope = option_value(tail, "--scope").unwrap_or("repository");
+            let applying = action == "apply";
+            if applying && option_value(tail, "--confirm") != Some("YES") {
+                return Err("Cleanup is destructive. Supply --confirm YES only after reviewing a preview.".to_string());
+            }
+            match (scope, applying) {
+                ("repository", false) | ("system", false) => {
+                    script_args.push("plan".to_string());
+                    script_args.extend(["--scope".to_string(), scope.to_string()]);
+                }
+                ("repository", true) | ("system", true) => {
+                    script_args.push("apply".to_string());
+                    script_args.extend(["--scope".to_string(), scope.to_string()]);
+                    script_args.extend(["--confirm".to_string(), "YES".to_string()]);
+                }
+                ("remote", false) => script_args.push("remote-plan".to_string()),
+                ("remote", true) => {
+                    script_args.extend(["remote-clean".to_string(), "--confirm".to_string(), "YES".to_string(), "--push".to_string()]);
+                }
+                _ => return Err("Cleaner scope must be repository, system, or remote.".to_string()),
+            }
+            if scope == "repository" {
+                let path = option_value(tail, "--path")
+                    .or_else(|| positional(tail, 0))
+                    .unwrap_or(".");
+                script_args.extend(["--path".to_string(), path.to_string()]);
+            }
+            if scope == "remote" {
+                let url = option_value(tail, "--url")
+                    .or_else(|| positional(tail, 0))
+                    .ok_or_else(|| "Remote cleaner requires --url <HTTPS-or-SSH-URL>.".to_string())?;
+                script_args.extend(["--url".to_string(), url.to_string()]);
+                if let Some(branch) = option_value(tail, "--branch") {
+                    script_args.extend(["--branch".to_string(), branch.to_string()]);
+                }
+                if !tail.iter().any(|value| value == "--include-dependencies") {
+                    script_args.push("--no-dependencies".to_string());
+                }
+                if tail.iter().any(|value| value == "--include-virtualenvs") {
+                    script_args.push("--include-virtualenvs".to_string());
+                }
+            } else {
+                if tail.iter().any(|value| value == "--include-dependencies") {
+                    script_args.push("--include-dependencies".to_string());
+                }
+                if tail.iter().any(|value| value == "--include-virtualenvs") {
+                    script_args.push("--include-virtualenvs".to_string());
+                }
+                if tail.iter().any(|value| value == "--include-windows-junk") {
+                    script_args.push("--include-windows-junk".to_string());
+                }
+                if tail.iter().any(|value| value == "--include-tracked") {
+                    script_args.push("--include-tracked".to_string());
+                }
+                if tail.iter().any(|value| value == "--no-build-caches") {
+                    script_args.push("--no-build-caches".to_string());
+                }
+            }
+        }
+        "commit-clean" => {
+            if !tail.iter().any(|value| value == "--yes") && option_value(tail, "--confirm") != Some("YES") {
+                return Err("commit-clean changes the Git index. Review the operation and pass --yes to confirm.".to_string());
+            }
+            let path = option_value(tail, "--path").or_else(|| positional(tail, 0)).unwrap_or(".");
+            script_args.extend(["commit-clean".to_string(), "--path".to_string(), path.to_string()]);
+            if tail.iter().any(|value| value == "--no-dependencies") {
+                script_args.push("--no-dependencies".to_string());
+            }
+        }
+        "hook" => {
+            let mode = tail.first().map(String::as_str).unwrap_or("help");
+            let path = option_value(tail, "--path").or_else(|| positional(&tail[1..], 0)).unwrap_or(".");
+            script_args.extend(["commit-hook".to_string(), "--path".to_string(), path.to_string()]);
+            if matches!(mode, "disable" | "remove" | "uninstall") {
+                script_args.push("--disable".to_string());
+            } else if matches!(mode, "install" | "enable") {
+                let script = cleaner_script_path()?;
+                script_args.extend(["--script".to_string(), script.to_string_lossy().to_string()]);
+            } else {
+                return Err("Use 'gitm cleaner hook install|disable [PATH]'.".to_string());
+            }
+        }
+        "--help" | "-h" | "help" => {
+            println!("gitm cleaner preview [--scope repository|system|remote] [--path PATH] [--url URL] [options]\ngitm cleaner apply ... --confirm YES\ngitm cleaner commit-clean [PATH] --yes\ngitm cleaner hook install|disable [PATH]\n\nPreview never deletes. Apply requires the exact YES confirmation. Remote apply pushes a separate cleanup branch.");
+            return Ok(());
+        }
+        other => return Err(format!("Unknown cleaner action '{other}'. Run 'gitm cleaner --help'.")),
+    }
+
+    let result = run_cleaner_helper(&script_args)?;
+    println!("{}", serde_json::to_string_pretty(&result)
+        .unwrap_or_else(|_| result.to_string()));
+    Ok(())
+}
+
 fn command_cloud(args: &[String]) -> Result<(), String> {
     let action = args.first().map(String::as_str).unwrap_or("status");
     let archive_root = option_value(args, "--archive-root");
@@ -786,6 +1000,10 @@ fn command_help(command: &str) -> &'static str {
         "remote" | "remotes" =>
             "gitm remotes [PATH]\n\
              Inspect remote names and credential-redacted fetch/push URLs.\n",
+        "cleaner" =>
+            "gitm cleaner preview|apply|commit-clean|hook [options]\n\\
+             Preview is read-only. Apply requires --confirm YES.\n\\
+             Uses the packaged Python runtime when available and the same cleaner rules as the desktop.\n",
         "cloud" =>
             "gitm cloud status|sync|configure|disable [options]\n\
              Use status to inspect configuration, sync for an explicit network transfer,\n\
@@ -817,6 +1035,7 @@ fn print_help() {
            gitm log [PATH] [--limit N]\n\
            gitm branches [PATH]\n\
            gitm remotes [PATH]\n\
+           gitm cleaner preview|apply|commit-clean|hook [options]\n\\
            gitm cloud status|sync|configure|disable [options]\n\
            gitm tui [--repo PATH]\n\
            gitm --help | --version\n\
@@ -1228,6 +1447,7 @@ mod tests {
         assert!(super::command_help("scan").contains("Discover local repositories"));
         assert!(super::command_help("inspect").contains("repository identity"));
         assert!(super::command_help("update").contains("never creates merge commits"));
+        assert!(super::command_help("cleaner").contains("Preview is read-only"));
         assert!(super::command_help("not-a-command").contains("Unknown command"));
     }
 

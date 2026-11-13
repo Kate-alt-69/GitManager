@@ -157,6 +157,8 @@ gitm branches .
 gitm remotes .
 gitm update check .
 gitm update pull .
+gitm cleaner preview --scope repository --path .
+gitm cleaner apply --scope repository --path . --confirm YES
 ```
 
 The inspection commands use Git's native repository data. Remote URLs are
@@ -169,6 +171,12 @@ and worktree state. `status`, `log`, `branches` and `remotes` provide
 read-only Git inspection. `update check` fetches origin and calculates
 ahead/behind counts. `update pull` is an explicit fast-forward-only operation:
 it refuses dirty or diverged worktrees and never creates merge commits.
+
+The `cleaner` command reuses the same preview-first helper as the desktop:
+repository/system/remote preview and apply, commit-clean, and commit-hook
+install/disable. Apply requires the exact `--confirm YES`; remote clean publishes
+a separate cleanup branch. The packaged Windows Python runtime is used when
+present; source checkouts require Python 3.10 or newer on PATH.
 
 The no-argument command opens a keyboard-driven TUI. It supports arrow keys,
 WASD, left/right navigation on wider terminals, Enter, Escape/Q, and optional

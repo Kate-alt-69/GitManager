@@ -193,12 +193,13 @@ Secret-bearing `.env`/credential/private-key paths are excluded by default. Remo
 
 The standalone Rust `gitm` CLI provides local repository scanning,
 inspection, status, commit history, branches, remotes, origin update checks,
-fast-forward-only pulls, backup, restore, and cloud synchronization, plus an
-adaptive keyboard/mouse TUI without requiring Node.js or the desktop WebView.
-Cloud Node providers are configured with `gitm cloud configure --file
-provider.json`; the desktop archive panel displays provider status and offers
-an explicit Sync Now action. Provider secrets stay in OS environment variables.
-Google Drive/OneDrive desktop-sync folders can also be selected in Scan Setup as
-local archive destinations.
+fast-forward-only pulls, backup, restore, Cloud Node synchronization, and the
+preview-first Developer Cleaner, plus an adaptive keyboard/mouse TUI without
+requiring Node.js or the desktop WebView. Cloud Node providers can be configured
+from **Scan Setup → Cloud object storage** or with
+`gitm cloud configure --file provider.json`. The desktop archive panel displays
+provider status and offers an explicit Sync Now action. Provider secrets stay
+in OS environment variables. Google Drive/OneDrive desktop-sync folders can
+also be selected in Scan Setup as local archive destinations.
 
 See [docs/archive-storage.md](docs/archive-storage.md).
