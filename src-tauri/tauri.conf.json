@@ -61,7 +61,8 @@
       "minimumSystemVersion": "11.0"
     },
     "resources": {
-      "../tools/gitmanager_cleaner.py": "tools/gitmanager_cleaner.py"
+      "../tools/gitmanager_cleaner.py": "tools/gitmanager_cleaner.py",
+      "../tools/runtime/python": "python"
     }
   }
 }

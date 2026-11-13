@@ -10,3 +10,6 @@ src-tauri/gen/
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Prepared Windows embedded runtime (downloaded and checksum-verified by build.py)
+tools/runtime/python/

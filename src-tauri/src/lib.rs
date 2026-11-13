@@ -519,14 +519,31 @@ fn resolve_cleaner_script(app_handle: &AppHandle) -> Result<PathBuf, String> {
         })
 }
 
+
+#[cfg(target_os = "windows")]
+fn resolve_bundled_python(app_handle: &AppHandle) -> Option<PathBuf> {
+    if let Ok(directories) = application_directories() {
+        let installed = PathBuf::from(directories.data_dir).join("runtime").join("python").join("python.exe");
+        if installed.is_file() { return Some(installed); }
+    }
+    app_handle.path().resolve("python/python.exe", BaseDirectory::Resource)
+        .ok().filter(|path| path.is_file())
+}
+
 fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value, String> {
     let script = resolve_cleaner_script(&app_handle)?;
     #[cfg(target_os = "windows")]
-    let interpreters: Vec<(String, Vec<String>)> = vec![
-        ("py".to_string(), vec!["-3.10".to_string()]),
-        ("py".to_string(), vec!["-3".to_string()]),
-        ("python".to_string(), vec![]),
-    ];
+    let mut interpreters: Vec<(String, Vec<String>)> = Vec::new();
+    #[cfg(target_os = "windows")]
+    if let Some(executable) = resolve_bundled_python(&app_handle) {
+        interpreters.push((executable.to_string_lossy().to_string(), vec!["-I".to_string()]));
+    }
+    #[cfg(target_os = "windows")]
+    interpreters.extend([
+        ("py".to_string(), vec!["-3.10".to_string(), "-I".to_string()]),
+        ("py".to_string(), vec!["-3".to_string(), "-I".to_string()]),
+        ("python".to_string(), vec!["-I".to_string()]),
+    ]);
     #[cfg(not(target_os = "windows"))]
     let interpreters: Vec<(String, Vec<String>)> = vec![
         ("python3".to_string(), vec![]),
@@ -586,7 +603,7 @@ fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value,
     }
 
     if last_error.is_empty() {
-        last_error = "Python 3.10 or newer was not found in PATH (tried py -3.10, py -3, python3, and python).".to_string();
+        last_error = "The bundled Python runtime and compatible system Python interpreters were not found.".to_string();
     }
     Err(last_error)
 }

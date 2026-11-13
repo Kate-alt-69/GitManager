@@ -24,6 +24,7 @@ Features:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -31,6 +32,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Optional, Tuple, List
 
@@ -52,6 +56,122 @@ def log_warn(msg: str) -> None:
 
 def log_err(msg: str) -> None:
     print(f"[ERR ] {msg}", file=sys.stderr)
+
+
+
+PYTHON_EMBED_VERSION = "3.14.10"
+PYTHON_EMBED_URL = (
+    "https://www.python.org/ftp/python/3.14.10/"
+    "python-3.14.10-embed-amd64.zip"
+)
+PYTHON_EMBED_SHA256 = "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159"
+
+
+def prepare_windows_python_runtime(project_root: Path) -> int:
+    """Fetch and verify the isolated CPython runtime used by the bundled cleaner."""
+    if platform.system() != "Windows":
+        log_info("Private Windows Python runtime is only bundled on Windows; skipping.")
+        return 0
+
+    runtime_dir = project_root / "tools" / "runtime" / "python"
+    python_exe = runtime_dir / "python.exe"
+    if python_exe.is_file():
+        code, out, err = run_capture([
+            str(python_exe), "-I", "-c",
+            "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
+        ])
+        if code == 0 and out.startswith(PYTHON_EMBED_VERSION):
+            log_ok(f"Private CPython {out} runtime is already prepared.")
+            return 0
+
+    log_info(f"Preparing isolated CPython {PYTHON_EMBED_VERSION} runtime for the Windows installer...")
+    with tempfile.TemporaryDirectory(prefix="gitmanager-python-") as temporary:
+        archive_path = Path(temporary) / "python-embed.zip"
+        request = urllib.request.Request(
+            PYTHON_EMBED_URL,
+            headers={"User-Agent": "GitManager-Build/1.0"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response, archive_path.open("wb") as output:
+                shutil.copyfileobj(response, output)
+        except Exception as exc:
+            log_err(f"Could not download the official Python embeddable package: {exc}")
+            return 1
+
+        digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        if digest.lower() != PYTHON_EMBED_SHA256:
+            log_err(
+                "Python embeddable package checksum did not match the pinned python.org SHA-256. "
+                f"Expected {PYTHON_EMBED_SHA256}, received {digest}."
+            )
+            return 1
+
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                root = runtime_dir.resolve()
+                for member in archive.infolist():
+                    target = (runtime_dir / member.filename).resolve()
+                    try:
+                        target.relative_to(root)
+                    except ValueError:
+                        log_err(f"Python runtime archive contains an unsafe path: {member.filename}")
+                        return 1
+                if runtime_dir.exists():
+                    shutil.rmtree(runtime_dir)
+                runtime_dir.mkdir(parents=True, exist_ok=True)
+                archive.extractall(runtime_dir)
+        except (OSError, zipfile.BadZipFile) as exc:
+            log_err(f"Could not extract the verified Python runtime: {exc}")
+            return 1
+
+    required = [python_exe, runtime_dir / "python314.zip", runtime_dir / "python314._pth"]
+    missing = [path.name for path in required if not path.is_file()]
+    if missing:
+        log_err("Python runtime is incomplete; missing: " + ", ".join(missing))
+        return 1
+
+    code, out, err = run_capture([
+        str(python_exe), "-I", "-c",
+        "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
+    ])
+    if code != 0 or not out.startswith(PYTHON_EMBED_VERSION):
+        log_err(f"Bundled Python failed its isolated startup check: {err or out or code}")
+        return 1
+
+    log_ok(f"Verified python.org CPython {out} embeddable runtime ({archive_path.stat().st_size if archive_path.exists() else 'downloaded'} bytes downloaded).")
+    return 0
+
+
+def name_windows_setup_installer(project_root: Path) -> Optional[Path]:
+    """Expose a stable, predictable setup.exe name after Tauri has bundled NSIS."""
+    if platform.system() != "Windows":
+        return None
+    output_dir = project_root / "src-tauri" / "target" / "release" / "bundle" / "nsis"
+    if not output_dir.is_dir():
+        log_err(f"NSIS installer output directory does not exist: {output_dir}")
+        return None
+    candidates = sorted(
+        path for path in output_dir.glob("*-setup.exe")
+        if path.name.lower() != "gitmanager-setup.exe"
+    )
+    if not candidates:
+        existing = output_dir / "GitManager-Setup.exe"
+        if existing.is_file() and existing.stat().st_size > 0:
+            return existing
+        log_err("Tauri did not create an NSIS *-setup.exe. The Windows installer is missing.")
+        return None
+    source = candidates[0]
+    destination = output_dir / "GitManager-Setup.exe"
+    try:
+        shutil.copy2(source, destination)
+    except OSError as exc:
+        log_err(f"Could not create GitManager-Setup.exe: {exc}")
+        return None
+    if not destination.is_file() or destination.stat().st_size < 1024 * 1024:
+        log_err("GitManager-Setup.exe is missing or unexpectedly small after bundling.")
+        return None
+    log_ok(f"Created Windows installer: {destination} ({destination.stat().st_size:,} bytes)")
+    return destination
 
 
 def ensure_cargo_in_path() -> None:
@@ -325,6 +445,15 @@ def run_build_or_dev(
         cmd.extend(["check", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
         return subprocess.call(cmd)
 
+    if mode == "build" and platform.system() == "Windows":
+        runtime_result = prepare_windows_python_runtime(project_root)
+        if runtime_result != 0:
+            return runtime_result
+
+    if mode == "build" and not has_cargo_tauri:
+        log_err("The Tauri CLI is required to create GitManager-Setup.exe. Install failed or pass --install-tauri-cli.")
+        return 1
+
     if has_cargo_tauri:
         cmd = ["cargo"]
         if toolchain_arg:
@@ -337,17 +466,25 @@ def run_build_or_dev(
                 cmd.append("--debug")
         log_info(f"Running Pure-Rust Tauri CLI: {' '.join(cmd)}")
         rc = subprocess.call(cmd, cwd=str(src_tauri_dir))
-        if rc == 0 and mode == "build":
-            # Also build the standalone background service executable (`git-manager-service`)
-            svc_cmd = ["cargo"]
-            if toolchain_arg:
-                svc_cmd.append(toolchain_arg)
-            svc_cmd.extend(["build", "--bin", "git-manager-service"])
-            if release:
-                svc_cmd.append("--release")
-            log_info(f"Building Background Update Service binary (`git-manager-service`): {' '.join(svc_cmd)}")
-            subprocess.call(svc_cmd, cwd=str(src_tauri_dir))
-        return rc
+        if rc != 0 or mode != "build":
+            return rc
+
+        # Also build the standalone background update service executable.
+        svc_cmd = ["cargo"]
+        if toolchain_arg:
+            svc_cmd.append(toolchain_arg)
+        svc_cmd.extend(["build", "--bin", "git-manager-service"])
+        if release:
+            svc_cmd.append("--release")
+        log_info(f"Building background service binary: {' '.join(svc_cmd)}")
+        service_rc = subprocess.call(svc_cmd, cwd=str(src_tauri_dir))
+        if service_rc != 0:
+            log_err("The background service binary failed to build.")
+            return service_rc
+
+        if platform.system() == "Windows" and name_windows_setup_installer(project_root) is None:
+            return 1
+        return 0
 
     # Fallback direct Cargo execution
     cmd = ["cargo"]
@@ -367,14 +504,14 @@ def run_build_or_dev(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="GitManager Pure-Rust Tauri v2 Dependency Checker & Build Script"
+        description="GitManager native dependency, runtime and installer build script"
     )
     parser.add_argument(
         "mode",
         nargs="?",
         default="build",
-        choices=["deps", "check", "dev", "build"],
-        help="Action to run: 'deps' (only check dependencies), 'check' (cargo check), 'dev' (run app), or 'build' (compile app).",
+        choices=["deps", "check", "dev", "build", "prepare-runtime"],
+        help="Action: deps, check, dev, build (including the Windows setup installer), or prepare-runtime.",
     )
     parser.add_argument(
         "--release",
@@ -400,6 +537,9 @@ def main() -> int:
     print(" GitManager — Pure-Rust Tauri v2 Dependency & Toolchain Manager")
     print("=" * 72)
 
+    if args.mode == "prepare-runtime":
+        return prepare_windows_python_runtime(project_root)
+
     check_os_system_dependencies()
     sanitize_tauri_v2_config(project_root)
 
@@ -407,7 +547,10 @@ def main() -> int:
     if toolchain_arg is None:
         return 1
 
-    has_cargo_tauri = check_tauri_rust_cli(toolchain_arg, auto_install=args.install_tauri_cli)
+    has_cargo_tauri = check_tauri_rust_cli(
+        toolchain_arg,
+        auto_install=args.install_tauri_cli or args.mode == "build",
+    )
 
     if args.mode == "deps":
         log_ok("All dependency checks finished.")

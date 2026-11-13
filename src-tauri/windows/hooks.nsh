@@ -9,3 +9,25 @@
   CreateDirectory "$INSTDIR"
   SetOutPath "$INSTDIR"
 !macroend
+
+ 
+!include LogicLib.nsh
+
+; Tauri invokes this after files, registry entries and shortcuts are installed.
+; Keep CPython private to the current user and do not touch machine-wide Python.
+!macro NSIS_HOOK_POSTINSTALL
+  StrCpy $0 "$LOCALAPPDATA\kastrick's_software\data\GitManager\runtime\python"
+  CreateDirectory "$0"
+  IfFileExists "$INSTDIR\resources\python\python.exe" 0 python_runtime_missing
+  CopyFiles /SILENT "$INSTDIR\resources\python\*.*" "$0"
+  nsExec::ExecToLog '"$0\python.exe" -I -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"'
+  Pop $1
+  StrCmp $1 "0" python_runtime_ready
+  MessageBox MB_ICONSTOP "GitManager's private Python runtime could not be initialized. Please rerun the installer."
+  Abort
+python_runtime_missing:
+  MessageBox MB_ICONSTOP "The GitManager installer is missing its bundled Python runtime. This package is incomplete."
+  Abort
+python_runtime_ready:
+  DetailPrint "GitManager private Python runtime is ready."
+!macroend
