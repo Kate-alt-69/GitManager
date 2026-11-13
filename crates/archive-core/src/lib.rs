@@ -256,12 +256,14 @@ pub fn capture_repository(
         for source_file in pack_files {
             let file_name = source_file.file_name()
                 .and_then(|name| name.to_str())
+                .map(str::to_owned)
                 .ok_or_else(|| "Generated Git pack filename is not valid UTF-8.".to_string())?;
             let metadata = fs::metadata(&source_file)
                 .map_err(|error| format!("Could not inspect generated Git pack {file_name}: {error}"))?;
+            let relative_path = format!(".git/objects/pack/{file_name}");
             scanned_files.push(ScannedFile {
                 source: source_file,
-                relative_path: format!(".git/objects/pack/{file_name}"),
+                relative_path,
                 size: metadata.len(),
                 mode: file_mode(&metadata),
             });
