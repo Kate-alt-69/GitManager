@@ -1865,3 +1865,27 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
 .brand-logo { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; }
 .btn-primary { background: #238636; border-color: rgba(240,246,252,.1); }
 .btn-primary:hover { background: #2ea043; }
+
+
+/* Group headings and filter controls for the flat, compact repository workspace */
+.repo-group-modern { min-width: 0; margin: 0 0 16px; }
+.repo-group-modern-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 2px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--gm-border);
+}
+.repo-group-modern-heading strong { color: var(--gm-muted); font-size: 10px; font-weight: 650; }
+.repo-group-modern-heading span { color: var(--gm-muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+.repo-page-controls .seg-btn {
+  transition: color .14s ease, background .14s ease, border-color .14s ease;
+}
+.repo-page-controls .seg-btn.active {
+  color: var(--gm-text);
+  background: rgba(56,139,253,.12);
+  border-color: rgba(88,166,255,.45);
+}
+.repo-page-controls .seg-btn:not(.active):hover { color: var(--gm-text); background: rgba(110,118,129,.1); }
