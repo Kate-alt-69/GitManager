@@ -1,6 +1,6 @@
 # GitManager — Native Git Workspace
 
-**GitManager** is a cross-platform Rust desktop application for local Git repositories, remote provider accounts, commit history and background repository updates. It uses top-and-bottom tab navigation with no permanent sidebar. The Repositories page is the local-machine homepage; GitHub/GitLab account repositories live separately under Accounts. The current Tauri 2 shell is the portable host while the Windows-specific wl_ui hosting contract is prepared for its upcoming WinUI 3 / Win32 backends.
+**GitManager** is a **free, open-source** cross-platform Rust desktop application for local Git repositories, remote provider accounts, commit history and background repository updates. It is published by **Kastrick** (Copyright © 2026) under the **Apache License 2.0**. No subscription, paid tier or account is required to use the app. It uses top-and-bottom tab navigation with no permanent sidebar. The Repositories page is the local-machine homepage; GitHub/GitLab account repositories live separately under Accounts. The current Tauri 2 shell is the portable host while the Windows-specific wl_ui hosting contract is prepared for its upcoming WinUI 3 / Win32 backends.
 
 ---
 
@@ -25,6 +25,9 @@ python3 build.py dev
 
 # Build optimized native release binaries (both `git-manager` GUI and `git-manager-service` daemon)
 python3 build.py build
+
+# Prepare the isolated CPython runtime used by Windows installers
+python3 build.py prepare-runtime
 ```
 
 ---
@@ -103,7 +106,7 @@ Add --include-virtualenvs to include validated Python environments. --include-wi
 
 A repository can add a .gitmanager-cleanignore file at its root with one relative path or glob pattern per line to exclude cleanup candidates for that repository. Existing .gitignore rules are reported in the preview, and remote cleanup appends a clearly marked GitManager-managed block to .gitignore only when it actually removes tracked generated outputs. Existing user-authored ignore rules are preserved.
 
-The cleaner needs Python 3.10 or newer on PATH (py -3.10, py -3, python3, or python). The native GitManager app remains Rust/Tauri; Python is only used when invoking the cleaner. Automatic commit hooks and unattended Keep Remote Clean scheduling are intentionally not enabled by this first cleaner integration.
+The Windows setup installer includes a pinned, checksum-verified CPython 3.14.10 embeddable runtime as an app-local resource. The NSIS post-install hook runs after the installer has extracted the application files and verifies that the private interpreter starts successfully. GitManager launches that bundled runtime without opening a console window; it does not install Python machine-wide or modify PATH. Development builds can prepare the same runtime with `python build.py prepare-runtime`. Linux and macOS use an installed Python 3.10+ interpreter for cleaner operations. Python remains isolated to the Developer Cleaner; the desktop app itself is Rust/Tauri.
 
 
 ---
@@ -135,6 +138,28 @@ Keep Remote Clean and Commit Clean remain separate follow-up features; they are 
 The repository inspector can install **Commit Clean** as a Git `pre-commit` hook for a locally indexed repository. On commit, it detects tracked generated/build/dependency paths and removes those paths from the Git index for that commit. It does **not** delete the files from the working tree. Exact paths are added to that repository's local `.git/info/exclude`, preserving the shared `.gitignore` and excluding those generated paths from future `git add .` operations.
 
 The hook requires Python 3.10 or newer. GitManager installs only into the repository's default `.git/hooks` directory, refuses custom `core.hooksPath` configurations, and will not overwrite an existing custom `pre-commit` hook. Disable Commit Clean in the same repository inspector to remove the GitManager-managed hook.
+
+
+---
+
+## 7. Windows production installer and signing
+
+On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager and its background service, and creates:
+
+    target/release/bundle/nsis/GitManager-Setup.exe
+
+The setup installer copies the private CPython runtime after application files have been extracted. It lives under the current user's GitManager data directory and is used only by the bundled Developer Cleaner. It does not install Python machine-wide or modify PATH.
+
+### Sign the production installer from GitManager
+
+1. Import a valid Authenticode **Code Signing** certificate with its private key into the current Windows user's `Cert:\CurrentUser\My` certificate store.
+2. Install the Windows SDK SignTool component.
+3. Open **Settings → Production signing**, refresh certificates, select the certificate and choose `GitManager-Setup.exe`.
+4. Click **Sign installer**. GitManager uses SHA-256, a trusted timestamp and then verifies the signature.
+
+GitManager does not export or store the certificate's private key. A self-signed certificate creates a cryptographic signature but does not establish public trust on other computers. For public downloads, use a certificate chaining to a Windows-trusted code-signing authority; SmartScreen reputation can still take time to build. GitManager itself remains free; code-signing certificates are a separate publisher cost.
+
+For tagged Windows CI releases, configure repository secrets `WINDOWS_SIGNING_CERTIFICATE` (base64 PFX) and `WINDOWS_SIGNING_PASSWORD`, plus the repository variable `WINDOWS_SIGNING_THUMBPRINT`. The workflow imports the certificate only on its ephemeral runner, signs the application, service and setup package, verifies the signature, then removes the temporary PFX and certificate. Never commit PFX files, passwords or private keys.
 
 
 ## 6. Per-user application storage and installation

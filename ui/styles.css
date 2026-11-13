@@ -1889,3 +1889,44 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   border-color: rgba(88,166,255,.45);
 }
 .repo-page-controls .seg-btn:not(.active):hover { color: var(--gm-text); background: rgba(110,118,129,.1); }
+
+
+/* Repository cards and workflow status. */
+.repo-card-open{gap:10px;padding:13px 14px 11px}.repo-card-heading strong{font-size:13px}
+.repo-card-commit{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:baseline;column-gap:8px;row-gap:3px}
+.repo-card-commit>strong{color:var(--gm-muted);font-size:10px;font-weight:600}
+.repo-card-commit>small:not(.repo-card-commit-meta){min-width:0;overflow:hidden;color:var(--gm-text);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.repo-card-commit-meta{grid-column:1/-1}.repo-card-status-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
+.repo-card-ci{display:inline-flex;align-items:center;gap:7px;min-width:0}.repo-card-ci .dashboard-ci{font-size:10px;font-weight:650}
+.repo-card-status-row .repo-card-branch{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.repo-card-meta{padding-top:7px;border-top:1px solid rgba(48,54,61,.56)}
+.ci-state-dot.ci-pending{animation:gm-ci-pulse 1.25s ease-in-out infinite}
+@keyframes gm-ci-pulse{0%,100%{opacity:.58;box-shadow:0 0 0 2px rgba(210,153,34,.08)}50%{opacity:1;box-shadow:0 0 0 5px rgba(210,153,34,.18)}}
+.branch-default-label{flex:0 0 auto;padding:1px 5px;color:#7ee787;background:rgba(63,185,80,.10);border:1px solid rgba(63,185,80,.26);border-radius:4px;font-size:7px;font-weight:800;letter-spacing:.06em}
+.repository-local-exclusions{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.repository-local-exclusions label{color:var(--gm-muted);font-size:10px;font-weight:650}
+.repository-local-exclusions textarea{width:100%;min-height:76px;padding:9px 10px;color:var(--gm-text);background:var(--gm-canvas);border:1px solid var(--gm-border);border-radius:7px;font:10px/1.5 var(--font-mono);resize:vertical}
+.repository-local-exclusions small,.settings-footnote{color:var(--gm-muted);font-size:9px;line-height:1.5}
+.signing-control-row{display:grid;grid-template-columns:170px minmax(0,1fr) auto;align-items:center;gap:9px;margin:10px 0}
+.signing-control-row label{color:var(--gm-muted);font-size:10px}.signing-control-row .select-control{min-width:0;width:100%}
+.signing-status{min-width:0;color:var(--gm-muted);font-size:10px;line-height:1.45}.settings-footnote{margin-top:11px}
+.commit-hover-card{position:fixed;z-index:1000;width:min(360px,calc(100vw - 24px));max-height:min(360px,calc(100vh - 24px));overflow:auto;padding:12px 13px;color:var(--gm-text);background:#1c2128;border:1px solid #484f58;border-radius:9px;box-shadow:0 14px 38px rgba(0,0,0,.42);pointer-events:none;animation:gm-fade-in .12s ease-out both}
+.commit-hover-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}.commit-hover-heading strong{font-size:11px;line-height:1.45}
+.commit-hover-heading code,.commit-hover-sha{color:var(--gm-blue);font:9px var(--font-mono)}
+.commit-hover-author{margin-top:6px;color:var(--gm-muted);font-size:9px;overflow-wrap:anywhere}
+.commit-hover-message{max-height:110px;margin-top:8px;overflow:hidden;color:#c9d1d9;font-size:10px;line-height:1.5;white-space:pre-wrap}
+.commit-hover-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:9px;padding-top:8px;color:var(--gm-muted);border-top:1px solid var(--gm-border);font-size:9px}
+.commit-hover-add{color:var(--gm-green);font-weight:700}.commit-hover-del{color:var(--gm-red);font-weight:700}.commit-hover-loading{color:var(--gm-muted);font-size:10px}
+.commit-hover-sha{display:block;margin-top:8px;overflow-wrap:anywhere;white-space:normal}
+@media(max-width:640px){.signing-control-row{grid-template-columns:1fr}.repo-card-open{padding:12px}}
+@media(prefers-reduced-motion:reduce){.ci-state-dot.ci-pending,.commit-hover-card{animation:none}}
+
+
+/* Non-blocking initial scan feedback. */
+.dashboard-scan-empty { border-style:dashed; }
+.dashboard-scan-progress { display:inline-flex; align-items:center; gap:5px; margin-top:11px; }
+.dashboard-scan-progress i { width:6px; height:6px; border-radius:50%; background:var(--gm-blue); animation:gm-scan-bounce 1.05s ease-in-out infinite; }
+.dashboard-scan-progress i:nth-child(2) { animation-delay:.14s; }
+.dashboard-scan-progress i:nth-child(3) { animation-delay:.28s; }
+@keyframes gm-scan-bounce { 0%,70%,100% { opacity:.35; transform:translateY(0); } 35% { opacity:1; transform:translateY(-4px); } }
+@media(prefers-reduced-motion:reduce) { .dashboard-scan-progress i { animation:none; opacity:1; } }

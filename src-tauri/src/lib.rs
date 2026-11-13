@@ -1,3 +1,4 @@
+mod process_utils;
 pub mod git_info;
 pub mod remote_providers;
 pub mod scanner;
@@ -6,8 +7,9 @@ pub mod watcher_service;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use serde::{Deserialize, Serialize};
+use git2::{Oid, Repository};
+use crate::process_utils::hidden_command;
 use serde_json::Value;
 use tauri::path::BaseDirectory;
 use std::sync::atomic::Ordering;
@@ -35,12 +37,15 @@ pub struct AppState {
     pub watcher: BackgroundWatcherControl,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RepositoryPreferences {
     pub auto_update: bool,
     pub keep_remote_clean: bool,
     pub commit_clean: bool,
+    pub cleaner_include_dependencies: bool,
+    pub cleaner_include_virtualenvs: bool,
+    pub cleaner_exclude_patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +162,95 @@ fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String>
     Ok(preferences)
 }
 
+
+fn repository_settings_path(repo_path: &str) -> Result<PathBuf, String> {
+    if repo_path.trim().is_empty() { return Err("Select a local Git repository first.".to_string()); }
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    if repo.is_bare() { return Err("Repository-local settings require a non-bare working tree.".to_string()); }
+    let info_dir = repo.path().join("info");
+    fs::create_dir_all(&info_dir).map_err(|error| format!("Could not create repository-local Git info directory: {error}"))?;
+    Ok(info_dir.join("gitmanager-settings.json"))
+}
+fn write_repository_settings_file(path: &Path, settings: &RepositoryPreferences) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(settings).map_err(|error| format!("Could not serialize repository settings: {error}"))?;
+    if bytes.len() > 64 * 1024 { return Err("Repository settings exceed the 64 KiB safety limit.".to_string()); }
+    let temporary = path.with_extension("json.tmp");
+    let backup = path.with_extension("json.bak");
+    fs::write(&temporary, bytes).map_err(|error| format!("Could not write temporary repository settings: {error}"))?;
+    let had_previous = path.exists();
+    if had_previous {
+        if backup.exists() { fs::remove_file(&backup).map_err(|error| format!("Could not clear repository settings backup: {error}"))?; }
+        fs::rename(path, &backup).map_err(|error| format!("Could not stage previous repository settings: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        if had_previous { let _ = fs::rename(&backup, path); }
+        return Err(format!("Could not save repository settings: {error}"));
+    }
+    if backup.exists() { let _ = fs::remove_file(&backup); }
+    Ok(())
+}
+#[tauri::command]
+fn load_repository_settings(app_handle: AppHandle, repo_path: String, repo_id: Option<String>) -> Result<RepositoryPreferences, String> {
+    let path = repository_settings_path(&repo_path)?;
+    if path.is_file() {
+        let content = fs::read_to_string(&path).map_err(|error| format!("Could not read repository-local settings: {error}"))?;
+        if content.len() > 64 * 1024 { return Err("Repository settings exceed the 64 KiB safety limit.".to_string()); }
+        return serde_json::from_str(&content).map_err(|error| format!("Repository-local settings are invalid JSON: {error}"));
+    }
+    let legacy = repo_id.and_then(|id| load_app_preferences(app_handle).ok()
+        .and_then(|preferences| preferences.repository_settings.get(&id).cloned()));
+    let settings = legacy.unwrap_or_default();
+    if settings != RepositoryPreferences::default() { write_repository_settings_file(&path, &settings)?; }
+    Ok(settings)
+}
+#[tauri::command]
+fn save_repository_settings(repo_path: String, settings: RepositoryPreferences) -> Result<RepositoryPreferences, String> {
+    if settings.cleaner_exclude_patterns.len() > 256 { return Err("A repository can have at most 256 cleaner exclusion patterns.".to_string()); }
+    let mut normalized = settings;
+    normalized.cleaner_exclude_patterns = normalized.cleaner_exclude_patterns.into_iter()
+        .map(|value| value.trim().replace('\\', "/"))
+        .filter(|value| !value.is_empty() && !value.starts_with('/') && !value.split('/').any(|part| part == ".."))
+        .take(256).collect();
+    let path = repository_settings_path(&repo_path)?;
+    write_repository_settings_file(&path, &normalized)?;
+    Ok(normalized)
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitDetails {
+    oid: String, short_oid: String, summary: String, message: String, author_name: String,
+    author_email: String, authored_at: String, files_changed: usize, insertions: usize, deletions: usize,
+}
+fn read_commit_details(repo_path: &str, oid_text: &str) -> Result<CommitDetails, String> {
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let oid = Oid::from_str(oid_text).map_err(|_| "The selected commit SHA is invalid.".to_string())?;
+    let commit = repo.find_commit(oid).map_err(|error| format!("Could not load selected commit: {error}"))?;
+    let tree = commit.tree().map_err(|error| format!("Could not read commit tree: {error}"))?;
+    let parent_tree = if commit.parent_count() > 0 {
+        Some(commit.parent(0).and_then(|parent| parent.tree()).map_err(|error| format!("Could not read parent commit tree: {error}"))?)
+    } else { None };
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .map_err(|error| format!("Could not compare commit trees: {error}"))?;
+    let stats = diff.stats().map_err(|error| format!("Could not summarize commit changes: {error}"))?;
+    let author = commit.author();
+    let timestamp = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
+        .map(|value| value.format("%Y-%m-%d %H:%M:%S UTC").to_string()).unwrap_or_else(|| "Unknown date".to_string());
+    Ok(CommitDetails {
+        oid: oid.to_string(), short_oid: oid.to_string().chars().take(7).collect(),
+        summary: commit.summary().unwrap_or("(no commit message)").to_string(),
+        message: commit.message().unwrap_or("").trim().to_string(),
+        author_name: author.name().unwrap_or("Unknown Author").to_string(),
+        author_email: author.email().unwrap_or("unknown@local").to_string(),
+        authored_at: timestamp, files_changed: stats.files_changed(),
+        insertions: stats.insertions(), deletions: stats.deletions(),
+    })
+}
+#[tauri::command]
+async fn get_commit_details(repo_path: String, oid: String) -> Result<CommitDetails, String> {
+    tokio::task::spawn_blocking(move || read_commit_details(&repo_path, &oid))
+        .await.map_err(|error| format!("Commit detail task failed: {error}"))?
+}
+
 fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     if roots.len() > 32 {
         return Err("GitManager supports up to 32 scan roots.".to_string());
@@ -235,37 +329,33 @@ fn get_default_scan_directories() -> Vec<String> {
 }
 
 #[tauri::command]
-fn scan_machine_repositories(
-    root_paths: Vec<String>,
-    max_depth: Option<usize>,
-    include_hidden_dirs: Option<bool>,
-    filter_mode: Option<String>,
-    index_dependency_repositories: Option<bool>,
-    state: State<'_, AppState>,
+async fn scan_machine_repositories(
+    root_paths: Vec<String>, max_depth: Option<usize>, include_hidden_dirs: Option<bool>,
+    filter_mode: Option<String>, index_dependency_repositories: Option<bool>, state: State<'_, AppState>,
 ) -> Result<IndexedRepoSummary, String> {
-    let local_repos = scan_repositories(ScanOptions {
-        root_paths,
-        max_depth,
-        include_hidden_dirs,
-        index_dependency_repositories,
-    })?;
-
-    // Local scan results are the local-machine library; remote account results belong in Accounts.
-    let combined = local_repos;
-
-    if let Ok(mut cache) = state.cached_repos.lock() {
-        *cache = combined.clone();
-    }
-
+    let options = ScanOptions { root_paths, max_depth, include_hidden_dirs, index_dependency_repositories };
+    // Directory walking and libgit2 inspection can be slow on large workspaces.
+    // Keep this work off the webview command thread so the desktop UI remains responsive.
+    let local_repos = tokio::task::spawn_blocking(move || scan_repositories(options))
+        .await.map_err(|error| format!("Repository scan task failed: {error}"))??;
+    if let Ok(mut cache) = state.cached_repos.lock() { *cache = local_repos.clone(); }
     let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
-    Ok(build_indexed_summary(combined, &requested))
+    Ok(build_indexed_summary(local_repos, &requested))
+}
+#[tauri::command]
+async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        let workdir = PathBuf::from(repo_path);
+        let git_dir = workdir.join(".git");
+        extract_git_repository_info(&workdir, &git_dir)
+    }).await.map_err(|error| format!("Repository inspection task failed: {error}"))?
 }
 
+
 #[tauri::command]
-fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {
-    let workdir = Path::new(&repo_path);
-    let git_dir = workdir.join(".git");
-    extract_git_repository_info(workdir, &git_dir)
+async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, String> {
+    tokio::task::spawn_blocking(remote_providers::detect_github_identity).await
+        .map_err(|error| format!("GitHub identity detection task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -275,12 +365,13 @@ async fn connect_git_account(
     access_token: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ConnectedAccountSummary, String> {
-    let summary = fetch_remote_account_repositories(ProviderAccountRequest {
-        provider,
-        username_or_host,
-        access_token,
-    })
-    .await?;
+    let summary = if provider.eq_ignore_ascii_case("github") && username_or_host.trim().is_empty()
+        && access_token.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+        tokio::task::spawn_blocking(remote_providers::fetch_github_cli_account).await
+            .map_err(|error| format!("GitHub account connection task failed: {error}"))??
+    } else {
+        fetch_remote_account_repositories(ProviderAccountRequest { provider, username_or_host, access_token }).await?
+    };
 
     if let Ok(mut accounts) = state.connected_accounts.lock() {
         accounts.retain(|a| {
@@ -360,7 +451,7 @@ async fn pull_repository_update(
 }
 
 #[tauri::command]
-fn control_background_service(
+async fn control_background_service(
     enable_in_app: Option<bool>,
     install_os_service: Option<bool>,
     state: State<'_, AppState>,
@@ -370,7 +461,9 @@ fn control_background_service(
     }
 
     if install_os_service == Some(true) {
-        let _ = register_os_background_service()?;
+        tokio::task::spawn_blocking(register_os_background_service)
+            .await
+            .map_err(|error| format!("Background service registration task failed: {error}"))??;
         state
             .watcher
             .os_service_registered
@@ -429,14 +522,35 @@ fn resolve_cleaner_script(app_handle: &AppHandle) -> Result<PathBuf, String> {
         })
 }
 
+
+#[cfg(target_os = "windows")]
+fn resolve_bundled_python(app_handle: &AppHandle) -> Option<PathBuf> {
+    // Release installers already extract the pinned runtime into the app's resource
+    // directory. Prefer that copy; the per-user data location is a safe migration/
+    // development fallback and never a machine-wide Python installation.
+    app_handle.path().resolve("python/python.exe", BaseDirectory::Resource)
+        .ok().filter(|path| path.is_file())
+        .or_else(|| {
+            application_directories().ok().map(|directories| {
+                PathBuf::from(directories.data_dir).join("runtime").join("python").join("python.exe")
+            }).filter(|path| path.is_file())
+        })
+}
+
 fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value, String> {
     let script = resolve_cleaner_script(&app_handle)?;
     #[cfg(target_os = "windows")]
-    let interpreters: Vec<(String, Vec<String>)> = vec![
-        ("py".to_string(), vec!["-3.10".to_string()]),
-        ("py".to_string(), vec!["-3".to_string()]),
-        ("python".to_string(), vec![]),
-    ];
+    let mut interpreters: Vec<(String, Vec<String>)> = Vec::new();
+    #[cfg(target_os = "windows")]
+    if let Some(executable) = resolve_bundled_python(&app_handle) {
+        interpreters.push((executable.to_string_lossy().to_string(), vec!["-I".to_string()]));
+    }
+    #[cfg(target_os = "windows")]
+    interpreters.extend([
+        ("py".to_string(), vec!["-3.10".to_string(), "-I".to_string()]),
+        ("py".to_string(), vec!["-3".to_string(), "-I".to_string()]),
+        ("python".to_string(), vec!["-I".to_string()]),
+    ]);
     #[cfg(not(target_os = "windows"))]
     let interpreters: Vec<(String, Vec<String>)> = vec![
         ("python3".to_string(), vec![]),
@@ -445,10 +559,10 @@ fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value,
 
     let mut last_error = String::new();
     for (executable, prefix) in interpreters {
-        let version_check = Command::new(&executable)
-            .args(&prefix)
-            .args(["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 3)"])
-            .output();
+        let mut version_command = hidden_command(&executable);
+        version_command.args(&prefix)
+            .args(["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 3)"]);
+        let version_check = version_command.output();
         match version_check {
             Ok(result) if result.status.success() => {}
             Ok(_) => {
@@ -462,12 +576,10 @@ fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value,
             }
         }
 
-        let output = Command::new(&executable)
-            .args(&prefix)
-            .arg(&script)
-            .args(&args)
-            .env("PYTHONUTF8", "1")
-            .output();
+        let mut run_command = hidden_command(&executable);
+        run_command.args(&prefix).arg(&script).args(&args)
+            .env("PYTHONUTF8", "1").env("PYTHONDONTWRITEBYTECODE", "1");
+        let output = run_command.output();
 
         let output = match output {
             Ok(value) => value,
@@ -498,7 +610,7 @@ fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value,
     }
 
     if last_error.is_empty() {
-        last_error = "Python 3.10 or newer was not found in PATH (tried py -3.10, py -3, python3, and python).".to_string();
+        last_error = "The bundled Python runtime and compatible system Python interpreters were not found.".to_string();
     }
     Err(last_error)
 }
@@ -649,6 +761,140 @@ async fn cleaner_apply(
 }
 
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowsSigningCertificate {
+    thumbprint: String,
+    subject: String,
+    not_after: String,
+}
+
+#[cfg(target_os = "windows")]
+fn run_signing_powershell(script: &str) -> Result<Value, String> {
+    let mut command = hidden_command("powershell.exe");
+    command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .env("POWERSHELL_TELEMETRY_OPTOUT", "1");
+    let output = command.output().map_err(|error| format!("Could not start PowerShell: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() { format!("PowerShell exited with {}.", output.status) } else { stderr });
+    }
+    if output.stdout.is_empty() { return Ok(Value::Array(Vec::new())); }
+    serde_json::from_slice(&output.stdout).map_err(|error| format!("Certificate query returned invalid JSON: {error}"))
+}
+
+fn read_windows_signing_certificates() -> Result<Vec<WindowsSigningCertificate>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+$now = Get-Date
+$items = @(Get-ChildItem -Path Cert:\CurrentUser\My | Where-Object {
+    $_.HasPrivateKey -and $_.NotBefore -le $now -and $_.NotAfter -gt $now -and
+    (@($_.EnhancedKeyUsageList | ForEach-Object { $_.ObjectId.Value }) -contains '1.3.6.1.5.5.7.3.3')
+} | ForEach-Object {
+    [PSCustomObject]@{ thumbprint = $_.Thumbprint; subject = $_.Subject; notAfter = $_.NotAfter.ToString('yyyy-MM-dd') }
+})
+ConvertTo-Json -InputObject $items -Compress -Depth 2
+"#;
+        let value = run_signing_powershell(script)?;
+        if value.is_null() { return Ok(Vec::new()); }
+        if let Some(items) = value.as_array() {
+            return items.iter().cloned()
+                .map(|item| serde_json::from_value(item).map_err(|error| format!("Invalid certificate result: {error}")))
+                .collect();
+        }
+        return Ok(vec![serde_json::from_value(value)
+            .map_err(|error| format!("Invalid certificate result: {error}"))?]);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Windows Authenticode signing is available only on Windows.".to_string())
+    }
+}
+
+#[tauri::command]
+async fn list_windows_signing_certificates() -> Result<Vec<WindowsSigningCertificate>, String> {
+    tokio::task::spawn_blocking(read_windows_signing_certificates)
+        .await
+        .map_err(|error| format!("Certificate discovery task failed: {error}"))?
+}
+
+#[cfg(target_os = "windows")]
+fn find_windows_signtool() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for env_name in ["ProgramFiles(x86)", "ProgramFiles"] {
+        let root = match std::env::var_os(env_name) { Some(value) => PathBuf::from(value), None => continue };
+        let bin_root = root.join("Windows Kits").join("10").join("bin");
+        let entries = match fs::read_dir(bin_root) { Ok(value) => value, Err(_) => continue };
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("x64").join("signtool.exe");
+            if candidate.is_file() { candidates.push(candidate); }
+        }
+    }
+    candidates.sort_by(|left, right| right.to_string_lossy().cmp(&left.to_string_lossy()));
+    candidates.into_iter().next()
+}
+
+fn sign_windows_installer_blocking(installer_path: String, thumbprint: String) -> Result<Value, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let clean_thumbprint = thumbprint.chars().filter(|character| character.is_ascii_hexdigit()).collect::<String>();
+        if clean_thumbprint.len() != 40 {
+            return Err("Select a valid SHA-1 thumbprint from the current-user Code Signing certificate store.".to_string());
+        }
+        let path = fs::canonicalize(&installer_path).map_err(|error| format!("Could not resolve installer file: {error}"))?;
+        if !path.is_file() || !matches!(path.extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase().as_str(), "exe" | "msi") {
+            return Err("Choose a Windows .exe or .msi installer file.".to_string());
+        }
+        let certificates = read_windows_signing_certificates()?;
+        if !certificates.iter().any(|certificate| certificate.thumbprint.eq_ignore_ascii_case(&clean_thumbprint)) {
+            return Err("The selected certificate is missing, expired, has no private key, or lacks Code Signing usage.".to_string());
+        }
+        let signtool = find_windows_signtool()
+            .ok_or_else(|| "Windows SDK SignTool was not found. Install the Windows 10/11 SDK signing tools.".to_string())?;
+
+        let mut sign = hidden_command(&signtool);
+        sign.args(["sign", "/sha1", &clean_thumbprint, "/fd", "SHA256",
+            "/tr", "https://timestamp.digicert.com", "/td", "SHA256",
+            "/d", "GitManager", "/du", "https://github.com/Kate-alt-69/GitManager"])
+            .arg(&path);
+        let signed = sign.output().map_err(|error| format!("Could not start SignTool: {error}"))?;
+        if !signed.status.success() {
+            let stderr = String::from_utf8_lossy(&signed.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&signed.stdout).trim().to_string();
+            return Err(format!("SignTool could not sign the installer: {}", if stderr.is_empty() { stdout } else { stderr }));
+        }
+
+        let mut verify = hidden_command(&signtool);
+        verify.args(["verify", "/pa", "/v"]).arg(&path);
+        let verified = verify.output().map_err(|error| format!("Could not verify signed installer: {error}"))?;
+        let stdout = String::from_utf8_lossy(&verified.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&verified.stderr).trim().to_string();
+        Ok(serde_json::json!({
+            "path": path.to_string_lossy(),
+            "thumbprint": clean_thumbprint,
+            "signatureCreated": true,
+            "chainTrusted": verified.status.success(),
+            "verification": if stdout.is_empty() { stderr } else { stdout }
+        }))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (installer_path, thumbprint);
+        Err("Windows Authenticode signing is available only on Windows.".to_string())
+    }
+}
+
+
+#[tauri::command]
+async fn sign_windows_installer(installer_path: String, thumbprint: String) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || sign_windows_installer_blocking(installer_path, thumbprint))
+        .await
+        .map_err(|error| format!("Installer signing task failed: {error}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -673,8 +919,14 @@ pub fn run() {
             get_application_directories,
             load_app_preferences,
             save_app_preferences,
+            load_repository_settings,
+            save_repository_settings,
+            get_commit_details,
+            list_windows_signing_certificates,
+            sign_windows_installer,
             scan_machine_repositories,
             inspect_repository,
+            detect_github_identity,
             connect_git_account,
             check_repo_updates_now,
             pull_repository_update,

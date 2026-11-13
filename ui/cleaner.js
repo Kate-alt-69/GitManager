@@ -51,8 +51,14 @@
     invalidatePreview();
   }
 
-  function openDialog() {
+  async function openDialog() {
     const repo = selectedRepo();
+    if (repo && repo.source_kind === "local_scan" && typeof ensureRepositoryLocalSettings === "function") {
+      await ensureRepositoryLocalSettings(repo);
+    }
+    const localSettings = repo && typeof repositoryAutomationSettings === "function"
+      ? repositoryAutomationSettings(repo)
+      : {};
     const endpoint = repo && repo.remotes
       ? (repo.remotes.find((remote) => remote.name === "origin") || repo.remotes[0])
       : null;
@@ -61,9 +67,9 @@
     byId("cleaner-remote-url").value = (repo && repo.primary_remote_url) || (endpoint && endpoint.url) || "";
     byId("cleaner-remote-branch").value = "";
     byId("cleaner-confirm").value = "";
-    ["cleaner-include-dependencies", "cleaner-include-venvs", "cleaner-include-windows-junk"].forEach((id) => {
-      byId(id).checked = false;
-    });
+    byId("cleaner-include-dependencies").checked = Boolean(localSettings.cleanerIncludeDependencies);
+    byId("cleaner-include-venvs").checked = Boolean(localSettings.cleanerIncludeVirtualenvs);
+    byId("cleaner-include-windows-junk").checked = false;
     updateScopeFields();
     setStatus("Ready to preview");
     byId("cleaner-modal-backdrop").classList.remove("hidden");

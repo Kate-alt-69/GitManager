@@ -33,21 +33,81 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Verify Dependencies & Build via Python Build Script
-        run: python3 build.py build --install-tauri-cli
-
-      - name: Name the Windows setup installer
+      - name: Import optional Windows production signing certificate
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+          WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
-          if (-not $installer) { throw "Tauri did not produce an NSIS setup.exe." }
-          Copy-Item $installer.FullName "src-tauri/target/release/bundle/nsis/GitManager-Setup.exe" -Force
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PASSWORD) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
+            Write-Host "::notice::No complete Windows signing credentials are configured. The Windows package will be built unsigned."
+            exit 0
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP "gitmanager-signing.pfx"
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE))
+            $securePassword = ConvertTo-SecureString -String $env:WINDOWS_SIGNING_PASSWORD -Force -AsPlainText
+            $imported = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
+            $expected = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\\s', '').ToUpperInvariant()
+            if (-not ($imported | Where-Object { $_.Thumbprint -eq $expected })) {
+              throw "The imported PFX does not contain WINDOWS_SIGNING_THUMBPRINT."
+            }
+            Write-Host "::notice::Windows production signing certificate imported into the ephemeral runner."
+          } finally {
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify Dependencies & Build via Python Build Script
+        env:
+          WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
+        run: python3 build.py build --install-tauri-cli
+
+      - name: Sign and verify Windows release files
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
+        run: |
+          $installer = "target/release/bundle/nsis/GitManager-Setup.exe"
+          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe was not created." }
+          $targets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", $installer)
+          foreach ($target in $targets) {
+            if (Test-Path -LiteralPath $target) {
+              & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
+              if ($LASTEXITCODE -ne 0) { throw "Signing failed for $target." }
+            }
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
+            $kits = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\bin"
+            if (-not (Test-Path $kits)) { $kits = Join-Path $env:ProgramFiles "Windows Kits\10\bin" }
+            $signtool = Get-ChildItem -LiteralPath $kits -Directory | Sort-Object Name -Descending |
+              ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
+              Where-Object { Test-Path $_ } | Select-Object -First 1
+            foreach ($target in $targets) {
+              if (Test-Path $target) { & $signtool verify /pa /v $target; if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $target" } }
+            }
+          }
+
+      - name: Remove imported signing certificate
+        if: runner.os == 'Windows' && always()
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
+        run: |
+          $thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\\s', '').ToUpperInvariant()
+          if ($thumbprint) {
+            Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $thumbprint } |
+              Remove-Item -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Upload platform installers
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-installers-${{ matrix.platform }}
-          path: src-tauri/target/release/bundle/**
+          path: target/release/bundle/**
           if-no-files-found: error
           compression-level: 9

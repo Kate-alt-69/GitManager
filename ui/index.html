@@ -74,6 +74,13 @@
             <section class="settings-card settings-card-wide"><div class="settings-card-heading"><div><h3>Repository discovery</h3><p>Choose which folders GitManager scans for local Git repositories.</p></div><span class="settings-icon">⌕</span></div><div id="settings-scan-root-summary" class="settings-value">Loading scan folders…</div><div class="settings-actions"><button id="btn-open-scan-settings" class="btn btn-secondary" type="button">Configure folders</button><button id="btn-scan-repos" class="btn btn-primary" type="button">Scan now</button></div><div class="quick-scan-row"><input id="scan-path-input" type="text" class="scan-input" placeholder="Optional one-time scan folder…" /><button id="btn-browse-folder" class="btn btn-secondary" type="button">Browse</button></div></section>
             <section class="settings-card"><div class="settings-card-heading"><div><h3>Background updates</h3><p>Check remotes and register the user-level background service.</p></div><span class="settings-icon">↻</span></div><p class="settings-value" id="settings-service-description">The service checks configured local repositories for safe fast-forward updates.</p><div class="settings-actions"><button id="btn-check-updates-now" class="btn btn-secondary" type="button">Check updates</button><button id="btn-register-os-service" class="btn btn-secondary" type="button">Enable background service</button></div></section>
             <section class="settings-card"><div class="settings-card-heading"><div><h3>Developer cleaner</h3><p>Preview generated files and developer caches before cleaning them.</p></div><span class="settings-icon">⌁</span></div><p class="settings-value">Nothing is removed until you inspect a preview and explicitly confirm the action.</p><div class="settings-actions"><button id="btn-open-cleaner" class="btn btn-secondary" type="button">Open Developer Cleaner</button></div></section>
+            <section class="settings-card settings-card-wide">
+              <div class="settings-card-heading"><div><h3>Production signing</h3><p>Sign a Windows installer with a Code Signing certificate already installed for your Windows user.</p></div><span class="settings-icon">✓</span></div>
+              <div class="signing-control-row"><label for="signing-certificate-select">Code Signing certificate</label><select id="signing-certificate-select" class="select-control"><option value="">Load certificates…</option></select><button id="btn-refresh-signing-certs" class="btn btn-secondary" type="button">Refresh</button></div>
+              <div class="quick-scan-row"><input id="signing-installer-path" type="text" class="scan-input" placeholder="Select GitManager-Setup.exe…" /><button id="btn-browse-signing-installer" class="btn btn-secondary" type="button">Choose installer</button></div>
+              <div class="settings-actions"><button id="btn-sign-windows-installer" class="btn btn-primary" type="button">Sign installer</button><span id="signing-status" class="signing-status" role="status">The certificate's private key never leaves Windows Certificate Store.</span></div>
+              <p class="settings-footnote">Requires the Windows SDK SignTool and a valid Authenticode Code Signing certificate. Self-signed certificates are not publicly trusted; a trusted certificate chain is required for public distribution.</p>
+            </section>
             <section class="settings-card settings-card-wide"><div class="settings-card-heading"><div><h3>Storage locations</h3><p>Per-user application files. Configuration and data stay outside the install directory.</p></div><span class="settings-icon">▤</span></div><div class="path-row"><span>Configuration</span><code id="settings-config-path">Resolving…</code></div><div class="path-row"><span>Application data</span><code id="settings-data-path">Resolving…</code></div><div class="path-row"><span>Software root</span><code id="settings-software-root">Resolving…</code></div></section>
           </div>
         </section>
@@ -207,12 +214,12 @@
               </select>
             </div>
             <div class="form-group">
-              <label for="account-username">Account Username / Organization</label>
+              <label for="account-username">Account Username / Organization (optional for GitHub CLI sign-in)</label>
               <input
                 id="account-username"
                 type="text"
                 class="scan-input"
-                placeholder="e.g. octocat, tauri-apps, or gitlab-org"
+                placeholder="Blank = use the active gh auth login"
               />
             </div>
             <div class="form-group">
@@ -221,7 +228,7 @@
                 id="account-token"
                 type="password"
                 class="scan-input"
-                placeholder="ghp_... or glpat-..."
+                placeholder="GitHub / GitLab token (optional)"
               />
             </div>
             <div id="modal-error-box" class="modal-error hidden"></div>
@@ -232,6 +239,7 @@
           </div>
         </div>
       </div>
+      <div id="commit-hover-card" class="commit-hover-card hidden" role="tooltip" aria-live="polite"></div>
       <nav class="bottom-tab-bar" aria-label="Main navigation" role="tablist">
         <button class="bottom-tab active" type="button" role="tab" aria-selected="true" data-page="repositories"><span aria-hidden="true">⌂</span><small>Repositories</small></button>
         <button class="bottom-tab" type="button" role="tab" aria-selected="false" data-page="accounts"><span aria-hidden="true">◎</span><small>Accounts</small></button>

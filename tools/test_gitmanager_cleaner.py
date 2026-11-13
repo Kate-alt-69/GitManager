@@ -143,6 +143,19 @@ class GitManagerCleanerTests(unittest.TestCase):
         plan = cleaner.build_repo_plan(self.root)
         self.assertNotIn(".next", {item["relative_path"] for item in plan["candidates"]})
 
+    def test_gitmanager_local_settings_add_cleaner_exclusions(self):
+        settings = self.root / ".git" / "info" / "gitmanager-settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            '{"cleanerExcludePatterns":["dist/","generated/*.lock","../outside","/absolute"]}',
+            encoding="utf-8",
+        )
+        patterns = cleaner._custom_exclusions(self.root)
+        self.assertIn("dist/", patterns)
+        self.assertIn("generated/*.lock", patterns)
+        self.assertNotIn("../outside", patterns)
+        self.assertNotIn("/absolute", patterns)
+
     def test_remote_urls_are_restricted_to_https_and_ssh(self):
         cleaner._validate_remote_url("https://github.com/example/project.git")
         cleaner._validate_remote_url("git@github.com:example/project.git")

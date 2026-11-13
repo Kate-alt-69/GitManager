@@ -50,7 +50,8 @@
         "compression": "lzma",
         "startMenuFolder": "Kastrick's Software",
         "installerIcon": "icons/icon.ico"
-      }
+      },
+      "signCommand": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ../tools/sign_windows_file.ps1 -FilePath \"%1\""
     },
     "linux": {
       "deb": {
@@ -61,7 +62,13 @@
       "minimumSystemVersion": "11.0"
     },
     "resources": {
-      "../tools/gitmanager_cleaner.py": "tools/gitmanager_cleaner.py"
-    }
+      "../tools/gitmanager_cleaner.py": "tools/gitmanager_cleaner.py",
+      "../tools/runtime/python": "python"
+    },
+    "publisher": "Kastrick",
+    "copyright": "Copyright © 2026 Kastrick",
+    "license": "Apache-2.0",
+    "shortDescription": "A free, native Git workspace manager",
+    "longDescription": "GitManager is a free and open-source Git workspace manager by Kastrick."
   }
 }

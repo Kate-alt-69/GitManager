@@ -14,23 +14,24 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-const APP_CONFIG_DIR: &str = "com.gitmanager.desktop";
-
-fn load_user_preferences() -> (Vec<String>, HashSet<String>) {
-    let config_root = match dirs::config_dir() {
+fn load_user_scan_roots() -> Vec<String> {
+    let data_root = match dirs::data_local_dir() {
         Some(path) => path,
-        None => return (Vec::new(), HashSet::new()),
+        None => return Vec::new(),
     };
-    let file_path = config_root
-        .join(APP_CONFIG_DIR)
+    // Match the desktop app's per-user Local AppData layout exactly.
+    let file_path = data_root
+        .join("kastrick's_software")
+        .join("config")
+        .join("GitManager")
         .join("preferences.json");
     let content = match fs::read_to_string(file_path) {
         Ok(value) if value.len() <= 256 * 1024 => value,
-        _ => return (Vec::new(), HashSet::new()),
+        _ => return Vec::new(),
     };
     let value: Value = match serde_json::from_str(&content) {
         Ok(value) => value,
-        Err(_) => return (Vec::new(), HashSet::new()),
+        Err(_) => return Vec::new(),
     };
 
     let roots = value
@@ -45,35 +46,25 @@ fn load_user_preferences() -> (Vec<String>, HashSet<String>) {
         })
         .unwrap_or_default();
 
-    let auto_update_ids = value
-        .get("repositorySettings")
-        .and_then(Value::as_object)
-        .map(|settings| {
-            settings
-                .iter()
-                .filter_map(|(repo_id, settings)| {
-                    settings
-                        .get("autoUpdate")
-                        .and_then(Value::as_bool)
-                        .filter(|enabled| *enabled)
-                        .map(|_| repo_id.clone())
-                })
-                .collect::<HashSet<_>>()
-        })
-        .unwrap_or_default();
-
-    (roots, auto_update_ids)
+    roots
+}
+fn repository_auto_update_enabled(repo_path: &str) -> bool {
+    let repo = match git2::Repository::open(repo_path) { Ok(value) => value, Err(_) => return false };
+    let settings_file = repo.path().join("info").join("gitmanager-settings.json");
+    let content = match fs::read_to_string(settings_file) { Ok(value) if value.len() <= 64 * 1024 => value, _ => return false };
+    serde_json::from_str::<Value>(&content).ok()
+        .and_then(|value| value.get("autoUpdate").and_then(Value::as_bool)).unwrap_or(false)
 }
 
 fn main() {
     let mut notified_commits: HashSet<String> = HashSet::new();
 
     loop {
-        let (scan_roots, auto_update_ids) = load_user_preferences();
+        let scan_roots = load_user_scan_roots();
         let updates = check_all_repos_for_updates(scan_roots);
 
         for update in updates {
-            let auto_update_allowed = auto_update_ids.contains(&update.repo_id)
+            let auto_update_allowed = repository_auto_update_enabled(&update.repo_path)
                 && update.working_tree_clean
                 && update.commits_ahead == 0;
 

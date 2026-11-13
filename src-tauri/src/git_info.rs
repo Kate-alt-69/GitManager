@@ -28,6 +28,7 @@ pub struct BranchInfo {
     pub is_remote: bool,
     pub target_oid: String,
     pub upstream: Option<String>,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +188,11 @@ pub fn extract_git_repository_info(workdir: &Path, git_dir_path: &Path) -> Resul
         }
     }
 
+    // Resolve the origin default branch from its symbolic remote HEAD. Do not guess.
+    let default_branch = repo.find_reference("refs/remotes/origin/HEAD").ok()
+        .and_then(|reference| reference.symbolic_target().map(str::to_string))
+        .and_then(|target| target.strip_prefix("refs/remotes/origin/").map(str::to_string));
+
     // Map OIDs to branch names & tag names for the full Git tree
     let mut oid_branches: HashMap<String, Vec<String>> = HashMap::new();
     let mut branches_info: Vec<BranchInfo> = Vec::new();
@@ -229,12 +235,16 @@ pub fn extract_git_repository_info(workdir: &Path, git_dir_path: &Path) -> Resul
                     .push(b_name.clone());
             }
 
+            let is_default = default_branch.as_ref().map(|name| {
+                b_name == name.as_str() || b_name == format!("origin/{name}")
+            }).unwrap_or(false);
             branches_info.push(BranchInfo {
                 name: b_name,
                 is_head,
                 is_remote,
                 target_oid,
                 upstream,
+                is_default,
             });
         }
     }

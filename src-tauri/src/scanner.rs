@@ -117,7 +117,7 @@ pub fn scan_repositories(options: ScanOptions) -> Result<Vec<GitRepositoryInfo>,
     .into_iter()
     .collect();
 
-    const MAX_DEPENDENCY_DESCENT: usize = 4;
+    const MAX_DEPENDENCY_DESCENT: usize = 2;
 
     for root in roots {
         let walker = WalkDir::new(&root)
