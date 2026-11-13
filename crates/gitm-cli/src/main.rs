@@ -93,7 +93,7 @@ fn command_list(args: &[String]) -> Result<(), String> {
             snapshot.kind.as_str(),
             snapshot.branch,
             snapshot.file_count,
-            human_bytes(snapshot.archive_bytes)
+            human_bytes(snapshot.stored_bytes)
         );
     }
     Ok(())
@@ -431,7 +431,7 @@ fn print_snapshot(snapshot: &ArchiveSnapshot) {
     println!("Files: {} · source: {} · compressed: {}",
         snapshot.file_count, human_bytes(snapshot.source_bytes), human_bytes(snapshot.archive_bytes));
     println!("SHA-256: {}", snapshot.sha256);
-    println!("Location: {}", snapshot.archive_path);
+    println!("Location: {}", snapshot.manifest_logical_path);
     if !snapshot.excluded_paths.is_empty() {
         println!("Excluded secret/special paths: {}", snapshot.excluded_paths.len());
         for path in snapshot.excluded_paths.iter().take(12) {
