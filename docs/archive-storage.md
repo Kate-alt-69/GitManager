@@ -19,18 +19,26 @@ separately so it can recreate remotes without copying `.git/config` or its
 credential helpers. It also omits Git reflogs, rerere caches, linked-worktree
 metadata and nested Git module stores.
 
-Before copying `.git`, Remote Archive scans the trees of every commit reachable
-from repository refs. If a reachable historical tree contains an excluded
-secret path (for example `.env.production` or `.ssh/id_ed25519`), capture is
-refused before any archive data is written. Remove the path from all reachable
-history (rewrite the affected commits), then retry. The scan is cached against
-the repository's ref fingerprint and is repeated when refs change.
+Before building a Remote Archive pack, GitManager scans the trees of every
+commit reachable from repository refs. If a reachable historical tree contains
+an excluded secret path (for example `.env.production` or `.ssh/id_ed25519`),
+capture is refused before any archive data is written. Remove the path from all
+reachable history (rewrite the affected commits), then retry. The scan is cached
+against the repository's ref fingerprint and is repeated when refs change.
+
+Remote Archive never copies the source `.git/objects` database wholesale. It
+builds a fresh pack containing only commit, tree, blob and annotated-tag objects
+reachable from repository refs (plus a detached HEAD when present). Staged-only
+blobs, dangling/unreachable objects, reflogs, the Git index, hooks and transient
+merge/rebase state are not included. Working-tree file contents are still
+captured separately, including uncommitted and untracked edits; the staging
+state itself is not preserved, so staged changes appear as ordinary worktree
+changes after restore and can be staged again.
 
 This is a path-based protection, not a secret-content scanner: credentials pasted
-into ordinary source files cannot be reliably detected. Unreachable/dangling Git
-objects may also remain in the raw local object database after a history rewrite;
-expire reflogs and run `git gc --prune=now` before making a strict Remote Archive
-when you need those unreferenced objects physically removed.
+into ordinary source files cannot be reliably detected. Repositories with shallow
+history are rejected because a partial object graph cannot provide a complete
+Remote Archive.
 
 ## RBE Cloud Node storage
 

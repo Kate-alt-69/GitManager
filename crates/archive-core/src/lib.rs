@@ -245,8 +245,33 @@ pub fn capture_repository(
     fs::create_dir_all(&staging)
         .map_err(|error| format!("Could not create archive staging directory: {error}"))?;
 
-    let (scanned_files, directories, excluded_paths) =
+    let (mut scanned_files, mut directories, excluded_paths) =
         scan_repository(&source, kind)?;
+    if kind == ArchiveKind::Remote {
+        // Never copy the source object database wholesale. It can contain staged,
+        // dangling or otherwise unreachable secret blobs which are not covered by
+        // the reachable-ref history scan. Build a fresh pack from refs only.
+        let pack_dir = staging.join("reachable-git-pack");
+        let pack_files = write_reachable_git_pack(&repository, &pack_dir)?;
+        for source_file in pack_files {
+            let file_name = source_file.file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "Generated Git pack filename is not valid UTF-8.".to_string())?;
+            let metadata = fs::metadata(&source_file)
+                .map_err(|error| format!("Could not inspect generated Git pack {file_name}: {error}"))?;
+            scanned_files.push(ScannedFile {
+                source: source_file,
+                relative_path: format!(".git/objects/pack/{file_name}"),
+                size: metadata.len(),
+                mode: file_mode(&metadata),
+            });
+        }
+        directories.push(".git/objects".to_string());
+        directories.push(".git/objects/pack".to_string());
+        scanned_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        directories.sort();
+        directories.dedup();
+    }
     let mut files = Vec::with_capacity(scanned_files.len());
     let mut source_bytes = 0u64;
     let mut stored_bytes = 0u64;
@@ -694,18 +719,84 @@ fn remote_commit_tips(repository: &Repository) -> Result<Vec<String>, String> {
     for reference in references {
         let reference = reference
             .map_err(|error| format!("Could not read a Git ref for Remote Archive security check: {error}"))?;
-        if let Ok(commit) = reference.peel_to_commit() {
-            tips.push(commit.id().to_string());
-        }
+        let name = reference.name().unwrap_or("<non-UTF-8 ref>");
+        let commit = reference.peel_to_commit().map_err(|error| {
+            format!("Remote Archive cannot preserve ref {name} because it does not resolve to a commit or annotated tag: {error}")
+        })?;
+        tips.push(commit.id().to_string());
     }
     if let Ok(head) = repository.head() {
-        if let Ok(commit) = head.peel_to_commit() {
-            tips.push(commit.id().to_string());
-        }
+        let commit = head.peel_to_commit()
+            .map_err(|error| format!("Remote Archive HEAD does not resolve to a commit: {error}"))?;
+        tips.push(commit.id().to_string());
     }
     tips.sort();
     tips.dedup();
     Ok(tips)
+}
+
+/// Build a compact Git pack from objects reachable through refs only.
+/// Source .git/objects is deliberately not copied, because it may also hold
+/// staged blobs, dangling objects or content left behind by history rewrites.
+fn write_reachable_git_pack(repository: &Repository, output_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    fs::create_dir_all(output_dir)
+        .map_err(|error| format!("Could not create temporary Git pack directory: {error}"))?;
+    let mut builder = repository.packbuilder()
+        .map_err(|error| format!("Could not initialize reachable Git pack builder: {error}"))?;
+    builder.set_threads(1);
+
+    let references = repository.references()
+        .map_err(|error| format!("Could not enumerate refs for Remote Archive pack: {error}"))?;
+    for reference in references {
+        let reference = reference
+            .map_err(|error| format!("Could not read ref for Remote Archive pack: {error}"))?;
+        let name = reference.name().unwrap_or("<non-UTF-8 ref>");
+        let resolved = reference.resolve()
+            .map_err(|error| format!("Could not resolve ref {name} for Remote Archive pack: {error}"))?;
+        let target = resolved.target()
+            .ok_or_else(|| format!("Remote Archive cannot pack ref {name} because it has no object target."))?;
+        resolved.peel_to_commit().map_err(|error| {
+            format!("Remote Archive cannot pack ref {name} because it does not resolve to a commit or annotated tag: {error}")
+        })?;
+        builder.insert_recursive(target, None)
+            .map_err(|error| format!("Could not add reachable objects for ref {name} to Remote Archive pack: {error}"))?;
+    }
+
+    // A detached HEAD is not necessarily named by any ref. Include it explicitly.
+    if let Ok(head) = repository.head() {
+        let resolved = head.resolve()
+            .map_err(|error| format!("Could not resolve HEAD for Remote Archive pack: {error}"))?;
+        if let Some(target) = resolved.target() {
+            resolved.peel_to_commit()
+                .map_err(|error| format!("Remote Archive HEAD does not resolve to a commit: {error}"))?;
+            builder.insert_recursive(target, None)
+                .map_err(|error| format!("Could not add detached HEAD objects to Remote Archive pack: {error}"))?;
+        }
+    }
+
+    if builder.object_count() == 0 {
+        return Ok(Vec::new());
+    }
+    builder.write(output_dir, 0o644)
+        .map_err(|error| format!("Could not write reachable Git pack: {error}"))?;
+    let pack_name = builder.name()
+        .ok_or_else(|| "Git pack builder did not return its generated pack name.".to_string())?;
+    if !matches!(pack_name.len(), 40 | 64)
+        || !pack_name.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Git pack builder returned an invalid pack name.".to_string());
+    }
+
+    let files = vec![
+        output_dir.join(format!("pack-{pack_name}.pack")),
+        output_dir.join(format!("pack-{pack_name}.idx")),
+    ];
+    for path in &files {
+        if !path.is_file() {
+            return Err(format!("Git pack builder did not create expected file {}.", path.display()));
+        }
+    }
+    Ok(files)
 }
 
 fn remote_refs_fingerprint(repository: &Repository) -> Result<String, String> {
@@ -870,6 +961,14 @@ fn validate_remote_archive_source(source: &Path) -> Result<(), String> {
     if !marker.is_dir() {
         return Err("Remote Archive requires a repository-local .git directory.".to_string());
     }
+    let shallow_file = marker.join("shallow");
+    if shallow_file.is_file() {
+        let bytes = fs::read(&shallow_file)
+            .map_err(|error| format!("Could not inspect Git shallow metadata: {error}"))?;
+        if !bytes.is_empty() {
+            return Err("Remote Archive requires complete Git history; this repository is shallow. Fetch or unshallow it before archiving.".to_string());
+        }
+    }
     for alternate in [
         marker.join("objects").join("info").join("alternates"),
         marker.join("objects").join("info").join("http-alternates"),
@@ -923,11 +1022,13 @@ fn scan_repository(
             let Ok(relative) = entry.path().strip_prefix(source) else { return false; };
             let relative_text = relative.to_string_lossy().replace('\\', "/");
             let file_type = entry.file_type();
+            let source_git_objects = kind == ArchiveKind::Remote && is_git_objects_directory(relative);
             let skip = file_type.is_symlink()
                 || (kind == ArchiveKind::Local && starts_with_git_directory(relative))
+                || source_git_objects
                 || is_default_secret_path(relative)
                 || (kind == ArchiveKind::Remote && is_git_sensitive_path(relative));
-            if skip {
+            if skip && !source_git_objects {
                 record_excluded(&mut excluded, relative_text);
             }
             !skip
@@ -964,6 +1065,24 @@ fn starts_with_git_directory(relative: &Path) -> bool {
     relative.components().next().is_some_and(|part| part.as_os_str() == ".git")
 }
 
+fn is_git_objects_directory(relative: &Path) -> bool {
+    let components = relative.components()
+        .filter_map(|part| part.as_os_str().to_str())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    components.len() == 2 && components[0] == ".git" && components[1] == "objects"
+}
+
+fn is_reachable_pack_file_name(name: &str) -> bool {
+    let Some(name) = name.strip_prefix("pack-") else { return false; };
+    let hash = name.strip_suffix(".pack")
+        .or_else(|| name.strip_suffix(".idx"));
+    hash.is_some_and(|hash| {
+        (hash.len() == 40 || hash.len() == 64)
+            && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
 fn is_git_sensitive_path(relative: &Path) -> bool {
     let mut components = relative.components();
     let Some(first) = components.next() else { return false; };
@@ -976,10 +1095,20 @@ fn is_git_sensitive_path(relative: &Path) -> bool {
     if remaining.is_empty() {
         return false;
     }
+
+    if remaining[0] == "objects" {
+        return !(remaining.len() == 3
+            && remaining[1] == "pack"
+            && is_reachable_pack_file_name(&remaining[2]));
+    }
+
     matches!(
         remaining[0].as_str(),
         "config" | "config.lock" | "config.worktree" | "config.worktree.lock" |
-        "index.lock" | "hooks" | "logs" | "rr-cache" | "modules" | "worktrees"
+        "index" | "index.lock" | "hooks" | "logs" | "rr-cache" | "modules" | "worktrees" |
+        "shallow" | "orig_head" | "fetch_head" | "merge_head" | "cherry_pick_head" |
+        "rebase_head" | "bisect_log" | "squash_msg" | "merge_msg" | "commit_editmsg" |
+        "auto_merge" | "merge_rr" | "sequencer" | "rebase-apply" | "rebase-merge"
     )
 }
 
@@ -1655,6 +1784,62 @@ mod tests {
     }
 
     #[test]
+    fn remote_archive_pack_contains_only_objects_reachable_from_refs() {
+        let root = temp_root("reachable-git-pack");
+        let repository_path = root.join("source");
+        fs::create_dir_all(&repository_path).unwrap();
+        let repository = Repository::init(&repository_path).unwrap();
+        commit_file(&repository, "README.md", "reachable commit");
+        let head_oid = repository.head().unwrap().target().unwrap();
+
+        let signature = git2::Signature::now("GitManager Test", "gitmanager-test@example.invalid").unwrap();
+        let commit_object = repository.find_object(head_oid, None).unwrap();
+        let tag_oid = repository.tag("v1", &commit_object, &signature, "release tag", false).unwrap();
+
+        // A staged secret is written to the object database and the index, but is
+        // not reachable from any commit/ref. A separate dangling blob is also left.
+        fs::write(repository_path.join(".env"), "STAGED_SECRET=must-not-pack").unwrap();
+        let mut index = repository.index().unwrap();
+        index.add_path(Path::new(".env")).unwrap();
+        index.write().unwrap();
+        let staged_secret_oid = index.get_path(Path::new(".env"), 0).unwrap().id;
+        let dangling_secret_oid = repository.blob(b"DANGLING_SECRET=must-not-pack").unwrap();
+
+        let generated_pack_dir = root.join("generated-pack");
+        let generated = write_reachable_git_pack(&repository, &generated_pack_dir).unwrap();
+        assert_eq!(generated.len(), 2);
+        assert!(generated.iter().any(|path| path.extension().and_then(|ext| ext.to_str()) == Some("pack")));
+        assert!(generated.iter().any(|path| path.extension().and_then(|ext| ext.to_str()) == Some("idx")));
+
+        let mirror_path = root.join("mirror.git");
+        let mirror = Repository::init_bare(&mirror_path).unwrap();
+        let mirror_pack_dir = mirror.path().join("objects").join("pack");
+        fs::create_dir_all(&mirror_pack_dir).unwrap();
+        for file in &generated {
+            fs::copy(file, mirror_pack_dir.join(file.file_name().unwrap())).unwrap();
+        }
+        let odb = mirror.odb().unwrap();
+        odb.refresh().unwrap();
+
+        assert!(mirror.find_commit(head_oid).is_ok());
+        assert!(mirror.find_object(tag_oid, None).is_ok());
+        assert!(mirror.odb().unwrap().exists(head_oid));
+        assert!(!odb.exists(staged_secret_oid));
+        assert!(!odb.exists(dangling_secret_oid));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_git_metadata_filter_only_allows_generated_pack_and_index_files() {
+        assert!(is_git_sensitive_path(Path::new(".git/index")));
+        assert!(is_git_sensitive_path(Path::new(".git/objects/loose-object")));
+        assert!(is_git_sensitive_path(Path::new(".git/objects/pack/multi-pack-index")));
+        assert!(is_git_sensitive_path(Path::new(".git/objects/info/alternates")));
+        assert!(!is_git_sensitive_path(Path::new(".git/objects/pack/pack-0123456789abcdef0123456789abcdef01234567.pack")));
+        assert!(!is_git_sensitive_path(Path::new(".git/objects/pack/pack-0123456789abcdef0123456789abcdef01234567.idx")));
+    }
+
+    #[test]
     fn remote_archive_refuses_secret_paths_in_reachable_git_history_and_caches_scan() {
         let root = temp_root("secret-history");
         let repository_path = root.join("repository");
@@ -1724,6 +1909,13 @@ mod tests {
         ).unwrap();
         let restored = Repository::open(&destination).unwrap();
         assert!(restored.head().is_ok());
+        assert!(!destination.join(".git").join("index").exists(), "source staging index must not be restored");
+        let restored_pack_dir = destination.join(".git").join("objects").join("pack");
+        let restored_pack_files = fs::read_dir(&restored_pack_dir).unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .count();
+        assert_eq!(restored_pack_files, 2, "Remote Archive should restore one generated pack and its index");
         let restored_remote = restored.find_remote("origin").unwrap();
         assert_eq!(restored_remote.url(), Some("https://github.com/acme/project.git"));
         assert_eq!(restored_remote.pushurl(), Some("https://github.com/acme/project.git"));
