@@ -192,6 +192,8 @@ let searchQuery = "";
 let appPreferences = null;
 let dependencyRepoIds = new Set();
 let repositoryKindFilter = "projects";
+let activePage = "repositories";
+let applicationDirectories = null;
 const ciStatusCache = new Map();
 
 async function tauriInvoke(cmd, args) {
@@ -591,34 +593,88 @@ function renderFilterBar(remoteCount, localCount, effectiveMode) {
 }
 
 function renderConnectedAccountsBar() {
-  const bar = document.getElementById("connected-accounts-bar");
-  if (!bar) return;
+  const container = document.getElementById("accounts-connected-list");
+  if (!container) return;
   if (connectedAccounts.length === 0) {
-    bar.classList.add("hidden");
-    bar.innerHTML = "";
+    container.innerHTML = '<div class="empty-list-state account-empty"><strong>No accounts connected</strong><span>Connect GitHub or GitLab to browse remote repositories here.</span></div>';
     return;
   }
-  bar.classList.remove("hidden");
-  bar.innerHTML = `
-    <div class="accounts-strip-title">CONNECTED ACCOUNTS</div>
-    <div class="accounts-strip-list">
-      ${connectedAccounts
-        .map(
-          (acc) => `
-        <div class="account-chip" title="${escapeHtml(acc.email)}">
-          <img src="${escapeHtml(acc.avatar_url)}" alt="${escapeHtml(acc.account_login)}" class="account-chip-avatar" />
-          <div class="account-chip-text">
-            <strong>${escapeHtml(acc.display_name)}</strong>
-            <span>${escapeHtml(acc.provider.toUpperCase())} • @${escapeHtml(acc.account_login)} (${acc.repositories.length})</span>
-          </div>
-        </div>
-      `
-        )
-        .join("")}
-    </div>
-  `;
+  container.innerHTML = connectedAccounts.map((account) => {
+    const avatar = account.avatar_url || fallbackRepoIconDataUri(account.provider, account.account_login);
+    return '<article class="connected-account-card"><img src="' + escapeHtml(avatar) + '" alt="" class="account-chip-avatar" />' +
+      '<div class="account-chip-text"><strong>' + escapeHtml(account.display_name || account.account_login) + '</strong><span>' +
+      escapeHtml(String(account.provider || "").toUpperCase()) + ' · @' + escapeHtml(account.account_login) + '</span></div>' +
+      '<span class="account-repo-count">' + (account.repositories || []).length + ' repos</span></article>';
+  }).join("");
 }
 
+function setActivePage(page) {
+  if (!["repositories", "accounts", "settings"].includes(page)) return;
+  activePage = page;
+  document.querySelectorAll(".app-page").forEach((section) => {
+    const active = section.id === "page-" + page;
+    section.classList.toggle("hidden", !active);
+    section.classList.toggle("active", active);
+  });
+  document.querySelectorAll("[data-page]").forEach((tab) => {
+    const active = tab.getAttribute("data-page") === page;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+}
+
+function getRepositoryById(id) {
+  return allRepositories.find((repo) => repo.id === id) ||
+    connectedAccounts.flatMap((account) => account.repositories || []).find((repo) => repo.id === id) ||
+    null;
+}
+
+function renderAccountsPage() {
+  const container = document.getElementById("accounts-repositories-list");
+  const count = document.getElementById("accounts-repository-count");
+  if (!container) return;
+  const repositories = connectedAccounts.flatMap((account) => account.repositories || []);
+  if (count) count.textContent = repositories.length + " repositories";
+  if (!repositories.length) {
+    container.innerHTML = '<div class="empty-list-state account-empty"><strong>No remote repositories to show</strong><span>Connect an account to fetch its repositories. Private repositories require a provider token.</span></div>';
+    return;
+  }
+  container.innerHTML = repositories.map((repo) => {
+    const latest = latestCommitFor(repo);
+    return '<button type="button" class="dashboard-repo-card account-repo-card" data-account-repo-id="' + escapeHtml(repo.id) + '">' +
+      '<div class="dashboard-card-top"><img class="dashboard-card-icon" src="' + escapeHtml(resolveRepoIconUrl(repo)) + '" alt="" />' +
+      '<div class="dashboard-card-heading"><strong>' + escapeHtml(repositoryFullName(repo)) + '</strong><span>' + escapeHtml(repo.name || "") + '</span></div>' +
+      '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(String(repo.primary_provider || "REMOTE").toUpperCase()) + '</span></div>' +
+      '<div class="dashboard-card-commit"><span class="dashboard-label">REMOTE REPOSITORY</span><strong>' + escapeHtml(repo.description || (latest ? latest.summary : "Repository discovered through account")) + '</strong>' +
+      '<span>' + escapeHtml(repo.web_url || "") + '</span></div><div class="dashboard-card-footer"><span class="dashboard-branch">⎇ ' +
+      escapeHtml(repo.current_branch || repo.default_branch || "Default branch unavailable") + '</span><span class="dashboard-ci ci-neutral">Remote</span></div></button>';
+  }).join("");
+  container.querySelectorAll("[data-account-repo-id]").forEach((card) => {
+    card.addEventListener("click", () => {
+      const id = card.getAttribute("data-account-repo-id");
+      if (!id) return;
+      selectedRepoId = id;
+      const repo = getRepositoryById(id);
+      selectedCommitOid = repo && repo.commits && repo.commits[0] ? repo.commits[0].oid : null;
+      setActivePage("repositories");
+      renderSelectedRepositoryDetails();
+    });
+  });
+}
+
+function renderSettingsPage() {
+  const roots = appPreferences && Array.isArray(appPreferences.scanRoots) ? appPreferences.scanRoots : [];
+  const rootSummary = document.getElementById("settings-scan-root-summary");
+  if (rootSummary) rootSummary.textContent = roots.length ? roots.length + " scan folder(s) · " + roots.join("  •  ") : "No scan folders configured yet.";
+  [
+    ["settings-config-path", applicationDirectories && applicationDirectories.configDir],
+    ["settings-data-path", applicationDirectories && applicationDirectories.dataDir],
+    ["settings-software-root", applicationDirectories && applicationDirectories.softwareRoot]
+  ].forEach(([id, value]) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = value || "Unavailable";
+  });
+}
 function renderRepositoryList() {
   const listContainer = document.getElementById("repo-list-container");
   if (!listContainer) return;
@@ -721,7 +777,7 @@ function renderRepositoryList() {
       const id = cardEl.getAttribute("data-repo-id");
       if (id) {
         selectedRepoId = id;
-        const repo = allRepositories.find((r) => r.id === id);
+        const repo = getRepositoryById(id);
         selectedCommitOid = (repo && repo.commits[0] && repo.commits[0].oid) || null;
         renderAll();
       }
@@ -888,7 +944,7 @@ function renderRepositoryDashboard(container) {
   container.querySelectorAll("[data-dashboard-repo-id]").forEach((card) => {
     card.addEventListener("click", () => {
       selectedRepoId = card.getAttribute("data-dashboard-repo-id");
-      const selected = allRepositories.find((repo) => repo.id === selectedRepoId);
+      const selected = getRepositoryById(selectedRepoId);
       selectedCommitOid = selected && selected.commits[0] ? selected.commits[0].oid : null;
       renderAll();
     });
@@ -979,16 +1035,21 @@ function renderSelectedRepositoryDetails() {
 
   if (!headerEl || !treeContainer || !inspectorEl) return;
 
-  const repo = allRepositories.find((r) => r.id === selectedRepoId);
-  const mainPanel = document.querySelector(".main-panel");
+  const repo = getRepositoryById(selectedRepoId);
+  const detailView = document.getElementById("repository-detail-view");
+  const homeView = document.getElementById("repo-home-content");
   if (!repo) {
-    if (mainPanel) mainPanel.classList.add("dashboard-mode");
-    renderRepositoryDashboard(headerEl);
+    if (detailView) detailView.classList.add("hidden");
+    if (homeView) {
+      homeView.classList.remove("hidden");
+      renderRepositoryDashboard(homeView);
+    }
     treeContainer.innerHTML = "";
     inspectorEl.innerHTML = "";
     return;
   }
-  if (mainPanel) mainPanel.classList.remove("dashboard-mode");
+  if (homeView) homeView.classList.add("hidden");
+  if (detailView) detailView.classList.remove("hidden");
 
   const iconSrc = resolveRepoIconUrl(repo);
   const fallbackSrc = fallbackRepoIconDataUri(repo.primary_provider, repo.name);
@@ -1219,8 +1280,10 @@ function renderSelectedRepositoryDetails() {
 function renderAll() {
   renderUpdateNotificationsTray();
   renderConnectedAccountsBar();
-  renderRepositoryList();
+  renderAccountsPage();
+  renderSettingsPage();
   renderSelectedRepositoryDetails();
+  setActivePage(activePage);
 }
 
 async function runMachineScan(customRoot) {
@@ -1241,7 +1304,7 @@ async function runMachineScan(customRoot) {
       indexDependencyRepositories: !appPreferences || appPreferences.indexDependencyRepositories !== false,
       filterMode: requestedFilter
     });
-    allRepositories = Array.isArray(summary.repositories) ? summary.repositories : [];
+    allRepositories = Array.isArray(summary.repositories) ? summary.repositories.filter((repo) => repo.source_kind === "local_scan") : [];
     dependencyRepoIds = new Set(summary.dependencyRepoIds || []);
     selectedRepoId = null;
     selectedCommitOid = null;
@@ -1290,11 +1353,7 @@ async function connectRemoteProviderAccount(provider, username, token) {
   );
   connectedAccounts.push(summary);
 
-  for (const remoteRepo of summary.repositories) {
-    if (!allRepositories.some((r) => r.id === remoteRepo.id)) {
-      allRepositories.push(remoteRepo);
-    }
-  }
+
 }
 
 function wireTauriBackgroundServiceEvents() {
@@ -1317,6 +1376,12 @@ function wireTauriBackgroundServiceEvents() {
 }
 
 function wireEventListeners() {
+  document.querySelectorAll("[data-page]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const page = tab.getAttribute("data-page");
+      if (page) setActivePage(page);
+    });
+  });
   const scanInput = document.getElementById("scan-path-input");
   const browseBtn = document.getElementById("btn-browse-folder");
   const scanBtn = document.getElementById("btn-scan-repos");
@@ -1634,6 +1699,11 @@ async function saveScanSetup() {
 }
 
 async function initializeGitManager() {
+  try {
+    applicationDirectories = await tauriInvoke("get_application_directories");
+  } catch (error) {
+    console.warn("Could not resolve GitManager storage directories:", error);
+  }
   try {
     appPreferences = await tauriInvoke("load_app_preferences");
   } catch (error) {
