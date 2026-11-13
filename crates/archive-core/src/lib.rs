@@ -639,6 +639,17 @@ fn sanitize_remote_url(value: &str) -> Result<String, String> {
     if value.trim().is_empty() || value.chars().any(char::is_control) {
         return Err("Git remote URL is empty or contains control characters.".to_string());
     }
+    // Handle SCP-style SSH remotes before generic URL parsing. A value such as
+    // "alice:token@host:path" can otherwise be misread as the URI scheme "alice".
+    if !value.contains("://") {
+        if let Some((user, destination)) = value.split_once('@') {
+            if destination.contains(':') && !destination.starts_with('/') {
+                let safe_user = if user.is_empty() || user.contains(':') { "git" } else { user };
+                return Ok(format!("{safe_user}@{destination}"));
+            }
+        }
+    }
+
     if let Ok(mut url) = url::Url::parse(value) {
         // SSH usernames identify the remote account (commonly "git") and are
         // not passwords. Keep them, but always discard a URL password. For all
@@ -650,15 +661,6 @@ fn sanitize_remote_url(value: &str) -> Result<String, String> {
         url.set_query(None);
         url.set_fragment(None);
         return Ok(url.to_string());
-    }
-
-    // SCP-style SSH remotes do not parse as standard URLs. Preserve a normal
-    // account name, but discard a username field that embeds a password.
-    if let Some((user, destination)) = value.split_once('@') {
-        if destination.contains(':') && !destination.starts_with('/') {
-            let safe_user = if user.is_empty() || user.contains(':') { "git" } else { user };
-            return Ok(format!("{safe_user}@{destination}"));
-        }
     }
     if value.contains("://") {
         return Err("Git remote URL could not be safely sanitized; remove embedded credentials and retry.".to_string());
