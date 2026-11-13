@@ -1,10 +1,33 @@
-# Vendored RBE Cloud Node
+# Vendored RBE Cloud Node — provenance and license status
 
-Source copied from the owner's [Kastrick8/RBE](https://github.com/Kastrick8/RBE)
-repository on 2026-11-13 for use and adaptation inside GitManager.
+Source project: [Kastrick8/RBE](https://github.com/Kastrick8/RBE)
 
-This directory contains the `cloud-node`, `atomic-io`, and
-`storage-sync-journal` Rust crates. The copy is pinned in this repository and
-does not track upstream changes automatically. GitManager may adapt these
-sources for complete repository archives, secret exclusions, five-point
-retention, and its own provider/user-interface contract.
+Vendored components:
+
+- `engine/crates/cloud-node`
+- `atomic-io`
+- `storage-sync-journal`
+
+The source files were copied into GitManager on 2026-11-13 and are maintained
+as a local copy under this directory. GitManager does not modify or push to the
+RBE repository as part of this vendoring work.
+
+GitManager's own root `LICENSE` is Apache License 2.0. However, at the time
+this copy was prepared, the public RBE default branch had no root or nested
+`LICENSE`, `NOTICE`, or `COPYING` file, the Cloud Node Cargo manifest had
+no `license` field, and GitHub reported no detected repository license.
+Therefore this notice records provenance but does **not** claim that the
+upstream RBE source has independently been confirmed as Apache-2.0 licensed.
+The source owner's explicit Apache-2.0 grant for the RBE components should be
+confirmed before redistribution of these vendored portions outside the
+owner-controlled repositories.
+
+GitManager-local modifications made after copying include:
+
+- Excluding common credential files and directories from Cloud Node local
+  directory scans by default.
+- Adding archive-specific retention integration helpers.
+
+The RBE source copy is intentionally vendored rather than referenced through a
+floating Git dependency. Upstream updates must be reviewed and copied
+deliberately.

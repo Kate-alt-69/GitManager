@@ -180,15 +180,18 @@ pub fn capture_repository(
     let mut index = read_index(&index_path)?;
     index.format_version = ARCHIVE_FORMAT_VERSION;
     let mut previous = std::mem::take(&mut index.snapshots);
-    previous.retain(|item| item.kind == kind && item.repository_id == repository_id);
+    previous.retain(|item| item.kind == kind && item.repository_id == repository_id && item.id != snapshot_id);
     previous.sort_by(|a, b| b.captured_at_unix_ms.cmp(&a.captured_at_unix_ms));
+
     let mut retained = vec![snapshot.clone()];
-    retained.extend(previous.into_iter().filter(|item| item.id != snapshot_id).take(MAX_RESTORE_POINTS - 1));
-    let retained_ids = retained.iter().map(|item| item.id.clone()).collect::<std::collections::HashSet<_>>();
-    let removed = index.snapshots.iter()
-        .filter(|item| !retained_ids.contains(&item.id))
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut removed = Vec::new();
+    for old in previous {
+        if retained.len() < MAX_RESTORE_POINTS {
+            retained.push(old);
+        } else {
+            removed.push(old);
+        }
+    }
     index.snapshots = retained;
     if let Err(error) = write_index_atomic(&index_path, &index) {
         let _ = fs::remove_file(&final_archive);
@@ -237,6 +240,7 @@ pub fn list_repository_archives(
 }
 
 pub fn restore_repository_archive(
+    repository_path: &str,
     destination_path: &str,
     archive_root: Option<&str>,
     kind_text: &str,
@@ -244,12 +248,13 @@ pub fn restore_repository_archive(
     confirm_replace: bool,
 ) -> Result<ArchiveRestoreResult, String> {
     let kind = ArchiveKind::parse(kind_text)?;
+    let repository_identity_path = absolute_path(repository_path)?;
+    let repository_id = repository_id(&repository_identity_path);
     let destination = absolute_path(destination_path)?;
     let root = match archive_root {
         Some(value) if !value.trim().is_empty() => PathBuf::from(value),
         _ => default_archive_root()?,
     };
-    let repository_id = repository_id(&destination);
     let index_path = root.join("repositories").join(&repository_id).join(kind.as_str()).join("index.json");
     let index = read_index(&index_path)?;
     let snapshot = index.snapshots.into_iter()

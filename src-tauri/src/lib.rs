@@ -342,12 +342,13 @@ async fn list_repository_archives(
 #[tauri::command]
 async fn restore_repository_archive(
     repo_path: String,
+    destination_path: String,
     snapshot_id: String,
     kind: String,
     confirm_replace: bool,
 ) -> Result<archive::ArchiveRestoreResult, String> {
     tokio::task::spawn_blocking(move || archive::restore_repository_archive(
-        &repo_path, None, &kind, &snapshot_id, confirm_replace
+        &repo_path, &destination_path, None, &kind, &snapshot_id, confirm_replace
     ))
     .await.map_err(|error| format!("Archive restore task failed: {error}"))?
 }

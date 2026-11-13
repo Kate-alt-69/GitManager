@@ -533,7 +533,7 @@ fn walk_directory(
 
 /// Exclude common credentials and private-key material from repository archives by default.
 /// Environment templates/examples remain available as safe placeholders.
-fn is_default_secret_path(relative: &Path) -> bool {
+pub fn is_default_secret_path(relative: &Path) -> bool {
     let components = relative.components()
         .filter_map(|component| component.as_os_str().to_str())
         .map(str::to_ascii_lowercase)
