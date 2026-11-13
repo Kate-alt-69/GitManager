@@ -191,7 +191,7 @@ let indexGroupingMode = "folder";
 let searchQuery = "";
 let appPreferences = null;
 let dependencyRepoIds = new Set();
-let repositoryKindFilter = "projects";
+let repositoryKindFilter = "all";
 let activePage = "repositories";
 let applicationDirectories = null;
 const ciStatusCache = new Map();
@@ -1597,7 +1597,7 @@ function openScanSetup(isFirstRun) {
   if (!appPreferences) {
     appPreferences = {
       scanRoots: [], maxScanDepth: 8, includeHiddenDirs: false,
-      indexDependencyRepositories: true, showDependencyRepositories: false,
+      indexDependencyRepositories: true, showDependencyRepositories: true,
       firstRunComplete: false
     };
   }
@@ -1616,7 +1616,7 @@ function openScanSetup(isFirstRun) {
   if (depth) depth.value = String(appPreferences.maxScanDepth || 8);
   if (hidden) hidden.checked = Boolean(appPreferences.includeHiddenDirs);
   if (dependencies) dependencies.checked = appPreferences.indexDependencyRepositories !== false;
-  if (showDependencies) showDependencies.checked = Boolean(appPreferences.showDependencyRepositories);
+  if (showDependencies) showDependencies.checked = appPreferences.showDependencyRepositories !== false;
   renderScanRootList();
   modal.classList.remove("hidden");
 }
@@ -1681,7 +1681,7 @@ async function saveScanSetup() {
 
   try {
     appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
-    repositoryKindFilter = appPreferences.showDependencyRepositories ? "all" : "projects";
+    repositoryKindFilter = appPreferences.showDependencyRepositories !== false ? "all" : "projects";
     updateScanRootSummary();
     document.getElementById("setup-modal-backdrop").classList.add("hidden");
     await runMachineScan();

@@ -65,7 +65,7 @@ impl Default for AppPreferences {
             max_scan_depth: 8,
             include_hidden_dirs: false,
             index_dependency_repositories: true,
-            show_dependency_repositories: false,
+            show_dependency_repositories: true,
             repository_settings: HashMap::new(),
             first_run_complete: false,
         }
