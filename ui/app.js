@@ -1730,6 +1730,17 @@ function renderSelectedRepositoryDetails() {
         <button id="btn-capture-remote-archive" class="btn btn-secondary" type="button">Save Remote Archive</button>
         <button id="btn-refresh-repo-archives" class="btn btn-secondary" type="button">Refresh</button>
       </div>
+      <div class="archive-cloud-panel">
+        <div class="archive-cloud-heading">
+          <strong>Cloud Object Storage</strong>
+          <div class="archive-action-row">
+            <button id="btn-refresh-cloud-archive" class="btn btn-secondary" type="button">Check status</button>
+            <button id="btn-sync-cloud-archive" class="btn btn-secondary" type="button">Sync now</button>
+          </div>
+        </div>
+        <div id="repo-cloud-archive-status" class="repository-setting-status" role="status">Checking cloud storage…</div>
+        <small>Credentials are read from your operating-system environment. Only environment-variable names are stored. Configure providers with <code>gitm cloud configure</code>.</small>
+      </div>
       <div id="repo-archive-status" class="repository-setting-status" role="status">Loading saved restore points…</div>
       <div id="repo-archive-list" class="repo-archive-list"></div>
     </div>
@@ -1801,6 +1812,69 @@ async function wireRepositoryArchivePanel(repo) {
   if (!list) return;
 
   const archiveRoot = (appPreferences && appPreferences.archiveRoot) || null;
+  const cloudRefreshButton = document.getElementById("btn-refresh-cloud-archive");
+  const cloudSyncButton = document.getElementById("btn-sync-cloud-archive");
+  const cloudStatus = document.getElementById("repo-cloud-archive-status");
+  const setCloudStatus = (value) => { if (cloudStatus) cloudStatus.textContent = value; };
+  let effectiveArchiveRoot = archiveRoot;
+  async function refreshCloudStatus() {
+    if (cloudRefreshButton) cloudRefreshButton.disabled = true;
+    try {
+      if (!effectiveArchiveRoot) {
+        effectiveArchiveRoot = await tauriInvoke("get_default_archive_directory");
+      }
+      const info = await tauriInvoke("get_archive_cloud_storage_info", {
+        archiveRoot: effectiveArchiveRoot
+      });
+      if (!info.configured) {
+        setCloudStatus("Not configured · local archives remain available. Select a cloud-synced folder or configure an object-storage provider with gitm cloud.");
+        if (cloudSyncButton) cloudSyncButton.disabled = true;
+      } else {
+        const authNames = Array.isArray(info.authEnvironmentVariables)
+          ? info.authEnvironmentVariables.join(", ")
+          : "";
+        setCloudStatus(
+          "Connected · " + (info.provider || "provider") + " · " +
+          (info.target || info.namespace || "configured") +
+          (authNames ? " · credentials: " + authNames : "") +
+          " · " + (info.note || "")
+        );
+        if (cloudSyncButton) cloudSyncButton.disabled = false;
+      }
+    } catch (error) {
+      setCloudStatus("Cloud status unavailable: " + String((error && error.message) || error));
+      if (cloudSyncButton) cloudSyncButton.disabled = true;
+    } finally {
+      if (cloudRefreshButton) cloudRefreshButton.disabled = false;
+    }
+  }
+  async function syncCloudArchives() {
+    if (cloudSyncButton) {
+      cloudSyncButton.disabled = true;
+      cloudSyncButton.textContent = "Syncing…";
+    }
+    setCloudStatus("Synchronizing content-addressed archive objects…");
+    try {
+      if (!effectiveArchiveRoot) {
+        effectiveArchiveRoot = await tauriInvoke("get_default_archive_directory");
+      }
+      const result = await tauriInvoke("sync_archive_cloud_storage", {
+        archiveRoot: effectiveArchiveRoot
+      });
+      setCloudStatus("Cloud synchronization completed · " + String(result));
+      await refreshCloudStatus();
+    } catch (error) {
+      setCloudStatus("Cloud synchronization failed: " + String((error && error.message) || error));
+    } finally {
+      if (cloudSyncButton) {
+        cloudSyncButton.disabled = false;
+        cloudSyncButton.textContent = "Sync now";
+      }
+    }
+  }
+  if (cloudRefreshButton) cloudRefreshButton.onclick = () => void refreshCloudStatus();
+  if (cloudSyncButton) cloudSyncButton.onclick = () => void syncCloudArchives();
+  void refreshCloudStatus();
   const localArchiveEnabled = !appPreferences || appPreferences.archiveLocalEnabled !== false;
   const remoteArchiveEnabled = !appPreferences || appPreferences.archiveRemoteEnabled !== false;
   if (localButton) localButton.disabled = !localArchiveEnabled;

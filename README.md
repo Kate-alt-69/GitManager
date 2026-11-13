@@ -191,12 +191,14 @@ so unchanged content is shared across snapshots. Local and Remote Archives are
 separate; each retains up to five complete restore points per repository/type.
 Secret-bearing `.env`/credential/private-key paths are excluded by default. Remote Archives are refused when those paths exist in reachable Git history. Archive identity follows the sanitized Git remote where available, so cloud restore points survive checkout-path changes.
 
-The standalone Rust `gitm` CLI provides repository status, commit history,
-branches, remotes, backup, cloud synchronization, and restore, plus an
-arrow/WASD keyboard TUI without requiring Node.js or the desktop WebView.
-Cloud Node providers can also be configured and synchronized from
-**Scan Setup → Repository archives**; provider secrets stay in OS environment
-variables, while Google Drive/OneDrive desktop-sync folders work as local archive
-destinations.
+The standalone Rust `gitm` CLI provides local repository scanning,
+inspection, status, commit history, branches, remotes, origin update checks,
+fast-forward-only pulls, backup, restore, and cloud synchronization, plus an
+adaptive keyboard/mouse TUI without requiring Node.js or the desktop WebView.
+Cloud Node providers are configured with `gitm cloud configure --file
+provider.json`; the desktop archive panel displays provider status and offers
+an explicit Sync Now action. Provider secrets stay in OS environment variables.
+Google Drive/OneDrive desktop-sync folders can also be selected in Scan Setup as
+local archive destinations.
 
 See [docs/archive-storage.md](docs/archive-storage.md).

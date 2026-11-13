@@ -149,11 +149,26 @@ gitm backup . --kind local
 gitm backup . --kind remote
 gitm backups . --kind local
 gitm restore . --id <snapshot-id> --kind local --to ../recovered --yes
+gitm scan ~/Projects ~/Repos --depth 8
+gitm inspect .
+gitm status .
+gitm log . --limit 20
+gitm branches .
+gitm remotes .
+gitm update check .
+gitm update pull .
 ```
 
 The inspection commands use Git's native repository data. Remote URLs are
 redacted before they are printed; use Git itself to inspect or change
 credential-related settings.
+
+The `scan` command discovers local repositories under the supplied roots or
+common developer folders; `inspect` shows repository metadata, refs, remotes
+and worktree state. `status`, `log`, `branches` and `remotes` provide
+read-only Git inspection. `update check` fetches origin and calculates
+ahead/behind counts. `update pull` is an explicit fast-forward-only operation:
+it refuses dirty or diverged worktrees and never creates merge commits.
 
 The no-argument command opens a keyboard-driven TUI. It supports arrow keys,
 WASD, left/right navigation on wider terminals, Enter, Escape/Q, and optional

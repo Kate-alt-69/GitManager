@@ -11,7 +11,8 @@ use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use git2::{BranchType, Repository, Sort, StatusOptions};
+use git2::{BranchType, Direction, FetchOptions, Repository, Sort, StatusOptions};
+use walkdir::WalkDir;
 use gitmanager_archive::{
     archive_cloud_storage_info, capture_repository, configure_archive_cloud_storage,
     default_archive_root, disable_archive_cloud_storage, list_repository_archives,
@@ -101,6 +102,9 @@ fn run() -> Result<(), String> {
         "backup" | "snapshot" => command_backup(&args[1..]),
         "backups" | "list" | "history" => command_list(&args[1..]),
         "restore" => command_restore(&args[1..]),
+        "scan" => command_scan(&args[1..]),
+        "inspect" => command_inspect(&args[1..]),
+        "update" => command_update(&args[1..]),
         "status" => command_status(&args[1..]),
         "log" | "history-commits" => command_log(&args[1..]),
         "branch" | "branches" => command_branches(&args[1..]),
@@ -195,6 +199,278 @@ fn open_repository(args: &[String]) -> Result<(PathBuf, Repository), String> {
     let repository = Repository::open(&canonical)
         .map_err(|error| format!("{} is not a readable Git repository: {error}", canonical.display()))?;
     Ok((canonical, repository))
+}
+
+fn default_scan_roots() -> Vec<PathBuf> {
+    let home = env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from);
+    let Some(home) = home else { return Vec::new(); };
+    let candidates = [
+        "Projects", "Repos", "Repositories", "Development", "dev", "workspace",
+        "src", "code", "GitHub", "GitLab", "source/repos", "Documents/GitHub",
+        "Documents/Projects", "Desktop",
+    ];
+    let roots = candidates.iter()
+        .map(|relative| home.join(relative))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    if roots.is_empty() { vec![home] } else { roots }
+}
+
+fn scan_roots(args: &[String]) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for index in 0.. {
+        match positional(args, index) {
+            Some(value) => roots.push(PathBuf::from(value)),
+            None => break,
+        }
+    }
+    if roots.is_empty() { default_scan_roots() } else { roots }
+}
+
+fn command_scan(args: &[String]) -> Result<(), String> {
+    let roots = scan_roots(args);
+    if roots.is_empty() {
+        return Err("No scan roots were supplied and no common developer folders were found.".to_string());
+    }
+    let depth = option_value(args, "--depth")
+        .map(|value| value.parse::<usize>().map_err(|_| "--depth must be an integer from 1 to 16.".to_string()))
+        .transpose()?
+        .unwrap_or(8);
+    if !(1..=16).contains(&depth) {
+        return Err("--depth must be between 1 and 16.".to_string());
+    }
+    let include_hidden = args.iter().any(|value| value == "--hidden");
+    let include_dependencies = args.iter().any(|value| value == "--include-dependencies");
+    const IGNORED: &[&str] = &[
+        "appdata", "library", "system volume information", "$recycle.bin",
+        "windows", "program files", "program files (x86)", "programdata",
+        "recovery", "proc", "sys", "dev", "volumes",
+    ];
+    const DEPENDENCIES: &[&str] = &[
+        "node_modules", "target", "vendor", ".cargo", ".rustup", ".npm",
+        ".pnpm-store", ".yarn", "venv", ".venv", "env", "site-packages",
+        "dist-packages", "__pycache__", ".gradle", ".nuget", "bower_components",
+        "pods", "dist", "build", "bin", "obj", "third_party", "third-party",
+    ];
+    let mut found = std::collections::BTreeMap::<String, Repository>::new();
+    for root in roots {
+        if !root.is_dir() { continue; }
+        let root = root.canonicalize().unwrap_or(root);
+        let walker = WalkDir::new(&root)
+            .max_depth(depth)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if name == ".git" { return true; }
+                if name.starts_with('.') && !include_hidden && entry.depth() > 0 {
+                    return false;
+                }
+                if IGNORED.contains(&name.as_str()) { return false; }
+                if !include_dependencies && DEPENDENCIES.contains(&name.as_str()) {
+                    return false;
+                }
+                if entry.path().components().any(|component| component.as_os_str() == ".git") {
+                    return false;
+                }
+                true
+            });
+        for entry in walker.flatten() {
+            if entry.file_name() != std::ffi::OsStr::new(".git") { continue; }
+            let Some(repo_root) = entry.path().parent() else { continue; };
+            let canonical = repo_root.canonicalize().unwrap_or_else(|_| repo_root.to_path_buf());
+            let key = canonical.to_string_lossy().to_string();
+            if found.contains_key(&key) { continue; }
+            if let Ok(repository) = Repository::open(&canonical) {
+                found.insert(key, repository);
+            }
+        }
+    }
+    println!("GitManager scan · {} local repositories", found.len());
+    if found.is_empty() {
+        println!("No local Git repositories were found.");
+        return Ok(());
+    }
+    for (path, repository) in found {
+        let name = Path::new(&path).file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        let branch = repository.head().ok()
+            .and_then(|head| head.shorthand().map(str::to_owned))
+            .unwrap_or_else(|| "(detached or unborn)".to_string());
+        let remote = repository.find_remote("origin").ok()
+            .and_then(|remote| remote.url().map(safe_remote_display))
+            .unwrap_or_else(|| "(no origin)".to_string());
+        let mut status_options = StatusOptions::new();
+        status_options.include_untracked(true).recurse_untracked_dirs(true);
+        let changed = repository.statuses(Some(&mut status_options))
+            .map(|statuses| statuses.len())
+            .unwrap_or(0);
+        println!("{name}  [{branch}]  {changed} changed  {remote}");
+        println!("  {path}");
+    }
+    Ok(())
+}
+
+fn command_inspect(args: &[String]) -> Result<(), String> {
+    let (path, repository) = open_repository(args)?;
+    let name = path.file_name().map(|value| value.to_string_lossy().to_string()).unwrap_or_default();
+    let head = repository.head().ok();
+    let branch = head.as_ref().and_then(|value| value.shorthand()).unwrap_or("(detached or unborn)");
+    let head_oid = head.as_ref().and_then(|value| value.target())
+        .map(|oid| oid.to_string()).unwrap_or_else(|| "(no commit)".to_string());
+    let config = repository.config().ok();
+    let author = config.as_ref().and_then(|value| value.get_string("user.name").ok())
+        .unwrap_or_else(|| "(not configured)".to_string());
+    let email = config.as_ref().and_then(|value| value.get_string("user.email").ok())
+        .unwrap_or_else(|| "(not configured)".to_string());
+    let mut options = StatusOptions::new();
+    options.include_untracked(true).recurse_untracked_dirs(true);
+    let statuses = repository.statuses(Some(&mut options))
+        .map_err(|error| format!("Could not inspect repository status: {error}"))?;
+    println!("Repository: {name}");
+    println!("Path:       {}", path.display());
+    println!("Branch:     {branch}");
+    println!("HEAD:       {}", &head_oid[..head_oid.len().min(12)]);
+    println!("Author:     {author} <{email}>");
+    println!("Worktree:   {} changed path(s)", statuses.len());
+    let branches = repository.branches(None).map_err(|error| error.to_string())?.count();
+    let tags = repository.tag_names(None).map_err(|error| error.to_string())?.iter().flatten().count();
+    println!("Refs:       {branches} branches · {tags} tags");
+    let remotes = repository.remotes().map_err(|error| error.to_string())?;
+    println!("Remotes:    {}", remotes.len());
+    for remote_name in remotes.iter().flatten() {
+        let remote = repository.find_remote(remote_name).map_err(|error| error.to_string())?;
+        let url = remote.url().map(safe_remote_display).unwrap_or_else(|| "(no fetch URL)".to_string());
+        println!("  {remote_name}: {url}");
+    }
+    if head_oid != "(no commit)" {
+        if let Ok(oid) = git2::Oid::from_str(&head_oid) {
+            if let Ok(commit) = repository.find_commit(oid) {
+                println!("Last commit: {}", commit.summary().unwrap_or("(no message)"));
+                println!("Committed:   {}", commit.time().seconds());
+                println!("Author:      {}", commit.author().name().unwrap_or("Unknown author"));
+            }
+        }
+    }
+    Ok(())
+}
+
+struct RemoteUpdateState {
+    branch: String,
+    local_oid: git2::Oid,
+    remote_oid: git2::Oid,
+    ahead: usize,
+    behind: usize,
+    clean: bool,
+}
+
+fn remote_update_state(path: &Path) -> Result<RemoteUpdateState, String> {
+    let repository = Repository::open(path)
+        .map_err(|error| format!("Could not open repository: {error}"))?;
+    let head = repository.head()
+        .map_err(|error| format!("Repository has no readable HEAD: {error}"))?;
+    if !head.is_branch() {
+        return Err("Detached HEAD cannot be checked for a branch update.".to_string());
+    }
+    let branch = head.shorthand()
+        .ok_or_else(|| "Current branch name is not valid UTF-8.".to_string())?
+        .to_string();
+    let local_oid = head.target()
+        .ok_or_else(|| "Current branch has no commit.".to_string())?;
+    let mut remote = repository.find_remote("origin")
+        .map_err(|_| "No origin remote is configured.".to_string())?;
+    remote.connect(Direction::Fetch)
+        .map_err(|error| format!("Could not connect to origin: {error}"))?;
+    let remote_ref = format!("refs/heads/{branch}");
+    let remote_advertised = remote.list()
+        .map_err(|error| format!("Could not list origin references: {error}"))?
+        .iter()
+        .find(|reference| reference.name() == remote_ref)
+        .map(|reference| reference.oid())
+        .ok_or_else(|| format!("Origin does not advertise branch '{branch}'."))?;
+    let _ = remote.disconnect();
+
+    let refspec = format!("{remote_ref}:refs/remotes/origin/{branch}");
+    let mut fetch = FetchOptions::new();
+    remote.fetch(&[&refspec], Some(&mut fetch), None)
+        .map_err(|error| format!("Could not fetch origin/{branch}: {error}"))?;
+    let tracking_ref = format!("refs/remotes/origin/{branch}");
+    let remote_oid = repository.refname_to_id(&tracking_ref).unwrap_or(remote_advertised);
+    let (ahead, behind) = repository.graph_ahead_behind(local_oid, remote_oid)
+        .map_err(|error| format!("Could not compare local and origin history: {error}"))?;
+    let mut status_options = StatusOptions::new();
+    status_options.include_untracked(true).recurse_untracked_dirs(true);
+    let clean = repository.statuses(Some(&mut status_options))
+        .map(|statuses| statuses.is_empty())
+        .map_err(|error| format!("Could not inspect working tree: {error}"))?;
+    Ok(RemoteUpdateState { branch, local_oid, remote_oid, ahead, behind, clean })
+}
+
+fn command_update(args: &[String]) -> Result<(), String> {
+    let action = args.first().map(String::as_str).unwrap_or("check");
+    let path = repository_path_arg(&args[1..])?;
+    let path = path.canonicalize()
+        .map_err(|error| format!("Could not resolve repository path: {error}"))?;
+    match action {
+        "check" | "status" => {
+            let state = remote_update_state(&path)?;
+            println!("Repository: {}", path.display());
+            println!("Branch:     {}", state.branch);
+            println!("Local:      {}", &state.local_oid.to_string()[..12]);
+            println!("Origin:     {}", &state.remote_oid.to_string()[..12]);
+            println!("Ahead:      {} commit(s)", state.ahead);
+            println!("Behind:     {} commit(s)", state.behind);
+            println!("Worktree:   {}", if state.clean { "clean" } else { "has local changes" });
+            if state.behind == 0 {
+                println!("Up to date with origin.");
+            } else if state.ahead > 0 {
+                println!("Branches have diverged; GitManager will not create a merge automatically.");
+            } else if !state.clean {
+                println!("Fast-forward is available, but local changes must be committed or stashed first.");
+            } else {
+                println!("Fast-forward update is available. Run gitm update pull to apply it.");
+            }
+            Ok(())
+        }
+        "pull" | "apply" => {
+            let state = remote_update_state(&path)?;
+            if !state.clean {
+                return Err("Refusing to pull because the worktree has uncommitted or untracked files. Commit or stash them first.".to_string());
+            }
+            if state.ahead > 0 && state.behind > 0 {
+                return Err("Refusing to pull because local and origin branches have diverged.".to_string());
+            }
+            if state.behind == 0 {
+                println!("Already up to date with origin.");
+                return Ok(());
+            }
+            if state.ahead > 0 {
+                return Err("Refusing to pull because local commits are not present on origin.".to_string());
+            }
+            let output = std::process::Command::new("git")
+                .arg("-C").arg(&path)
+                .args(["pull", "--ff-only"])
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .map_err(|error| format!("Could not start Git for fast-forward pull: {error}. Install Git or update this repository manually."))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                return Err(if !stderr.is_empty() { stderr } else if !stdout.is_empty() { stdout } else { format!("Git pull exited with {}", output.status) });
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            println!("{}", if stdout.is_empty() { "Repository fast-forwarded successfully." } else { stdout.as_str() });
+            Ok(())
+        }
+        "--help" | "-h" | "help" => {
+            println!("gitm update check [PATH]\ngitm update pull [PATH]\n\nChecks origin and compares ahead/behind commits. Pull uses --ff-only, refuses dirty worktrees, and never creates merge commits.");
+            Ok(())
+        }
+        other => Err(format!("Unknown update action '{other}'. Use 'gitm update check' or 'gitm update pull'.")),
+    }
 }
 
 fn command_status(args: &[String]) -> Result<(), String> {
@@ -488,6 +764,16 @@ fn command_help(command: &str) -> &'static str {
             "gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n\
              Verify and restore a selected point. Existing destinations are preserved before replacement.\n\
              Without --yes, no destination changes are made.\n",
+        "scan" =>
+            "gitm scan [ROOT...] [--depth N] [--hidden] [--include-dependencies]\n\
+             Discover local repositories under supplied roots or common developer folders.\n",
+        "inspect" =>
+            "gitm inspect [PATH]\n\
+             Show repository identity, author, refs, remotes and worktree state.\n",
+        "update" =>
+            "gitm update check|pull [PATH]\n\\
+             Check origin ahead/behind counts or fast-forward a clean worktree.\n\\
+             Pull refuses dirty or diverged branches and never creates merge commits.\n",
         "status" =>
             "gitm status [PATH]\n\
              Show the current branch, HEAD and working-tree changes.\n",
@@ -524,6 +810,9 @@ fn print_help() {
            gitm backup [PATH] --kind local|remote [--archive-root PATH]\n\
            gitm backups [PATH] [--kind local|remote] [--archive-root PATH]\n\
            gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n\
+           gitm scan [ROOT...] [--depth N] [--hidden] [--include-dependencies]\n\
+           gitm inspect [PATH]\n\
+           gitm update check|pull [PATH]\n\\
            gitm status [PATH]\n\
            gitm log [PATH] [--limit N]\n\
            gitm branches [PATH]\n\
@@ -936,6 +1225,9 @@ mod tests {
         assert!(super::command_help("restore").contains("Without --yes"));
         assert!(super::command_help("cloud").contains("explicit network transfer"));
         assert!(super::command_help("backup").contains("reachable Git history"));
+        assert!(super::command_help("scan").contains("Discover local repositories"));
+        assert!(super::command_help("inspect").contains("repository identity"));
+        assert!(super::command_help("update").contains("never creates merge commits"));
         assert!(super::command_help("not-a-command").contains("Unknown command"));
     }
 

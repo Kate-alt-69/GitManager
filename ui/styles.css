@@ -2037,3 +2037,30 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   border-color: rgba(218, 54, 51, 0.48);
   color: var(--danger, #f85149);
 }
+
+
+/* Archive provider status and explicit cloud sync controls */
+.archive-cloud-panel {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 10px;
+  background: rgba(127, 127, 127, 0.035);
+}
+.archive-cloud-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.archive-cloud-heading .archive-action-row {
+  margin: 0;
+}
+.archive-cloud-panel small {
+  color: var(--muted, #8b949e);
+  font-size: 11px;
+  line-height: 1.5;
+}
