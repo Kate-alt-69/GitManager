@@ -359,7 +359,7 @@ fn draw(
                         snapshot.kind.as_str(),
                         snapshot.branch,
                         snapshot.file_count,
-                        human_bytes(snapshot.archive_bytes)
+                        human_bytes(snapshot.stored_bytes)
                     ));
                 }
             }
@@ -429,7 +429,7 @@ fn print_snapshot(snapshot: &ArchiveSnapshot) {
     println!("Repository: {}", snapshot.repository_path);
     println!("Branch: {}", snapshot.branch);
     println!("Files: {} · source: {} · new blob bytes: {}",
-        snapshot.file_count, human_bytes(snapshot.source_bytes), human_bytes(snapshot.archive_bytes));
+        snapshot.file_count, human_bytes(snapshot.source_bytes), human_bytes(snapshot.stored_bytes));
     println!("SHA-256: {}", snapshot.manifest_sha256);
     println!("Location: {}", snapshot.manifest_logical_path);
     if !snapshot.excluded_paths.is_empty() {

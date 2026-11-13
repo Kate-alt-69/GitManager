@@ -26,7 +26,10 @@ GitManager-local modifications made after copying include:
 
 - Excluding common credential files and directories from Cloud Node local
   directory scans by default.
-- Adding archive-specific retention integration helpers.
+- Adding direct logical-file read, verify, restore, and prune operations to
+  CloudNodeStore for repository-level content-addressed snapshots.
+- Making the Cloud Node crate manifests standalone Cargo packages rather than
+  inheriting settings from the upstream RBE workspace.
 
 The RBE source copy is intentionally vendored rather than referenced through a
 floating Git dependency. Upstream updates must be reviewed and copied

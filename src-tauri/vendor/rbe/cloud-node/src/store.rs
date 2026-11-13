@@ -1,3 +1,8 @@
+// GitManager vendor modification (2026-11-13):
+// Direct logical-file lookup, verification, restore and removal helpers were
+// added for repository archive manifests/blobs. The upstream RBE source is
+// retained otherwise; see ../NOTICE.md for provenance and license status.
+
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};

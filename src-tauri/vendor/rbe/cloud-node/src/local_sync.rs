@@ -1,3 +1,7 @@
+// GitManager vendor modification (2026-11-13):
+// Common environment/credential paths are excluded by default for archives.
+// See ../NOTICE.md for source provenance and license status.
+
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};

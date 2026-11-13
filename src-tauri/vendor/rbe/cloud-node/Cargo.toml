@@ -1,3 +1,4 @@
+# GitManager vendor adaptation (2026-11-13): standalone manifest replaces RBE workspace-inherited fields.
 [package]
 name = "cloud-node"
 version = "0.1.0"
