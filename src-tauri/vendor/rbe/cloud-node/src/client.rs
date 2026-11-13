@@ -417,7 +417,7 @@ async fn write_cache_ready_marker(cache_root: &Path, header: SyncPlanHeader) -> 
         durable::remove_file_async(&part).await?;
     }
     tokio::fs::write(&part, header.encode()).await?;
-    tokio::fs::OpenOptions::new().write(true).open(&part).await?.sync_all().await?
+    tokio::fs::OpenOptions::new().write(true).open(&part).await?.sync_all().await?;
     if target.exists() {
         durable::remove_file_async(&target).await?;
     }
