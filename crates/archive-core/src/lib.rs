@@ -311,7 +311,9 @@ pub fn capture_repository(
         repository_name,
         repository_path: source.to_string_lossy().to_string(),
         kind,
-        captured_at: chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp)
+        captured_at: i64::try_from(timestamp)
+            .ok()
+            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
             .map(|date| date.to_rfc3339())
             .unwrap_or_else(|| timestamp.to_string()),
         captured_at_unix_ms: timestamp,
