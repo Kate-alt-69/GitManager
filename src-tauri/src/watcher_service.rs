@@ -1,7 +1,7 @@
 use git2::{Direction, FetchOptions, Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
+use crate::process_utils::hidden_command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -205,7 +205,7 @@ pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
     }
 
     // Prefer Git's explicit fast-forward-only pull. It must never create a merge commit.
-    let output = Command::new("git")
+    let output = hidden_command("git")
         .arg("-C")
         .arg(repo_path)
         .arg("pull")
@@ -296,7 +296,7 @@ pub fn register_os_background_service() -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         let bin_quoted = format!("\"{}\" --svchost-worker", service_bin.display());
-        let sc_out = Command::new("sc.exe")
+        let sc_out = hidden_command("sc.exe")
             .args([
                 "create",
                 "GitManagerUpdateSvc",
@@ -307,13 +307,13 @@ pub fn register_os_background_service() -> Result<String, String> {
             .output();
 
         // Also ensure background worker process is spawned immediately even without Administrator elevation
-        let _ = Command::new(&service_bin)
+        let _ = hidden_command(&service_bin)
             .arg("--svchost-worker")
             .spawn();
 
         match sc_out {
             Ok(o) if o.status.success() => {
-                let _ = Command::new("sc.exe").args(["start", "GitManagerUpdateSvc"]).output();
+                let _ = hidden_command("sc.exe").args(["start", "GitManagerUpdateSvc"]).output();
                 return Ok("Registered & started Windows Service 'GitManagerUpdateSvc' (sc.exe / svchost background model).".to_string());
             }
             _ => {
@@ -333,8 +333,8 @@ pub fn register_os_background_service() -> Result<String, String> {
                 service_bin.display()
             );
             let _ = std::fs::write(&unit_path, unit_content);
-            let _ = Command::new("systemctl").args(["--user", "daemon-reload"]).output();
-            let _ = Command::new("systemctl")
+            let _ = hidden_command("systemctl").args(["--user", "daemon-reload"]).output();
+            let _ = hidden_command("systemctl")
                 .args(["--user", "enable", "--now", "gitmanager-updater.service"])
                 .output();
         }
@@ -352,7 +352,7 @@ pub fn register_os_background_service() -> Result<String, String> {
                 service_bin.display()
             );
             let _ = std::fs::write(&plist_path, plist_content);
-            let _ = Command::new("launchctl").args(["load", "-w", &plist_path.to_string_lossy()]).output();
+            let _ = hidden_command("launchctl").args(["load", "-w", &plist_path.to_string_lossy()]).output();
         }
         return Ok("Registered & started macOS LaunchAgent (com.gitmanager.updater).".to_string());
     }
@@ -379,14 +379,14 @@ pub fn send_os_desktop_notification(notification: &RepoUpdateNotification) {
             title.replace('\'', ""),
             body.replace('\'', "")
         );
-        let _ = Command::new("powershell")
+        let _ = hidden_command("powershell")
             .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script])
             .spawn();
     }
 
     #[cfg(target_os = "linux")]
     {
-        let _ = Command::new("notify-send")
+        let _ = hidden_command("notify-send")
             .args(["-a", "GitManager", &title, body])
             .spawn();
     }
@@ -398,7 +398,7 @@ pub fn send_os_desktop_notification(notification: &RepoUpdateNotification) {
             body.replace('"', "\\\""),
             title.replace('"', "\\\"")
         );
-        let _ = Command::new("osascript").args(["-e", &apple_script]).spawn();
+        let _ = hidden_command("osascript").args(["-e", &apple_script]).spawn();
     }
 }
 

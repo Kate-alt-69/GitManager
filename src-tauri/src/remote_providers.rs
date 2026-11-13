@@ -1,5 +1,8 @@
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashSet;
+use crate::process_utils::hidden_command;
 
 use crate::git_info::{BranchInfo, CommitNode, GitRepositoryInfo, RemoteEndpoint};
 
@@ -47,6 +50,102 @@ struct GithubRepoItem {
     owner: GithubOwner,
     updated_at: Option<String>,
     description: Option<String>,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubIdentity { pub login: String, pub display_name: String, pub organizations: Vec<String> }
+
+fn run_gh_json(args: &[&str]) -> Result<Value, String> {
+    let mut command = hidden_command("gh");
+    command.args(args).env("GH_PROMPT_DISABLED", "1").env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("GH_PAGER", "cat").env("GIT_TERMINAL_PROMPT", "0");
+    let output = command.output().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            "GitHub CLI was not found. Install it and run gh auth login to connect automatically.".to_string()
+        } else { format!("Could not start GitHub CLI: {error}") }
+    })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() { format!("GitHub CLI request failed: {}", output.status) }
+            else { format!("GitHub CLI request failed: {stderr}") });
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| format!("GitHub CLI returned invalid JSON: {error}"))
+}
+fn run_gh_paginated(endpoint: &str) -> Result<Vec<Value>, String> {
+    let output = run_gh_json(&["api", "--paginate", "--slurp", endpoint])?;
+    let mut items = Vec::new();
+    if let Some(pages) = output.as_array() {
+        for page in pages {
+            if let Some(values) = page.as_array() { items.extend(values.iter().cloned()); }
+            else if page.is_object() { items.push(page.clone()); }
+        }
+    }
+    Ok(items)
+}
+pub fn detect_github_identity() -> Result<GitHubIdentity, String> {
+    let user = run_gh_json(&["api", "user"])?;
+    let login = user.get("login").and_then(Value::as_str)
+        .ok_or_else(|| "GitHub CLI did not return an authenticated account.".to_string())?.to_string();
+    let display_name = user.get("name").and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty()).unwrap_or(&login).to_string();
+    let organizations = run_gh_paginated("user/orgs?per_page=100").unwrap_or_default().into_iter()
+        .filter_map(|value| value.get("login").and_then(Value::as_str).map(str::to_string)).collect();
+    Ok(GitHubIdentity { login, display_name, organizations })
+}
+fn map_github_repositories(items: Vec<GithubRepoItem>, display_name: &str, owner_email: &str) -> Vec<GitRepositoryInfo> {
+    items.into_iter().map(|item| {
+        let default_branch = item.default_branch.unwrap_or_else(|| "main".to_string());
+        let head_oid = format!("gh-{}-head", item.id);
+        let date_iso = item.updated_at.unwrap_or_else(|| "Unknown update date".to_string());
+        let owner_login = item.owner.login.clone();
+        let owner_avatar = item.owner.avatar_url.clone();
+        let item_name = item.name.clone();
+        let item_full_name = item.full_name.clone();
+        let item_clone_url = item.clone_url.clone();
+        let item_html_url = item.html_url.clone();
+        let description = item.description.clone().unwrap_or_else(|| "GitHub repository".to_string());
+        GitRepositoryInfo {
+            id: format!("github::{item_full_name}"), name: item_name.clone(),
+            path: format!("github.com/{item_full_name}"), git_dir: format!("remote://github.com/{item_full_name}.git"),
+            parent_folder: format!("GitHub / @{owner_login}"), owner_name: if owner_login.eq_ignore_ascii_case(display_name) { display_name.to_string() } else { owner_login.clone() },
+            owner_email: owner_email.to_string(), current_branch: default_branch.clone(), has_remote: true,
+            primary_provider: "github".to_string(), primary_remote_url: Some(item_clone_url.clone()),
+            web_url: Some(item_html_url.clone()), icon_url: owner_avatar.clone(),
+            remotes: vec![RemoteEndpoint { name: "origin".to_string(), url: item_clone_url, provider: "github".to_string(),
+                host: "github.com".to_string(), owner: Some(owner_login), repo_slug: Some(item_name),
+                web_url: Some(item_html_url), icon_url: owner_avatar }],
+            branches: vec![BranchInfo { name: default_branch.clone(), is_head: true, is_remote: true,
+                target_oid: head_oid.clone(), upstream: Some(format!("origin/{default_branch}")), is_default: true }],
+            commits: vec![CommitNode { oid: head_oid, short_oid: "remote".to_string(), message: description.clone(),
+                summary: description, author_name: display_name.to_string(), author_email: owner_email.to_string(),
+                timestamp: 0, date_iso, parents: vec![], branches: vec![default_branch], tags: vec!["remote".to_string()],
+                is_head: true, lane: 0 }],
+            dirty_files_count: 0, total_commits_loaded: 1, source_kind: "remote_account".to_string(),
+        }
+    }).collect()
+}
+pub fn fetch_github_cli_account() -> Result<ConnectedAccountSummary, String> {
+    let user_value = run_gh_json(&["api", "user"])?;
+    let user: GithubUserResponse = serde_json::from_value(user_value)
+        .map_err(|error| format!("Could not parse authenticated GitHub user: {error}"))?;
+    let display_name = user.name.clone().filter(|name| !name.trim().is_empty()).unwrap_or_else(|| user.login.clone());
+    let email = user.email.clone().unwrap_or_else(|| format!("{}@users.noreply.github.com", user.login));
+    let mut items = run_gh_paginated("user/repos?per_page=100&type=all&sort=updated")?.into_iter()
+        .filter_map(|value| serde_json::from_value::<GithubRepoItem>(value).ok()).collect::<Vec<_>>();
+    let organizations = run_gh_paginated("user/orgs?per_page=100").unwrap_or_default().into_iter()
+        .filter_map(|value| value.get("login").and_then(Value::as_str).map(str::to_string)).take(24).collect::<Vec<_>>();
+    for organization in organizations {
+        if let Ok(org_items) = run_gh_paginated(&format!("orgs/{organization}/repos?per_page=100&type=all&sort=updated")) {
+            items.extend(org_items.into_iter().filter_map(|value| serde_json::from_value::<GithubRepoItem>(value).ok()));
+        }
+    }
+    let mut seen = HashSet::new();
+    items.retain(|item| seen.insert(item.full_name.to_ascii_lowercase()));
+    Ok(ConnectedAccountSummary { provider: "github".to_string(), account_login: user.login, display_name,
+        email, avatar_url: user.avatar_url, profile_url: user.html_url,
+        repositories: map_github_repositories(items, &display_name, &email) })
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,7 +276,7 @@ async fn fetch_github_account(req: ProviderAccountRequest) -> Result<ConnectedAc
             let head_oid = format!("gh-{}-head", item.id);
             let date_iso = item
                 .updated_at
-                .unwrap_or_else(|| "2026-01-01T00:00:00Z".to_string());
+                .unwrap_or_else(|| "Unknown update date".to_string());
 
             GitRepositoryInfo {
                 id: format!("github::{}", item.full_name),
@@ -209,6 +308,7 @@ async fn fetch_github_account(req: ProviderAccountRequest) -> Result<ConnectedAc
                     is_remote: true,
                     target_oid: head_oid.clone(),
                     upstream: Some(format!("origin/{}", default_branch)),
+                    is_default: true,
                 }],
                 commits: vec![CommitNode {
                     oid: head_oid,
@@ -358,6 +458,7 @@ async fn fetch_gitlab_account(req: ProviderAccountRequest) -> Result<ConnectedAc
                     is_remote: true,
                     target_oid: head_oid.clone(),
                     upstream: Some(format!("origin/{}", default_branch)),
+                    is_default: true,
                 }],
                 commits: vec![CommitNode {
                     oid: head_oid,

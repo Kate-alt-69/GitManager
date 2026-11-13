@@ -6,8 +6,9 @@ pub mod watcher_service;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use serde::{Deserialize, Serialize};
+use git2::{Oid, Repository};
+use crate::process_utils::hidden_command;
 use serde_json::Value;
 use tauri::path::BaseDirectory;
 use std::sync::atomic::Ordering;
@@ -41,6 +42,9 @@ pub struct RepositoryPreferences {
     pub auto_update: bool,
     pub keep_remote_clean: bool,
     pub commit_clean: bool,
+    pub cleaner_include_dependencies: bool,
+    pub cleaner_include_virtualenvs: bool,
+    pub cleaner_exclude_patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +161,95 @@ fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String>
     Ok(preferences)
 }
 
+
+fn repository_settings_path(repo_path: &str) -> Result<PathBuf, String> {
+    if repo_path.trim().is_empty() { return Err("Select a local Git repository first.".to_string()); }
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    if repo.is_bare() { return Err("Repository-local settings require a non-bare working tree.".to_string()); }
+    let info_dir = repo.path().join("info");
+    fs::create_dir_all(&info_dir).map_err(|error| format!("Could not create repository-local Git info directory: {error}"))?;
+    Ok(info_dir.join("gitmanager-settings.json"))
+}
+fn write_repository_settings_file(path: &Path, settings: &RepositoryPreferences) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(settings).map_err(|error| format!("Could not serialize repository settings: {error}"))?;
+    if bytes.len() > 64 * 1024 { return Err("Repository settings exceed the 64 KiB safety limit.".to_string()); }
+    let temporary = path.with_extension("json.tmp");
+    let backup = path.with_extension("json.bak");
+    fs::write(&temporary, bytes).map_err(|error| format!("Could not write temporary repository settings: {error}"))?;
+    let had_previous = path.exists();
+    if had_previous {
+        if backup.exists() { fs::remove_file(&backup).map_err(|error| format!("Could not clear repository settings backup: {error}"))?; }
+        fs::rename(path, &backup).map_err(|error| format!("Could not stage previous repository settings: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        if had_previous { let _ = fs::rename(&backup, path); }
+        return Err(format!("Could not save repository settings: {error}"));
+    }
+    if backup.exists() { let _ = fs::remove_file(&backup); }
+    Ok(())
+}
+#[tauri::command]
+fn load_repository_settings(app_handle: AppHandle, repo_path: String, repo_id: Option<String>) -> Result<RepositoryPreferences, String> {
+    let path = repository_settings_path(&repo_path)?;
+    if path.is_file() {
+        let content = fs::read_to_string(&path).map_err(|error| format!("Could not read repository-local settings: {error}"))?;
+        if content.len() > 64 * 1024 { return Err("Repository settings exceed the 64 KiB safety limit.".to_string()); }
+        return serde_json::from_str(&content).map_err(|error| format!("Repository-local settings are invalid JSON: {error}"));
+    }
+    let legacy = repo_id.and_then(|id| load_app_preferences(app_handle).ok()
+        .and_then(|preferences| preferences.repository_settings.get(&id).cloned()));
+    let settings = legacy.unwrap_or_default();
+    if settings != RepositoryPreferences::default() { write_repository_settings_file(&path, &settings)?; }
+    Ok(settings)
+}
+#[tauri::command]
+fn save_repository_settings(repo_path: String, settings: RepositoryPreferences) -> Result<RepositoryPreferences, String> {
+    if settings.cleaner_exclude_patterns.len() > 256 { return Err("A repository can have at most 256 cleaner exclusion patterns.".to_string()); }
+    let mut normalized = settings;
+    normalized.cleaner_exclude_patterns = normalized.cleaner_exclude_patterns.into_iter()
+        .map(|value| value.trim().replace('\\', "/"))
+        .filter(|value| !value.is_empty() && !value.starts_with('/') && !value.split('/').any(|part| part == ".."))
+        .take(256).collect();
+    let path = repository_settings_path(&repo_path)?;
+    write_repository_settings_file(&path, &normalized)?;
+    Ok(normalized)
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitDetails {
+    oid: String, short_oid: String, summary: String, message: String, author_name: String,
+    author_email: String, authored_at: String, files_changed: usize, insertions: usize, deletions: usize,
+}
+fn read_commit_details(repo_path: &str, oid_text: &str) -> Result<CommitDetails, String> {
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let oid = Oid::from_str(oid_text).map_err(|_| "The selected commit SHA is invalid.".to_string())?;
+    let commit = repo.find_commit(oid).map_err(|error| format!("Could not load selected commit: {error}"))?;
+    let tree = commit.tree().map_err(|error| format!("Could not read commit tree: {error}"))?;
+    let parent_tree = if commit.parent_count() > 0 {
+        Some(commit.parent(0).and_then(|parent| parent.tree()).map_err(|error| format!("Could not read parent commit tree: {error}"))?)
+    } else { None };
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .map_err(|error| format!("Could not compare commit trees: {error}"))?;
+    let stats = diff.stats().map_err(|error| format!("Could not summarize commit changes: {error}"))?;
+    let author = commit.author();
+    let timestamp = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
+        .map(|value| value.format("%Y-%m-%d %H:%M:%S UTC").to_string()).unwrap_or_else(|| "Unknown date".to_string());
+    Ok(CommitDetails {
+        oid: oid.to_string(), short_oid: oid.to_string().chars().take(7).collect(),
+        summary: commit.summary().unwrap_or("(no commit message)").to_string(),
+        message: commit.message().unwrap_or("").trim().to_string(),
+        author_name: author.name().unwrap_or("Unknown Author").to_string(),
+        author_email: author.email().unwrap_or("unknown@local").to_string(),
+        authored_at: timestamp, files_changed: stats.files_changed(),
+        insertions: stats.insertions(), deletions: stats.deletions(),
+    })
+}
+#[tauri::command]
+async fn get_commit_details(repo_path: String, oid: String) -> Result<CommitDetails, String> {
+    tokio::task::spawn_blocking(move || read_commit_details(&repo_path, &oid))
+        .await.map_err(|error| format!("Commit detail task failed: {error}"))?
+}
+
 fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     if roots.len() > 32 {
         return Err("GitManager supports up to 32 scan roots.".to_string());
@@ -235,37 +328,33 @@ fn get_default_scan_directories() -> Vec<String> {
 }
 
 #[tauri::command]
-fn scan_machine_repositories(
-    root_paths: Vec<String>,
-    max_depth: Option<usize>,
-    include_hidden_dirs: Option<bool>,
-    filter_mode: Option<String>,
-    index_dependency_repositories: Option<bool>,
-    state: State<'_, AppState>,
+async fn scan_machine_repositories(
+    root_paths: Vec<String>, max_depth: Option<usize>, include_hidden_dirs: Option<bool>,
+    filter_mode: Option<String>, index_dependency_repositories: Option<bool>, state: State<'_, AppState>,
 ) -> Result<IndexedRepoSummary, String> {
-    let local_repos = scan_repositories(ScanOptions {
-        root_paths,
-        max_depth,
-        include_hidden_dirs,
-        index_dependency_repositories,
-    })?;
-
-    // Local scan results are the local-machine library; remote account results belong in Accounts.
-    let combined = local_repos;
-
-    if let Ok(mut cache) = state.cached_repos.lock() {
-        *cache = combined.clone();
-    }
-
+    let options = ScanOptions { root_paths, max_depth, include_hidden_dirs, index_dependency_repositories };
+    // Directory walking and libgit2 inspection can be slow on large workspaces.
+    // Keep this work off the webview command thread so the desktop UI remains responsive.
+    let local_repos = tokio::task::spawn_blocking(move || scan_repositories(options))
+        .await.map_err(|error| format!("Repository scan task failed: {error}"))??;
+    if let Ok(mut cache) = state.cached_repos.lock() { *cache = local_repos.clone(); }
     let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
-    Ok(build_indexed_summary(combined, &requested))
+    Ok(build_indexed_summary(local_repos, &requested))
+}
+#[tauri::command]
+async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        let workdir = PathBuf::from(repo_path);
+        let git_dir = workdir.join(".git");
+        extract_git_repository_info(&workdir, &git_dir)
+    }).await.map_err(|error| format!("Repository inspection task failed: {error}"))?
 }
 
+
 #[tauri::command]
-fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {
-    let workdir = Path::new(&repo_path);
-    let git_dir = workdir.join(".git");
-    extract_git_repository_info(workdir, &git_dir)
+async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, String> {
+    tokio::task::spawn_blocking(remote_providers::detect_github_identity).await
+        .map_err(|error| format!("GitHub identity detection task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -275,12 +364,13 @@ async fn connect_git_account(
     access_token: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ConnectedAccountSummary, String> {
-    let summary = fetch_remote_account_repositories(ProviderAccountRequest {
-        provider,
-        username_or_host,
-        access_token,
-    })
-    .await?;
+    let summary = if provider.eq_ignore_ascii_case("github") && username_or_host.trim().is_empty()
+        && access_token.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+        tokio::task::spawn_blocking(remote_providers::fetch_github_cli_account).await
+            .map_err(|error| format!("GitHub account connection task failed: {error}"))??
+    } else {
+        fetch_remote_account_repositories(ProviderAccountRequest { provider, username_or_host, access_token }).await?
+    };
 
     if let Ok(mut accounts) = state.connected_accounts.lock() {
         accounts.retain(|a| {
@@ -445,10 +535,10 @@ fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value,
 
     let mut last_error = String::new();
     for (executable, prefix) in interpreters {
-        let version_check = Command::new(&executable)
-            .args(&prefix)
-            .args(["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 3)"])
-            .output();
+        let mut version_command = hidden_command(&executable);
+        version_command.args(&prefix)
+            .args(["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 3)"]);
+        let version_check = version_command.output();
         match version_check {
             Ok(result) if result.status.success() => {}
             Ok(_) => {
@@ -462,12 +552,10 @@ fn run_cleaner_script(app_handle: AppHandle, args: Vec<String>) -> Result<Value,
             }
         }
 
-        let output = Command::new(&executable)
-            .args(&prefix)
-            .arg(&script)
-            .args(&args)
-            .env("PYTHONUTF8", "1")
-            .output();
+        let mut run_command = hidden_command(&executable);
+        run_command.args(&prefix).arg(&script).args(&args)
+            .env("PYTHONUTF8", "1").env("PYTHONDONTWRITEBYTECODE", "1");
+        let output = run_command.output();
 
         let output = match output {
             Ok(value) => value,
@@ -673,8 +761,12 @@ pub fn run() {
             get_application_directories,
             load_app_preferences,
             save_app_preferences,
+            load_repository_settings,
+            save_repository_settings,
+            get_commit_details,
             scan_machine_repositories,
             inspect_repository,
+            detect_github_identity,
             connect_git_account,
             check_repo_updates_now,
             pull_repository_update,
