@@ -3,13 +3,14 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use crossterm::execute;
 use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use gitmanager_archive::{
     archive_cloud_storage_info, capture_repository, configure_archive_cloud_storage,
     default_archive_root, disable_archive_cloud_storage, list_repository_archives,
@@ -24,6 +25,34 @@ const MENU: [&str; 6] = [
     "Cloud Storage: Status & Sync",
     "Exit",
 ];
+
+fn terminal_width() -> usize {
+    let (width, _) = terminal::size().unwrap_or((80, 24));
+    usize::from(width.clamp(48, 104))
+}
+
+fn two_column_menu(width: usize) -> bool {
+    width >= 88
+}
+
+fn move_menu_vertical(selected: usize, direction: isize, width: usize) -> usize {
+    if two_column_menu(width) {
+        let column = selected / 3;
+        let row = selected % 3;
+        column * 3 + (row as isize + direction).rem_euclid(3) as usize
+    } else {
+        (selected as isize + direction).rem_euclid(MENU.len() as isize) as usize
+    }
+}
+
+fn move_menu_horizontal(selected: usize, right: bool, width: usize) -> usize {
+    if !two_column_menu(width) {
+        return selected;
+    }
+    let row = selected % 3;
+    let column = selected / 3;
+    (if right { 1 - column } else { 0 }) * 3 + row
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -281,8 +310,38 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
         if !event::poll(Duration::from_millis(250)).map_err(|error| error.to_string())? {
             continue;
         }
-        let Event::Key(key) = event::read().map_err(|error| error.to_string())? else {
-            continue;
+        let incoming = event::read().map_err(|error| error.to_string())?;
+        let key = match incoming {
+            Event::Mouse(mouse) => {
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                    let width = terminal_width();
+                    let row = usize::from(mouse.row);
+                    match screen {
+                        Screen::Menu => {
+                            if two_column_menu(width) && (7..10).contains(&row) {
+                                let item_row = row - 7;
+                                let right_column = usize::from(usize::from(mouse.column) >= width / 2);
+                                selected = item_row + right_column * 3;
+                                status = format!("Selected {} · press Enter", MENU[selected]);
+                            } else if !two_column_menu(width) && (7..13).contains(&row) {
+                                selected = row - 7;
+                                status = format!("Selected {} · press Enter", MENU[selected]);
+                            }
+                        }
+                        Screen::Snapshots => {
+                            let item_row = row.saturating_sub(7);
+                            if row >= 7 && item_row < snapshots.len() {
+                                selected = item_row;
+                                status = format!("Selected restore point {} · press Enter or R", snapshots[selected].id);
+                            }
+                        }
+                        Screen::ConfirmRestore => {}
+                    }
+                }
+                continue;
+            }
+            Event::Key(key) => key,
+            _ => continue,
         };
         if key.kind != KeyEventKind::Press {
             continue;
@@ -293,9 +352,15 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                     selected = (selected + MENU.len() - 1) % MENU.len();
                 }
                 KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') => {
-                    selected = (selected + 1) % MENU.len();
+                    selected = move_menu_vertical(selected, 1, terminal_width());
                 }
-                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Left | KeyCode::Char('a') | KeyCode::Char('A') => {
+                    selected = move_menu_horizontal(selected, false, terminal_width());
+                }
+                KeyCode::Right | KeyCode::Char('d') | KeyCode::Char('D') => {
+                    selected = move_menu_horizontal(selected, true, terminal_width());
+                }
+                KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
                 KeyCode::Enter => match selected {
                     0 | 1 => {
                         let kind = if selected == 0 { "local" } else { "remote" };
@@ -391,24 +456,38 @@ enum Screen {
     ConfirmRestore,
 }
 
-struct TerminalSession;
+struct TerminalSession {
+    mouse_enabled: bool,
+}
 
 impl TerminalSession {
     fn enter() -> Result<Self, String> {
         terminal::enable_raw_mode().map_err(|error| format!("Could not enable terminal input: {error}"))?;
         let mut stdout = io::stdout();
+        let mouse_enabled = env::var("TERM").ok().as_deref() != Some("dumb");
         if let Err(error) = execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide) {
             let _ = terminal::disable_raw_mode();
             return Err(format!("Could not enter TUI screen: {error}"));
         }
-        Ok(Self)
+        if mouse_enabled {
+            if let Err(error) = execute!(stdout, EnableMouseCapture) {
+                let _ = execute!(stdout, crossterm::cursor::Show, LeaveAlternateScreen);
+                let _ = terminal::disable_raw_mode();
+                return Err(format!("Could not enable TUI mouse selection: {error}"));
+            }
+        }
+        Ok(Self { mouse_enabled })
     }
 }
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
+        let mut stdout = io::stdout();
+        if self.mouse_enabled {
+            let _ = execute!(stdout, DisableMouseCapture);
+        }
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(io::stdout(), crossterm::cursor::Show, LeaveAlternateScreen);
+        let _ = execute!(stdout, crossterm::cursor::Show, LeaveAlternateScreen);
     }
 }
 
@@ -421,11 +500,13 @@ fn draw(
     status: &str,
     pending: Option<&ArchiveSnapshot>,
 ) -> Result<(), String> {
-    let (width, _) = terminal::size().unwrap_or((80, 24));
-    let width = usize::from(width.clamp(48, 104));
+    let width = terminal_width();
     let unicode = env::var("GITM_ASCII").ok().as_deref() != Some("1")
         && env::var("TERM").ok().as_deref() != Some("dumb");
-    let color = env::var_os("NO_COLOR").is_none();
+    let color = env::var_os("NO_COLOR").is_none()
+        && env::var("FORCE_COLOR").ok().as_deref() != Some("0")
+        && env::var("GITM_COLOR").ok().as_deref() != Some("0")
+        && env::var("TERM").ok().as_deref() != Some("dumb");
     let left = if unicode { "╭" } else { "+" };
     let right = if unicode { "╮" } else { "+" };
     let bottom_left = if unicode { "╰" } else { "+" };
@@ -443,8 +524,29 @@ fn draw(
     match screen {
         Screen::Menu => {
             rows.push("Choose an action".to_string());
-            for (index, label) in MENU.iter().enumerate() {
-                rows.push(format!("{} {}", if index == selected { if unicode { "❯" } else { ">" } } else { " " }, label));
+            if two_column_menu(width) {
+                let column_width = (inner.saturating_sub(2)) / 2;
+                for row in 0..3 {
+                    let left_index = row;
+                    let right_index = row + 3;
+                    let left = format!(
+                        "{} [{}] {}",
+                        if left_index == selected { if unicode { "❯" } else { ">" } } else { " " },
+                        left_index + 1,
+                        MENU[left_index],
+                    );
+                    let right = format!(
+                        "{} [{}] {}",
+                        if right_index == selected { if unicode { "❯" } else { ">" } } else { " " },
+                        right_index + 1,
+                        MENU[right_index],
+                    );
+                    rows.push(format!("{}  {}", pad_to_width(&clip(&left, column_width), column_width), clip(&right, column_width)));
+                }
+            } else {
+                for (index, label) in MENU.iter().enumerate() {
+                    rows.push(format!("{} [{}] {}", if index == selected { if unicode { "❯" } else { ">" } } else { " " }, index + 1, label));
+                }
             }
         }
         Screen::Snapshots => {
@@ -479,7 +581,11 @@ fn draw(
     }
     rows.push(String::new());
     rows.push(format!("Status: {status}"));
-    rows.push("Keys: ↑/↓ or W/S · Enter · Esc/Q".to_string());
+    rows.push(if two_column_menu(width) {
+        "Keys: ↑/↓ or W/S · ←/→ or A/D · Enter · Esc/Q · Click to select".to_string()
+    } else {
+        "Keys: ↑/↓ or W/S · Enter · Esc/Q · Click to select".to_string()
+    });
 
     let mut stdout = io::stdout();
     queue!(stdout, crossterm::cursor::MoveTo(0, 0), Clear(ClearType::All))
@@ -520,9 +626,38 @@ fn draw(
 }
 
 fn clip(value: &str, max: usize) -> String {
-    if value.chars().count() <= max { return value.to_string(); }
-    if max < 4 { return value.chars().take(max).collect(); }
-    value.chars().take(max - 3).collect::<String>() + "..."
+    if UnicodeWidthStr::width(value) <= max {
+        return value.to_string();
+    }
+    if max < 4 {
+        let mut output = String::new();
+        let mut width = 0usize;
+        for character in value.chars() {
+            let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+            if width + character_width > max {
+                break;
+            }
+            output.push(character);
+            width += character_width;
+        }
+        return output;
+    }
+    let limit = max - 3;
+    let mut output = String::new();
+    let mut width = 0usize;
+    for character in value.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if width + character_width > limit {
+            break;
+        }
+        output.push(character);
+        width += character_width;
+    }
+    output + "..."
+}
+
+fn pad_to_width(value: &str, width: usize) -> String {
+    format!("{value}{}", " ".repeat(width.saturating_sub(UnicodeWidthStr::width(value))))
 }
 
 fn print_snapshot(snapshot: &ArchiveSnapshot) {
@@ -544,6 +679,21 @@ fn print_snapshot(snapshot: &ArchiveSnapshot) {
 #[cfg(test)]
 mod tests {
     use super::positional;
+
+    #[test]
+    fn terminal_clip_uses_display_width_for_wide_unicode() {
+        assert_eq!(super::clip("界A", 3), "界A");
+        assert_eq!(super::clip("界ABC", 5), "界...");
+        assert_eq!(super::pad_to_width("界A", 4), "界A ");
+    }
+
+    #[test]
+    fn menu_moves_vertically_by_column_and_horizontally_by_row() {
+        assert_eq!(super::move_menu_vertical(0, 1, 104), 1);
+        assert_eq!(super::move_menu_vertical(1, -1, 104), 0);
+        assert_eq!(super::move_menu_horizontal(1, true, 104), 4);
+        assert_eq!(super::move_menu_horizontal(4, false, 104), 1);
+    }
 
     #[test]
     fn positional_arguments_skip_option_values() {

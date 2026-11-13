@@ -10,5 +10,6 @@ name = "gitm"
 path = "src/main.rs"
 
 [dependencies]
+unicode-width = "0.2"
 gitmanager-archive = { path = "../archive-core" }
 crossterm = "0.28"

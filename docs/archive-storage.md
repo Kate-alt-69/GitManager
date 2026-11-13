@@ -109,9 +109,11 @@ gitm backups . --kind local
 gitm restore . --id <snapshot-id> --kind local --to ../recovered --yes
 ```
 
-The no-argument command opens a keyboard-driven TUI. It supports arrow keys and
-WASD, Enter, Escape/Q, and an ASCII mode for older/dumb terminals
-(`GITM_ASCII=1`). Use `--archive-root PATH` to select another local folder,
+The no-argument command opens a keyboard-driven TUI. It supports arrow keys,
+WASD, left/right navigation on wider terminals, Enter, Escape/Q, and optional
+SGR mouse selection. Its menu switches to two columns on wide terminals and
+clips text by terminal display width. ASCII and no-color modes support older or
+dumb terminals (`GITM_ASCII=1`, `TERM=dumb`, `NO_COLOR=1`, or `GITM_COLOR=0`). Use `--archive-root PATH` to select another local folder,
 including a Google Drive, OneDrive, or Dropbox Desktop-synced folder.
 
 Cloud object storage can be configured with `gitm cloud configure --file
