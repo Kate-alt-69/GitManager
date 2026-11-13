@@ -883,6 +883,11 @@ pub fn configure_archive_cloud_storage(
     provider_json: &str,
 ) -> Result<ArchiveCloudStorageInfo, String> {
     let root = resolve_archive_root(archive_root)?;
+    let _cloud_settings_lock = ArchiveCaptureLock::acquire(
+        &root,
+        "cloud-provider-sync",
+        ArchiveKind::Local,
+    )?;
     let provider: serde_json::Value = serde_json::from_str(provider_json)
         .map_err(|error| format!("Cloud provider configuration is invalid JSON: {error}"))?;
     if !provider.is_object() {
@@ -914,6 +919,11 @@ pub fn disable_archive_cloud_storage(
     archive_root: Option<&str>,
 ) -> Result<ArchiveCloudStorageInfo, String> {
     let root = resolve_archive_root(archive_root)?;
+    let _cloud_settings_lock = ArchiveCaptureLock::acquire(
+        &root,
+        "cloud-provider-sync",
+        ArchiveKind::Local,
+    )?;
     let path = root.join(CLOUD_NODE_SETTINGS_FILE);
     if path.exists() {
         fs::remove_file(path)
@@ -1450,6 +1460,29 @@ mod tests {
         let alternates = repository_path.join(".git/objects/info/alternates");
         fs::write(&alternates, root.join("external-objects").to_string_lossy().as_bytes()).unwrap();
         assert!(validate_remote_archive_source(&repository_path).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archive_cloud_settings_mutations_share_the_provider_sync_lock() {
+        let root = temp_root("cloud-settings-lock");
+        let sync = ArchiveCaptureLock::acquire(
+            &root,
+            "cloud-provider-sync",
+            ArchiveKind::Local,
+        ).unwrap();
+        assert!(ArchiveCaptureLock::acquire(
+            &root,
+            "cloud-provider-sync",
+            ArchiveKind::Local,
+        ).is_err());
+        drop(sync);
+        let mutation = ArchiveCaptureLock::acquire(
+            &root,
+            "cloud-provider-sync",
+            ArchiveKind::Local,
+        ).unwrap();
+        drop(mutation);
         let _ = fs::remove_dir_all(root);
     }
 
