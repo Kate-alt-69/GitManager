@@ -63,6 +63,10 @@ fn main() {
     }
 }
 
+fn has_command_help_flag(args: &[String]) -> bool {
+    args.iter().skip(1).any(|value| matches!(value.as_str(), "--help" | "-h"))
+}
+
 fn run() -> Result<(), String> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() {
@@ -82,11 +86,13 @@ fn run() -> Result<(), String> {
         }
         return Ok(());
     }
-    if args.len() > 1
-        && matches!(args[1].as_str(), "--help" | "-h")
-        && args[0] != "cloud"
-    {
-        print_command_help(&args[0]);
+    if has_command_help_flag(&args) {
+        match args[0].as_str() {
+            "cloud" => command_cloud(&["help".to_string()])?,
+            "cleaner" => command_cleaner(&["help".to_string()])?,
+            "update" => command_update(&["help".to_string()])?,
+            _ => print_command_help(&args[0]),
+        }
         return Ok(());
     }
 
@@ -1439,6 +1445,20 @@ fn print_snapshot(snapshot: &ArchiveSnapshot) {
 #[cfg(test)]
 mod tests {
     use super::positional;
+
+    #[test]
+    fn nested_help_flags_are_detected_before_command_execution() {
+        assert!(super::has_command_help_flag(&[
+            "update".to_string(), "pull".to_string(), "--help".to_string()
+        ]));
+        assert!(super::has_command_help_flag(&[
+            "cloud".to_string(), "disable".to_string(), "-h".to_string()
+        ]));
+        assert!(super::has_command_help_flag(&[
+            "cleaner".to_string(), "apply".to_string(), "--help".to_string()
+        ]));
+        assert!(!super::has_command_help_flag(&["backup".to_string(), ".".to_string()]));
+    }
 
     #[test]
     fn command_specific_help_documents_safe_restore_and_cloud_actions() {
