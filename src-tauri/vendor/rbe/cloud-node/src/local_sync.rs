@@ -521,23 +521,51 @@ pub fn is_default_secret_path(relative: &Path) -> bool {
         .filter_map(|component| component.as_os_str().to_str())
         .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>();
-    if components.is_empty() { return false; }
-    const SECRET_DIRS: &[&str] = &[".aws", ".azure", ".gnupg", ".ssh", ".secrets", "secrets"];
-    if components.iter().any(|part| SECRET_DIRS.contains(&part.as_str())) { return true; }
+    if components.is_empty() {
+        return false;
+    }
+
+    const SECRET_DIRS: &[&str] = &[
+        ".aws", ".azure", ".docker", ".gnupg", ".kube", ".secrets", ".ssh", "secrets",
+    ];
+    if components.iter().any(|part| SECRET_DIRS.contains(&part.as_str())) {
+        return true;
+    }
+    let normalized = components.join("/");
+    const SECRET_PATHS: &[&str] = &[
+        ".config/azure",
+        ".config/gcloud",
+        ".config/gh",
+        ".config/containers",
+        ".terraform.d",
+    ];
+    if SECRET_PATHS.iter().any(|prefix| {
+        normalized == *prefix || normalized.starts_with(&format!("{prefix}/"))
+    }) {
+        return true;
+    }
+
     let name = components.last().map(String::as_str).unwrap_or_default();
     if name == ".env" || (name.starts_with(".env.") && !matches!(
         name, ".env.example" | ".env.sample" | ".env.template" | ".env.dist"
-    )) { return true; }
+    )) {
+        return true;
+    }
     if matches!(name,
         "id_rsa" | "id_dsa" | "id_ecdsa" | "id_ed25519" |
         "credentials" | "credentials.json" | "secrets.json" | "secrets.yaml" |
-        "secrets.yml" | "service-account.json"
-    ) || (name.starts_with("service-account-") && name.ends_with(".json")) {
+        "secrets.yml" | "service-account.json" | "auth.json" |
+        ".npmrc" | ".pypirc" | ".netrc" | "_netrc" | ".git-credentials" |
+        ".authinfo" | ".pgpass" | ".my.cnf" | ".htpasswd" |
+        ".terraformrc" | "dockerconfigjson"
+    ) || (name.starts_with("service-account-") && name.ends_with(".json"))
+        || name.starts_with("terraform.tfstate")
+    {
         return true;
     }
     matches!(
         Path::new(name).extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase).as_deref(),
-        Some("pem" | "key" | "p12" | "pfx" | "keystore" | "jks")
+        Some("pem" | "key" | "p12" | "pfx" | "ppk" | "keystore" | "jks")
     )
 }
 
@@ -892,9 +920,17 @@ mod tests {
         assert!(is_default_secret_path(Path::new("certs/signing.pfx")));
         assert!(is_default_secret_path(Path::new(".ssh/id_ed25519")));
         assert!(is_default_secret_path(Path::new("secrets/service-account.json")));
+        assert!(is_default_secret_path(Path::new(".npmrc")));
+        assert!(is_default_secret_path(Path::new("project/.netrc")));
+        assert!(is_default_secret_path(Path::new(".docker/config.json")));
+        assert!(is_default_secret_path(Path::new(".kube/config")));
+        assert!(is_default_secret_path(Path::new(".config/gcloud/application_default_credentials.json")));
+        assert!(is_default_secret_path(Path::new(".config/gh/hosts.yml")));
+        assert!(is_default_secret_path(Path::new("terraform.tfstate.backup")));
         assert!(!is_default_secret_path(Path::new(".env.example")));
         assert!(!is_default_secret_path(Path::new(".env.sample")));
         assert!(!is_default_secret_path(Path::new("src/config.rs")));
+        assert!(!is_default_secret_path(Path::new("docs/.env.example")));
     }
 
     fn root(label: &str) -> PathBuf {
