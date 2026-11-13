@@ -143,9 +143,16 @@ pub fn fetch_github_cli_account() -> Result<ConnectedAccountSummary, String> {
     }
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.full_name.to_ascii_lowercase()));
-    Ok(ConnectedAccountSummary { provider: "github".to_string(), account_login: user.login, display_name,
-        email, avatar_url: user.avatar_url, profile_url: user.html_url,
-        repositories: map_github_repositories(items, &display_name, &email) })
+    let repositories = map_github_repositories(items, &display_name, &email);
+    Ok(ConnectedAccountSummary {
+        provider: "github".to_string(),
+        account_login: user.login,
+        display_name,
+        email,
+        avatar_url: user.avatar_url,
+        profile_url: user.html_url,
+        repositories,
+    })
 }
 
 #[derive(Debug, Deserialize)]

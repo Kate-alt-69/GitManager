@@ -1,3 +1,4 @@
+mod process_utils;
 pub mod git_info;
 pub mod remote_providers;
 pub mod scanner;

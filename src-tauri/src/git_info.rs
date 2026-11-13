@@ -235,15 +235,16 @@ pub fn extract_git_repository_info(workdir: &Path, git_dir_path: &Path) -> Resul
                     .push(b_name.clone());
             }
 
+            let is_default = default_branch.as_ref().map(|name| {
+                b_name == name.as_str() || b_name == format!("origin/{name}")
+            }).unwrap_or(false);
             branches_info.push(BranchInfo {
                 name: b_name,
                 is_head,
                 is_remote,
                 target_oid,
                 upstream,
-                is_default: default_branch.as_ref().map(|name| {
-                    b_name == name.as_str() || b_name == format!("origin/{name}")
-                }).unwrap_or(false),
+                is_default,
             });
         }
     }
