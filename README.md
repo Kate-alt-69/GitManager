@@ -180,3 +180,18 @@ On Linux and macOS, the same folder layout is rooted in the platform's user-loca
 The setup finish screen offers **Continue using GitManager** (launch the app) and a separate desktop-shortcut option. Uninstalling the application does not target the config/data siblings.
 
 Release builds use size-focused Cargo settings (size optimization, LTO, one codegen unit and symbol stripping), and Tokio is built with only the runtime/time features used by this application. This is an optimization baseline; final installer sizes must still be measured from actual Windows/Linux/macOS release artifacts.
+
+
+## 5. Repository Archives & Native `gitm` CLI
+
+GitManager vendors the RBE Cloud Node storage engine under
+`src-tauri/vendor/rbe` and adapts it for complete repository restore points.
+Archive data is stored as content-addressed file blobs plus immutable manifests,
+so unchanged content is shared across snapshots. Local and Remote Archives are
+separate; each retains up to five complete restore points per repository/type.
+Secret-bearing `.env`/credential/private-key paths are excluded by default.
+
+The standalone Rust `gitm` CLI provides backup, history, restore, and an
+arrow/WASD keyboard TUI without requiring Node.js or the desktop WebView.
+
+See [docs/archive-storage.md](docs/archive-storage.md).

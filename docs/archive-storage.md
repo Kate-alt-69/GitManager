@@ -59,3 +59,25 @@ authentication secrets; credentials must be set up again.
 Five restore points are a retention policy, not a full disaster-recovery
 guarantee. A local archive destination should be on a different physical device;
 a cloud provider should be independent of the source machine and disk.
+
+
+## `gitm` native CLI
+
+GitManager ships a separate Rust CLI so archive operations do not require Node.js
+or the desktop WebView runtime:
+
+```text
+gitm
+gitm backup . --kind local
+gitm backup . --kind remote
+gitm backups . --kind local
+gitm restore . --id <snapshot-id> --kind local --to ../recovered --yes
+```
+
+The no-argument command opens a keyboard-driven TUI. It supports arrow keys and
+WASD, Enter, Escape/Q, and an ASCII mode for older/dumb terminals
+(`GITM_ASCII=1`). Use `--archive-root PATH` to select another local folder,
+including a Google Drive Desktop-synced folder. The RBE Cloud Node provider
+engine is vendored for object-storage synchronization; direct Google Drive API
+authentication is separate from Google Cloud Storage and is not implied by GCS
+support.

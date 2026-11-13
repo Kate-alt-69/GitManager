@@ -69,7 +69,8 @@ fn command_backup(args: &[String]) -> Result<(), String> {
         .or_else(|| positional(args, 0).map(str::to_owned))
         .unwrap_or(env::current_dir().map_err(|error| error.to_string())?.to_string_lossy().to_string());
     let kind = option_value(args, "--kind").unwrap_or("local");
-    let snapshot = capture_repository(&repo, None, kind)?;
+    let archive_root = option_value(args, "--archive-root");
+    let snapshot = capture_repository(&repo, archive_root, kind)?;
     print_snapshot(&snapshot);
     Ok(())
 }
@@ -80,7 +81,8 @@ fn command_list(args: &[String]) -> Result<(), String> {
         .or_else(|| positional(args, 0).map(str::to_owned))
         .unwrap_or(env::current_dir().map_err(|error| error.to_string())?.to_string_lossy().to_string());
     let kind = option_value(args, "--kind");
-    let snapshots = list_repository_archives(&repo, None, kind)?;
+    let archive_root = option_value(args, "--archive-root");
+    let snapshots = list_repository_archives(&repo, archive_root, kind)?;
     if snapshots.is_empty() {
         println!("No GitManager restore points found for {repo}");
         return Ok(());
@@ -116,7 +118,8 @@ fn command_restore(args: &[String]) -> Result<(), String> {
         println!("Run again with --yes to confirm replacement of the destination.");
         return Ok(());
     }
-    let result = restore_repository_archive(&repo, destination, None, kind, snapshot_id, true)?;
+    let archive_root = option_value(args, "--archive-root");
+    let result = restore_repository_archive(&repo, destination, archive_root, kind, snapshot_id, true)?;
     println!("Restored {} archive to {}", result.snapshot.id, result.destination);
     if let Some(path) = result.preserved_previous_path {
         println!("Previous destination preserved at {}", path);
@@ -160,9 +163,9 @@ fn print_help() {
         "GitManager · gitm — native repository archive and recovery\n\
          Usage:\n\
            gitm                         Open the interactive TUI\n\
-           gitm backup [PATH] --kind local|remote\n\
-           gitm backups [PATH] [--kind local|remote]\n\
-           gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] --yes\n\
+           gitm backup [PATH] --kind local|remote [--archive-root PATH]\n\
+           gitm backups [PATH] [--kind local|remote] [--archive-root PATH]\n\
+           gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n\
            gitm tui [--repo PATH]\n\
            gitm --help | --version\n\
          \n\
@@ -437,6 +440,29 @@ fn print_snapshot(snapshot: &ArchiveSnapshot) {
         for path in snapshot.excluded_paths.iter().take(12) {
             println!("  - {path}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::positional;
+
+    #[test]
+    fn positional_arguments_skip_option_values() {
+        let args = vec![
+            "--kind".to_string(), "remote".to_string(),
+            "--archive-root".to_string(), "D:/Backups".to_string(),
+            "D:/Projects/App".to_string(),
+        ];
+        assert_eq!(positional(&args, 0), Some("D:/Projects/App"));
+        assert_eq!(positional(&args, 1), None);
+    }
+
+    #[test]
+    fn positional_arguments_keep_multiple_paths() {
+        let args = vec!["source".to_string(), "--id".to_string(), "snapshot".to_string(), "destination".to_string()];
+        assert_eq!(positional(&args, 0), Some("source"));
+        assert_eq!(positional(&args, 1), Some("destination"));
     }
 }
 
