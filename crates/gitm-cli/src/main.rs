@@ -652,6 +652,7 @@ fn cleaner_script_path() -> Result<PathBuf, String> {
     for base in unique {
         for relative in [
             Path::new("resources/tools/gitmanager_cleaner.py"),
+            Path::new("Resources/tools/gitmanager_cleaner.py"),
             Path::new("tools/gitmanager_cleaner.py"),
             Path::new("../tools/gitmanager_cleaner.py"),
         ] {
