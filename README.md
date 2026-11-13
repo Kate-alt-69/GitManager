@@ -146,7 +146,7 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager and its background service, and creates:
 
-    src-tauri/target/release/bundle/nsis/GitManager-Setup.exe
+    target/release/bundle/nsis/GitManager-Setup.exe
 
 The setup installer copies the private CPython runtime after application files have been extracted. It lives under the current user's GitManager data directory and is used only by the bundled Developer Cleaner. It does not install Python machine-wide or modify PATH.
 

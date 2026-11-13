@@ -72,9 +72,9 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $installer = "src-tauri/target/release/bundle/nsis/GitManager-Setup.exe"
+          $installer = "target/release/bundle/nsis/GitManager-Setup.exe"
           if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe was not created." }
-          $targets = @("src-tauri/target/release/git-manager.exe", "src-tauri/target/release/git-manager-service.exe", $installer)
+          $targets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", $installer)
           foreach ($target in $targets) {
             if (Test-Path -LiteralPath $target) {
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
@@ -108,6 +108,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-installers-${{ matrix.platform }}
-          path: src-tauri/target/release/bundle/**
+          path: target/release/bundle/**
           if-no-files-found: error
           compression-level: 9

@@ -153,7 +153,8 @@ def name_windows_setup_installer(project_root: Path) -> Optional[Path]:
     """Expose a stable, predictable setup.exe name after Tauri has bundled NSIS."""
     if platform.system() != "Windows":
         return None
-    output_dir = project_root / "src-tauri" / "target" / "release" / "bundle" / "nsis"
+    # Tauri inherits the Cargo workspace target directory at the repository root.
+    output_dir = project_root / "target" / "release" / "bundle" / "nsis"
     if not output_dir.is_dir():
         log_err(f"NSIS installer output directory does not exist: {output_dir}")
         return None
