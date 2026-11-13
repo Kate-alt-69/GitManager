@@ -1,8 +1,11 @@
-//! Per-repository archive capture triggers.
+//! Bounded archive capture watcher.
 //!
-//! Only discovered Git working directories are watched. The module deliberately
-//! avoids watching entire disks or dependency trees directly.
+//! A single OS filesystem watcher observes discovered repositories. At most two
+//! archive captures execute concurrently; this keeps idle and burst-time thread
+//! use predictable on lower-end machines.
 
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
@@ -16,7 +19,22 @@ use crate::AppPreferences;
 
 static WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 const MAX_WATCHED_REPOSITORIES: usize = 256;
+const MAX_CONCURRENT_ARCHIVES: usize = 2;
 const COMMIT_SETTLE: Duration = Duration::from_millis(180);
+const EVENT_POLL: Duration = Duration::from_millis(200);
+
+struct WatchedRepository {
+    path: String,
+    root: PathBuf,
+    git_dir: PathBuf,
+    archive_root: String,
+    local_enabled: bool,
+    remote_enabled: bool,
+    last_change: Option<Instant>,
+    pending_commit: Option<Instant>,
+    last_head: Option<String>,
+    capture_in_progress: bool,
+}
 
 pub fn restart_archive_watchers(preferences: &AppPreferences) {
     let generation = WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
@@ -36,12 +54,9 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) {
     let local_enabled = preferences.archive_local_enabled;
     let remote_enabled = preferences.archive_remote_enabled;
 
-    thread::Builder::new()
-        .name("gitmanager-archive-discovery".to_string())
+    let _ = thread::Builder::new()
+        .name("gitmanager-archive-watcher".to_string())
         .spawn(move || {
-            if generation != WATCH_GENERATION.load(Ordering::SeqCst) {
-                return;
-            }
             let repositories = match scan_repositories(ScanOptions {
                 root_paths: roots,
                 max_depth: Some(max_depth.clamp(2, 16)),
@@ -54,165 +69,267 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) {
                     return;
                 }
             };
+            if generation != WATCH_GENERATION.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let archive_root_path = canonicalize_or_original(Path::new(&archive_root));
+            let mut watched = Vec::<WatchedRepository>::new();
+            let mut watch_targets = Vec::<(PathBuf, RecursiveMode)>::new();
+            let mut registered = HashSet::<PathBuf>::new();
 
             for repository in repositories.into_iter().take(MAX_WATCHED_REPOSITORIES) {
-                if generation != WATCH_GENERATION.load(Ordering::SeqCst) {
-                    break;
-                }
-                let path = repository.path.clone();
-                let git_dir = repository.git_dir.clone();
-                let trigger = trigger.clone();
-                let archive_root = archive_root.clone();
-                thread::Builder::new()
-                    .name(format!("gitmanager-archive-{}", repository.name))
-                    .spawn(move || {
-                        watch_repository(
-                            generation,
-                            path,
-                            git_dir,
-                            trigger,
-                            quiet_ms,
-                            archive_root,
-                            local_enabled,
-                            remote_enabled,
+                let root = match std::fs::canonicalize(&repository.path) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        eprintln!(
+                            "GitManager archive watcher: could not resolve repository {}: {error}",
+                            repository.path
                         );
-                    })
-                    .ok();
-            }
-        })
-        .ok();
-}
-
-fn watch_repository(
-    generation: u64,
-    repository_path: String,
-    git_dir: String,
-    trigger: String,
-    quiet_ms: u64,
-    archive_root: String,
-    local_enabled: bool,
-    remote_enabled: bool,
-) {
-    let repository_root = match std::fs::canonicalize(&repository_path) {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("GitManager archive watcher: could not resolve repository {repository_path}: {error}");
-            return;
-        }
-    };
-    let archive_root_path = match std::fs::canonicalize(&archive_root) {
-        Ok(path) => path,
-        Err(_) => std::path::PathBuf::from(&archive_root),
-    };
-    if archive_root_path == repository_root || archive_root_path.starts_with(&repository_root) {
-        eprintln!(
-            "GitManager archive watcher: refusing to watch {} because archive storage {} is inside it",
-            repository_root.display(),
-            archive_root_path.display()
-        );
-        return;
-    }
-    let git_dir_path = std::path::PathBuf::from(git_dir);
-    let mut watch_targets = Vec::<(std::path::PathBuf, RecursiveMode)>::new();
-    if trigger == "commit" {
-        if !git_dir_path.is_dir() {
-            return;
-        }
-        // Git commits update HEAD/packed-refs directly and branch refs below
-        // refs/. Do not recursively watch the object database (often enormous).
-        watch_targets.push((git_dir_path.clone(), RecursiveMode::NonRecursive));
-        let refs = git_dir_path.join("refs");
-        if refs.is_dir() {
-            watch_targets.push((refs, RecursiveMode::Recursive));
-        }
-        let ref_logs = git_dir_path.join("logs").join("refs");
-        if ref_logs.is_dir() {
-            watch_targets.push((ref_logs, RecursiveMode::Recursive));
-        }
-    } else {
-        watch_targets.push((repository_root.clone(), RecursiveMode::Recursive));
-    }
-
-    let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
-    let mut watcher = match notify::recommended_watcher(move |event: notify::Result<Event>| {
-        let _ = sender.send(event);
-    }) {
-        Ok(watcher) => watcher,
-        Err(error) => {
-            eprintln!("GitManager archive watcher: could not initialize watcher for {}: {error}", repository_root.display());
-            return;
-        }
-    };
-    for (path, mode) in watch_targets {
-        if let Err(error) = watcher.watch(&path, mode) {
-            eprintln!("GitManager archive watcher: could not register {}: {error}", path.display());
-            return;
-        }
-    }
-
-    let mut last_change = None::<Instant>;
-    let mut pending_commit = None::<Instant>;
-    let mut last_head = current_head(&repository_path);
-
-    while generation == WATCH_GENERATION.load(Ordering::SeqCst) {
-        match receiver.recv_timeout(Duration::from_millis(200)) {
-            Ok(Ok(event)) => {
-                if matches!(event.kind, EventKind::Access(_)) {
+                        continue;
+                    }
+                };
+                if archive_root_path == root || archive_root_path.starts_with(&root) {
+                    eprintln!(
+                        "GitManager archive watcher: refusing to watch {} because archive storage {} is inside it",
+                        root.display(),
+                        archive_root_path.display()
+                    );
                     continue;
                 }
-                if trigger == "change" {
-                    // Git metadata changes are not project file edits. Ignoring
-                    // them prevents commits and ref updates from causing duplicate
-                    // Local/Remote change-trigger snapshots.
-                    let has_project_change = event.paths.is_empty() || event.paths.iter().any(|path| {
-                        path.strip_prefix(&repository_root)
-                            .ok()
-                            .is_some_and(|relative| {
-                                !relative.components().any(|component| component.as_os_str() == ".git")
-                            })
-                    });
-                    if has_project_change {
-                        last_change = Some(Instant::now());
+
+                let git_dir = canonicalize_or_original(Path::new(&repository.git_dir));
+                if trigger == "commit" {
+                    if !git_dir.is_dir() {
+                        continue;
+                    }
+                    // HEAD and packed-refs are direct entries. Refs and reflog refs
+                    // are recursive. Never watch the potentially huge object DB.
+                    add_watch_target(
+                        &mut watch_targets,
+                        &mut registered,
+                        git_dir.clone(),
+                        RecursiveMode::NonRecursive,
+                    );
+                    let refs = git_dir.join("refs");
+                    if refs.is_dir() {
+                        add_watch_target(
+                            &mut watch_targets,
+                            &mut registered,
+                            refs,
+                            RecursiveMode::Recursive,
+                        );
+                    }
+                    let ref_logs = git_dir.join("logs").join("refs");
+                    if ref_logs.is_dir() {
+                        add_watch_target(
+                            &mut watch_targets,
+                            &mut registered,
+                            ref_logs,
+                            RecursiveMode::Recursive,
+                        );
                     }
                 } else {
-                    pending_commit = Some(Instant::now() + COMMIT_SETTLE);
+                    add_watch_target(
+                        &mut watch_targets,
+                        &mut registered,
+                        root.clone(),
+                        RecursiveMode::Recursive,
+                    );
                 }
-            }
-            Ok(Err(error)) => {
-                eprintln!("GitManager archive watcher: event error for {repository_path}: {error}");
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
 
-        if trigger == "change"
-            && last_change.is_some_and(|last| last.elapsed() >= Duration::from_millis(quiet_ms))
-        {
-            last_change = None;
-            capture_enabled_archives(
-                &repository_path,
-                &archive_root,
-                local_enabled,
-                remote_enabled,
-            );
-        }
-
-        if trigger == "commit"
-            && pending_commit.is_some_and(|deadline| Instant::now() >= deadline)
-        {
-            pending_commit = None;
-            let current = current_head(&repository_path);
-            if current.is_some() && current != last_head {
-                last_head = current;
-                capture_enabled_archives(
-                    &repository_path,
-                    &archive_root,
+                watched.push(WatchedRepository {
+                    path: repository.path,
+                    root,
+                    git_dir,
+                    archive_root: archive_root.clone(),
                     local_enabled,
                     remote_enabled,
-                );
+                    last_change: None,
+                    pending_commit: None,
+                    last_head: None,
+                    capture_in_progress: false,
+                });
+                let index = watched.len() - 1;
+                watched[index].last_head = current_head(&watched[index].path);
+            }
+
+            if watched.is_empty() || watch_targets.is_empty() {
+                return;
+            }
+
+            let (event_sender, event_receiver) = mpsc::channel::<notify::Result<Event>>();
+            let mut watcher = match notify::recommended_watcher(
+                move |event: notify::Result<Event>| {
+                    let _ = event_sender.send(event);
+                },
+            ) {
+                Ok(watcher) => watcher,
+                Err(error) => {
+                    eprintln!("GitManager archive watcher: could not initialize filesystem watcher: {error}");
+                    return;
+                }
+            };
+
+            for (path, mode) in watch_targets {
+                if let Err(error) = watcher.watch(&path, mode) {
+                    eprintln!(
+                        "GitManager archive watcher: could not register {}: {error}",
+                        path.display()
+                    );
+                }
+            }
+
+            let (capture_done_sender, capture_done_receiver) = mpsc::channel::<usize>();
+            let mut active_captures = 0usize;
+
+            while generation == WATCH_GENERATION.load(Ordering::SeqCst) {
+                match event_receiver.recv_timeout(EVENT_POLL) {
+                    Ok(Ok(event)) => {
+                        if !matches!(event.kind, EventKind::Access(_)) {
+                            apply_event(&mut watched, &event, &trigger);
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        eprintln!("GitManager archive watcher: filesystem event error: {error}");
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+
+                while let Ok(index) = capture_done_receiver.try_recv() {
+                    if let Some(repository) = watched.get_mut(index) {
+                        if repository.capture_in_progress {
+                            repository.capture_in_progress = false;
+                            active_captures = active_captures.saturating_sub(1);
+                        }
+                    }
+                }
+
+                if active_captures >= MAX_CONCURRENT_ARCHIVES {
+                    continue;
+                }
+
+                for index in 0..watched.len() {
+                    if active_captures >= MAX_CONCURRENT_ARCHIVES {
+                        break;
+                    }
+                    if watched[index].capture_in_progress {
+                        continue;
+                    }
+
+                    let should_capture = if trigger == "change" {
+                        watched[index].last_change.is_some_and(|last| {
+                            last.elapsed() >= Duration::from_millis(quiet_ms)
+                        })
+                    } else {
+                        watched[index].pending_commit.is_some_and(|deadline| Instant::now() >= deadline)
+                    };
+                    if !should_capture {
+                        continue;
+                    }
+
+                    if trigger == "change" {
+                        watched[index].last_change = None;
+                    } else {
+                        watched[index].pending_commit = None;
+                        let head = current_head(&watched[index].path);
+                        if head.is_none() || head == watched[index].last_head {
+                            continue;
+                        }
+                        watched[index].last_head = head;
+                    }
+
+                    watched[index].capture_in_progress = true;
+                    active_captures += 1;
+                    let path = watched[index].path.clone();
+                    let root = watched[index].archive_root.clone();
+                    let local = watched[index].local_enabled;
+                    let remote = watched[index].remote_enabled;
+                    let done = capture_done_sender.clone();
+                    if let Err(error) = thread::Builder::new()
+                        .name("gitmanager-archive-capture".to_string())
+                        .spawn(move || {
+                            capture_enabled_archives(&path, &root, local, remote);
+                            let _ = done.send(index);
+                        })
+                    {
+                        watched[index].capture_in_progress = false;
+                        active_captures = active_captures.saturating_sub(1);
+                        eprintln!(
+                            "GitManager archive watcher: could not start capture worker for {}: {error}",
+                            watched[index].path
+                        );
+                    }
+                }
+            }
+        });
+}
+
+fn canonicalize_or_original(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn add_watch_target(
+    targets: &mut Vec<(PathBuf, RecursiveMode)>,
+    registered: &mut HashSet<PathBuf>,
+    path: PathBuf,
+    mode: RecursiveMode,
+) {
+    if registered.insert(path.clone()) {
+        targets.push((path, mode));
+    }
+}
+
+fn apply_event(repositories: &mut [WatchedRepository], event: &Event, trigger: &str) {
+    if event.paths.is_empty() {
+        let now = Instant::now();
+        for repository in repositories {
+            if trigger == "change" {
+                repository.last_change = Some(now);
+            } else {
+                repository.pending_commit = Some(now + COMMIT_SETTLE);
+            }
+        }
+        return;
+    }
+
+    for path in &event.paths {
+        if trigger == "change" {
+            // Attribute a nested-repository event to the deepest discovered repo
+            // only, not to every parent repository whose root contains the path.
+            let selected = repositories
+                .iter()
+                .enumerate()
+                .filter(|(_, repository)| path.starts_with(&repository.root))
+                .max_by_key(|(_, repository)| repository.root.components().count())
+                .map(|(index, _)| index);
+            if let Some(index) = selected {
+                if is_project_file_event(&repositories[index].root, path) {
+                    repositories[index].last_change = Some(Instant::now());
+                }
+            }
+        } else {
+            let selected = repositories
+                .iter()
+                .enumerate()
+                .filter(|(_, repository)| path.starts_with(&repository.git_dir))
+                .max_by_key(|(_, repository)| repository.git_dir.components().count())
+                .map(|(index, _)| index);
+            if let Some(index) = selected {
+                repositories[index].pending_commit = Some(Instant::now() + COMMIT_SETTLE);
             }
         }
     }
+}
+
+fn is_project_file_event(repository_root: &Path, event_path: &Path) -> bool {
+    let Ok(relative) = event_path.strip_prefix(repository_root) else {
+        return false;
+    };
+    !relative.components().any(|component| {
+        component.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git")
+    })
 }
 
 fn current_head(repository_path: &str) -> Option<String> {
@@ -247,5 +364,27 @@ fn capture_enabled_archives(
         ) {
             eprintln!("GitManager Remote Archive for {repository_path}: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_project_file_event;
+    use std::path::Path;
+
+    #[test]
+    fn file_changes_in_git_metadata_do_not_trigger_change_archives() {
+        assert!(!is_project_file_event(
+            Path::new("/projects/app"),
+            Path::new("/projects/app/.git/index")
+        ));
+        assert!(!is_project_file_event(
+            Path::new("/projects/app"),
+            Path::new("/projects/app/.git/objects/pack/pack-abc.pack")
+        ));
+        assert!(is_project_file_event(
+            Path::new("/projects/app"),
+            Path::new("/projects/app/src/main.rs")
+        ));
     }
 }
