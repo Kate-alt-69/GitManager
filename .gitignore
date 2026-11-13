@@ -14,3 +14,6 @@ Thumbs.db
 # Prepared Windows embedded runtime (downloaded and checksum-verified by build.py)
 tools/runtime/python/*
 !tools/runtime/python/.keep
+
+# Generated Tauri sidecar binaries (built locally/CI for the active target triple)
+src-tauri/binaries/

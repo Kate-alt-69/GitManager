@@ -1,36 +1,29 @@
-# Vendored RBE Cloud Node — provenance and license status
+# Vendored RBE Cloud Node — third-party notices
 
-Source project: [Kastrick8/RBE](https://github.com/Kastrick8/RBE)
-
-Vendored components:
+The following source components are copied from [Kastrick8/RBE](https://github.com/Kastrick8/RBE):
 
 - `engine/crates/cloud-node`
 - `atomic-io`
 - `storage-sync-journal`
 
-The source files were copied into GitManager on 2026-11-13 and are maintained
-as a local copy under this directory. GitManager does not modify or push to the
-RBE repository as part of this vendoring work.
+**Copyright and origin:** RBE project by Kastrick (upstream repository: `Kastrick8/RBE`).
 
-GitManager's own root `LICENSE` is Apache License 2.0. However, at the time
-this copy was prepared, the public RBE default branch had no root or nested
-`LICENSE`, `NOTICE`, or `COPYING` file, the Cloud Node Cargo manifest had
-no `license` field, and GitHub reported no detected repository license.
-Therefore this notice records provenance but does **not** claim that the
-upstream RBE source has independently been confirmed as Apache-2.0 licensed.
-The source owner's explicit Apache-2.0 grant for the RBE components should be
-confirmed before redistribution of these vendored portions outside the
-owner-controlled repositories.
+**License:** Apache License, Version 2.0. A complete copy of the upstream license is
+provided in [LICENSE](./LICENSE). The license is also available at
+https://www.apache.org/licenses/LICENSE-2.0.
 
-GitManager-local modifications made after copying include:
+The vendored source is maintained locally under GitManager. GitManager does not
+modify, push to, or depend on a live branch of the RBE repository.
 
-- Excluding common credential files and directories from Cloud Node local
-  directory scans by default.
-- Adding direct logical-file read, verify, restore, and prune operations to
-  CloudNodeStore for repository-level content-addressed snapshots.
-- Making the Cloud Node crate manifests standalone Cargo packages rather than
-  inheriting settings from the upstream RBE workspace.
+## GitManager modifications
 
-The RBE source copy is intentionally vendored rather than referenced through a
-floating Git dependency. Upstream updates must be reviewed and copied
-deliberately.
+The following vendored file contains GitManager-specific changes in addition to
+the original RBE implementation:
+
+- `cloud-node/src/local_sync.rs`: excludes common secret/credential files by
+  default and adds verified logical-file read/restore and retention helpers
+  used by repository snapshots.
+
+The modifications are marked in the affected source file. The remainder of the
+vendored source is retained from the upstream copy. Upstream updates must be
+reviewed and copied deliberately.

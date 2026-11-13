@@ -1,3 +1,8 @@
+// GitManager modifications to the upstream RBE Cloud Node source:
+// - exclude common environment secrets, credentials and private keys by default;
+// - expose bounded, hash-verified logical-file read/restore helpers for GitManager archives;
+// - expose logical-object removal for post-publication five-point retention.
+// Original source: https://github.com/Kastrick8/RBE (Apache-2.0).
 // GitManager vendor modification (2026-11-13):
 // Common environment/credential paths are excluded by default for archives.
 // See ../NOTICE.md for source provenance and license status.
