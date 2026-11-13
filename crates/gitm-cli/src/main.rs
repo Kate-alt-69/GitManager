@@ -495,7 +495,7 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                         Screen::Menu => {
                             if two_column_menu(width) && (7..10).contains(&row) {
                                 let item_row = row - 7;
-                                let right_column = usize::from(usize::from(mouse.column) >= width / 2);
+                                let right_column = if usize::from(mouse.column) >= width / 2 { 1 } else { 0 };
                                 selected = item_row + right_column * 3;
                                 status = format!("Selected {} · press Enter", MENU[selected]);
                             } else if !two_column_menu(width) && (7..13).contains(&row) {
@@ -524,7 +524,7 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
         match screen {
             Screen::Menu => match key.code {
                 KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => {
-                    selected = (selected + MENU.len() - 1) % MENU.len();
+                    selected = move_menu_vertical(selected, -1, terminal_width());
                 }
                 KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') => {
                     selected = move_menu_vertical(selected, 1, terminal_width());
