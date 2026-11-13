@@ -36,3 +36,4 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1.40", default-features = false, features = ["rt", "rt-multi-thread", "time"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
+cloud-node = { path = "vendor/rbe/cloud-node" }

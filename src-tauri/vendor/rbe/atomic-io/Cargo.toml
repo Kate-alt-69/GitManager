@@ -1,0 +1,9 @@
+[package]
+name = "atomic-io"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
