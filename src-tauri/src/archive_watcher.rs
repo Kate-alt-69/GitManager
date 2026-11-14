@@ -5,12 +5,15 @@
 //! use predictable on lower-end machines.
 
 use std::collections::HashSet;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use fs2::FileExt;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 
 use crate::archive;
@@ -18,6 +21,9 @@ use crate::scanner::{scan_repositories, ScanOptions};
 use crate::AppPreferences;
 
 static WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
+static WATCHER_RUNNING: AtomicBool = AtomicBool::new(false);
+static WATCHER_LEASE: OnceLock<Mutex<Option<Arc<File>>>> = OnceLock::new();
+static WATCHER_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 const MAX_WATCHED_REPOSITORIES: usize = 256;
 const MAX_CONCURRENT_ARCHIVES: usize = 2;
 const COMMIT_SETTLE: Duration = Duration::from_millis(180);
@@ -36,14 +42,105 @@ struct WatchedRepository {
     capture_in_progress: bool,
 }
 
-pub fn restart_archive_watchers(preferences: &AppPreferences) {
-    let generation = WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    if !preferences.first_run_complete
-        || preferences.archive_trigger == "manual"
-        || (!preferences.archive_local_enabled && !preferences.archive_remote_enabled)
-    {
-        return;
+struct WatcherRunGuard {
+    generation: u64,
+}
+
+impl Drop for WatcherRunGuard {
+    fn drop(&mut self) {
+        if WATCH_GENERATION.load(Ordering::SeqCst) == self.generation {
+            WATCHER_RUNNING.store(false, Ordering::SeqCst);
+        }
     }
+}
+
+fn watcher_lease_path() -> Result<PathBuf, String> {
+    let local_data = dirs::data_local_dir()
+        .ok_or_else(|| "Could not resolve the user's local data directory for archive watcher ownership.".to_string())?;
+    let data_dir = local_data
+        .join("kastrick's_software")
+        .join("data")
+        .join("GitManager");
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Could not create archive watcher state directory: {error}"))?;
+    Ok(data_dir.join("archive-watcher.lock"))
+}
+
+fn watcher_config_signature(preferences: &AppPreferences) -> String {
+    serde_json::to_string(&(
+        &preferences.scan_roots,
+        preferences.max_scan_depth,
+        preferences.include_hidden_dirs,
+        preferences.first_run_complete,
+        &preferences.archive_root,
+        preferences.archive_local_enabled,
+        preferences.archive_remote_enabled,
+        &preferences.archive_trigger,
+        preferences.archive_quiet_ms,
+    ))
+    .unwrap_or_default()
+}
+
+pub fn archive_watchers_running() -> bool {
+    WATCHER_RUNNING.load(Ordering::SeqCst)
+}
+
+pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
+    let generation = WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let enabled = preferences.first_run_complete
+        && preferences.archive_trigger != "manual"
+        && (preferences.archive_local_enabled || preferences.archive_remote_enabled);
+    let lease_slot = WATCHER_LEASE.get_or_init(|| Mutex::new(None));
+    let config_slot = WATCHER_CONFIG.get_or_init(|| Mutex::new(None));
+    let mut lease_guard = lease_slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut config_guard = config_slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if !enabled {
+        *config_guard = None;
+        *lease_guard = None;
+        WATCHER_RUNNING.store(false, Ordering::SeqCst);
+        return false;
+    }
+
+    let signature = watcher_config_signature(preferences);
+    if config_guard.as_deref() == Some(signature.as_str())
+        && lease_guard.is_some()
+        && WATCHER_RUNNING.load(Ordering::SeqCst)
+    {
+        return true;
+    }
+
+    if lease_guard.is_none() {
+        let path = match watcher_lease_path() {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("GitManager archive watcher: {error}");
+                return false;
+            }
+        };
+        let file = match OpenOptions::new().create(true).read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("GitManager archive watcher: could not open {}: {error}", path.display());
+                return false;
+            }
+        };
+        if let Err(error) = file.try_lock_exclusive() {
+            if error.kind() != std::io::ErrorKind::WouldBlock {
+                eprintln!("GitManager archive watcher: could not acquire {}: {error}", path.display());
+            }
+            return false;
+        }
+        *lease_guard = Some(Arc::new(file));
+    }
+
+    *config_guard = Some(signature);
+    let lease = match lease_guard.as_ref() {
+        Some(file) => Arc::clone(file),
+        None => return false,
+    };
+    drop(config_guard);
+    drop(lease_guard);
 
     let roots = preferences.scan_roots.clone();
     let max_depth = preferences.max_scan_depth;
@@ -54,9 +151,12 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) {
     let local_enabled = preferences.archive_local_enabled;
     let remote_enabled = preferences.archive_remote_enabled;
 
-    let _ = thread::Builder::new()
+    WATCHER_RUNNING.store(true, Ordering::SeqCst);
+    let spawned = thread::Builder::new()
         .name("gitmanager-archive-watcher".to_string())
         .spawn(move || {
+            let _lease = lease;
+            let _run_guard = WatcherRunGuard { generation };
             let repositories = match scan_repositories(ScanOptions {
                 root_paths: roots,
                 max_depth: Some(max_depth.clamp(2, 16)),
@@ -264,6 +364,12 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) {
                 }
             }
         });
+    if let Err(error) = spawned {
+        WATCHER_RUNNING.store(false, Ordering::SeqCst);
+        eprintln!("GitManager archive watcher: could not start watcher thread: {error}");
+        return false;
+    }
+    true
 }
 
 fn canonicalize_or_original(path: &Path) -> PathBuf {
