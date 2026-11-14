@@ -2064,3 +2064,126 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   font-size: 11px;
   line-height: 1.5;
 }
+
+
+/* Repository discovery: real skeletons, staggered entrance, and compact hover inspection. */
+.repo-card {
+  animation-delay: calc(var(--card-index, 0) * 34ms);
+  will-change: opacity, transform;
+}
+.repo-card-open { position: relative; }
+.repo-card-hover-details {
+  display: grid;
+  gap: 7px;
+  max-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-4px);
+  border-top: 1px solid transparent;
+  transition: max-height .2s ease, opacity .16s ease, transform .16s ease, padding-top .2s ease, border-color .2s ease;
+  padding-top: 0;
+}
+.repo-card:hover .repo-card-hover-details,
+.repo-card:focus-within .repo-card-hover-details {
+  max-height: 128px;
+  padding-top: 9px;
+  opacity: 1;
+  transform: translateY(0);
+  border-color: var(--gm-border);
+}
+.repo-card-hover-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  color: var(--gm-muted);
+  font-size: 9px;
+  text-align: left;
+}
+.repo-card-hover-row > code,
+.repo-card-hover-row > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #c9d1d9;
+  font: 9px/1.4 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-card-hover-row > strong { font-family: inherit; font-weight: 550; }
+.repo-card-skeleton {
+  min-height: 190px;
+  padding: 14px;
+  gap: 14px;
+  pointer-events: none;
+  animation: gm-skeleton-enter .24s ease-out both;
+  animation-delay: calc(var(--card-index, 0) * 35ms);
+}
+.repo-skeleton-grid { margin-top: 2px; }
+.repo-skeleton-top,
+.repo-skeleton-bottom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.repo-skeleton-avatar,
+.repo-skeleton-pill,
+.repo-skeleton-lines i,
+.repo-skeleton-divider,
+.repo-skeleton-line,
+.repo-skeleton-bottom i {
+  display: block;
+  background: linear-gradient(100deg, #212832 20%, #303945 38%, #212832 58%);
+  background-size: 220% 100%;
+  animation: gm-skeleton-shimmer 1.35s ease-in-out infinite;
+  border-radius: 5px;
+}
+.repo-skeleton-avatar { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 8px; }
+.repo-skeleton-lines { display: grid; flex: 1; gap: 7px; min-width: 0; }
+.repo-skeleton-lines i:first-child { width: 58%; height: 10px; }
+.repo-skeleton-lines i:last-child { width: 38%; height: 8px; }
+.repo-skeleton-pill { width: 54px; height: 18px; flex: 0 0 54px; border-radius: 999px; }
+.repo-skeleton-divider { height: 1px; border-radius: 0; opacity: .8; }
+.repo-skeleton-line { height: 10px; }
+.repo-skeleton-line-wide { width: 88%; }
+.repo-skeleton-line-short { width: 43%; height: 8px; }
+.repo-skeleton-bottom { justify-content: space-between; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--gm-border); }
+.repo-skeleton-bottom i:first-child { width: 84px; height: 8px; }
+.repo-skeleton-bottom i:last-child { width: 104px; height: 8px; }
+.dashboard-scan-caption {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 0;
+  color: var(--gm-muted);
+  font-size: 10px;
+}
+.dashboard-scan-caption .dashboard-scan-progress { margin: 0; flex: 0 0 auto; }
+.dashboard-stats-loading { opacity: .65; }
+@keyframes gm-skeleton-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -120% 0; }
+}
+@keyframes gm-skeleton-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (hover: none), (max-width: 700px) {
+  .repo-card-hover-details {
+    max-height: 128px;
+    padding-top: 9px;
+    opacity: 1;
+    transform: none;
+    border-color: var(--gm-border);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .repo-card, .repo-card-hover-details, .repo-card-skeleton,
+  .repo-skeleton-avatar, .repo-skeleton-pill, .repo-skeleton-lines i,
+  .repo-skeleton-divider, .repo-skeleton-line, .repo-skeleton-bottom i {
+    animation: none;
+    transition: none;
+  }
+  .repo-card-hover-details { opacity: 1; transform: none; }
+}
