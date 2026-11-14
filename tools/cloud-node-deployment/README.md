@@ -14,6 +14,19 @@ The package contains the standalone `cloud_node` executable extracted from the o
 
 Windows ARM64, Linux musl, and Linux 32-bit are not included in the current RBE release. macOS RBE binaries are not Apple-notarized; this setup does not bypass Gatekeeper or remove quarantine attributes.
 
+## Build this ZIP
+
+From the GitManager repository, run:
+
+```powershell
+py build.py prepare-cloud-node
+```
+
+The command needs Python 3.9+ and network access on the build computer, but does
+not need Rust or Cargo. The normal `py build.py` desktop build also creates
+this package automatically. The release workflow builds it once in a separate
+job for all five targets.
+
 ## Install
 
 Extract this ZIP on the machine that will host the node. Python 3.9+ is required; the script uses only the Python standard library and the included binaries. No Rust, Cargo, Node.js, npm, or network download is required on the destination machine.
