@@ -9,7 +9,6 @@
     "core:default",
     "dialog:default",
     "shell:allow-open",
-    "fs:default",
     {
       "identifier": "shell:allow-spawn",
       "allow": [
