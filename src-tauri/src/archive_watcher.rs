@@ -511,4 +511,45 @@ mod tests {
             Path::new("/projects/app/src/main.rs")
         ));
     }
+
+    #[test]
+    fn watcher_lease_rejects_a_second_process_owner() {
+        use std::fs::{self, OpenOptions};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gitmanager-watcher-lease-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create watcher lease test directory");
+        let path = root.join("archive-watcher.lock");
+
+        let first = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open first watcher lease");
+        first.try_lock_exclusive().expect("first watcher should acquire lease");
+
+        let second = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open second watcher lease");
+        let error = second
+            .try_lock_exclusive()
+            .expect_err("second watcher must not acquire the same lease");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+
+        FileExt::unlock(&first).expect("release first watcher lease");
+        second.try_lock_exclusive().expect("second watcher can acquire released lease");
+        FileExt::unlock(&second).expect("release second watcher lease");
+        let _ = fs::remove_dir_all(root);
+    }
 }
