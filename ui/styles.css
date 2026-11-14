@@ -2601,3 +2601,106 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   .brand-title-row { gap: 6px; }
   .app-version-badge { font-size: 8px; }
 }
+
+/* Settings sections and cloud-provider workspace */
+.settings-subnav {
+  display:flex;
+  justify-content:flex-end;
+  align-items:center;
+  gap:7px;
+  margin:0 0 17px;
+  padding:0 0 10px;
+  border-bottom:1px solid var(--border-subtle);
+}
+.settings-subtab {
+  min-width:96px;
+  padding:8px 15px;
+  color:var(--text-secondary);
+  background:var(--bg-surface);
+  border:1px solid var(--border-subtle);
+  border-radius:8px;
+  font:inherit;
+  font-size:12px;
+  font-weight:650;
+  cursor:pointer;
+}
+.settings-subtab:hover,.cloud-provider-tab:hover {
+  color:var(--text-primary);
+  border-color:var(--accent-blue);
+}
+.settings-subtab.active {
+  color:var(--text-primary);
+  border-color:var(--accent-blue);
+  background:var(--bg-elevated);
+}
+.settings-panel { min-width:0; }
+.cloud-settings-heading {
+  margin:0 0 16px;
+  align-items:center;
+}
+.cloud-settings-heading h3 { margin-top:2px; font-size:17px; }
+.cloud-provider-layout {
+  display:grid;
+  grid-template-columns:190px minmax(0,1fr);
+  gap:14px;
+  align-items:start;
+}
+.cloud-provider-tabs {
+  position:sticky;
+  top:0;
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+  padding:8px;
+  background:var(--bg-surface);
+  border:1px solid var(--border-subtle);
+  border-radius:10px;
+}
+.cloud-provider-tab {
+  display:flex;
+  align-items:center;
+  width:100%;
+  min-height:37px;
+  padding:8px 11px;
+  color:var(--text-secondary);
+  background:transparent;
+  border:1px solid transparent;
+  border-radius:7px;
+  text-align:left;
+  font:inherit;
+  font-size:11.5px;
+  font-weight:620;
+  cursor:pointer;
+}
+.cloud-provider-tab.active {
+  color:var(--text-primary);
+  background:var(--bg-elevated);
+  border-color:var(--border-subtle);
+  box-shadow:inset 2px 0 0 var(--accent-blue);
+}
+.cloud-provider-panels { min-width:0; }
+.cloud-provider-panel { min-width:0; }
+.cloud-provider-panel .settings-card { min-height:190px; }
+.cloud-node-install-commands {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:0 18px;
+  margin-top:14px;
+}
+#cloud-provider-status { margin-top:14px; }
+#cloud-provider-status.is-error { color:var(--accent-red, #f85149); }
+@media (max-width:900px) {
+  .cloud-provider-layout { grid-template-columns:1fr; }
+  .cloud-provider-tabs {
+    position:static;
+    flex-direction:row;
+    flex-wrap:wrap;
+  }
+  .cloud-provider-tab { width:auto; flex:1 1 120px; }
+}
+@media (max-width:640px) {
+  .settings-subnav { justify-content:stretch; }
+  .settings-subtab { flex:1 1 0; }
+  .cloud-node-install-commands { grid-template-columns:1fr; }
+  .cloud-settings-heading { align-items:flex-start; flex-direction:column; }
+}
