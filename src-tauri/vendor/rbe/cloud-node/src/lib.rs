@@ -12,7 +12,9 @@ mod config;
 mod crypto;
 mod durable;
 mod format;
+#[cfg(feature = "journal-ingest")]
 mod ingest;
+#[cfg(feature = "local-sync")]
 mod local_sync;
 mod protocol;
 #[cfg(feature = "client")]
@@ -28,7 +30,9 @@ mod provider_sync_guard;
 #[cfg(feature = "client")]
 #[path = "provider_sync.rs"]
 mod provider_sync_raw;
+#[cfg(feature = "server")]
 mod recovery;
+#[cfg(feature = "registry-ingest")]
 mod registry_ingest;
 #[cfg(feature = "server")]
 mod server;
@@ -65,10 +69,13 @@ pub use crypto::{
 pub use format::{
     BlobKind, BlobManifest, ByteRangeChange, ChunkRef, FolderEntry, BLOB_FORMAT_VERSION,
 };
+#[cfg(feature = "local-sync")]
 pub use local_sync::{
-    is_default_secret_path, load_local_sync_settings, LocalDirectoryRestoreResult,
-    LocalDirectoryStatus, LocalDirectorySyncResult, LocalSyncSettings,
+    load_local_sync_settings, LocalDirectoryRestoreResult, LocalDirectoryStatus,
+    LocalDirectorySyncResult, LocalSyncSettings,
 };
+pub use secret_paths::is_default_secret_path;
+mod secret_paths;
 pub use protocol::{Frame, FrameKind, CN_PROTOCOL, MAX_FRAME_BYTES};
 #[cfg(feature = "client")]
 pub use provider::ProviderClient;
@@ -77,9 +84,12 @@ pub use provider_sync::{
     provider_status, synchronize_provider, ProviderSyncAction, ProviderSyncRelation,
     ProviderSyncResult, ProviderSyncStatus,
 };
+#[cfg(feature = "server")]
 pub use recovery::{CloudNodeRecoveryReceiver, RecoveryReceipt};
+#[cfg(feature = "registry-ingest")]
 pub use registry_ingest::{ingest_registry_export, RegistryIngestResult, RegistryStoredObject};
 #[cfg(feature = "client")]
+#[cfg(feature = "registry-ingest")]
 pub use registry_ingest::{synchronize_registry_export, RegistrySyncResult};
 #[cfg(feature = "server")]
 pub use server::{
