@@ -488,7 +488,7 @@ async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, St
         .map_err(|error| format!("GitHub identity detection task failed: {error}"))?
 }
 
-/// Report whether this process is the first-run setup companion.
+/// Return the application version from the compiled Cargo package metadata.
 #[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
