@@ -504,8 +504,12 @@ fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
         .sidecar("gitmanager-setup")
         .map_err(|error| format!("GitManager Setup helper is unavailable: {error}"))?;
 
-    command.spawn()
+    let (_events, child) = command.spawn()
         .map_err(|error| format!("Could not start GitManager Setup: {error}"))?;
+
+    // Keep the child handle alive until this bootstrap process exits; dropping
+    // it here can terminate the just-launched setup process on some platforms.
+    std::mem::forget(child);
 
     app_handle.exit(0);
     Ok(())
