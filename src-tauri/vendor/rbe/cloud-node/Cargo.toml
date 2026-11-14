@@ -19,8 +19,8 @@ client = ["dep:reqwest", "dep:tokio-util"]
 # opt-in so desktop builds do not compile server-only crypto code.
 server = ["dep:ed25519-dalek"]
 local-sync = []
- registry-ingest = ["client"]
- journal-ingest = ["dep:storage-sync-journal"]
+registry-ingest = ["client"]
+journal-ingest = ["dep:storage-sync-journal"]
 
 [dependencies]
 atomic-io = { path = "../atomic-io" }
