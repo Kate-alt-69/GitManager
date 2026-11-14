@@ -190,8 +190,47 @@ The setup finish screen offers **Continue using GitManager** (launch the app) an
 
 Release builds use size-focused Cargo settings (size optimization, thin LTO, eight codegen units and symbol stripping) to balance binary size and parallel build time. The build script reports separate target-specific dependency graphs for `git-manager`, `gitm-cli` and `gitmanager-setup`, plus the deduplicated union. It counts normal and build dependencies for each requested target, not every workspace member. The under-500 target applies to the desktop app graph, not the whole workspace. Cargo's `541/542`-style progress indicator is a build-progress total, not a count of distinct dependency package names; use the `GitManager app graph` report when comparing against the target. The Tauri signing overlay is created only when a valid Windows signing thumbprint is configured; otherwise local and CI builds remain intentionally unsigned without invoking SignTool.
 
-GitManager's desktop build keeps the Cloud Node client/provider-sync path, but makes the unrelated Ed25519 server, registry ingestion, storage-journal ingestion and local-sync API opt-in features. Their implementations are still covered by a dedicated all-features CI test. The archive secret/credential path filter remains part of the default client build. The Tauri filesystem plugin was removed because the UI uses native Rust commands for file operations and never calls the plugin API; dialog and shell capabilities remain.
+GitManager's desktop application does **not** embed or bundle the standalone `cloud_node` executable. Its archive engine links only the Cloud Node client/storage APIs needed for local archive operations; the RBE server process remains a separate deployment on the RBE host. The full server-capable Cloud Node binary is distributed in its own portable deployment ZIP, fetched from the official RBE Release and verified before packaging.
 
+
+## 7. Portable RBE Cloud Node deployment
+
+Every normal `py build.py` / `python build.py build` run also creates a separate
+all-platform ZIP under `target/deployment/`:
+
+```text
+GitManager-Cloud-Node-Setup-rbe-bin-v0.1.0-build.11.1.zip
+```
+
+The ZIP contains the official standalone RBE `cloud_node` binaries for Windows
+x64, Linux x64, Linux ARM64, macOS Intel and macOS Apple Silicon, plus
+`setup.py`, the RBE Apache 2.0 license, provenance and SHA-256 manifest.
+GitManager downloads all five upstream release archives even when the desktop
+application itself is being built for only one OS. It verifies both GitHub's
+Release asset digests and the RBE `SHA256SUMS` file, then extracts only the
+root-level `cloud_node` executable from each archive. No RBE backend,
+Container, Service or unrelated runtime binary is put in the deployment ZIP.
+
+On the destination computer, extract the ZIP and run `py setup.py` on Windows
+or `python3 setup.py` on Linux/macOS. Python 3.9+ is required; the target
+machine does not need Rust, Cargo, Node.js, npm or an internet connection.
+The script detects the host OS/architecture, verifies its bundled binary,
+creates a separate node identity/private key/settings, validates the settings
+with the binary, and offers a per-user background service (Task Scheduler,
+systemd --user or LaunchAgent). It never deletes an existing Cloud Node store.
+
+The node initiates authenticated outbound synchronization to the configured
+RBE backend. Setup creates a public peer-registration JSON object that the RBE
+administrator adds to the backend's `replication.targets`; private keys stay
+on their respective machines. See
+[the Cloud Node deployment guide](tools/cloud-node-deployment/README.md),
+[RBE Cloud Node documentation](https://github.com/Kastrick8/RBE/blob/main/doc/cloud-node.md),
+and [the official RBE binary release](https://github.com/Kastrick8/RBE/releases/tag/rbe-bin-v0.1.0).
+
+For CI, the five-target ZIP is built once by the separate
+`cloud-node-deployment` job and uploaded as the
+`gitmanager-cloud-node-deployment` artifact. It is not duplicated inside the
+Windows, Linux or macOS GitManager installers.
 
 ## 8. Repository Archives & Native `gitm` CLI
 
