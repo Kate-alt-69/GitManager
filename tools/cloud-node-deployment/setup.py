@@ -97,6 +97,8 @@ def load_manifest():
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise SetupError(f"Could not read package manifest.json: {error}") from error
+    if not isinstance(manifest, dict):
+        raise SetupError("Package manifest must be a JSON object.")
     if manifest.get("formatVersion") != 1 or manifest.get("kind") != "gitmanager-cloud-node-deployment":
         raise SetupError("Unsupported Cloud Node deployment package format.")
     if not isinstance(manifest.get("targets"), dict):
@@ -496,9 +498,21 @@ def main():
         install_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         if os.name != "nt":
             os.chmod(install_dir, 0o700)
-        temporary_binary = binary_path.with_name(binary_path.name + ".new")
-        shutil.copy2(binary_source, temporary_binary)
-        os.replace(temporary_binary, binary_path)
+        binary_fd, temporary_name = tempfile.mkstemp(
+            prefix=binary_path.name + ".",
+            suffix=".new",
+            dir=str(install_dir),
+        )
+        temporary_binary = Path(temporary_name)
+        try:
+            with os.fdopen(binary_fd, "wb") as output, binary_source.open("rb") as source:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary_binary, binary_path)
+        finally:
+            if temporary_binary.exists():
+                temporary_binary.unlink()
         if os.name != "nt":
             os.chmod(binary_path, 0o755)
 
