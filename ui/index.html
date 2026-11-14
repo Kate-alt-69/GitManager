@@ -16,7 +16,7 @@
               <path d="M6 9v6"></path><path d="M18 9a9 9 0 0 1-9 9"></path>
             </svg>
           </div>
-          <div class="brand-copy"><h1 class="brand-title">GitManager</h1><span class="brand-subtitle">Your Git workspace</span></div>
+          <div class="brand-copy"><div class="brand-title-row"><h1 class="brand-title">GitManager</h1><span id="app-version-badge" class="app-version-badge">v—</span></div><span class="brand-subtitle">Your Git workspace</span></div>
         </div>
         <nav class="top-tab-row" aria-label="Main navigation" role="tablist">
           <button class="app-tab active" type="button" role="tab" aria-selected="true" aria-controls="page-repositories" data-page="repositories">
@@ -90,6 +90,11 @@
               <p class="settings-footnote">Requires the Windows SDK SignTool and a valid Authenticode Code Signing certificate. Self-signed certificates are not publicly trusted; a trusted certificate chain is required for public distribution.</p>
             </section>
             <section class="settings-card settings-card-wide"><div class="settings-card-heading"><div><h3>Storage locations</h3><p>Per-user application files. Configuration and data stay outside the install directory.</p></div><span class="settings-icon">▤</span></div><div class="path-row"><span>Configuration</span><code id="settings-config-path">Resolving…</code></div><div class="path-row"><span>Application data</span><code id="settings-data-path">Resolving…</code></div><div class="path-row"><span>Software root</span><code id="settings-software-root">Resolving…</code></div></section>
+            <section class="settings-card about-version-card">
+              <div class="settings-card-heading"><div><h3>About GitManager</h3><p>Application build information.</p></div><span class="settings-icon">ⓘ</span></div>
+              <div class="path-row"><span>Version</span><code id="settings-app-version">Loading…</code></div>
+              <div class="about-version-note">GitManager · Pure-Rust local and remote Git workspace</div>
+            </section>
           </div>
         </section>
       </main>
