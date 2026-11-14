@@ -183,3 +183,51 @@ jobs:
             target/release/GitManager-Setup*
           if-no-files-found: error
           compression-level: 9
+
+  publish-cloud-node:
+    name: Publish standalone Cloud Node setup bundle
+    if: >-
+      ${{ github.event_name == 'push' &&
+          (github.ref == 'refs/heads/main' ||
+           github.ref == 'refs/heads/master' ||
+           startsWith(github.ref, 'refs/tags/v')) }}
+    needs: cloud-node-deployment
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified all-platform Cloud Node ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: gitmanager-cloud-node-deployment
+          path: release-assets
+
+      - name: Create stable download filename and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find release-assets -maxdepth 1 -type f -name 'GitManager-Cloud-Node-Setup-*.zip' -print)
+          if [ "${#archives[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one versioned Cloud Node setup ZIP; found ${#archives[@]}."
+            exit 1
+          fi
+          cp "${archives[0]}" release-assets/GitManager-Cloud-Node-Setup.zip
+          sha256sum release-assets/GitManager-Cloud-Node-Setup.zip > release-assets/GitManager-Cloud-Node-Setup.zip.sha256
+
+      - name: Publish the moving Cloud Node download release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cloud-node-setup-latest
+          target_commitish: ${{ github.sha }}
+          name: GitManager Cloud Node Setup
+          body: |
+            Standalone, cross-platform RBE Cloud Node deployment package for NAS devices and other computers.
+
+            This ZIP is separate from the GitManager desktop application. It contains the five supported platform binaries, the self-configuring Python setup script, checksums, licenses and deployment instructions. It contains no machine-specific node key or credentials.
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/GitManager-Cloud-Node-Setup.zip
+            release-assets/GitManager-Cloud-Node-Setup.zip.sha256
