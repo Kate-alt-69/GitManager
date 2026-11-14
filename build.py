@@ -545,7 +545,7 @@ def prepare_cloud_node_deployment(project_root: Path) -> int:
                 log_ok(f"Prepared Cloud Node {target}: {size:,} bytes, SHA-256 {binary_sha}")
 
             template_dir = project_root / "tools" / "cloud-node-deployment"
-            for name in ("README.md", "setup.py", "LICENSE-RBE.txt", "NOTICE-RBE.txt"):
+            for name in ("README.md", "setup.py", "LICENSE-GITMANAGER.txt", "LICENSE-RBE.txt", "NOTICE-RBE.txt"):
                 source = template_dir / name
                 if not source.is_file():
                     raise ValueError(f"Cloud Node deployment template is missing {source}.")
