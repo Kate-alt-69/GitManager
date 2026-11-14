@@ -1,84 +1,67 @@
-// Standalone Background Service / Daemon Binary (`git-manager-service`)
-// Reads the same user preferences as the desktop app, checks configured scan roots,
-// and performs opt-in safe fast-forwards only for clean, non-diverged repositories.
+// Standalone Background Service / Daemon Binary (`git-manager-service`).
+// The worker checks Git remotes and owns automatic repository archive watching
+// whenever the desktop process is not already watching the same user profile.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use git_manager_lib::archive_watcher;
 use git_manager_lib::watcher_service::{
     apply_repository_update, check_all_repos_for_updates, send_os_desktop_notification,
 };
-use serde_json::Value;
+use git_manager_lib::load_background_preferences;
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-fn load_user_scan_roots() -> Vec<String> {
-    let data_root = match dirs::data_local_dir() {
-        Some(path) => path,
-        None => return Vec::new(),
-    };
-    // Match the desktop app's per-user Local AppData layout exactly.
-    let file_path = data_root
-        .join("kastrick's_software")
-        .join("config")
-        .join("GitManager")
-        .join("preferences.json");
-    let content = match fs::read_to_string(file_path) {
-        Ok(value) if value.len() <= 256 * 1024 => value,
-        _ => return Vec::new(),
-    };
-    let value: Value = match serde_json::from_str(&content) {
-        Ok(value) => value,
-        Err(_) => return Vec::new(),
-    };
-
-    let roots = value
-        .get("scanRoots")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    roots
-}
-fn repository_auto_update_enabled(repo_path: &str) -> bool {
-    let repo = match git2::Repository::open(repo_path) { Ok(value) => value, Err(_) => return false };
-    let settings_file = repo.path().join("info").join("gitmanager-settings.json");
-    let content = match fs::read_to_string(settings_file) { Ok(value) if value.len() <= 64 * 1024 => value, _ => return false };
-    serde_json::from_str::<Value>(&content).ok()
-        .and_then(|value| value.get("autoUpdate").and_then(Value::as_bool)).unwrap_or(false)
-}
+const PREFERENCE_REFRESH: Duration = Duration::from_secs(30);
+const REMOTE_UPDATE_INTERVAL: Duration = Duration::from_secs(120);
 
 fn main() {
     let mut notified_commits: HashSet<String> = HashSet::new();
+    let mut last_remote_check = Instant::now() - REMOTE_UPDATE_INTERVAL;
 
     loop {
-        let scan_roots = load_user_scan_roots();
-        let updates = check_all_repos_for_updates(scan_roots);
+        match load_background_preferences() {
+            Ok(preferences) => {
+                // Archive watcher uses a per-user cross-process lease. If the
+                // desktop process currently owns it, this call is a no-op and
+                // the service retries on the next preference refresh.
+                let _ = archive_watcher::restart_archive_watchers(&preferences);
 
-        for update in updates {
-            let auto_update_allowed = repository_auto_update_enabled(&update.repo_path)
-                && update.working_tree_clean
-                && update.commits_ahead == 0;
+                if last_remote_check.elapsed() >= REMOTE_UPDATE_INTERVAL {
+                    let updates = check_all_repos_for_updates(preferences.scan_roots.clone());
 
-            if auto_update_allowed
-                && apply_repository_update(Path::new(&update.repo_path)).is_ok()
-            {
-                continue;
+                    for update in updates {
+                        let auto_update_allowed = preferences
+                            .repository_settings
+                            .get(&update.repo_id)
+                            .map(|settings| settings.auto_update)
+                            .unwrap_or(false)
+                            && update.working_tree_clean
+                            && update.commits_ahead == 0;
+
+                        if auto_update_allowed
+                            && apply_repository_update(Path::new(&update.repo_path)).is_ok()
+                        {
+                            continue;
+                        }
+
+                        let key = format!("{}::{}", update.repo_path, update.remote_oid);
+                        if notified_commits.insert(key) {
+                            send_os_desktop_notification(&update);
+                        }
+                    }
+                    last_remote_check = Instant::now();
+                }
             }
-
-            let key = format!("{}::{}", update.repo_path, update.remote_oid);
-            if notified_commits.insert(key) {
-                send_os_desktop_notification(&update);
+            Err(error) => {
+                // Do not discard an already-running watcher on a transient
+                // preference read/parse failure. A later iteration retries.
+                eprintln!("GitManager background service: could not load preferences: {error}");
             }
         }
-        thread::sleep(Duration::from_secs(120));
+
+        thread::sleep(PREFERENCE_REFRESH);
     }
 }
