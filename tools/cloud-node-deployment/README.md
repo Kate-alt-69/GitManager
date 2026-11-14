@@ -68,7 +68,7 @@ requires explicit confirmation before continuing.
 
 ## Connect the node to your RBE backend
 
-Cloud Node uses the existing authenticated RBE peer protocol. The node initiates an outbound HTTPS connection to the RBE backend's Cloud Node recovery endpoint; it does not open a general-purpose NAS file-sharing listener.
+Cloud Node uses the existing authenticated RBE peer protocol. The node initiates an outbound HTTPS connection to the RBE backend's Cloud Node recovery endpoint; it does not open a general-purpose NAS file-sharing listener and does not require internet-facing port forwarding on the NAS. The RBE backend is the receiving/authentication service; the NAS node scans local data and initiates synchronization.
 
 During setup, provide:
 
