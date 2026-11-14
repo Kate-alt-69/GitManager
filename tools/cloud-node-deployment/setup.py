@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -70,6 +71,53 @@ def run_checked(args, *, env=None, timeout=30):
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise SetupError(f"Could not run {args[0]}: {error}") from error
+
+
+def windows_current_user_sid():
+    system_root = os.environ.get("SystemRoot")
+    if not system_root:
+        raise SetupError("Windows SystemRoot is unavailable; cannot secure the Cloud Node private key.")
+    whoami = Path(system_root) / "System32" / "whoami.exe"
+    if not whoami.is_file():
+        raise SetupError("Windows whoami.exe is unavailable; cannot secure the Cloud Node private key.")
+    result = run_checked([whoami, "/user", "/fo", "csv", "/nh"], timeout=15)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise SetupError(f"Could not identify the current Windows user SID: {detail}")
+    for row in csv.reader(result.stdout.splitlines()):
+        for field in row:
+            sid = field.strip()
+            if re.fullmatch(r"S-1-(?:[0-9]+-)*[0-9]+", sid):
+                return sid
+    raise SetupError("Windows did not return a valid current-user SID; refusing to write an unprotected private key.")
+
+
+def restrict_windows_secret_acl(path):
+    system_root = os.environ.get("SystemRoot")
+    if not system_root:
+        raise SetupError("Windows SystemRoot is unavailable; cannot secure the Cloud Node private key.")
+    icacls = Path(system_root) / "System32" / "icacls.exe"
+    if not icacls.is_file():
+        raise SetupError("Windows icacls.exe is unavailable; cannot secure the Cloud Node private key.")
+    sid = windows_current_user_sid()
+
+    # Reset inherited/default entries, then remove inheritance and grant only
+    # the current user's SID full access to this secret file.
+    reset = run_checked([icacls, path, "/reset"], timeout=15)
+    if reset.returncode != 0:
+        detail = reset.stderr.strip() or reset.stdout.strip()
+        raise SetupError(f"Could not reset private-key file permissions: {detail}")
+    result = run_checked([icacls, path, "/inheritance:r", "/grant:r", f"*{sid}:(F)"], timeout=15)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise SetupError(f"Could not restrict private-key file permissions to the current Windows user: {detail}")
+
+
+def restrict_secret_file_permissions(path):
+    if os.name == "nt":
+        restrict_windows_secret_acl(path)
+    else:
+        os.chmod(path, 0o600)
 
 
 def sha256_file(path):
@@ -235,16 +283,27 @@ def secure_write(path, content, *, secret=False):
     fd, temporary_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
     temporary = Path(temporary_name)
     try:
-        if os.name != "nt":
-            os.chmod(temporary, 0o600 if secret else 0o644)
+        if secret:
+            if os.name == "nt":
+                restrict_windows_secret_acl(temporary)
+            else:
+                os.chmod(temporary, 0o600)
+        elif os.name != "nt":
+            os.chmod(temporary, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        if os.name != "nt":
-            os.chmod(path, 0o600 if secret else 0o644)
+        if secret and os.name != "nt":
+            os.chmod(path, 0o600)
+        elif not secret and os.name != "nt":
+            os.chmod(path, 0o644)
     except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         try:
             temporary.unlink()
         except OSError:
@@ -573,6 +632,9 @@ def main():
             os.chmod(binary_path, 0o755)
 
         if reuse:
+            # Re-apply restrictive permissions when reusing an older install,
+            # because previous versions did not set a Windows user-only ACL.
+            restrict_secret_file_permissions(key_path)
             try:
                 config = json.loads(config_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
