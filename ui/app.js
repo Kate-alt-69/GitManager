@@ -194,6 +194,7 @@ let appPreferences = null;
 let dependencyRepoIds = new Set();
 let repositoryKindFilter = "all";
 let activePage = "repositories";
+let cloudNodeReleaseLookupPromise = null;
 let applicationDirectories = null;
 let selectedBranchName = null;
 let branchFilterMode = "all";
@@ -852,7 +853,7 @@ function renderConnectedAccountsBar() {
 }
 
 function setActivePage(page) {
-  if (!["repositories", "accounts", "settings"].includes(page)) return;
+  if (!["repositories", "accounts", "cloud-nodes", "settings"].includes(page)) return;
   activePage = page;
   document.querySelectorAll(".app-page").forEach((section) => {
     const active = section.id === "page-" + page;
@@ -2196,9 +2197,26 @@ function wireEventListeners() {
   document.querySelectorAll("[data-page]").forEach((tab) => {
     tab.addEventListener("click", () => {
       const page = tab.getAttribute("data-page");
-      if (page) setActivePage(page);
+      if (page) {
+        setActivePage(page);
+        if (page === "cloud-nodes") void refreshCloudNodeBundleAvailability();
+      }
     });
   });
+  const cloudNodeDownload = document.getElementById("btn-download-cloud-node-setup");
+  const cloudNodeRefresh = document.getElementById("btn-refresh-cloud-node-release");
+  const cloudNodeArtifacts = document.getElementById("btn-open-cloud-node-artifacts");
+  const cloudNodeGuide = document.getElementById("btn-open-cloud-node-guide");
+  if (cloudNodeDownload) cloudNodeDownload.addEventListener("click", () => void downloadCloudNodeSetup());
+  if (cloudNodeRefresh) cloudNodeRefresh.addEventListener("click", () => void refreshCloudNodeBundleAvailability(true));
+  if (cloudNodeArtifacts) cloudNodeArtifacts.addEventListener("click", () => void openCloudNodeExternalPage(
+    "https://github.com/Kate-alt-69/GitManager/actions/workflows/release.yml",
+    "Opened GitManager's build workflow. Download the gitmanager-cloud-node-deployment artifact from a successful run."
+  ));
+  if (cloudNodeGuide) cloudNodeGuide.addEventListener("click", () => void openCloudNodeExternalPage(
+    "https://github.com/Kate-alt-69/GitManager/blob/main/tools/cloud-node-deployment/README.md",
+    "Opened the Cloud Node deployment guide."
+  ));
   const scanInput = document.getElementById("scan-path-input");
   const browseBtn = document.getElementById("btn-browse-folder");
   const scanBtn = document.getElementById("btn-scan-repos");
@@ -2664,6 +2682,136 @@ async function disableArchiveCloudProvider() {
   } finally {
     setArchiveCloudBusy(false);
   }
+}
+
+
+const CLOUD_NODE_RELEASE_API =
+  "https://api.github.com/repos/Kate-alt-69/GitManager/releases/tags/cloud-node-setup-latest";
+const CLOUD_NODE_RELEASE_ASSET_NAME = "GitManager-Cloud-Node-Setup.zip";
+
+async function getCloudNodeReleaseInfo(forceRefresh = false) {
+  if (forceRefresh) cloudNodeReleaseLookupPromise = null;
+  if (!cloudNodeReleaseLookupPromise) {
+    cloudNodeReleaseLookupPromise = (async () => {
+      const response = await fetch(CLOUD_NODE_RELEASE_API, {
+        headers: { Accept: "application/vnd.github+json" },
+        cache: "no-store"
+      });
+      if (response.status === 404) {
+        return {
+          available: false,
+          message: "The standalone Cloud Node release has not been published yet. Use View build artifacts for the current CI build."
+        };
+      }
+      if (!response.ok) {
+        throw new Error("GitHub release lookup returned HTTP " + response.status + ".");
+      }
+      const release = await response.json();
+      const assets = Array.isArray(release.assets) ? release.assets : [];
+      const asset = assets.find((item) =>
+        item && item.name === CLOUD_NODE_RELEASE_ASSET_NAME &&
+        item.state === "uploaded" && typeof item.browser_download_url === "string"
+      );
+      if (!asset) {
+        return {
+          available: false,
+          release,
+          message: "The latest Cloud Node release does not contain its expected ZIP asset yet. Use View build artifacts."
+        };
+      }
+
+      const download = new URL(asset.browser_download_url);
+      const expectedPrefix =
+        "/kate-alt-69/gitmanager/releases/download/cloud-node-setup-latest/";
+      if (
+        download.protocol !== "https:" ||
+        download.hostname.toLowerCase() !== "github.com" ||
+        !download.pathname.toLowerCase().startsWith(expectedPrefix) ||
+        download.username ||
+        download.password ||
+        download.search ||
+        download.hash
+      ) {
+        throw new Error("GitHub returned an unexpected Cloud Node download URL.");
+      }
+      return { available: true, release, asset, downloadUrl: download.href };
+    })();
+  }
+  return cloudNodeReleaseLookupPromise;
+}
+
+async function refreshCloudNodeBundleAvailability(forceRefresh = false) {
+  const button = document.getElementById("btn-download-cloud-node-setup");
+  const status = document.getElementById("cloud-node-release-status");
+  if (!button || !status) return;
+
+  button.disabled = true;
+  button.textContent = "Checking package…";
+  status.textContent = "Checking the verified standalone Cloud Node release…";
+  try {
+    const info = await getCloudNodeReleaseInfo(forceRefresh);
+    if (!info.available) {
+      button.textContent = "Not published yet";
+      status.textContent = info.message;
+      return;
+    }
+    const sizeMiB = Number(info.asset.size || 0) / (1024 * 1024);
+    button.disabled = false;
+    button.textContent = "Download Cloud Node ZIP";
+    status.textContent =
+      "Available from " + String(info.release.tag_name || "the Cloud Node release") +
+      " · " + sizeMiB.toFixed(1) + " MiB · separate from the GitManager installer.";
+  } catch (error) {
+    button.textContent = "Download unavailable";
+    status.textContent = "Could not check the Cloud Node release: " +
+      String((error && error.message) || error) +
+      " Use View build artifacts to inspect CI output.";
+  }
+}
+
+async function downloadCloudNodeSetup() {
+  const button = document.getElementById("btn-download-cloud-node-setup");
+  const status = document.getElementById("cloud-node-release-status");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Opening download…";
+  }
+  try {
+    const info = await getCloudNodeReleaseInfo();
+    if (!info.available) throw new Error(info.message);
+    const safeUrl = safeExternalWebUrl(info.downloadUrl);
+    if (!safeUrl) throw new Error("The Cloud Node download URL did not pass HTTPS validation.");
+    await tauriInvoke("open_external_url", { url: safeUrl });
+    if (status) status.textContent = "Opened the standalone Cloud Node ZIP in your default browser. The download does not install anything on this computer.";
+  } catch (error) {
+    if (status) status.textContent = "Could not open the Cloud Node download: " +
+      String((error && error.message) || error);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Download Cloud Node ZIP";
+    }
+    void refreshCloudNodeBundleAvailability();
+  }
+}
+
+async function openCloudNodeExternalPage(rawUrl, message) {
+  const safeUrl = safeExternalWebUrl(rawUrl);
+  if (!safeUrl) {
+    const status = document.getElementById("cloud-node-release-status");
+    if (status) status.textContent = "The requested GitHub page did not pass HTTPS validation.";
+    return;
+  }
+  try {
+    await tauriInvoke("open_external_url", { url: safeUrl });
+  } catch (error) {
+    const status = document.getElementById("cloud-node-release-status");
+    if (status) status.textContent = "Could not open the page: " +
+      String((error && error.message) || error);
+    return;
+  }
+  const status = document.getElementById("cloud-node-release-status");
+  if (status && message) status.textContent = message;
 }
 
 async function saveScanSetup() {
