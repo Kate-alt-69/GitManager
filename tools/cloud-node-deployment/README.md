@@ -61,7 +61,7 @@ The included settings.json binds the backend API to 0.0.0.0:8080 by default. Aft
 - http://127.0.0.1:8080/health — native backend health endpoint
 - http://127.0.0.1:8080/api/health — bundled api/health.route
 
-Use the backend's actual configured port if settings.json was already present and preserved. The installer does not open firewall ports or create a TLS certificate. Restrict LAN access with the host firewall and configure HTTPS before exposing an endpoint beyond a trusted local network.
+Use the backend's actual configured port if settings.json was already present and preserved. GitManager's Settings → Cloud → Cloud Node setup page can check a private LAN IP and report the native /health and bundled /api/health responses. This verifies backend reachability only; it does not authenticate/pair a peer or enable persistent Cloud Node synchronization. The installer does not open firewall ports or create a TLS certificate. Restrict LAN access with the host firewall and configure HTTPS before exposing an endpoint beyond a trusted local network.
 
 Initialize the RBE administrator account before the first normal backend run:
 
