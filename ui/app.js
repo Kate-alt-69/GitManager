@@ -2795,11 +2795,12 @@ function cloudProviderTemplate(provider) {
       auth: { mode: "aws-sig-v4" }
     },
     "s3-compatible": {
-      kind: "http",
+      kind: "amazon-s3",
       namespace: "gitmanager",
       bucket: "gitmanager-archives",
-      endpoint: "https://objects.example.com",
-      auth: { mode: "bearer", bearerTokenEnv: "GITMANAGER_ARCHIVE_TOKEN" }
+      region: "auto",
+      endpoint: "https://YOUR-S3-ENDPOINT",
+      auth: { mode: "aws-sig-v4" }
     }
   };
   return templates[provider] || null;
