@@ -490,6 +490,12 @@ async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, St
 
 /// Report whether this process is the first-run setup companion.
 #[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Report whether this process is the first-run setup companion.
+#[tauri::command]
 fn is_setup_mode() -> bool {
     std::env::var_os("GITMANAGER_SETUP_MODE").is_some()
 }
@@ -1096,6 +1102,7 @@ pub fn run() {
             scan_machine_repositories,
             inspect_repository,
             detect_github_identity,
+            get_app_version,
             is_setup_mode,
             launch_first_run_setup,
             connect_git_account,
