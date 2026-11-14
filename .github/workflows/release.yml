@@ -109,7 +109,7 @@ jobs:
             [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE))
             $securePassword = ConvertTo-SecureString -String $env:WINDOWS_SIGNING_PASSWORD -Force -AsPlainText
             $imported = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
-            $expected = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\\s', '').ToUpperInvariant()
+            $expected = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\s', '').ToUpperInvariant()
             if (-not ($imported | Where-Object { $_.Thumbprint -eq $expected })) {
               throw "The imported PFX does not contain WINDOWS_SIGNING_THUMBPRINT."
             }
@@ -167,7 +167,7 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\\s', '').ToUpperInvariant()
+          $thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\s', '').ToUpperInvariant()
           if ($thumbprint) {
             Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $thumbprint } |
               Remove-Item -Force -ErrorAction SilentlyContinue
