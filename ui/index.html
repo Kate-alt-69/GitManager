@@ -92,13 +92,13 @@
           <header class="modal-header setup-modal-header">
             <div>
               <h3 id="setup-modal-title">Set up your workspace</h3>
-              <p id="setup-modal-subtitle" class="setup-modal-subtitle">Choose the folders GitManager should index.</p>
+              <p id="setup-modal-subtitle" class="setup-modal-subtitle">Choose your main repository folder, then add any other locations where you keep projects.</p>
             </div>
             <button id="btn-close-scan-setup" class="icon-close-btn" aria-label="Close setup">&times;</button>
           </header>
           <div class="modal-body setup-modal-body">
             <div class="setup-roots-heading">
-              <div><strong>Scan folders</strong><span>GitManager scans inside each folder for Git repositories.</span></div>
+              <div><strong>Main repository folder</strong><span>Choose the folder containing most of your projects. Additional scan locations can be added below.</span></div>
               <button id="btn-setup-smart-roots" class="btn btn-secondary" type="button">Use recommended folders</button>
             </div>
             <div id="setup-scan-root-list" class="setup-root-list">
@@ -109,7 +109,7 @@
               <input id="setup-manual-root" class="scan-input" type="text" placeholder="Or enter a path, e.g. D:/Project_Customs or D:/" />
               <button id="btn-setup-add-root" class="btn btn-secondary" type="button">Add path</button>
             </div>
-            <p class="setup-hint">Choose one or more project folders. A drive root such as D:/ is supported; scanning an entire drive can take longer. GitManager does not automatically scan every system drive.</p>
+            <p class="setup-hint">The first folder is your main workspace. You can mark any other folder as the main location. A drive root such as D:/ is supported, but scanning an entire drive can take longer. GitManager does not automatically scan every system drive.</p>
             <div class="setup-options">
               <label class="setup-option"><input id="setup-index-dependencies" type="checkbox" checked /> Index Git repositories found inside dependency folders too</label>
               <label class="setup-option"><input id="setup-show-dependencies" type="checkbox" checked /> Include dependency repositories in the default repository view</label>
