@@ -531,6 +531,7 @@ async fn fetch_rbe_health(
 async fn check_rbe_node_status(address: String) -> Result<RbeNodeStatusInfo, String> {
     let base = validate_rbe_node_base_url(&address)?;
     let client = reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(6))
         .redirect(reqwest::redirect::Policy::none())
@@ -1331,6 +1332,38 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running GitManager Tauri v2 application");
+}
+
+#[cfg(test)]
+mod rbe_node_address_tests {
+    use super::validate_rbe_node_base_url;
+
+    #[test]
+    fn accepts_private_lan_ipv4_and_defaults_to_backend_port() {
+        let address = validate_rbe_node_base_url("192.168.1.50").unwrap();
+        assert_eq!(address.as_str(), "http://192.168.1.50:8080/");
+    }
+
+    #[test]
+    fn accepts_explicit_lan_port_and_ipv6_unique_local_addresses() {
+        let address = validate_rbe_node_base_url("http://10.0.0.12:8090").unwrap();
+        assert_eq!(address.port(), Some(8090));
+        assert!(validate_rbe_node_base_url("http://[fd12::20]:8080").is_ok());
+    }
+
+    #[test]
+    fn rejects_public_hosts_and_non_ip_names() {
+        assert!(validate_rbe_node_base_url("https://8.8.8.8").is_err());
+        assert!(validate_rbe_node_base_url("nas.example.com:8080").is_err());
+    }
+
+    #[test]
+    fn rejects_credentials_paths_queries_and_fragments() {
+        assert!(validate_rbe_node_base_url("http://user:pass@192.168.1.50").is_err());
+        assert!(validate_rbe_node_base_url("http://192.168.1.50/api").is_err());
+        assert!(validate_rbe_node_base_url("http://192.168.1.50?token=secret").is_err());
+        assert!(validate_rbe_node_base_url("http://192.168.1.50/#health").is_err());
+    }
 }
 
 #[cfg(test)]
