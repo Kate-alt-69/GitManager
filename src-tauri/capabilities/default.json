@@ -15,11 +15,7 @@
         {
           "name": "binaries/gitmanager-setup",
           "sidecar": true,
-          "args": [
-            {
-              "validator": ".+"
-            }
-          ]
+          "args": []
         }
       ]
     }
