@@ -14,8 +14,8 @@ resolver = "2"
 # Optimize native release binaries and packaged installers for size.
 [profile.release]
 opt-level = "z"
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 8
 strip = true
 panic = "abort"
 incremental = false
