@@ -517,6 +517,8 @@ def prepare_cloud_node_deployment(project_root: Path) -> int:
                 checksum_map[match.group(2)] = match.group(1).lower()
 
         staging_root = target_dir / "cloud-node-deployment-staging"
+        if staging_root.is_symlink():
+            raise ValueError("Refusing to replace a symlink at the Cloud Node staging path.")
         if staging_root.exists():
             shutil.rmtree(staging_root)
         staging_root.mkdir(parents=True, exist_ok=True)
@@ -587,8 +589,18 @@ def prepare_cloud_node_deployment(project_root: Path) -> int:
                 for file_path in files:
                     relative = file_path.relative_to(staging_root).as_posix()
                     bundle.write(file_path, relative)
+            with zipfile.ZipFile(temporary_archive, "r") as packaged:
+                corrupt_entry = packaged.testzip()
+                if corrupt_entry:
+                    raise ValueError(f"Generated Cloud Node ZIP failed CRC verification at {corrupt_entry}.")
+                packaged_manifest = json.loads(packaged.read("manifest.json").decode("utf-8"))
+                compile(packaged.read("setup.py"), "tools/cloud-node-deployment/setup.py", "exec")
+                for target, entry in packaged_manifest["targets"].items():
+                    payload = packaged.read(entry["path"])
+                    if len(payload) != entry["size"] or hashlib.sha256(payload).hexdigest() != entry["sha256"]:
+                        raise ValueError(f"Generated Cloud Node ZIP failed binary verification for {target}.")
             os.replace(temporary_archive, final_archive)
-            log_ok(f"Created all-platform Cloud Node deployment ZIP: {final_archive}")
+            log_ok(f"Created and verified all-platform Cloud Node deployment ZIP: {final_archive}")
             log_info(f"Included targets: {', '.join(sorted(targets_manifest))}")
             return 0
         finally:
@@ -1081,7 +1093,7 @@ def main() -> int:
         nargs="?",
         default="build",
         choices=["deps", "check", "dev", "build", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node"],
-        help="Action: deps, check, dev, build, prepare-runtime, or prepare-sidecar.",
+        help="Action: deps, check, dev, build, prepare-runtime, prepare-sidecar, or prepare-cloud-node.",
     )
     parser.add_argument(
         "--release",
