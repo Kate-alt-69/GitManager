@@ -73,8 +73,13 @@ jobs:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
           $installer = "target/release/bundle/nsis/GitManager-Setup.exe"
-          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe was not created." }
-          $targets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", $installer)
+          $setupHelper = "target/release/GitManager-Setup.exe"
+          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe NSIS installer was not created." }
+          if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
+
+          $msiFiles = @(Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File -ErrorAction Stop)
+          if ($msiFiles.Count -lt 1) { throw "The WiX MSI package was not created." }
+          $targets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/gitm.exe", $setupHelper, $installer) + @($msiFiles | ForEach-Object { $_.FullName })
           foreach ($target in $targets) {
             if (Test-Path -LiteralPath $target) {
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
@@ -111,5 +116,6 @@ jobs:
           path: |
             target/release/bundle/**
             target/release/gitm*
+            target/release/GitManager-Setup*
           if-no-files-found: error
           compression-level: 9
