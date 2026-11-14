@@ -92,7 +92,7 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "peer-client", feature = "provider-sync", feature = "server"))]
+#[cfg(any(feature = "peer-client", feature = "provider-sync"))]
 pub(crate) async fn create_dir_all_async(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     let missing = missing_directories_async(path).await?;
@@ -103,7 +103,7 @@ pub(crate) async fn create_dir_all_async(path: impl AsRef<Path>) -> io::Result<(
     Ok(())
 }
 
-#[cfg(any(feature = "peer-client", feature = "provider-sync", feature = "server"))]
+#[cfg(any(feature = "peer-client", feature = "provider-sync"))]
 pub(crate) async fn rename_async(
     source: impl AsRef<Path>,
     target: impl AsRef<Path>,
@@ -120,7 +120,7 @@ pub(crate) async fn rename_async(
     Ok(())
 }
 
-#[cfg(any(feature = "peer-client", feature = "provider-sync", feature = "server"))]
+#[cfg(any(feature = "peer-client", feature = "provider-sync"))]
 pub(crate) async fn remove_file_async(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     let parent = parent_path(path);
@@ -128,7 +128,7 @@ pub(crate) async fn remove_file_async(path: impl AsRef<Path>) -> io::Result<()> 
     sync_directory_async(&parent).await
 }
 
-#[cfg(any(feature = "peer-client", feature = "provider-sync", feature = "server"))]
+#[cfg(any(feature = "peer-client", feature = "provider-sync"))]
 pub(crate) async fn remove_dir_all_async(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     let parent = parent_path(path);
@@ -136,7 +136,7 @@ pub(crate) async fn remove_dir_all_async(path: impl AsRef<Path>) -> io::Result<(
     sync_directory_async(&parent).await
 }
 
-#[cfg(any(feature = "peer-client", feature = "provider-sync", feature = "server"))]
+#[cfg(any(feature = "peer-client", feature = "provider-sync"))]
 async fn missing_directories_async(path: &Path) -> io::Result<Vec<PathBuf>> {
     let mut missing = Vec::new();
     let mut current = path.to_path_buf();
@@ -177,7 +177,7 @@ async fn sync_directory_async(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "peer-client", feature = "provider-sync", feature = "server"))]
+#[cfg(any(feature = "peer-client", feature = "provider-sync"))]
 async fn sync_parent_async(path: &Path) -> io::Result<()> {
     sync_directory_async(&parent_path(path)).await
 }
