@@ -1,5 +1,15 @@
 # GitManager Cloud Node deployment
 
+## Download the standalone bundle
+
+The latest all-platform package is published separately from the GitManager desktop installers:
+
+- [Download GitManager-Cloud-Node-Setup.zip](https://github.com/Kate-alt-69/GitManager/releases/download/cloud-node-setup-latest/GitManager-Cloud-Node-Setup.zip)
+- [Download the SHA-256 checksum](https://github.com/Kate-alt-69/GitManager/releases/download/cloud-node-setup-latest/GitManager-Cloud-Node-Setup.zip.sha256)
+
+For pull-request builds, download the `gitmanager-cloud-node-deployment` artifact from the [GitManager native-installer workflow](https://github.com/Kate-alt-69/GitManager/actions/workflows/release.yml).
+
+
 This ZIP is a separate, cross-platform deployment package for **RBE Cloud Node**. It is not embedded in `git-manager.exe` and it does not install the RBE backend, Container, or Service binaries.
 
 The package contains the standalone `cloud_node` executable extracted from the official RBE runtime release for five targets:
