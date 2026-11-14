@@ -204,7 +204,7 @@ jobs:
           name: gitmanager-cloud-node-deployment
           path: release-assets
 
-      - name: Create stable download filename and checksum
+      - name: Check stable download filename and create checksum
         shell: bash
         run: |
           set -euo pipefail
@@ -213,7 +213,6 @@ jobs:
             echo "::error::Expected exactly one RBE node bootstrap ZIP; found ${#archives[@]}."
             exit 1
           fi
-          cp "${archives[0]}" release-assets/GitManager-Cloud-Node-Setup.zip
           (cd release-assets && sha256sum GitManager-Cloud-Node-Setup.zip > GitManager-Cloud-Node-Setup.zip.sha256)
 
       - name: Publish the moving Cloud Node download release
