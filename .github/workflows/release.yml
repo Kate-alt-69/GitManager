@@ -9,6 +9,34 @@ on:
   workflow_dispatch:
 
 jobs:
+
+  cloud-node-deployment:
+    name: Portable RBE Cloud Node package (all 5 targets)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download, verify and package all official RBE Cloud Node binaries
+        run: python build.py prepare-cloud-node
+
+      - name: Validate the portable Cloud Node setup script
+        run: python -m py_compile tools/cloud-node-deployment/setup.py
+
+      - name: Upload all-platform Cloud Node deployment ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitmanager-cloud-node-deployment
+          path: target/deployment/*.zip
+          if-no-files-found: error
+          compression-level: 0
+
   build-tauri:
     permissions:
       contents: write
@@ -64,7 +92,8 @@ jobs:
       - name: Verify Dependencies & Build via Python Build Script
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
-        run: python3 build.py build --install-tauri-cli
+          GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
+        run: python build.py build --install-tauri-cli
 
       - name: Sign and verify Windows release files
         if: runner.os == 'Windows'
