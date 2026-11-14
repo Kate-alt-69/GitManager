@@ -24,6 +24,13 @@ MANIFEST_PATH = PACKAGE_ROOT / "manifest.json"
 KEY_ENV = "RBE_CLOUD_NODE_PRIVATE_KEY"
 NODE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 PUBLIC_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+REQUIRED_TARGETS = {
+    "windows-x64",
+    "linux-x64",
+    "linux-arm64",
+    "macos-intel",
+    "macos-arm64",
+}
 
 
 class SetupError(RuntimeError):
@@ -103,6 +110,16 @@ def load_manifest():
         raise SetupError("Unsupported Cloud Node deployment package format.")
     if not isinstance(manifest.get("targets"), dict):
         raise SetupError("Package manifest has no target map.")
+    included_targets = set(manifest["targets"])
+    if included_targets != REQUIRED_TARGETS:
+        missing = sorted(REQUIRED_TARGETS - included_targets)
+        unexpected = sorted(included_targets - REQUIRED_TARGETS)
+        raise SetupError(
+            "The deployment ZIP must contain exactly all five supported platform binaries. "
+            f"Missing: {missing or 'none'}; unexpected: {unexpected or 'none'}."
+        )
+    if not isinstance(manifest.get("rbeRelease"), dict):
+        raise SetupError("Package manifest is missing RBE release provenance.")
     return manifest
 
 
