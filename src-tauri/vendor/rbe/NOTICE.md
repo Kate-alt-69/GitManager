@@ -32,3 +32,20 @@ logical-object removal APIs are already provided by upstream
 `cloud-node/src/store.rs`; GitManager consumes those APIs without duplicating
 them. The remainder of the vendored source is retained from the upstream copy.
 Upstream updates must be reviewed and copied deliberately.
+
+
+## GitManager Cloud Node feature isolation
+
+The vendored Cloud Node manifest now keeps default features empty. GitManager's
+archive engine enables only `provider-sync`; the authenticated peer transport
+(`peer-client` / `peer-auth`), inbound server (`server`), registry ingestion,
+local sync and storage-journal ingestion remain separate opt-in features.
+The existing `client` feature remains as a compatibility umbrella for the full
+peer-client and provider-sync surfaces.
+
+Shared durable outbound-cache helpers were moved to
+`cloud-node/src/outbound_cache.rs` so provider sync does not compile the
+peer-transport module. The interrupted registry replacement marker check was
+moved to `cloud-node/src/registry_guard.rs` and remains active even when the
+optional registry-ingest implementation is not compiled. These changes are
+local GitManager vendor adaptations; the upstream RBE repository is untouched.
