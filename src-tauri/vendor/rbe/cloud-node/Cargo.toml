@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["client"]
-client = ["dep:reqwest", "dep:tokio-util"]
+client = ["dep:reqwest", "dep:tokio-util", "dep:ed25519-dalek"]
 # GitManager's desktop/archive integration is a Cloud Node client. The
 # Ed25519 authentication server is available to RBE consumers but stays
 # opt-in so desktop builds do not compile server-only crypto code.
