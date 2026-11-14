@@ -65,3 +65,5 @@ jobs:
           node --check ui/app.js
           python -m py_compile build.py
           python -m py_compile tools/cloud-node-deployment/setup.py
+          python -m py_compile tools/cloud-node-deployment/test_setup.py
+          python tools/cloud-node-deployment/test_setup.py
