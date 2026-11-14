@@ -2217,9 +2217,19 @@ function wireEventListeners() {
   });
   const setupRootList = document.getElementById("setup-scan-root-list");
   if (setupRootList) setupRootList.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-remove-root]");
-    if (!button) return;
-    const index = Number(button.getAttribute("data-remove-root"));
+    const primaryButton = event.target.closest("[data-main-root]");
+    if (primaryButton) {
+      const index = Number(primaryButton.getAttribute("data-main-root"));
+      if (Number.isInteger(index) && index > 0 && index < appPreferences.scanRoots.length) {
+        const [root] = appPreferences.scanRoots.splice(index, 1);
+        appPreferences.scanRoots.unshift(root);
+        renderScanRootList();
+      }
+      return;
+    }
+    const removeButton = event.target.closest("[data-remove-root]");
+    if (!removeButton) return;
+    const index = Number(removeButton.getAttribute("data-remove-root"));
     if (Number.isInteger(index)) {
       appPreferences.scanRoots.splice(index, 1);
       renderScanRootList();
@@ -2377,8 +2387,12 @@ function renderScanRootList() {
     return;
   }
   list.innerHTML = roots.map((root, index) =>
-    '<div class="setup-root-item"><span class="setup-root-index">' + (index + 1) + '</span>' +
+    '<div class="setup-root-item' + (index === 0 ? ' setup-root-main' : '') + '">' +
+    '<span class="setup-root-index">' + (index + 1) + '</span>' +
+    '<span class="setup-root-role">' + (index === 0 ? 'MAIN' : 'ADDITIONAL') + '</span>' +
     '<code title="' + escapeHtml(root) + '">' + escapeHtml(root) + '</code>' +
+    (index === 0 ? '<span class="setup-root-primary-label">Primary</span>' :
+      '<button type="button" class="setup-root-make-primary" data-main-root="' + index + '">Make main</button>') +
     '<button type="button" class="setup-root-remove" data-remove-root="' + index + '" aria-label="Remove scan folder">Remove</button></div>'
   ).join("");
 }
