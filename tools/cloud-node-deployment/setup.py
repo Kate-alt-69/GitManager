@@ -627,8 +627,12 @@ def main():
             + json.dumps(registration, indent=2)
             + "\n\n"
             "The backend must also have its own RBE_CLOUD_NODE_PRIVATE_KEY configured. "
-            "Its matching public key is the upstream.publicKey in this node's setting.cn.json. "
-            "Do not copy either machine's private key to the other machine.\n"
+            "On the backend, run cloud_node public-key with that backend key available; "
+            "enter that output as upstream.publicKey in this node's setting.cn.json. "
+            "The backend's node.id must match the upstream.nodeId you entered here. "
+            "Do not copy either machine's private key to the other machine.\n\n"
+            "The peer url is required metadata in the current RBE replication target schema. "
+            "The current inbound recovery endpoint authenticates nodeId and publicKey and does not dial this url.\n"
         )
         secure_write(install_dir / "RBE-SERVER-PEER-REGISTRATION.md", instructions)
 
