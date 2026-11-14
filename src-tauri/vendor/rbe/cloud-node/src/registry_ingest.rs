@@ -5,16 +5,17 @@ use std::path::{Component, Path, PathBuf};
 
 use fs2::FileExt;
 
-#[cfg(feature = "client")]
+use crate::registry_guard::{ensure_registry_ingest_committed, REGISTRY_INGEST_PENDING};
+
+#[cfg(feature = "provider-sync")]
 use crate::provider_sync::{synchronize_provider, ProviderSyncResult};
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 use crate::CloudNodeSettings;
 use crate::{durable, BlobKind, CloudNodeStore, StoredObject, SyncObject, SyncPlan};
 
 const REGISTRY_LOGICAL_ROOT: &str = "registry";
 const REQUIRED_INDEX_SNAPSHOT: &str = "index/snapshot.json";
 const REGISTRY_INGEST_LOCK: &str = ".registry-ingest.lock";
-const REGISTRY_INGEST_PENDING: &str = ".registry-ingest.pending";
 const REGISTRY_INGEST_MARKER: &[u8] = b"RBE-CN-REGISTRY-INGEST/1\n";
 const ALLOWED_TOP_LEVEL: &[&str] = &[
     "index",
@@ -42,7 +43,7 @@ pub struct RegistryStoredObject {
     pub content_sha256: String,
 }
 
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistrySyncResult {
     pub ingest: RegistryIngestResult,
@@ -90,19 +91,6 @@ impl Drop for RegistryIngestLock {
     }
 }
 
-/// Refuse to publish or negotiate a Cloud Node snapshot while a previous
-/// registry replacement is known to have stopped before its commit point.
-pub(crate) fn ensure_registry_ingest_committed(store: &CloudNodeStore) -> anyhow::Result<()> {
-    let marker = registry_pending_path(store);
-    if marker.exists() {
-        anyhow::bail!(
-            "Cloud Node registry replacement is incomplete at {}; run ingest-registry or sync-registry again with a complete trusted export before synchronization",
-            marker.display()
-        );
-    }
-    Ok(())
-}
-
 /// Ingest a complete trusted Kastrick/RPX registry export into Cloud Node's
 /// normal content-addressed store.
 ///
@@ -133,7 +121,7 @@ pub fn ingest_registry_export(
 /// Replace the local registry snapshot and synchronize it through the normal
 /// provider-history transaction while holding the registry ingest lock for the
 /// complete operation. Package semantics remain outside Cloud Node.
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 pub async fn synchronize_registry_export(
     settings: &CloudNodeSettings,
     store: &CloudNodeStore,
