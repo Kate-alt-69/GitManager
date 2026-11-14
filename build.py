@@ -289,7 +289,7 @@ def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
     if platform.system() != "Windows":
         return None
 
-    thumbprint = re.sub(r"\\s", "", os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "")).upper()
+    thumbprint = re.sub(r"\s", "", os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "")).upper()
     if not thumbprint:
         log_info("No Windows signing certificate configured; Tauri will produce an unsigned build.")
         return None
@@ -324,7 +324,7 @@ def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
             }
         }
     }
-    config_path.write_text(json.dumps(signing_config, indent=2) + "\\n", encoding="utf-8")
+    config_path.write_text(json.dumps(signing_config, indent=2), encoding="utf-8")
     log_ok("Enabled Tauri's custom signing command because a Windows certificate is configured.")
     return config_path
 
