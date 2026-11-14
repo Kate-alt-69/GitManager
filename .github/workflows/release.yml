@@ -27,7 +27,31 @@ jobs:
         run: python build.py prepare-cloud-node
 
       - name: Validate the portable Cloud Node setup script
-        run: python -m py_compile tools/cloud-node-deployment/setup.py
+        run: python -m py_compile build.py tools/cloud-node-deployment/setup.py
+
+      - name: Verify every platform binary inside the generated ZIP
+        run: |
+          python - <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+          import tempfile
+          import zipfile
+
+          archives = sorted(pathlib.Path("target/deployment").glob("*.zip"))
+          if len(archives) != 1:
+              raise SystemExit(f"Expected one deployment ZIP, found {len(archives)}")
+          with tempfile.TemporaryDirectory(prefix="gitmanager-cloud-node-") as temp:
+              with zipfile.ZipFile(archives[0], "r") as package:
+                  bad = package.testzip()
+                  if bad:
+                      raise SystemExit(f"ZIP CRC verification failed at {bad}")
+                  package.extractall(temp)
+              setup = pathlib.Path(temp) / "setup.py"
+              result = subprocess.run([sys.executable, str(setup), "--verify-only"], check=False)
+              if result.returncode:
+                  raise SystemExit(result.returncode)
+          PY
 
       - name: Upload all-platform Cloud Node deployment ZIP
         uses: actions/upload-artifact@v4
