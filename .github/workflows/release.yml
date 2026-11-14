@@ -212,7 +212,7 @@ jobs:
             exit 1
           fi
           cp "${archives[0]}" release-assets/GitManager-Cloud-Node-Setup.zip
-          sha256sum release-assets/GitManager-Cloud-Node-Setup.zip > release-assets/GitManager-Cloud-Node-Setup.zip.sha256
+          (cd release-assets && sha256sum GitManager-Cloud-Node-Setup.zip > GitManager-Cloud-Node-Setup.zip.sha256)
 
       - name: Publish the moving Cloud Node download release
         uses: softprops/action-gh-release@v2
