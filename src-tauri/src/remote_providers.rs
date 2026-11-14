@@ -168,8 +168,6 @@ struct GitlabUserResponse {
 
 #[derive(Debug, Deserialize)]
 struct GitlabNamespace {
-    path: String,
-    name: String,
     avatar_url: Option<String>,
 }
 
