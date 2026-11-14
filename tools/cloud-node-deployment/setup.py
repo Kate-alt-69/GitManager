@@ -387,8 +387,25 @@ def collect_new_settings():
     mode = ask("Node mode (primary/replica/relay/archive)", "primary").lower()
     if mode not in ("primary", "replica", "relay", "archive"):
         raise SetupError("Node mode must be primary, replica, relay, or archive.")
-    storage_input = ask("Cloud Node storage/backup directory", str(default_storage_directory()))
+    storage_input = ask("Cloud Node internal storage/backup directory", str(default_storage_directory()))
     storage_root = Path(storage_input).expanduser().resolve()
+    watched_default = Path.home() / "CloudNodeData"
+    watched_input = ask(
+        "Directory on this machine whose files Cloud Node should back up",
+        str(watched_default),
+    )
+    watched_directory = Path(watched_input).expanduser().resolve()
+    logical_prefix = ask("Logical backup namespace/prefix", "nas-data").replace("\\", "/")
+    if (
+        not logical_prefix
+        or len(logical_prefix) > 512
+        or logical_prefix.startswith("/")
+        or logical_prefix.endswith("/")
+        or ":" in logical_prefix
+        or any(part in ("", ".", "..") for part in logical_prefix.split("/"))
+        or any(ord(character) < 32 or ord(character) == 127 for character in logical_prefix)
+    ):
+        raise SetupError("The logical backup namespace must be a relative path without empty, '.', '..', drive or control segments.")
     backend_url = validate_peer_url(ask("RBE backend HTTPS base URL"), "RBE backend URL")
     backend_node_id = validate_node_id(ask("RBE backend Cloud Node ID"))
     backend_public_key = validate_public_key(ask("RBE backend Ed25519 public key"), "RBE backend public key")
@@ -407,6 +424,10 @@ def collect_new_settings():
             "backupVersions": backup_versions,
             "preserveOriginal": True,
             "videoChunkBytes": 4194304,
+        },
+        "localSync": {
+            "directory": str(watched_directory),
+            "logicalPrefix": logical_prefix,
         },
         "upstream": {
             "url": backend_url,
@@ -523,6 +544,8 @@ def main():
                 raise SetupError(f"Could not read existing Cloud Node settings: {error}") from error
             if not isinstance(config.get("node"), dict) or not isinstance(config.get("upstream"), dict):
                 raise SetupError("Existing settings are not an RBE peer-mode Cloud Node configuration.")
+            if not isinstance(config.get("localSync"), dict):
+                raise SetupError("Existing settings do not include a watched localSync directory.")
             node_id = validate_node_id(str(config["node"].get("id", "")))
             say(f"Keeping existing Cloud Node ID: {node_id}")
         else:
@@ -576,7 +599,9 @@ def main():
 
         say("\n[ OK ] Cloud Node binary installed and verified.")
         say(f"Settings: {config_path}")
-        say(f"Storage:  {config['node']['storageRoot']}")
+        say(f"Cloud Node internal storage: {config['node']['storageRoot']}")
+        say(f"Watched folder: {config['localSync']['directory']}")
+        say(f"Logical backup prefix: {config['localSync']['logicalPrefix']}")
         say(f"Private key: {key_path} (never copy this file to the RBE backend)")
         say(f"Public key:  {public_key}")
         say(f"Peer registration: {registration_path}")
