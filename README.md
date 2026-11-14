@@ -202,6 +202,9 @@ all-platform ZIP under `target/deployment/`:
 GitManager-Cloud-Node-Setup-rbe-bin-v0.1.0-build.11.1.zip
 ```
 
+To build only this deployment package without a Rust toolchain or desktop
+installer, run `py build.py prepare-cloud-node`.
+
 The ZIP contains the official standalone RBE `cloud_node` binaries for Windows
 x64, Linux x64, Linux ARM64, macOS Intel and macOS Apple Silicon, plus
 `setup.py`, the RBE Apache 2.0 license, provenance and SHA-256 manifest.
