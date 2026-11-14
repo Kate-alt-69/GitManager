@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Cross-platform first-run companion for GitManager.
 //!
 //! This binary shares the main Tauri UI and opens it in forced setup mode.
