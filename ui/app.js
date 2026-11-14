@@ -2730,6 +2730,54 @@ async function disableArchiveCloudProvider() {
 
 
 
+async function checkCloudNodeAddress() {
+  const input = document.getElementById("cloud-node-address-input");
+  const button = document.getElementById("btn-check-cloud-node-address");
+  const status = document.getElementById("cloud-node-address-status");
+  const address = String(input && input.value || "").trim();
+  if (!address) {
+    if (status) {
+      status.textContent = "Enter the NAS IP address and port first.";
+      status.classList.add("is-error");
+    }
+    if (input) input.focus();
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Checking…";
+  }
+  if (status) {
+    status.textContent = "Checking the NAS backend health endpoints…";
+    status.classList.remove("is-error");
+  }
+  try {
+    const result = await tauriInvoke("check_rbe_node_status", { address });
+    const backendCode = result.backendHttpStatus == null ? "unavailable" : "HTTP " + result.backendHttpStatus;
+    const apiCode = result.apiRouteHttpStatus == null ? "unavailable" : "HTTP " + result.apiRouteHttpStatus;
+    const backendState = result.reachable ? "Backend reachable" : "Backend not confirmed reachable";
+    const detail = result.backendError || result.apiRouteError || result.message || "";
+    if (status) {
+      status.textContent = backendState + " at " + String(result.address || address) +
+        " · /health: " + backendCode + " · /api/health: " + apiCode +
+        (detail ? " · " + detail : "") +
+        (result.reachable ? " · This checks status only; it does not pair or authenticate a peer." : "");
+      status.classList.toggle("is-error", !result.reachable);
+    }
+  } catch (error) {
+    if (status) {
+      status.textContent = "Could not check this NAS address: " +
+        String((error && error.message) || error);
+      status.classList.add("is-error");
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Check backend";
+    }
+  }
+}
+
 function cloudProviderTemplate(provider) {
   const templates = {
     supabase: {
@@ -2799,8 +2847,10 @@ function wireCloudSettingsControls() {
   const supabase = document.getElementById("btn-cloud-supabase-configure");
   const amazonS3 = document.getElementById("btn-cloud-amazon-s3-configure");
   const s3Compatible = document.getElementById("btn-cloud-s3-compatible-configure");
+  const nodeAddressCheck = document.getElementById("btn-check-cloud-node-address");
 
   if (refresh) refresh.addEventListener("click", () => void refreshArchiveCloudStatus());
+  if (nodeAddressCheck) nodeAddressCheck.addEventListener("click", () => void checkCloudNodeAddress());
   if (openProvider) openProvider.addEventListener("click", () => {
     setActiveCloudProvider("s3-compatible");
     openCloudProviderConfiguration("s3-compatible");
