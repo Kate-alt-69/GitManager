@@ -612,29 +612,40 @@ def prepare_cloud_node_deployment(project_root: Path) -> int:
 
 
 def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
+    """Write an explicit Windows signing override for every release build.
 
-    """Create a temporary Tauri signing overlay only when a real signer is configured."""
+    Nulls in Tauri's merged config remove stale or externally inherited
+    certificate/signCommand values. Unsigned builds must never invoke a signer
+    and then fail SignTool verification because it produced no signature.
+    """
     if platform.system() != "Windows":
         return None
 
     thumbprint = re.sub(r"\s", "", os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "")).upper()
-    if not thumbprint:
-        log_info("No Windows signing certificate configured; Tauri will produce an unsigned build.")
-        return None
-    if not re.fullmatch(r"[A-F0-9]{40}", thumbprint):
-        log_err("WINDOWS_SIGNING_THUMBPRINT must be a 40-character SHA-1 thumbprint.")
-        return None
-
-    sign_script = project_root / "tools" / "sign_windows_file.ps1"
-    if not sign_script.is_file():
-        log_err(f"Windows signing script is missing: {sign_script}")
-        return None
-
-    config_path = project_root / "target" / "build-config" / "tauri.windows.signing.conf.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    signing_config = {
+    signing_config: Dict[str, object] = {
         "bundle": {
             "windows": {
+                "certificateThumbprint": None,
+                "digestAlgorithm": None,
+                "signCommand": None,
+                "timestampUrl": None,
+            }
+        }
+    }
+
+    if thumbprint:
+        if not re.fullmatch(r"[A-F0-9]{40}", thumbprint):
+            log_err("WINDOWS_SIGNING_THUMBPRINT must be a 40-character SHA-1 thumbprint.")
+            return None
+        sign_script = project_root / "tools" / "sign_windows_file.ps1"
+        if not sign_script.is_file():
+            log_err(f"Windows signing script is missing: {sign_script}")
+            return None
+        signing_config["bundle"] = {
+            "windows": {
+                "certificateThumbprint": None,
+                "digestAlgorithm": None,
+                "timestampUrl": None,
                 "signCommand": {
                     "cmd": "powershell.exe",
                     "args": [
@@ -648,12 +659,20 @@ def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
                         "-FilePath",
                         "%1",
                     ],
-                }
+                },
             }
         }
-    }
-    config_path.write_text(json.dumps(signing_config, indent=2), encoding="utf-8")
-    log_ok("Enabled Tauri's custom signing command because a Windows certificate is configured.")
+        log_ok("Enabled Tauri's custom signing command because a Windows certificate is configured.")
+    else:
+        log_info("No Windows signing certificate configured; explicitly disabling Tauri signing for this unsigned build.")
+
+    config_path = project_root / "target" / "build-config" / "tauri.windows.signing.conf.json"
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(signing_config, indent=2) + "\n", encoding="utf-8")
+    except OSError as error:
+        log_err(f"Could not write the Windows signing override {config_path}: {error}")
+        return None
     return config_path
 
 
@@ -1041,11 +1060,10 @@ def run_build_or_dev(
                 cmd.append("--debug")
             elif platform.system() == "Windows":
                 signing_config = prepare_windows_tauri_signing_config(project_root)
-                if signing_config is not None:
-                    cmd.extend(["--config", str(signing_config.resolve())])
-                elif os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
-                    log_err("A Windows signing thumbprint was provided, but the signing config could not be prepared.")
+                if signing_config is None:
+                    log_err("Could not prepare an explicit Windows signing override; refusing to build with an ambiguous signing configuration.")
                     return 1
+                cmd.extend(["--config", str(signing_config.resolve())])
         log_info(f"Running Pure-Rust Tauri CLI: {' '.join(cmd)}")
         rc = subprocess.call(cmd, cwd=str(src_tauri_dir))
         if rc != 0 or mode != "build":
@@ -1132,6 +1150,10 @@ def main() -> int:
         return 1
 
     report_dependency_count(project_root, toolchain_arg)
+    log_info(
+        "Cargo's later n/N progress meter counts compilation units (including build scripts and "
+        "host/target variants), not unique crates; use the package-scoped dependency graph counts above."
+    )
 
     has_cargo_tauri = check_tauri_rust_cli(
         toolchain_arg,
