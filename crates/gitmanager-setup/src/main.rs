@@ -26,19 +26,8 @@ fn main() -> ExitCode {
 }
 
 fn resolve_application_path() -> Result<PathBuf, String> {
-    // Normal first-run handoff: the Tauri app supplies its own exact executable path.
-    if let Some(argument) = std::env::args_os().nth(1) {
-        let supplied = PathBuf::from(argument);
-        if supplied.is_file() {
-            return Ok(supplied);
-        }
-        return Err(format!(
-            "The GitManager application path supplied to Setup does not exist:\n{}",
-            supplied.display()
-        ));
-    }
-
-    // Direct launch from Explorer/Finder: look for the main app beside this helper.
+    // Tauri bundles sidecars beside the application executable. Resolve that
+    // trusted sibling for both first-run handoff and direct Explorer/Finder launch.
     let helper = std::env::current_exe()
         .map_err(|error| format!("Could not locate GitManager Setup: {error}"))?;
     let helper_dir = helper
