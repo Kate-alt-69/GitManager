@@ -1913,6 +1913,14 @@ mod tests {
             "https://bob:push-secret@github.com/acme/project.git?token=push-query-secret",
         ).unwrap();
 
+        // Remote Archive must preserve all named local refs, not just the
+        // current HEAD, because the pack contains objects reachable from refs.
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        let head_oid = head_commit.id();
+        repo.branch("archive-feature", &head_commit, false).unwrap();
+        let tag_target = head_commit.as_object();
+        repo.tag_lightweight("v1.0", &tag_target, false).unwrap();
+
         let snapshot = capture_repository(
             repository_path.to_str().unwrap(),
             Some(archive_root.to_str().unwrap()),
@@ -1944,6 +1952,16 @@ mod tests {
         ).unwrap();
         let restored = Repository::open(&destination).unwrap();
         assert!(restored.head().is_ok());
+        assert_eq!(
+            restored.find_reference("refs/heads/archive-feature").unwrap().target(),
+            Some(head_oid),
+            "Remote Archive must restore non-current local branch refs"
+        );
+        assert_eq!(
+            restored.find_reference("refs/tags/v1.0").unwrap().target(),
+            Some(head_oid),
+            "Remote Archive must restore tag refs"
+        );
         assert!(!destination.join(".git").join("index").exists(), "source staging index must not be restored");
         let restored_pack_dir = destination.join(".git").join("objects").join("pack");
         let restored_pack_files = fs::read_dir(&restored_pack_dir).unwrap()
