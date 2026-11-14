@@ -479,7 +479,7 @@ def build_gitm_sidecar(
         log_err("The standalone gitm CLI failed to build.")
         return gitm_result
 
-    setup_cmd = common_prefix + ["build", "--package", "git-manager", "--bin", "gitmanager-setup"]
+    setup_cmd = common_prefix + ["build", "--package", "gitmanager-setup", "--bin", "gitmanager-setup"]
     if release:
         setup_cmd.append("--release")
     log_info(f"Building GitManager first-run setup companion: {' '.join(setup_cmd)}")
