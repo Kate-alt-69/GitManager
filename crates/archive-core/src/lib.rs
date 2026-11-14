@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-const ARCHIVE_FORMAT_VERSION: u16 = 1;
+const ARCHIVE_FORMAT_VERSION: u16 = 2;
+const LEGACY_ARCHIVE_FORMAT_VERSION: u16 = 1;
 const MAX_RESTORE_POINTS: usize = 5;
 const MAX_INDEX_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -421,11 +422,14 @@ pub fn capture_repository(
     // The active Cloud Node set is the union of the retained restore points.
     // List the old manifest before pruning to discover no-longer-referenced blobs.
     // Snapshot blobs are namespaced by repository/archive kind and content hash.
-    let prefix = blob_prefix(&repository_id, kind);
+    let prefixes = [
+        blob_prefix(&repository_id, kind),
+        legacy_blob_prefix(&repository_id, kind),
+    ];
     let plan = store.sync_plan()
         .map_err(|error| format!("Could not inspect retained archive blobs: {error}"))?;
     let stale_blobs = plan.ordered()
-        .filter(|object| object.logical_path.starts_with(&prefix))
+        .filter(|object| prefixes.iter().any(|prefix| object.logical_path.starts_with(prefix)))
         .filter(|object| !retained_blobs.contains(&object.logical_path))
         .map(|object| object.logical_path.clone())
         .collect::<Vec<_>>();
@@ -542,7 +546,12 @@ pub fn restore_repository_archive(
             let _ = fs::remove_dir_all(&stage);
             return Err(format!("Restore-point manifest contains a path excluded by the security policy: {}", file.relative_path));
         }
-        let expected_blob = blob_logical_path(&repository_id, kind, &file.content_sha256);
+        let expected_blob = blob_logical_path_for_version(
+            &repository_id,
+            kind,
+            &file.content_sha256,
+            manifest.format_version,
+        );
         if expected_blob != file.blob_logical_path {
             let _ = fs::remove_dir_all(&stage);
             return Err(format!("Restore-point manifest contains an invalid content address for {}", file.relative_path));
@@ -1152,6 +1161,10 @@ fn is_git_sensitive_path(relative: &Path) -> bool {
 }
 
 fn blob_prefix(repository_id: &str, kind: ArchiveKind) -> String {
+    format!("gitm.archives/repositories/{repository_id}/{}/blobs/", kind.as_str())
+}
+
+fn legacy_blob_prefix(repository_id: &str, kind: ArchiveKind) -> String {
     format!("gitmanager/repositories/{repository_id}/{}/blobs/", kind.as_str())
 }
 
@@ -1159,15 +1172,38 @@ fn blob_logical_path(repository_id: &str, kind: ArchiveKind, sha256: &str) -> St
     format!("{}{}", blob_prefix(repository_id, kind), sha256)
 }
 
+fn legacy_blob_logical_path(repository_id: &str, kind: ArchiveKind, sha256: &str) -> String {
+    format!("{}{}", legacy_blob_prefix(repository_id, kind), sha256)
+}
+
+fn blob_logical_path_for_version(
+    repository_id: &str,
+    kind: ArchiveKind,
+    sha256: &str,
+    format_version: u16,
+) -> String {
+    if format_version == LEGACY_ARCHIVE_FORMAT_VERSION {
+        legacy_blob_logical_path(repository_id, kind, sha256)
+    } else {
+        blob_logical_path(repository_id, kind, sha256)
+    }
+}
+
 fn manifest_logical_path(repository_id: &str, kind: ArchiveKind, snapshot_id: &str) -> String {
     format!(
-        "gitmanager/repositories/{repository_id}/{}/snapshots/{snapshot_id}.json",
+        "gitm.metadata/repositories/{repository_id}/{}/snapshots/{snapshot_id}.json",
         kind.as_str()
     )
 }
 
 fn index_logical_path(repository_id: &str, kind: ArchiveKind) -> String {
-    format!("gitmanager/repositories/{repository_id}/{}/index.json", kind.as_str())
+    format!("gitm.metadata/repositories/{repository_id}/{}/index.json", kind.as_str())
+}
+
+fn legacy_index_logical_path(logical_path: &str) -> Option<String> {
+    logical_path
+        .strip_prefix("gitm.metadata/")
+        .map(|suffix| format!("gitmanager/{suffix}"))
 }
 
 fn local_index_path(root: &Path, repository_id: &str, kind: ArchiveKind) -> PathBuf {
@@ -1419,8 +1455,14 @@ pub fn sync_archive_cloud_storage(archive_root: Option<&str>) -> Result<String, 
 }
 
 fn read_index(path: &Path, store: &CloudNodeStore, logical_path: &str) -> Result<ArchiveIndex, String> {
-    let cloud_bytes = store.read_logical_file(logical_path, MAX_INDEX_BYTES)
+    let mut cloud_bytes = store.read_logical_file(logical_path, MAX_INDEX_BYTES)
         .map_err(|error| format!("Could not recover archive index from Cloud Node: {error}"))?;
+    if cloud_bytes.is_none() {
+        if let Some(legacy_path) = legacy_index_logical_path(logical_path) {
+            cloud_bytes = store.read_logical_file(&legacy_path, MAX_INDEX_BYTES)
+                .map_err(|error| format!("Could not recover legacy archive index from Cloud Node: {error}"))?;
+        }
+    }
     let bytes = if let Some(bytes) = cloud_bytes {
         bytes
     } else if path.is_file() {
@@ -1456,7 +1498,10 @@ fn read_manifest(store: &CloudNodeStore, snapshot: &ArchiveSnapshot) -> Result<S
 }
 
 fn validate_manifest(manifest: &SnapshotManifest, snapshot: &ArchiveSnapshot) -> Result<(), String> {
-    if manifest.format_version != ARCHIVE_FORMAT_VERSION
+    if !matches!(
+        manifest.format_version,
+        LEGACY_ARCHIVE_FORMAT_VERSION | ARCHIVE_FORMAT_VERSION
+    )
         || manifest.repository_id != snapshot.repository_id
         || manifest.snapshot_id != snapshot.id
         || manifest.kind != snapshot.kind
@@ -1481,7 +1526,12 @@ fn validate_manifest(manifest: &SnapshotManifest, snapshot: &ArchiveSnapshot) ->
         {
             return Err(format!("Restore-point manifest contains a secret or restricted path: {}", file.relative_path));
         }
-        let expected = blob_logical_path(&snapshot.repository_id, snapshot.kind, &file.content_sha256);
+        let expected = blob_logical_path_for_version(
+            &snapshot.repository_id,
+            snapshot.kind,
+            &file.content_sha256,
+            manifest.format_version,
+        );
         if file.blob_logical_path != expected {
             return Err(format!("Restore-point manifest has an invalid content address: {}", file.relative_path));
         }
@@ -2196,5 +2246,42 @@ mod tests {
         assert!(is_default_secret_path(Path::new("nested/.env.production")));
         assert!(is_default_secret_path(Path::new(".ssh/id_ed25519")));
         assert!(!is_default_secret_path(Path::new(".env.example")));
+    }
+}
+
+#[cfg(test)]
+mod logical_namespace_tests {
+    use super::*;
+
+    #[test]
+    fn gitmanager_objects_use_separate_gitm_namespaces() {
+        let repository_id = "repository-id";
+        let digest = "a".repeat(64);
+
+        assert!(blob_logical_path(repository_id, ArchiveKind::Local, &digest)
+            .starts_with("gitm.archives/"));
+        assert!(manifest_logical_path(repository_id, ArchiveKind::Local, "snapshot-1")
+            .starts_with("gitm.metadata/"));
+        assert!(index_logical_path(repository_id, ArchiveKind::Remote)
+            .starts_with("gitm.metadata/"));
+        assert_eq!(
+            blob_logical_path_for_version(
+                repository_id,
+                ArchiveKind::Local,
+                &digest,
+                LEGACY_ARCHIVE_FORMAT_VERSION,
+            ),
+            legacy_blob_logical_path(repository_id, ArchiveKind::Local, &digest)
+        );
+    }
+
+    #[test]
+    fn current_index_key_can_derive_the_legacy_key() {
+        let current = index_logical_path("repository-id", ArchiveKind::Remote);
+        assert_eq!(
+            legacy_index_logical_path(&current).as_deref(),
+            Some("gitmanager/repositories/repository-id/remote/index.json")
+        );
+        assert!(legacy_index_logical_path("other/path").is_none());
     }
 }
