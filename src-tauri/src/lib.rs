@@ -511,8 +511,8 @@ fn normalize_external_url(raw_url: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn open_external_url(raw_url: String) -> Result<(), String> {
-    let url = normalize_external_url(&raw_url)?;
+fn open_external_url(url: String) -> Result<(), String> {
+    let url = normalize_external_url(&url)?;
 
     #[cfg(target_os = "windows")]
     {
