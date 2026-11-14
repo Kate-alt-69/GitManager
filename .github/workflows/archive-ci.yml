@@ -48,6 +48,9 @@ jobs:
       - name: Check the desktop backend and all sidecar dependencies
         run: cargo check --locked --workspace --all-targets
 
+      - name: Test every optional Cloud Node capability
+        run: cargo test --locked -p cloud-node --all-features --all-targets
+
       - name: Check frontend JavaScript syntax
         uses: actions/setup-node@v4
         with:
