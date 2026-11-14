@@ -18,7 +18,7 @@ client = ["dep:reqwest", "dep:tokio-util"]
 # Ed25519 authentication server is available to RBE consumers but stays
 # opt-in so desktop builds do not compile server-only crypto code.
 server = ["dep:ed25519-dalek"]
- local-sync = []
+local-sync = []
  registry-ingest = ["client"]
  journal-ingest = ["dep:storage-sync-journal"]
 
