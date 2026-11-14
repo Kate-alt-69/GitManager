@@ -1553,7 +1553,10 @@ mod tests {
         };
         perform_fast_forward_update(&root, &state).unwrap();
         assert_eq!(repository.head().unwrap().target(), Some(second));
-        assert_eq!(std::fs::read_to_string(root.join("README.md")).unwrap(), "second\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("README.md")).unwrap().replace("\r\n", "\n"),
+            "second\n"
+        );
         drop(repository);
         let _ = std::fs::remove_dir_all(root);
     }
