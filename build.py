@@ -218,31 +218,115 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
 
 
 def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
-    """Count unique normal/build Cargo packages in the complete workspace graph."""
-    command = ["cargo"]
-    if toolchain_arg:
-        command.append(toolchain_arg)
-    command.extend([
-        "tree", "--workspace", "--edges", "normal,build",
-        "--prefix", "none", "--format", "{p}",
-    ])
-    code, output, error = run_capture(command, cwd=project_root)
-    if code != 0:
-        log_warn(f"Could not measure the Cargo dependency graph: {error or code}")
+    """Count the actual build graphs for the app and its two packaged sidecars.
+
+    Cargo's progress bar reports compilation units (including build scripts and
+    proc-macro targets), not unique crates. This report uses package-scoped
+    normal/build dependency graphs, never the entire workspace.
+    """
+    try:
+        target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+        if not target_triple:
+            target_triple = resolve_rust_target_triple(toolchain_arg)
+    except RuntimeError as error:
+        log_warn(f"Could not determine target for the Cargo dependency audit: {error}")
         return None
 
-    packages = set()
-    for line in output.splitlines():
-        value = line.strip()
-        if re.match(r"^[A-Za-z0-9_-]+ v[0-9]", value):
-            packages.add(value)
+    command_prefix = ["cargo"]
+    if toolchain_arg:
+        command_prefix.append(toolchain_arg)
 
-    count = len(packages)
-    if count < 500:
-        log_ok(f"Workspace dependency graph: {count} unique crates (target: under 500).")
-    else:
-        log_warn(f"Workspace dependency graph: {count} unique crates; the target is under 500.")
-    return count
+    package_graphs: Dict[str, set] = {}
+    for package in ("git-manager", "gitm-cli", "gitmanager-setup"):
+        command = command_prefix + [
+            "tree",
+            "--package", package,
+            "--edges", "normal,build",
+            "--target", target_triple,
+            "--prefix", "none",
+            "--format", "{p}",
+        ]
+        code, output, error = run_capture(command, cwd=project_root)
+        if code != 0:
+            log_warn(f"Could not measure the {package} dependency graph: {error or code}")
+            continue
+
+        packages = {
+            line.strip()
+            for line in output.splitlines()
+            if re.match(r"^[A-Za-z0-9_-]+ v[0-9]", line.strip())
+        }
+        package_graphs[package] = packages
+        log_info(f"{package}: {len(packages)} unique normal/build packages for {target_triple}.")
+
+    app_count = len(package_graphs.get("git-manager", set()))
+    sidecar_packages = (
+        package_graphs.get("gitm-cli", set())
+        | package_graphs.get("gitmanager-setup", set())
+    )
+    complete_build_packages = set().union(*package_graphs.values()) if package_graphs else set()
+
+    if app_count:
+        if app_count < 500:
+            log_ok(f"GitManager app graph: {app_count} unique packages (target: under 500).")
+        else:
+            log_warn(
+                f"GitManager app graph: {app_count} unique packages; "
+                "the under-500 target is not met yet."
+            )
+    if sidecar_packages:
+        log_info(f"Packaged sidecar graphs: {len(sidecar_packages)} unique packages.")
+    if complete_build_packages:
+        log_info(
+            f"All requested build targets together: {len(complete_build_packages)} "
+            "unique packages (not Cargo compilation units)."
+        )
+    return app_count or None
+
+
+def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
+    """Create a temporary Tauri signing overlay only when a real signer is configured."""
+    if platform.system() != "Windows":
+        return None
+
+    thumbprint = re.sub(r"\\s", "", os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "")).upper()
+    if not thumbprint:
+        log_info("No Windows signing certificate configured; Tauri will produce an unsigned build.")
+        return None
+    if not re.fullmatch(r"[A-F0-9]{40}", thumbprint):
+        log_err("WINDOWS_SIGNING_THUMBPRINT must be a 40-character SHA-1 thumbprint.")
+        return None
+
+    sign_script = project_root / "tools" / "sign_windows_file.ps1"
+    if not sign_script.is_file():
+        log_err(f"Windows signing script is missing: {sign_script}")
+        return None
+
+    config_path = project_root / "target" / "build-config" / "tauri.windows.signing.conf.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    signing_config = {
+        "bundle": {
+            "windows": {
+                "signCommand": {
+                    "cmd": "powershell.exe",
+                    "args": [
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(sign_script.resolve()),
+                        "-FilePath",
+                        "%1",
+                    ],
+                }
+            }
+        }
+    }
+    config_path.write_text(json.dumps(signing_config, indent=2) + "\\n", encoding="utf-8")
+    log_ok("Enabled Tauri's custom signing command because a Windows certificate is configured.")
+    return config_path
 
 
 def sanitize_tauri_v2_config(project_root: Path) -> None:
@@ -622,6 +706,13 @@ def run_build_or_dev(
             cmd.extend(["tauri", "build"])
             if not release:
                 cmd.append("--debug")
+            elif platform.system() == "Windows":
+                signing_config = prepare_windows_tauri_signing_config(project_root)
+                if signing_config is not None:
+                    cmd.extend(["--config", str(signing_config.resolve())])
+                elif os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
+                    log_err("A Windows signing thumbprint was provided, but the signing config could not be prepared.")
+                    return 1
         log_info(f"Running Pure-Rust Tauri CLI: {' '.join(cmd)}")
         rc = subprocess.call(cmd, cwd=str(src_tauri_dir))
         if rc != 0 or mode != "build":
