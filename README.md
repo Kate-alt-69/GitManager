@@ -207,7 +207,7 @@ installer, run `py build.py prepare-cloud-node`.
 
 The ZIP contains the official standalone RBE `cloud_node` binaries for Windows
 x64, Linux x64, Linux ARM64, macOS Intel and macOS Apple Silicon, plus
-`setup.py`, the RBE Apache 2.0 license, provenance and SHA-256 manifest.
+`setup.py`, both GitManager and RBE Apache 2.0 licenses, provenance and SHA-256 manifest.
 GitManager downloads all five upstream release archives even when the desktop
 application itself is being built for only one OS. It verifies both GitHub's
 Release asset digests and the RBE `SHA256SUMS` file, then extracts only the
