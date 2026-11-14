@@ -190,55 +190,41 @@ The setup finish screen offers **Continue using GitManager** (launch the app) an
 
 Release builds use size-focused Cargo settings (size optimization, thin LTO, eight codegen units and symbol stripping) to balance binary size and parallel build time. The build script reports separate target-specific dependency graphs for `git-manager`, `gitm-cli` and `gitmanager-setup`, plus the deduplicated union. It counts normal and build dependencies for each requested target, not every workspace member. The under-500 target applies to the desktop app graph, not the whole workspace. Cargo's `541/542`-style progress indicator is a build-progress total, not a count of distinct dependency package names; use the `GitManager app graph` report when comparing against the target. The Tauri signing overlay is created only when a valid Windows signing thumbprint is configured; otherwise local and CI builds remain intentionally unsigned without invoking SignTool.
 
-GitManager's desktop application does **not** embed or bundle the standalone `cloud_node` executable. Its archive engine links only the Cloud Node client/storage APIs needed for local archive operations; the RBE server process remains a separate deployment on the RBE host. The full server-capable Cloud Node binary is distributed in its own portable deployment ZIP, fetched from the official RBE Release and verified before packaging.
+GitManager's desktop application does **not** embed the standalone RBE runtime. Its archive engine links only the Cloud Node storage/provider APIs needed for local and remote archive operations. A separate NAS/remote-machine bootstrap ZIP provisions the full RBE runtime when installed on that machine.
 
+## 7. Portable RBE node deployment
 
-## 7. Portable RBE Cloud Node deployment
+Every normal \`py build.py\` / \`python build.py build\` run also creates a small bootstrap ZIP under \`target/deployment/\`:
 
-Every normal `py build.py` / `python build.py build` run also creates a separate
-all-platform ZIP under `target/deployment/`:
+\`\`\`text
+GitManager-Cloud-Node-Setup.zip
+\`\`\`
 
-```text
-GitManager-Cloud-Node-Setup-rbe-bin-v0.1.0-build.11.1.zip
-```
+To build only this package without a Rust toolchain or desktop installer, run:
 
-To build only this deployment package without a Rust toolchain or desktop
-installer, run `py build.py prepare-cloud-node`.
+\`\`\`powershell
+py build.py prepare-cloud-node
+\`\`\`
 
-The ZIP contains the official standalone RBE `cloud_node` binaries for Windows
-x64, Linux x64, Linux ARM64, macOS Intel and macOS Apple Silicon, plus
-`setup.py`, both GitManager and RBE Apache 2.0 licenses, provenance and SHA-256 manifest.
-GitManager downloads all five upstream release archives even when the desktop
-application itself is being built for only one OS. It verifies both GitHub's
-Release asset digests and the RBE `SHA256SUMS` file, then extracts only the
-root-level `cloud_node` executable from each archive. No RBE backend,
-Container, Service or unrelated runtime binary is put in the deployment ZIP.
+The ZIP contains \`setup.py\`, \`manifest.json\`, starter \`settings.json\` and \`setting.node.cn.json\`, the RBE \`api/\` route files, and the Apache-2.0 license/notice files. **It deliberately contains no RBE executables.**
 
-On the destination computer, extract the ZIP and run `py setup.py` on Windows
-or `python3 setup.py` on Linux/macOS. Python 3.9+ is required; the target
-machine does not need Rust, Cargo, Node.js, npm or an internet connection.
-The script detects the host OS/architecture, verifies its bundled binary,
-creates a separate node identity/private key/settings, asks which local folder
-to watch via RBE's `localSync.directory`, validates the settings with the binary,
-and offers a per-user background service (Task Scheduler, systemd --user or
-LaunchAgent). The Cloud Node's internal `storageRoot` and watched folder are
-kept separate. The current RBE localSync scanner has no ignore-file/secret-file
-exclusion, so setup warns against selecting home folders, whole drives or
-folders containing credentials/private keys and requires explicit confirmation.
-It never deletes an existing Cloud Node store.
+On the destination machine, extract the ZIP and run \`py setup.py\` on Windows or \`python3 setup.py\` on Linux/macOS. Python 3.9+ and network access are required there. The script detects the host OS/architecture, queries the official RBE latest stable release, downloads only the matching platform archive, verifies the GitHub Release SHA-256 digest and the corresponding \`SHA256SUMS\` entry, and safely installs the complete runtime:
 
-The node initiates authenticated outbound synchronization to the configured
-RBE backend. Setup creates a public peer-registration JSON object that the RBE
-administrator adds to the backend's `replication.targets`; private keys stay
-on their respective machines. See
-[the Cloud Node deployment guide](tools/cloud-node-deployment/README.md),
-[RBE Cloud Node documentation](https://github.com/Kastrick8/RBE/blob/main/doc/cloud-node.md),
-and [the official RBE binary release](https://github.com/Kastrick8/RBE/releases/tag/rbe-bin-v0.1.0).
+- \`backend(.exe)\` — RBE API backend
+- \`cloud_node(.exe)\` — Cloud Node storage and peer/provider client
+- \`dep/container(.exe)\` and \`dep/service(.exe)\` — RBE runtime dependencies
+- \`build-info.json\` — release/build provenance
+- \`api/\` — the included \`.route\` files copied beside the backend
 
-For CI, the five-target ZIP is built once by the separate
-`cloud-node-deployment` job and uploaded as the
-`gitmanager-cloud-node-deployment` artifact. It is not duplicated inside the
-Windows, Linux or macOS GitManager installers.
+The script preserves existing configuration, keys, storage and API routes; it does not delete user data or overwrite an existing settings file. It creates a protected Cloud Node private key and separate \`node-registration.json\` with the public node identity. The generated start script sets the key/config environment variables and starts \`backend\` with the selected \`settings.json\`. Initialize RBE's administrator account with \`backend --init-admin\` before starting the normal backend runtime.
+
+The starter backend API binds to \`0.0.0.0:8080\` by default. After startup, the native \`/health\` endpoint and bundled \`/api/health\` route provide basic status information. The installer does not open firewall ports or configure TLS; restrict the service with the host firewall and configure HTTPS before exposing it beyond a trusted LAN.
+
+**Current peer-server limitation:** the current public RBE release wires the authenticated Cloud Node receiver into the backend's temporary maintenance/boot-recovery listener. It does not yet provide a permanent LAN peer listener with an interactive pairing endpoint. The RBE peer URL validator also requires HTTPS for non-loopback hosts. Installing the complete backend/runtime therefore provides the normal API/status service and the required runtime layout, but a persistent GitManager-to-NAS pairing/sync session still needs a permanent receiver and pairing flow.
+
+GitManager's planned namespace separation can use logical prefixes such as \`gitm.archives\`, \`gitm.metadata\` and \`gitm.recovery\`. GitManager's background worker must explicitly write those objects through the Cloud Node storage API or peer/provider sync; adding these names to the settings file alone does not move application data.
+
+For CI, the lightweight ZIP is built once by the \`cloud-node-deployment\` job and uploaded as the \`gitmanager-cloud-node-deployment\` artifact. The package is not duplicated inside Windows, Linux or macOS GitManager installers. See [the deployment guide](tools/cloud-node-deployment/README.md), [RBE Cloud Node documentation](https://github.com/Kastrick8/RBE/blob/main/doc/cloud-node.md), [RBE API route documentation](https://github.com/Kastrick8/RBE/blob/main/api/README.md), and [the official RBE binary release](https://github.com/Kastrick8/RBE/releases/tag/rbe-bin-v0.1.0).
 
 ## 8. Repository Archives & Native `gitm` CLI
 
