@@ -155,7 +155,7 @@ The build also creates a separate first-run helper alongside the native binaries
 
     target/release/GitManager-Setup.exe
 
-That helper is bundled into the installed app as a Tauri sidecar. The first time `git-manager.exe` starts, it hands off to the helper, which opens the shared onboarding UI. The helper is built for every supported OS: `GitManager-Setup.exe` on Windows and `GitManager-Setup` on Linux/macOS. The same first-run flow asks for the main repository folder, supports additional scan roots, and then continues into GitManager. If the sidecar is unavailable in a development build, the in-process wizard remains as a fallback.
+That helper is bundled into the installed app as a Tauri sidecar. It is a tiny, dependency-free Rust launcher; it does not replace or duplicate Tauri. On first launch, the main Tauri app hands its executable path to the helper. The helper relaunches that same Tauri app with `--setup`, so the actual workspace wizard is still rendered by GitManager's Tauri UI/runtime. The helper is built for every supported OS: `GitManager-Setup.exe` on Windows and `GitManager-Setup` on Linux/macOS. The same first-run flow asks for the main repository folder, supports additional scan roots, and then continues into GitManager. If the sidecar is unavailable in a development build, the in-process wizard remains as a fallback.
 
 The Windows installer copies the private CPython runtime after application files have been extracted. It lives under the current user's GitManager data directory and is used only by the bundled Developer Cleaner. It does not install Python machine-wide or modify PATH.
 
@@ -188,7 +188,7 @@ On Linux and macOS, the same folder layout is rooted in the platform's user-loca
 
 The setup finish screen offers **Continue using GitManager** (launch the app) and a separate desktop-shortcut option. Uninstalling the application does not target the config/data siblings.
 
-Release builds use size-focused Cargo settings (size optimization, LTO, one codegen unit and symbol stripping), and Tokio is built with only the runtime/time features used by this application. This is an optimization baseline; final installer sizes must still be measured from actual Windows/Linux/macOS release artifacts.
+Release builds use size-focused Cargo settings (size optimization, thin LTO, eight codegen units and symbol stripping) to balance binary size and parallel build time. Each build also reports the number of unique normal/build crates in the workspace; the optimization target is fewer than 500. This is an optimization baseline; final installer sizes must still be measured from actual Windows/Linux/macOS release artifacts.
 
 
 ## 8. Repository Archives & Native `gitm` CLI
