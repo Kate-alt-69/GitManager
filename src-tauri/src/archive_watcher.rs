@@ -50,6 +50,12 @@ impl Drop for WatcherRunGuard {
     fn drop(&mut self) {
         if WATCH_GENERATION.load(Ordering::SeqCst) == self.generation {
             WATCHER_RUNNING.store(false, Ordering::SeqCst);
+            if let Some(slot) = WATCHER_CONFIG.get() {
+                *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            }
+            if let Some(slot) = WATCHER_LEASE.get() {
+                *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            }
         }
     }
 }
@@ -272,13 +278,21 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
                 }
             };
 
+            let mut registered_targets = 0usize;
             for (path, mode) in watch_targets {
-                if let Err(error) = watcher.watch(&path, mode) {
-                    eprintln!(
-                        "GitManager archive watcher: could not register {}: {error}",
-                        path.display()
-                    );
+                match watcher.watch(&path, mode) {
+                    Ok(()) => registered_targets += 1,
+                    Err(error) => {
+                        eprintln!(
+                            "GitManager archive watcher: could not register {}: {error}",
+                            path.display()
+                        );
+                    }
                 }
+            }
+            if registered_targets == 0 {
+                eprintln!("GitManager archive watcher: no filesystem watch targets could be registered.");
+                return;
             }
 
             let (capture_done_sender, capture_done_receiver) = mpsc::channel::<usize>();
@@ -367,6 +381,12 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
         });
     if let Err(error) = spawned {
         WATCHER_RUNNING.store(false, Ordering::SeqCst);
+        if let Some(slot) = WATCHER_CONFIG.get() {
+            *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+        if let Some(slot) = WATCHER_LEASE.get() {
+            *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
         eprintln!("GitManager archive watcher: could not start watcher thread: {error}");
         return false;
     }
@@ -550,6 +570,8 @@ mod tests {
         FileExt::unlock(&first).expect("release first watcher lease");
         second.try_lock_exclusive().expect("second watcher can acquire released lease");
         FileExt::unlock(&second).expect("release second watcher lease");
+        drop(first);
+        drop(second);
         let _ = fs::remove_dir_all(root);
     }
 }
