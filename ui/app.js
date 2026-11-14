@@ -1009,9 +1009,12 @@ function renderRepositoryList() {
 }
 
 function repositoryFullName(repo) {
-  const remote = (repo.remotes || []).find((item) => item.name === "origin") || (repo.remotes || [])[0];
-  if (remote && remote.owner && remote.repo_slug) return remote.owner + "/" + remote.repo_slug;
-  return (repo.owner_name || "Local") + "/" + repo.name;
+  const remotes = Array.isArray(repo.remotes) ? repo.remotes : [];
+  const remote = remotes.find((item) => item.name === "origin") || remotes[0];
+  if (repo.has_remote && remote && remote.owner && remote.repo_slug) {
+    return remote.owner + "/" + remote.repo_slug;
+  }
+  return repo.name || "Unnamed repository";
 }
 
 function latestCommitFor(repo) {
@@ -1299,16 +1302,32 @@ function renderRepositoryDashboard(container) {
   const roots = appPreferences && Array.isArray(appPreferences.scanRoots) ? appPreferences.scanRoots : [];
 
   if (allRepositories.length === 0) {
-    container.innerHTML =
-      '<section class="dashboard-view">' +
-        '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2><p>Your local Git projects will appear here.</p></div>' +
-        '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
-        '<div class="dashboard-empty ' + (repositoryScanInProgress ? 'dashboard-scan-empty' : '') + '">' +
-          '<strong>' + (repositoryScanInProgress ? 'Scanning your folders…' : 'No repositories indexed yet') + '</strong>' +
-          '<span>' + (repositoryScanInProgress ? 'GitManager is indexing Git folders in the background. You can keep using the app while this runs.' : 'Add a project folder or choose the recommended development folders to begin.') + '</span>' +
-          (repositoryScanInProgress ? '<span class="dashboard-scan-progress" aria-hidden="true"><i></i><i></i><i></i></span>' : '') +
-        '</div>' +
-      '</section>';
+    if (repositoryScanInProgress) {
+      const skeletonCards = Array.from({ length: 6 }, (_, index) =>
+        '<article class="repo-card repo-card-skeleton" aria-hidden="true" style="--card-index:' + index + '">' +
+          '<div class="repo-skeleton-top"><span class="repo-skeleton-avatar"></span><span class="repo-skeleton-lines"><i></i><i></i></span><span class="repo-skeleton-pill"></span></div>' +
+          '<div class="repo-skeleton-divider"></div>' +
+          '<div class="repo-skeleton-line repo-skeleton-line-wide"></div>' +
+          '<div class="repo-skeleton-line repo-skeleton-line-short"></div>' +
+          '<div class="repo-skeleton-bottom"><i></i><i></i></div>' +
+        '</article>'
+      ).join("");
+      container.innerHTML =
+        '<section class="dashboard-view">' +
+          '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2><p>Discovering your Git projects and reading their metadata…</p></div>' +
+          '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
+          '<div class="dashboard-stats dashboard-stats-loading"><div><strong>—</strong><span>Projects</span></div><div><strong>—</strong><span>Dependencies</span></div><div><strong>—</strong><span>Remote-linked</span></div></div>' +
+          '<div class="repo-card-grid repo-skeleton-grid">' + skeletonCards + '</div>' +
+          '<p class="dashboard-scan-caption"><span class="dashboard-scan-progress" aria-hidden="true"><i></i><i></i><i></i></span> Scanning configured folders in the background. GitManager remains usable while indexing runs.</p>' +
+        '</section>';
+    } else {
+      container.innerHTML =
+        '<section class="dashboard-view">' +
+          '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2><p>Your local Git projects will appear here.</p></div>' +
+          '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
+          '<div class="dashboard-empty"><strong>No repositories indexed yet</strong><span>Add a project folder or choose the recommended development folders to begin.</span></div>' +
+        '</section>';
+    }
     const setup = document.getElementById("btn-dashboard-setup");
     if (setup) setup.addEventListener("click", () => openScanSetup(false));
     return;
@@ -1322,25 +1341,38 @@ function renderRepositoryDashboard(container) {
     const commitSha = commit ? commit.short_oid : "";
     const commitDate = commit ? commit.date_iso : "";
     const branchCount = (repo.branches || []).length;
+    const tagCount = (repo.commits || []).reduce((total, item) => total + (Array.isArray(item.tags) ? item.tags.length : 0), 0);
+    const commitCount = Number(repo.total_commits_loaded || (repo.commits || []).length);
     const isDependency = dependencyRepoIds.has(repo.id);
     const provider = repo.has_remote ? String(repo.primary_provider || "remote").toUpperCase() : "LOCAL";
     const dirty = Number(repo.dirty_files_count || 0);
-    return '<article class="repo-card">' +
-      '<button type="button" class="repo-card-open" data-dashboard-repo-id="' + escapeHtml(repo.id) + '">' +
+    const fullName = repositoryFullName(repo);
+    const displayName = repo.has_remote ? fullName : (repo.name || fullName);
+    const displayOwner = commit && commit.author_name ? commit.author_name : "No commits yet";
+    const remoteWebUrl = (repo.remotes || []).find((item) => item.name === "origin")?.web_url ||
+      (repo.remotes || [])[0]?.web_url || "";
+    const locationLabel = repo.path || repo.git_dir || "Repository path unavailable";
+    return '<article class="repo-card" style="--card-index:' + Math.min(index, 10) + '">' +
+      '<button type="button" class="repo-card-open" data-dashboard-repo-id="' + escapeHtml(repo.id) + '" aria-label="Open ' + escapeHtml(displayName) + '">' +
         '<span class="repo-card-top">' +
           '<img class="repo-card-icon" src="' + escapeHtml(icon) + '" alt="" data-fallback="' + escapeHtml(fallback) + '" />' +
-          '<span class="repo-card-heading"><strong>' + escapeHtml(repo.name || repositoryFullName(repo)) + '</strong><small>' +
-            escapeHtml(repositoryFullName(repo)) + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
+          '<span class="repo-card-heading"><strong>' + escapeHtml(displayName) + '</strong><small>' +
+            (repo.has_remote ? escapeHtml(fullName) : 'Local repository') + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
           '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(provider) + '</span>' +
         '</span>' +
-        '<span class="repo-card-commit"><strong>' + escapeHtml(repo.owner_name || "Local repository") + '</strong>' +
+        '<span class="repo-card-commit"><strong>' + escapeHtml(displayOwner) + '</strong>' +
           '<small title="' + escapeHtml(commitTitle) + '">' + escapeHtml(commitTitle) + '</small>' +
           '<small class="repo-card-commit-meta">' + escapeHtml(commitSha + (commitDate ? " · " + commitDate : "")) + '</small></span>' +
         '<span class="repo-card-status-row"><span class="repo-card-branch">⑂ ' + escapeHtml(repo.current_branch || "Detached HEAD") + '</span>' +
           '<span class="repo-card-ci"><span class="ci-state-dot ci-neutral" data-ci-dot-repo-id="' + escapeHtml(repo.id) + '" aria-hidden="true"></span>' +
           '<span class="dashboard-ci ci-neutral" data-ci-repo-id="' + escapeHtml(repo.id) + '" aria-label="CI status">Checking CI…</span></span></span>' +
-        '<span class="repo-card-meta"><span>' + branchCount + ' branches</span>' +
+        '<span class="repo-card-meta"><span>' + branchCount + ' branches</span><span>' + tagCount + ' tags</span>' +
           '<span class="' + (dirty ? 'repo-dirty' : 'repo-clean') + '">' + (dirty ? dirty + ' changed' : 'Working tree clean') + '</span></span>' +
+        '<span class="repo-card-hover-details" aria-hidden="true">' +
+          '<span class="repo-card-hover-row"><span>Location</span><code title="' + escapeHtml(locationLabel) + '">' + escapeHtml(locationLabel) + '</code></span>' +
+          '<span class="repo-card-hover-row"><span>History</span><strong>' + escapeHtml(String(commitCount)) + ' commits loaded</strong></span>' +
+          '<span class="repo-card-hover-row"><span>Remote</span><strong>' + escapeHtml(remoteWebUrl || (repo.has_remote ? "Remote configured" : "No remote configured")) + '</strong></span>' +
+        '</span>' +
       '</button>' +
       '<details class="repo-ci-details" data-ci-expand data-repo-id="' + escapeHtml(repo.id) + '">' +
         '<summary><span class="ci-detail-count" data-ci-count-repo-id="' + escapeHtml(repo.id) + '">View individual checks</span></summary>' +
