@@ -244,7 +244,7 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
             "--edges", "normal,build",
             "--target", target_triple,
             "--prefix", "none",
-            "--format", "{p}",
+            "--format", "{p} [{s}]",
         ]
         code, output, error = run_capture(command, cwd=project_root)
         if code != 0:
@@ -254,7 +254,7 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
         packages = {
             line.strip()
             for line in output.splitlines()
-            if re.match(r"^[A-Za-z0-9_-]+ v[0-9]", line.strip())
+            if re.match(r"^.+ v[0-9]", line.strip())
         }
         package_graphs[package] = packages
         log_info(f"{package}: {len(packages)} unique normal/build packages for {target_triple}.")
