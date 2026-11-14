@@ -1,0 +1,7 @@
+GitManager Cloud Node deployment contains the standalone RBE Cloud Node executable.
+
+Upstream project: https://github.com/Kastrick8/RBE
+Upstream license: Apache License 2.0 (see LICENSE-RBE.txt)
+Upstream release and exact asset SHA-256 values: manifest.json
+
+GitManager downloads the official RBE per-platform runtime archives, verifies their archive SHA-256 values, and extracts only the root-level cloud_node/cloud_node.exe file. The RBE backend, Container, Service, and unrelated runtime files are not redistributed in this ZIP.
