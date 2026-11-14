@@ -2578,3 +2578,26 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
 @media (prefers-reduced-motion: reduce) {
   .repo-card, .repo-card-hover-details { animation: none; transition: none; }
 }
+
+
+/* Application version identity. */
+.brand-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.app-version-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  color: #8b949e;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  font: 9px/1.4 var(--font-mono);
+  white-space: nowrap;
+}
+.about-version-card { grid-column: 1 / -1; }
+.about-version-card .path-row { max-width: 360px; }
+.about-version-card .path-row code { color: #58a6ff; font-weight: 650; }
+.about-version-note { margin-top: 6px; color: #8b949e; font-size: 10px; }
+@media (max-width: 760px) {
+  .brand-title-row { gap: 6px; }
+  .app-version-badge { font-size: 8px; }
+}
