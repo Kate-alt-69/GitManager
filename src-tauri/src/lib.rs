@@ -9,6 +9,7 @@ pub mod watcher_service;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use serde::{Deserialize, Serialize};
 use git2::{Oid, Repository};
 use crate::process_utils::hidden_command;
@@ -492,6 +493,71 @@ async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, St
 #[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+/// Validate a repository web URL before opening it in the system browser.
+/// The WebView never receives the shell-open permission.
+fn normalize_external_url(raw_url: &str) -> Result<String, String> {
+    let mut url = url::Url::parse(raw_url.trim())
+        .map_err(|_| "The repository web URL is invalid.".to_string())?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err("Only HTTPS repository web URLs can be opened.".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Repository URLs containing embedded credentials cannot be opened.".to_string());
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
+#[tauri::command]
+fn open_external_url(raw_url: String) -> Result<(), String> {
+    let url = normalize_external_url(&raw_url)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| "Windows SystemRoot is unavailable.".to_string())?;
+        let executable = PathBuf::from(system_root).join("System32").join("rundll32.exe");
+        hidden_command(executable)
+            .arg("url.dll,FileProtocolHandler")
+            .arg(&url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Could not open repository website: {error}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        hidden_command("/usr/bin/open")
+            .arg(&url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Could not open repository website: {error}"))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        hidden_command("xdg-open")
+            .arg(&url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Could not open repository website: {error}"))?;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = url;
+        return Err("Opening external URLs is not supported on this platform.".to_string());
+    }
+
+    Ok(())
 }
 
 /// Report whether this process is the first-run setup companion.
@@ -1101,6 +1167,7 @@ pub fn run() {
             inspect_repository,
             detect_github_identity,
             get_app_version,
+            open_external_url,
             is_setup_mode,
             launch_first_run_setup,
             connect_git_account,
