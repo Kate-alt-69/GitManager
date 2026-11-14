@@ -167,12 +167,12 @@ async fn missing_directories_async(path: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(missing)
 }
 
-#[cfg(all(feature = "client", unix))]
+#[cfg(all(any(feature = "peer-client", feature = "provider-sync"), unix))]
 async fn sync_directory_async(path: &Path) -> io::Result<()> {
     tokio::fs::File::open(path).await?.sync_all().await
 }
 
-#[cfg(all(feature = "client", not(unix)))]
+#[cfg(all(any(feature = "peer-client", feature = "provider-sync"), not(unix)))]
 async fn sync_directory_async(_path: &Path) -> io::Result<()> {
     Ok(())
 }
