@@ -12,16 +12,22 @@ name = "cloud_node"
 path = "src/lib.rs"
 
 [features]
-default = ["client"]
-client = ["dep:reqwest", "dep:tokio-util", "dep:ed25519-dalek"]
-# GitManager's desktop/archive integration is a Cloud Node client. The
-# Ed25519 authentication server is available to RBE consumers but stays
-# opt-in so desktop builds do not compile server-only crypto code.
-server = ["dep:ed25519-dalek"]
+# Keep the core storage types lightweight. Consumers opt into the transport they use.
+default = []
+# Backwards-compatible umbrella feature for all Cloud Node client capabilities.
+client = ["peer-client", "provider-sync"]
+# Authenticated RBE node-to-node transport.
+peer-client = ["dep:reqwest", "dep:tokio-util", "peer-auth", "recovery"]
+peer-auth = ["dep:ed25519-dalek"]
+# Object-provider synchronization used by GitManager's repository archives.
+provider-sync = ["dep:reqwest", "dep:tokio-util", "recovery"]
+# Shared recovery receiver used by provider sync and peer/server transfers.
+recovery = []
+# Inbound RBE server; kept separate from GitManager's desktop archive client.
+server = ["peer-auth", "recovery"]
 local-sync = []
-registry-ingest = ["client"]
+registry-ingest = ["provider-sync", "dep:storage-sync-journal"]
 journal-ingest = ["dep:storage-sync-journal"]
-
 [dependencies]
 atomic-io = { path = "../atomic-io" }
 storage-sync-journal = { path = "../storage-sync-journal", optional = true }
