@@ -178,6 +178,12 @@ install/disable. Apply requires the exact `--confirm YES`; remote clean publishe
 a separate cleanup branch. The packaged Windows Python runtime is used when
 present; source checkouts require Python 3.10 or newer on PATH.
 
+The CLI also provides native `scan`, `inspect`, `status`, `log`,
+`branches`, `remotes`, and `update check|pull` commands. The cleaner is exposed
+through `gitm cleaner preview|apply|commit-clean|hook`; preview is read-only and
+applying repository/system cleanup requires explicit confirmation. `gitm
+update pull` only fast-forwards a clean, non-diverged worktree.
+
 The no-argument command opens a keyboard-driven TUI. It supports arrow keys,
 WASD, left/right navigation on wider terminals, Enter, Escape/Q, and optional
 SGR mouse selection. Its menu switches to two columns on wide terminals and

@@ -11,7 +11,7 @@ use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use git2::{BranchType, Direction, FetchOptions, Repository, Sort, StatusOptions};
+use git2::{BranchType, CheckoutBuilder, Direction, FetchOptions, Repository, ResetType, Sort, StatusOptions};
 use walkdir::WalkDir;
 use gitmanager_archive::{
     archive_cloud_storage_info, capture_repository, configure_archive_cloud_storage,
@@ -457,19 +457,22 @@ fn command_update(args: &[String]) -> Result<(), String> {
             if state.ahead > 0 {
                 return Err("Refusing to pull because local commits are not present on origin.".to_string());
             }
-            let output = std::process::Command::new("git")
-                .arg("-C").arg(&path)
-                .args(["pull", "--ff-only"])
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .output()
-                .map_err(|error| format!("Could not start Git for fast-forward pull: {error}. Install Git or update this repository manually."))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                return Err(if !stderr.is_empty() { stderr } else if !stdout.is_empty() { stdout } else { format!("Git pull exited with {}", output.status) });
-            }
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            println!("{}", if stdout.is_empty() { "Repository fast-forwarded successfully." } else { stdout.as_str() });
+            // remote_update_state has already fetched origin and verified that
+            // this branch can only move forward. Reset through libgit2 to avoid
+            // spawning an external Git process for the common fast-forward path.
+            let repository = Repository::open(&path)
+                .map_err(|error| format!("Could not reopen repository for fast-forward: {error}"))?;
+            let target = repository.find_object(state.remote_oid, None)
+                .map_err(|error| format!("Fetched origin commit is unavailable locally: {error}"))?;
+            let mut checkout = CheckoutBuilder::new();
+            checkout.safe();
+            repository.reset(&target, ResetType::Hard, Some(&mut checkout))
+                .map_err(|error| format!("Could not fast-forward to origin/{}: {error}", state.branch))?;
+            println!(
+                "Fast-forwarded {} to {}.",
+                state.branch,
+                &state.remote_oid.to_string()[..12]
+            );
             Ok(())
         }
         "--help" | "-h" | "help" => {
@@ -974,51 +977,64 @@ fn positional(args: &[String], index: usize) -> Option<&str> {
 
 fn command_help(command: &str) -> &'static str {
     match command {
-        "backup" | "snapshot" =>
-            "gitm backup [PATH] --kind local|remote [--archive-root PATH]\n\
-             Save a complete Local or Remote repository restore point.\n\
-             Local includes working-tree changes; Remote also includes reachable Git history.\n",
-        "backups" | "list" | "history" =>
-            "gitm backups [PATH] [--kind local|remote] [--archive-root PATH]\n\
-             List retained restore points (up to five per repository and archive type).\n",
-        "restore" =>
-            "gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n\
-             Verify and restore a selected point. Existing destinations are preserved before replacement.\n\
-             Without --yes, no destination changes are made.\n",
-        "scan" =>
-            "gitm scan [ROOT...] [--depth N] [--hidden] [--include-dependencies]\n\
-             Discover local repositories under supplied roots or common developer folders.\n",
-        "inspect" =>
-            "gitm inspect [PATH]\n\
-             Show repository identity, author, refs, remotes and worktree state.\n",
-        "update" =>
-            "gitm update check|pull [PATH]\n\\
-             Check origin ahead/behind counts or fast-forward a clean worktree.\n\\
-             Pull refuses dirty or diverged branches and never creates merge commits.\n",
-        "status" =>
-            "gitm status [PATH]\n\
-             Show the current branch, HEAD and working-tree changes.\n",
-        "log" | "history-commits" =>
-            "gitm log [PATH] [--limit N]\n\
-             Show recent commits (default 20, maximum 500).\n",
-        "branch" | "branches" =>
-            "gitm branches [PATH]\n\
-             List local and remote branches and mark the current branch.\n",
-        "remote" | "remotes" =>
-            "gitm remotes [PATH]\n\
-             Inspect remote names and credential-redacted fetch/push URLs.\n",
-        "cleaner" =>
-            "gitm cleaner preview|apply|commit-clean|hook [options]\n\\
-             Preview is read-only. Apply requires --confirm YES.\n\\
-             Uses the packaged Python runtime when available and the same cleaner rules as the desktop.\n",
-        "cloud" =>
-            "gitm cloud status|sync|configure|disable [options]\n\
-             Use status to inspect configuration, sync for an explicit network transfer,\n\
-             configure --file provider.json to set a provider, or disable to stop syncing.\n",
-        "tui" =>
-            "gitm tui [--repo PATH]\n\
-             Open the keyboard-driven archive dashboard. Use arrows/WASD, Enter, Esc/Q,\n\
-             left/right in wide terminals, or click when SGR mouse is supported.\n",
+        "backup" | "snapshot" => concat!(
+            "gitm backup [PATH] --kind local|remote [--archive-root PATH]\n",
+            "Save a complete Local or Remote repository restore point.\n",
+            "Local includes working-tree changes; Remote also includes reachable Git history.\n",
+        ),
+        "backups" | "list" | "history" => concat!(
+            "gitm backups [PATH] [--kind local|remote] [--archive-root PATH]\n",
+            "List retained restore points (up to five per repository and archive type).\n",
+        ),
+        "restore" => concat!(
+            "gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n",
+            "Verify and restore a selected point. Existing destinations are preserved before replacement.\n",
+            "Without --yes, no destination changes are made.\n",
+        ),
+        "scan" => concat!(
+            "gitm scan [ROOT...] [--depth N] [--hidden] [--include-dependencies]\n",
+            "Discover local repositories under supplied roots or common developer folders.\n",
+        ),
+        "inspect" => concat!(
+            "gitm inspect [PATH]\n",
+            "Show repository identity, author, refs, remotes and worktree state.\n",
+        ),
+        "update" => concat!(
+            "gitm update check|pull [PATH]\n",
+            "Check origin ahead/behind counts or fast-forward a clean worktree.\n",
+            "Pull refuses dirty or diverged branches and never creates merge commits.\n",
+        ),
+        "status" => concat!(
+            "gitm status [PATH]\n",
+            "Show the current branch, HEAD and working-tree changes.\n",
+        ),
+        "log" | "history-commits" => concat!(
+            "gitm log [PATH] [--limit N]\n",
+            "Show recent commits (default 20, maximum 500).\n",
+        ),
+        "branch" | "branches" => concat!(
+            "gitm branches [PATH]\n",
+            "List local and remote branches and mark the current branch.\n",
+        ),
+        "remote" | "remotes" => concat!(
+            "gitm remotes [PATH]\n",
+            "Inspect remote names and credential-redacted fetch/push URLs.\n",
+        ),
+        "cleaner" => concat!(
+            "gitm cleaner preview|apply|commit-clean|hook [options]\n",
+            "Preview is read-only. Apply requires --confirm YES.\n",
+            "Uses the packaged Python runtime when available and the same cleaner rules as the desktop.\n",
+        ),
+        "cloud" => concat!(
+            "gitm cloud status|sync|configure|disable [options]\n",
+            "Use status to inspect configuration, sync for an explicit network transfer,\n",
+            "configure --file provider.json to set a provider, or disable to stop syncing.\n",
+        ),
+        "tui" => concat!(
+            "gitm tui [--repo PATH]\n",
+            "Open the keyboard-driven archive dashboard. Use arrows/WASD, Enter, Esc/Q,\n",
+            "left/right in wide terminals, or click when SGR mouse is supported.\n",
+        ),
         _ => "Unknown command. Run gitm --help to list supported commands.\n",
     }
 }
@@ -1028,29 +1044,28 @@ fn print_command_help(command: &str) {
 }
 
 fn print_help() {
-    println!(
-        "GitManager · gitm — native repository and archive toolkit\n\
-         Usage:\n\
-           gitm                         Open the interactive TUI\n\
-           gitm backup [PATH] --kind local|remote [--archive-root PATH]\n\
-           gitm backups [PATH] [--kind local|remote] [--archive-root PATH]\n\
-           gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n\
-           gitm scan [ROOT...] [--depth N] [--hidden] [--include-dependencies]\n\
-           gitm inspect [PATH]\n\
-           gitm update check|pull [PATH]\n\\
-           gitm status [PATH]\n\
-           gitm log [PATH] [--limit N]\n\
-           gitm branches [PATH]\n\
-           gitm remotes [PATH]\n\
-           gitm cleaner preview|apply|commit-clean|hook [options]\n\\
-           gitm cloud status|sync|configure|disable [options]\n\
-           gitm tui [--repo PATH]\n\
-           gitm --help | --version\n\
-         \n\
-         Local Archive stores working files without .git. Remote Archive stores\n\
-         the Git repository metadata and working files. Secrets are excluded by\n\
-         default. Restore requires --yes before replacing an existing destination.\n"
-    );
+    println!("{}", concat!(
+        "GitManager · gitm — native repository and archive toolkit\n",
+        "Usage:\n",
+        "  gitm                         Open the interactive TUI\n",
+        "  gitm backup [PATH] --kind local|remote [--archive-root PATH]\n",
+        "  gitm backups [PATH] [--kind local|remote] [--archive-root PATH]\n",
+        "  gitm restore [PATH] --id ID [--kind local|remote] [--to PATH] [--archive-root PATH] --yes\n",
+        "  gitm scan [ROOT...] [--depth N] [--hidden] [--include-dependencies]\n",
+        "  gitm inspect [PATH]\n",
+        "  gitm update check|pull [PATH]\n",
+        "  gitm status [PATH]\n",
+        "  gitm log [PATH] [--limit N]\n",
+        "  gitm branches [PATH]\n",
+        "  gitm remotes [PATH]\n",
+        "  gitm cleaner preview|apply|commit-clean|hook [options]\n",
+        "  gitm cloud status|sync|configure|disable [options]\n",
+        "  gitm tui [--repo PATH]\n",
+        "  gitm --help | --version\n\n",
+        "Local Archive stores working files without .git. Remote Archive stores\n",
+        "the Git repository metadata and working files. Secrets are excluded by\n",
+        "default. Restore requires --yes before replacing an existing destination.\n",
+    ));
 }
 
 fn run_tui(repository: PathBuf) -> Result<(), String> {
@@ -1458,6 +1473,27 @@ mod tests {
             "cleaner".to_string(), "apply".to_string(), "--help".to_string()
         ]));
         assert!(!super::has_command_help_flag(&["backup".to_string(), ".".to_string()]));
+    }
+
+    #[test]
+    fn command_help_uses_clean_line_breaks_for_all_commands() {
+        for command in [
+            "backup", "backups", "restore", "scan", "inspect", "update",
+            "status", "log", "branches", "remotes", "cleaner", "cloud", "tui",
+        ] {
+            let help = super::command_help(command);
+            assert!(!help.contains("\\\n"), "command help for {command} has a stray continuation slash");
+            assert!(!help.is_empty());
+        }
+        assert!(super::command_help("update").contains("fast-forward"));
+        assert!(super::command_help("cleaner").contains("Preview is read-only"));
+    }
+
+    #[test]
+    fn update_pull_help_promises_only_safe_fast_forward_behavior() {
+        let help = super::command_help("update");
+        assert!(help.contains("fast-forward"));
+        assert!(help.contains("never creates merge commits"));
     }
 
     #[test]

@@ -202,4 +202,25 @@ provider status and offers an explicit Sync Now action. Provider secrets stay
 in OS environment variables. Google Drive/OneDrive desktop-sync folders can
 also be selected in Scan Setup as local archive destinations.
 
+### Native `gitm` command reference
+
+Run `gitm --help` for the top-level list or `gitm help COMMAND` for focused help.
+
+| Command | Purpose |
+| --- | --- |
+| `gitm` / `gitm tui` | Open the adaptive terminal dashboard. |
+| `gitm scan [ROOT...]` | Find local Git repositories under selected roots. |
+| `gitm inspect [PATH]` | Show repository metadata, refs, remotes, and worktree state. |
+| `gitm status [PATH]` | Show changed and untracked files. |
+| `gitm log [PATH] [--limit N]` | Read recent commits. |
+| `gitm branches [PATH]` / `gitm remotes [PATH]` | Inspect branches and credential-redacted remote URLs. |
+| `gitm update check [PATH]` | Compare the current branch with `origin`. |
+| `gitm update pull [PATH]` | Fast-forward a clean branch only; refuses dirty or diverged worktrees. |
+| `gitm backup [PATH] --kind local` | Save a Local Archive. |
+| `gitm backup [PATH] --kind remote` | Save a Remote Archive including reachable Git history. |
+| `gitm backups [PATH]` | List retained restore points. |
+| `gitm restore [PATH] --id ID --kind KIND --yes` | Restore a selected point after verification. |
+| `gitm cloud status|sync|configure|disable` | Inspect or explicitly synchronize Cloud Node storage. |
+| `gitm cleaner preview|apply|commit-clean|hook` | Use the same preview-first developer cleaner as the desktop. |
+
 See [docs/archive-storage.md](docs/archive-storage.md).
