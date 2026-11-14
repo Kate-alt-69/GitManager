@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
-use crate::client::{cached_resource_path, cleanup_outbound_cache, prepare_outbound_cache};
+use crate::outbound_cache::{cached_resource_path, cleanup_outbound_cache, prepare_outbound_cache};
 use crate::config::{validate_node_id, CloudNodeSettings, ProviderConflictPolicy};
 use crate::durable;
 use crate::format::BlobKind;
