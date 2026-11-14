@@ -505,13 +505,12 @@ fn is_setup_mode() -> bool {
 /// first-run wizard rather than leaving the user without onboarding.
 #[tauri::command]
 fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
-    let current_app = std::env::current_exe()
-        .map_err(|error| format!("Could not locate the running GitManager application: {error}"))?;
+    // Tauri places sidecars beside the main executable. The helper resolves
+    // that sibling itself, so the WebView cannot supply an arbitrary program path.
     let command = app_handle
         .shell()
         .sidecar("gitmanager-setup")
-        .map_err(|error| format!("GitManager Setup helper is unavailable: {error}"))?
-        .args([current_app.to_string_lossy().to_string()]);
+        .map_err(|error| format!("GitManager Setup helper is unavailable: {error}"))?;
 
     let (_events, child) = command.spawn()
         .map_err(|error| format!("Could not start GitManager Setup: {error}"))?;
