@@ -2686,8 +2686,26 @@ async function initializeGitManager() {
   }
   repositoryKindFilter = appPreferences.showDependencyRepositories ? "all" : "projects";
   updateScanRootSummary();
-  if (!appPreferences.firstRunComplete) {
+
+  let setupMode = false;
+  try {
+    setupMode = Boolean(await tauriInvoke("is_setup_mode"));
+  } catch (_) {
+    // Older development builds may not expose the setup-helper command yet.
+  }
+
+  if (setupMode) {
     openScanSetup(true);
+  } else if (!appPreferences.firstRunComplete) {
+    try {
+      // The regular app hands first launch to the packaged setup companion.
+      // If a developer build has no staged sidecar, keep onboarding in-process.
+      await tauriInvoke("launch_first_run_setup");
+      return;
+    } catch (error) {
+      console.warn("GitManager Setup helper could not be started; opening the built-in wizard:", error);
+      openScanSetup(true);
+    }
   } else {
     void runMachineScan();
   }
