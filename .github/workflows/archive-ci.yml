@@ -48,6 +48,9 @@ jobs:
       - name: Check the desktop backend and all sidecar dependencies
         run: cargo check --locked --workspace --all-targets
 
+      - name: Check GitManager's provider-sync-only Cloud Node feature set
+        run: cargo check --locked -p cloud-node --no-default-features --features provider-sync
+
       - name: Test every optional Cloud Node capability
         run: cargo test --locked -p cloud-node --all-features --all-targets
 
