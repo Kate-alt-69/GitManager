@@ -491,6 +491,7 @@ fn capture_enabled_archives(
 #[cfg(test)]
 mod tests {
     use super::{apply_event, is_project_file_event, WatchedRepository};
+    use fs2::FileExt;
     use notify::{Event, EventKind};
     use std::path::{Path, PathBuf};
 
