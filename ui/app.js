@@ -1703,8 +1703,12 @@ function renderSelectedRepositoryDetails() {
         setStatus("This repository remote does not provide a safe HTTPS web URL.");
         return;
       }
-      if (window.__TAURI__ && window.__TAURI__.shell && window.__TAURI__.shell.open) {
-        await window.__TAURI__.shell.open(url);
+      if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+        try {
+          await tauriInvoke("open_external_url", { url });
+        } catch (error) {
+          setStatus("Could not open repository website: " + ((error && error.message) || error));
+        }
       } else {
         window.open(url, "_blank", "noopener");
       }
