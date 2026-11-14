@@ -2187,3 +2187,35 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   }
   .repo-card-hover-details { opacity: 1; transform: none; }
 }
+
+
+/* Primary repository root selection in the cross-platform first-run setup. */
+.setup-root-role {
+  flex: 0 0 auto;
+  color: var(--gm-muted, #8b949e);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: .07em;
+}
+.setup-root-primary-label {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  color: #7ee787;
+  background: rgba(63,185,80,.10);
+  border: 1px solid rgba(63,185,80,.24);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 650;
+}
+.setup-root-make-primary {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  color: var(--gm-blue, #58a6ff);
+  background: transparent;
+  border: 1px solid var(--gm-border, #30363d);
+  border-radius: 5px;
+  font-size: 9px;
+  cursor: pointer;
+}
+.setup-root-make-primary:hover { background: rgba(56,139,253,.10); border-color: var(--gm-blue, #58a6ff); }
+.setup-root-main { background: rgba(63,185,80,.035); border-radius: 6px; }
