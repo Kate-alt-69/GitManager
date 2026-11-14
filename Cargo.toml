@@ -6,6 +6,7 @@ members = [
     "src-tauri/vendor/rbe/cloud-node",
     "crates/archive-core",
     "crates/gitm-cli",
+    "crates/gitmanager-setup",
 ]
 resolver = "2"
 
