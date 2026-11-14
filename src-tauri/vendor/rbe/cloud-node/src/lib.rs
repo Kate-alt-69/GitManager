@@ -3,12 +3,12 @@
 //! Cloud Node sits below REL/RELC. Language programs never receive node keys,
 //! tunnel identities, topology, storage roots, or direct access to this crate.
 
-#[cfg(feature = "server")]
+#[cfg(feature = "peer-auth")]
 mod auth;
-#[cfg(feature = "client")]
+#[cfg(feature = "peer-client")]
 mod client;
 mod config;
-#[cfg(feature = "server")]
+#[cfg(feature = "peer-auth")]
 mod crypto;
 mod durable;
 mod format;
@@ -16,24 +16,27 @@ mod format;
 mod ingest;
 #[cfg(feature = "local-sync")]
 mod local_sync;
+#[cfg(any(feature = "peer-client", feature = "provider-sync"))]
+mod outbound_cache;
 mod protocol;
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 mod provider;
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 mod provider_diagnostics;
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 #[path = "provider_sync_checked.rs"]
 mod provider_sync;
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 #[path = "provider_sync_guard.rs"]
 mod provider_sync_guard;
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 #[path = "provider_sync.rs"]
 mod provider_sync_raw;
-#[cfg(feature = "server")]
+#[cfg(feature = "recovery")]
 mod recovery;
 #[cfg(feature = "registry-ingest")]
 mod registry_ingest;
+mod registry_guard;
 #[cfg(feature = "server")]
 mod server;
 mod settings_path;
@@ -41,27 +44,27 @@ mod store;
 mod sync;
 mod transfer;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "peer-auth")]
 pub use auth::{random_session_and_nonce, NodeProof, NodeProofKind, DEFAULT_AUTH_SKEW_MS};
-#[cfg(feature = "client")]
+#[cfg(feature = "peer-client")]
 pub use client::{
     negotiate_sync, probe_upstream, synchronize_upstream, AuthenticatedPeer, SyncNegotiation,
     KNOCK_PATH, SESSION_PROOF_HEADER, SYNC_PATH, TRANSFER_PATH,
 };
-#[cfg(not(feature = "client"))]
+#[cfg(not(feature = "peer-client"))]
 pub const KNOCK_PATH: &str = "/.rbe/cn/v1/knock";
-#[cfg(not(feature = "client"))]
+#[cfg(not(feature = "peer-client"))]
 pub const SYNC_PATH: &str = "/.rbe/cn/v1/sync";
-#[cfg(not(feature = "client"))]
+#[cfg(not(feature = "peer-client"))]
 pub const TRANSFER_PATH: &str = "/.rbe/cn/v1/transfer";
-#[cfg(not(feature = "client"))]
+#[cfg(not(feature = "peer-client"))]
 pub const SESSION_PROOF_HEADER: &str = "x-rbe-cn-proof";
 pub use config::{
     CloudNodeSettings, NodeMode, NodeSettings, ProviderAuthMode, ProviderAuthSettings,
     ProviderConflictPolicy, ProviderKind, ProviderSettings, ReplicationSettings, ReplicationTarget,
     UpstreamSettings,
 };
-#[cfg(feature = "server")]
+#[cfg(feature = "peer-auth")]
 pub use crypto::{
     load_signing_key_from_env, public_key_hex, sign_challenge, verify_challenge,
     CLOUD_NODE_PRIVATE_KEY_ENV,
@@ -77,18 +80,17 @@ pub use local_sync::{
 pub use secret_paths::is_default_secret_path;
 mod secret_paths;
 pub use protocol::{Frame, FrameKind, CN_PROTOCOL, MAX_FRAME_BYTES};
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 pub use provider::ProviderClient;
-#[cfg(feature = "client")]
+#[cfg(feature = "provider-sync")]
 pub use provider_sync::{
     provider_status, synchronize_provider, ProviderSyncAction, ProviderSyncRelation,
     ProviderSyncResult, ProviderSyncStatus,
 };
-#[cfg(feature = "server")]
+#[cfg(feature = "recovery")]
 pub use recovery::{CloudNodeRecoveryReceiver, RecoveryReceipt};
 #[cfg(feature = "registry-ingest")]
 pub use registry_ingest::{ingest_registry_export, RegistryIngestResult, RegistryStoredObject};
-#[cfg(feature = "client")]
 #[cfg(feature = "registry-ingest")]
 pub use registry_ingest::{synchronize_registry_export, RegistrySyncResult};
 #[cfg(feature = "server")]
