@@ -241,6 +241,20 @@ function fallbackRepoIconDataUri(provider, repoName) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
+function safeExternalWebUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:" || !url.hostname) return null;
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href;
+  } catch (_) {
+    return null;
+  }
+}
+
 function trustedProviderImageUrl(rawUrl) {
   if (typeof rawUrl !== "string" || !rawUrl.trim()) return "";
   try {
@@ -550,8 +564,9 @@ function updateRepositoryCiPanel(repo, details) {
   const summary = panel.querySelector(".repo-ci-summary");
   const list = panel.querySelector(".repo-ci-check-list");
   if (summary) {
-    summary.innerHTML = '<span class="ci-state-dot ci-' + details.state + '"></span><strong class="ci-' +
-      details.state + '">' + escapeHtml(details.label) + '</strong><span>' +
+    const state = normalizeCiState(details.state);
+    summary.innerHTML = '<span class="ci-state-dot ci-' + state + '"></span><strong class="ci-' +
+      state + '">' + escapeHtml(details.label) + '</strong><span>' +
       details.checks.length + ' individual check(s)</span>' +
       (details.checkedAt ? '<time>Updated ' + escapeHtml(formatCiTimestamp(details.checkedAt)) + '</time>' : '');
   }
@@ -1237,12 +1252,21 @@ function formatCiTimestamp(value) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
+function normalizeCiState(value) {
+  const state = String(value || "neutral").trim().toLowerCase();
+  return state === "success" || state === "failure" || state === "pending" || state === "neutral"
+    ? state
+    : "neutral";
+}
+
 function renderCiCheckRows(details) {
   if (!details.checks.length) {
     return '<div class="ci-empty-state">' + escapeHtml(details.message || "No individual checks were reported for this commit.") + '</div>';
   }
   const priority = { failure: 0, pending: 1, success: 2, neutral: 3 };
-  const ordered = details.checks.slice().sort((a, b) => (priority[a.state] - priority[b.state]) || a.name.localeCompare(b.name));
+  const ordered = details.checks
+    .map((check) => ({ ...check, state: normalizeCiState(check.state) }))
+    .sort((a, b) => (priority[a.state] - priority[b.state]) || a.name.localeCompare(b.name));
   return ordered.map((check) => {
     const contents = '<span class="ci-state-dot ci-' + escapeHtml(check.state) + '" aria-hidden="true"></span>' +
       '<span class="ci-check-copy"><strong>' + escapeHtml(check.name) + '</strong><small>' +
@@ -1260,12 +1284,12 @@ function updateCiCard(repo, details) {
   document.querySelectorAll("[data-ci-repo-id]").forEach((element) => {
     if (element.getAttribute("data-ci-repo-id") !== repo.id) return;
     element.textContent = details.label;
-    element.className = "dashboard-ci ci-" + details.state;
+    element.className = "dashboard-ci ci-" + normalizeCiState(details.state);
     element.setAttribute("aria-label", "CI status: " + details.label);
   });
   document.querySelectorAll("[data-ci-dot-repo-id]").forEach((element) => {
     if (element.getAttribute("data-ci-dot-repo-id") === repo.id) {
-      element.className = "ci-state-dot ci-" + details.state;
+      element.className = "ci-state-dot ci-" + normalizeCiState(details.state);
     }
   });
   document.querySelectorAll("[data-ci-count-repo-id]").forEach((element) => {
@@ -1674,8 +1698,11 @@ function renderSelectedRepositoryDetails() {
   const openRemoteBtn = document.getElementById("btn-open-remote-url");
   if (openRemoteBtn) {
     openRemoteBtn.addEventListener("click", async () => {
-      const url = openRemoteBtn.getAttribute("data-url");
-      if (!url) return;
+      const url = safeExternalWebUrl(openRemoteBtn.getAttribute("data-url"));
+      if (!url) {
+        setStatus("This repository remote does not provide a safe HTTPS web URL.");
+        return;
+      }
       if (window.__TAURI__ && window.__TAURI__.shell && window.__TAURI__.shell.open) {
         await window.__TAURI__.shell.open(url);
       } else {
