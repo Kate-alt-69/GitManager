@@ -683,8 +683,9 @@ def main():
         save_json(registration_path, registration)
         instructions = (
             "# Register this Cloud Node on the RBE backend\n\n"
-            "Add the following object to the RBE backend's setting.cn.json under "
-            "replication.targets. Preserve existing targets.\n\n"
+            "Add the following object to the RBE backend's Cloud Node config "
+            "(normally setting.node.cn.json, or the file selected with its --config option) "
+            "under replication.targets. Preserve existing targets.\n\n"
             "JSON registration object:\n\n"
             + json.dumps(registration, indent=2)
             + "\n\n"
