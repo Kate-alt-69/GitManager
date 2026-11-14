@@ -217,6 +217,34 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
         return 127, "", f"Command not found: {cmd[0]}"
 
 
+def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
+    """Count unique normal/build Cargo packages in the complete workspace graph."""
+    command = ["cargo"]
+    if toolchain_arg:
+        command.append(toolchain_arg)
+    command.extend([
+        "tree", "--workspace", "--edges", "normal,build",
+        "--prefix", "none", "--format", "{p}",
+    ])
+    code, output, error = run_capture(command, cwd=project_root)
+    if code != 0:
+        log_warn(f"Could not measure the Cargo dependency graph: {error or code}")
+        return None
+
+    packages = set()
+    for line in output.splitlines():
+        value = line.strip()
+        if re.match(r"^[A-Za-z0-9_-]+ v[0-9]", value):
+            packages.add(value)
+
+    count = len(packages)
+    if count < 500:
+        log_ok(f"Workspace dependency graph: {count} unique crates (target: under 500).")
+    else:
+        log_warn(f"Workspace dependency graph: {count} unique crates; the target is under 500.")
+    return count
+
+
 def sanitize_tauri_v2_config(project_root: Path) -> None:
     """
     Validates and auto-fixes `src-tauri/tauri.conf.json` against the Tauri v2 schema:
@@ -676,6 +704,8 @@ def main() -> int:
     toolchain_arg = check_and_resolve_rust(project_root)
     if toolchain_arg is None:
         return 1
+
+    report_dependency_count(project_root, toolchain_arg)
 
     has_cargo_tauri = check_tauri_rust_cli(
         toolchain_arg,
