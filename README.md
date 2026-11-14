@@ -194,37 +194,37 @@ GitManager's desktop application does **not** embed the standalone RBE runtime. 
 
 ## 7. Portable RBE node deployment
 
-Every normal \`py build.py\` / \`python build.py build\` run also creates a small bootstrap ZIP under \`target/deployment/\`:
+Every normal `py build.py` / `python build.py build` run also creates a small bootstrap ZIP under `target/deployment/`:
 
-\`\`\`text
+```text
 GitManager-Cloud-Node-Setup.zip
-\`\`\`
+```
 
 To build only this package without a Rust toolchain or desktop installer, run:
 
-\`\`\`powershell
+```powershell
 py build.py prepare-cloud-node
-\`\`\`
+```
 
-The ZIP contains \`setup.py\`, \`manifest.json\`, starter \`settings.json\` and \`setting.node.cn.json\`, the RBE \`api/\` route files, and the Apache-2.0 license/notice files. **It deliberately contains no RBE executables.**
+The ZIP contains `setup.py`, `manifest.json`, starter `settings.json` and `setting.node.cn.json`, the RBE `api/` route files, and the Apache-2.0 license/notice files. **It deliberately contains no RBE executables.**
 
-On the destination machine, extract the ZIP and run \`py setup.py\` on Windows or \`python3 setup.py\` on Linux/macOS. Python 3.9+ and network access are required there. The script detects the host OS/architecture, queries the official RBE latest stable release, downloads only the matching platform archive, verifies the GitHub Release SHA-256 digest and the corresponding \`SHA256SUMS\` entry, and safely installs the complete runtime:
+On the destination machine, extract the ZIP and run `py setup.py` on Windows or `python3 setup.py` on Linux/macOS. Python 3.9+ and network access are required there. The script detects the host OS/architecture, queries the official RBE latest stable release, downloads only the matching platform archive, verifies the GitHub Release SHA-256 digest and the corresponding `SHA256SUMS` entry, and safely installs the complete runtime:
 
-- \`backend(.exe)\` — RBE API backend
-- \`cloud_node(.exe)\` — Cloud Node storage and peer/provider client
-- \`dep/container(.exe)\` and \`dep/service(.exe)\` — RBE runtime dependencies
-- \`build-info.json\` — release/build provenance
-- \`api/\` — the included \`.route\` files copied beside the backend
+- `backend(.exe)` — RBE API backend
+- `cloud_node(.exe)` — Cloud Node storage and peer/provider client
+- `dep/container(.exe)` and `dep/service(.exe)` — RBE runtime dependencies
+- `build-info.json` — release/build provenance
+- `api/` — the included `.route` files copied beside the backend
 
-The script preserves existing configuration, keys, storage and API routes; it does not delete user data or overwrite an existing settings file. It creates a protected Cloud Node private key and separate \`node-registration.json\` with the public node identity. The generated start script sets the key/config environment variables and starts \`backend\` with the selected \`settings.json\`. Initialize RBE's administrator account with \`backend --init-admin\` before starting the normal backend runtime.
+The script preserves existing configuration, keys, storage and API routes; it does not delete user data or overwrite an existing settings file. It creates a protected Cloud Node private key and separate `node-registration.json` with the public node identity. The generated start script sets the key/config environment variables and starts `backend` with the selected `settings.json`. Initialize RBE's administrator account with `backend --init-admin` before starting the normal backend runtime.
 
-The starter backend API binds to \`0.0.0.0:8080\` by default. After startup, the native \`/health\` endpoint and bundled \`/api/health\` route provide basic status information. The installer does not open firewall ports or configure TLS; restrict the service with the host firewall and configure HTTPS before exposing it beyond a trusted LAN.
+The starter backend API binds to `0.0.0.0:8080` by default. After startup, the native `/health` endpoint and bundled `/api/health` route provide basic status information. In **Settings → Cloud → Cloud Node setup**, GitManager can accept a private LAN IP/port and check both endpoints. This is a reachability/status check, not peer pairing or authentication. The check only accepts private, loopback or link-local IP addresses and does not follow redirects. The installer does not open firewall ports or configure TLS; restrict the service with the host firewall and configure HTTPS before exposing it beyond a trusted LAN.
 
 **Current peer-server limitation:** the current public RBE release wires the authenticated Cloud Node receiver into the backend's temporary maintenance/boot-recovery listener. It does not yet provide a permanent LAN peer listener with an interactive pairing endpoint. The RBE peer URL validator also requires HTTPS for non-loopback hosts. Installing the complete backend/runtime therefore provides the normal API/status service and the required runtime layout, but a persistent GitManager-to-NAS pairing/sync session still needs a permanent receiver and pairing flow.
 
-GitManager's planned namespace separation can use logical prefixes such as \`gitm.archives\`, \`gitm.metadata\` and \`gitm.recovery\`. GitManager's background worker must explicitly write those objects through the Cloud Node storage API or peer/provider sync; adding these names to the settings file alone does not move application data.
+GitManager's planned namespace separation can use logical prefixes such as `gitm.archives`, `gitm.metadata` and `gitm.recovery`. GitManager's background worker must explicitly write those objects through the Cloud Node storage API or peer/provider sync; adding these names to the settings file alone does not move application data.
 
-For CI, the lightweight ZIP is built once by the \`cloud-node-deployment\` job and uploaded as the \`gitmanager-cloud-node-deployment\` artifact. The package is not duplicated inside Windows, Linux or macOS GitManager installers. See [the deployment guide](tools/cloud-node-deployment/README.md), [RBE Cloud Node documentation](https://github.com/Kastrick8/RBE/blob/main/doc/cloud-node.md), [RBE API route documentation](https://github.com/Kastrick8/RBE/blob/main/api/README.md), and [the official RBE binary release](https://github.com/Kastrick8/RBE/releases/tag/rbe-bin-v0.1.0).
+For CI, the lightweight ZIP is built once by the `cloud-node-deployment` job and uploaded as the `gitmanager-cloud-node-deployment` artifact. The package is not duplicated inside Windows, Linux or macOS GitManager installers. See [the deployment guide](tools/cloud-node-deployment/README.md), [RBE Cloud Node documentation](https://github.com/Kastrick8/RBE/blob/main/doc/cloud-node.md), [RBE API route documentation](https://github.com/Kastrick8/RBE/blob/main/api/README.md), and [the official RBE binary release](https://github.com/Kastrick8/RBE/releases/tag/rbe-bin-v0.1.0).
 
 ## 8. Repository Archives & Native `gitm` CLI
 
