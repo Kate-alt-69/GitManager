@@ -464,20 +464,29 @@ def build_gitm_sidecar(
     toolchain_arg: str,
     release: bool,
 ) -> int:
-    """Build and stage the standalone Rust gitm executable for Tauri externalBin."""
-    cargo_cmd = ["cargo"]
-    if toolchain_arg:
-        cargo_cmd.append(toolchain_arg)
-    cargo_cmd.extend(["build", "--package", "gitm-cli", "--bin", "gitm"])
+    """Build and stage gitm plus the cross-platform first-run setup sidecar."""
     profile = "release" if release else "debug"
-    if release:
-        cargo_cmd.append("--release")
+    common_prefix = ["cargo"]
+    if toolchain_arg:
+        common_prefix.append(toolchain_arg)
 
-    log_info(f"Building native gitm CLI sidecar: {' '.join(cargo_cmd)}")
-    result = subprocess.call(cargo_cmd, cwd=str(project_root))
-    if result != 0:
+    gitm_cmd = common_prefix + ["build", "--package", "gitm-cli", "--bin", "gitm"]
+    if release:
+        gitm_cmd.append("--release")
+    log_info(f"Building native gitm CLI sidecar: {' '.join(gitm_cmd)}")
+    gitm_result = subprocess.call(gitm_cmd, cwd=str(project_root))
+    if gitm_result != 0:
         log_err("The standalone gitm CLI failed to build.")
-        return result
+        return gitm_result
+
+    setup_cmd = common_prefix + ["build", "--package", "git-manager", "--bin", "gitmanager-setup"]
+    if release:
+        setup_cmd.append("--release")
+    log_info(f"Building GitManager first-run setup companion: {' '.join(setup_cmd)}")
+    setup_result = subprocess.call(setup_cmd, cwd=str(project_root))
+    if setup_result != 0:
+        log_err("The cross-platform GitManager Setup companion failed to build.")
+        return setup_result
 
     try:
         host_triple = resolve_rust_target_triple(toolchain_arg)
@@ -490,42 +499,57 @@ def build_gitm_sidecar(
         target_dir = project_root / target_dir
     target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
     binary_triple = target_triple or host_triple
-    if target_triple:
-        binary_dir = target_dir / target_triple / profile
-    else:
-        binary_dir = target_dir / profile
+    binary_dir = target_dir / target_triple / profile if target_triple else target_dir / profile
 
     executable_suffix = ".exe" if "windows" in binary_triple else ""
-    source = binary_dir / f"gitm{executable_suffix}"
-    if not source.is_file():
-        log_err(f"Cargo completed but the expected gitm binary is missing: {source}")
-        return 1
-
+    artifacts = [
+        (binary_dir / f"gitm{executable_suffix}", f"gitm-{binary_triple}{executable_suffix}"),
+        (binary_dir / f"gitmanager-setup{executable_suffix}", f"gitmanager-setup-{binary_triple}{executable_suffix}"),
+    ]
     sidecar_dir = project_root / "src-tauri" / "binaries"
     sidecar_dir.mkdir(parents=True, exist_ok=True)
-    destination = sidecar_dir / f"gitm-{binary_triple}{executable_suffix}"
+    staged: List[Path] = []
+
+    for source, filename in artifacts:
+        if not source.is_file():
+            log_err(f"Cargo completed but the expected sidecar binary is missing: {source}")
+            return 1
+        destination = sidecar_dir / filename
+        try:
+            shutil.copy2(source, destination)
+        except OSError as error:
+            log_err(f"Could not stage sidecar at {destination}: {error}")
+            return 1
+        staged.append(destination)
+        log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
+
+    # Publish a predictable standalone setup helper beside the Cargo outputs:
+    # GitManager-Setup.exe on Windows and GitManager-Setup on Linux/macOS.
+    setup_artifact_name = "GitManager-Setup.exe" if executable_suffix else "GitManager-Setup"
+    setup_artifact = binary_dir / setup_artifact_name
     try:
-        shutil.copy2(source, destination)
+        shutil.copy2(staged[1], setup_artifact)
     except OSError as error:
-        log_err(f"Could not stage gitm sidecar at {destination}: {error}")
+        log_err(f"Could not stage the standalone setup helper at {setup_artifact}: {error}")
         return 1
 
-    # When CI has imported a production signing certificate, sign the sidecar
-    # before Tauri copies it into the application bundle.
+    # When CI has imported a production signing certificate, sign both sidecars
+    # and the predictable setup-helper output before Tauri bundles the sidecars.
     if platform.system() == "Windows" and os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
         sign_script = project_root / "tools" / "sign_windows_file.ps1"
         if sign_script.is_file():
-            sign_cmd = [
-                "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-                "-ExecutionPolicy", "Bypass", "-File", str(sign_script),
-                "-FilePath", str(destination),
-            ]
-            sign_rc = subprocess.call(sign_cmd, cwd=str(project_root))
-            if sign_rc != 0:
-                log_err("The gitm sidecar could not be signed with the configured certificate.")
-                return sign_rc
+            for target in [*staged, setup_artifact]:
+                sign_cmd = [
+                    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass", "-File", str(sign_script),
+                    "-FilePath", str(target),
+                ]
+                sign_rc = subprocess.call(sign_cmd, cwd=str(project_root))
+                if sign_rc != 0:
+                    log_err(f"Could not sign GitManager build output: {target}")
+                    return sign_rc
 
-    log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
+    log_ok(f"Created standalone setup helper: {setup_artifact} ({setup_artifact.stat().st_size:,} bytes)")
     return 0
 
 
