@@ -147,7 +147,7 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It creates both Windows installer formats:
 
     target/release/bundle/nsis/GitManager-Setup.exe
-    target/release/bundle/msi/GitManager_1.0.0_x64_en-US.msi
+    target/release/bundle/msi/*.msi
 
 The NSIS and WiX/MSI files are **application installers**. They install GitManager; they are not the first-run workspace wizard.
 
