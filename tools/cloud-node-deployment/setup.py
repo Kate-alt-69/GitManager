@@ -395,6 +395,22 @@ def collect_new_settings():
         str(watched_default),
     )
     watched_directory = Path(watched_input).expanduser().resolve()
+    if (
+        storage_root == watched_directory
+        or storage_root.is_relative_to(watched_directory)
+        or watched_directory.is_relative_to(storage_root)
+    ):
+        raise SetupError(
+            "Keep the watched folder and Cloud Node internal storage in separate, non-overlapping directories."
+        )
+    say("")
+    say("IMPORTANT DATA-SYNC SAFETY:")
+    say("Cloud Node scans every regular file under the watched folder and syncs it to the configured RBE backend.")
+    say("Symlinks are skipped, but the current RBE localSync scanner has no ignore-file or secret-file exclusion.")
+    say("Do not select your home directory, a whole drive, .ssh, credential stores, or folders containing .env/private keys.")
+    say("Use a dedicated folder containing only data you intend to replicate to the RBE server.")
+    if not ask_yes_no("I understand that regular files in this folder may be transferred to the RBE backend", False):
+        raise SetupError("Setup cancelled before creating or starting the Cloud Node.")
     logical_prefix = ask("Logical backup namespace/prefix", "nas-data").replace("\\", "/")
     if (
         not logical_prefix
