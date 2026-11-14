@@ -33,8 +33,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
+import stat
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
@@ -284,7 +288,319 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
     return app_count or None
 
 
+
+RBE_CLOUD_NODE_RELEASE_TAG = "rbe-bin-v0.1.0"
+RBE_CLOUD_NODE_TARGETS = {
+    "windows-x64": ("windows-x64", "zip", "cloud_node.exe", "Windows x64 (MSVC)"),
+    "linux-x64": ("linux-x64", "tar.gz", "cloud_node", "Linux x64 (glibc 2.35+)"),
+    "linux-arm64": ("linux-arm64", "tar.gz", "cloud_node", "Linux ARM64 (glibc 2.39+)"),
+    "macos-intel": ("macos-intel", "tar.gz", "cloud_node", "macOS Intel"),
+    "macos-arm64": ("macos-arm64", "tar.gz", "cloud_node", "macOS Apple Silicon"),
+}
+
+
+def read_bounded_url(url: str, limit: int, *, headers: Optional[Dict[str, str]] = None) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "GitManager-Cloud-Node-Builder",
+            "Accept": "application/vnd.github+json",
+            **(headers or {}),
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            parsed = urllib.parse.urlsplit(response.geturl())
+            allowed_hosts = {
+                "api.github.com",
+                "github.com",
+                "release-assets.githubusercontent.com",
+                "objects.githubusercontent.com",
+                "github-cloud.s3.amazonaws.com",
+            }
+            if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
+                raise ValueError(f"Refusing download redirect to untrusted host: {response.geturl()}")
+            declared_size = response.headers.get("Content-Length")
+            if declared_size and int(declared_size) > limit:
+                raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
+            data = response.read(limit + 1)
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise RuntimeError(f"Could not download {url}: {error}") from error
+    if len(data) > limit:
+        raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
+    return data
+
+
+def parse_sha256_digest(value: str, label: str) -> str:
+    match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", str(value or ""))
+    if not match:
+        raise ValueError(f"{label} has no valid GitHub SHA-256 digest.")
+    return match.group(1).lower()
+
+
+def fetch_rbe_cloud_node_release(tag: str) -> Dict[str, object]:
+    if not re.fullmatch(r"rbe-bin-v[0-9]+\.[0-9]+\.[0-9]+", tag):
+        raise ValueError("RBE_CLOUD_NODE_RELEASE_TAG must be a version tag such as rbe-bin-v0.1.0.")
+    api_url = f"https://api.github.com/repos/Kastrick8/RBE/releases/tags/{tag}"
+    try:
+        release = json.loads(read_bounded_url(api_url, 2 * 1024 * 1024).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"RBE GitHub Release metadata was invalid: {error}") from error
+    if release.get("tag_name") != tag or release.get("draft") or release.get("prerelease"):
+        raise ValueError(f"RBE tag {tag} is not a published stable release.")
+    if not isinstance(release.get("assets"), list):
+        raise ValueError(f"RBE release {tag} has no asset list.")
+    return release
+
+
+def download_verified_rbe_asset(
+    asset: Dict[str, object],
+    cache_dir: Path,
+    *,
+    max_bytes: int = 128 * 1024 * 1024,
+) -> Tuple[Path, str]:
+    name = str(asset.get("name") or "")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise ValueError(f"RBE release contains an unsafe asset name: {name!r}")
+    expected_size = asset.get("size")
+    if not isinstance(expected_size, int) or expected_size <= 0 or expected_size > max_bytes:
+        raise ValueError(f"RBE asset {name} has an invalid or oversized declared size.")
+    expected_hash = parse_sha256_digest(str(asset.get("digest") or ""), f"RBE asset {name}")
+    download_url = str(asset.get("browser_download_url") or "")
+    if not download_url.startswith("https://github.com/Kastrick8/RBE/releases/download/"):
+        raise ValueError(f"RBE asset {name} points to an unexpected download URL.")
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    destination = cache_dir / name
+    if destination.is_file() and not destination.is_symlink():
+        if destination.stat().st_size == expected_size and hashlib.sha256(destination.read_bytes()).hexdigest() == expected_hash:
+            log_ok(f"Using cached and verified RBE asset: {name}")
+            return destination, expected_hash
+        destination.unlink()
+
+    log_info(f"Downloading official RBE asset: {name} ({expected_size:,} bytes)")
+    payload = read_bounded_url(download_url, max_bytes)
+    if len(payload) != expected_size:
+        raise ValueError(f"RBE asset {name} size mismatch: expected {expected_size}, received {len(payload)}.")
+    actual_hash = hashlib.sha256(payload).hexdigest()
+    if actual_hash != expected_hash:
+        raise ValueError(f"RBE asset {name} failed GitHub Release SHA-256 verification.")
+    temporary = destination.with_name(destination.name + ".part")
+    try:
+        with temporary.open("wb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    log_ok(f"Downloaded and SHA-256 verified: {name}")
+    return destination, actual_hash
+
+
+def extract_rbe_cloud_node_archive(
+    archive_path: Path,
+    archive_kind: str,
+    binary_name: str,
+    destination: Path,
+) -> Tuple[int, str]:
+    max_binary_bytes = 256 * 1024 * 1024
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".part")
+    count = 0
+    digest = hashlib.sha256()
+    try:
+        if archive_kind == "zip":
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                matches = [item for item in archive.infolist() if item.filename == binary_name]
+                if len(matches) != 1:
+                    raise ValueError(f"{archive_path.name} must contain exactly one root-level {binary_name}.")
+                item = matches[0]
+                mode = (item.external_attr >> 16) & 0xFFFF
+                if item.is_dir() or stat.S_ISLNK(mode) or (mode and not stat.S_ISREG(mode)):
+                    raise ValueError(f"RBE asset contains a non-regular {binary_name}.")
+                if item.file_size <= 0 or item.file_size > max_binary_bytes:
+                    raise ValueError(f"RBE asset {binary_name} has an invalid size.")
+                with archive.open(item, "r") as source, temporary.open("wb") as output:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        count += len(chunk)
+                        if count > max_binary_bytes:
+                            raise ValueError(f"RBE asset {binary_name} exceeded the extraction size limit.")
+                        digest.update(chunk)
+                        output.write(chunk)
+        elif archive_kind == "tar.gz":
+            with tarfile.open(archive_path, "r:gz") as archive:
+                matches = [item for item in archive.getmembers() if item.name == binary_name]
+                if len(matches) != 1:
+                    raise ValueError(f"{archive_path.name} must contain exactly one root-level {binary_name}.")
+                item = matches[0]
+                if not item.isfile() or item.issym() or item.islnk() or item.size <= 0 or item.size > max_binary_bytes:
+                    raise ValueError(f"RBE asset contains an invalid {binary_name} entry.")
+                source = archive.extractfile(item)
+                if source is None:
+                    raise ValueError(f"Could not read {binary_name} from {archive_path.name}.")
+                with source, temporary.open("wb") as output:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        count += len(chunk)
+                        if count > max_binary_bytes:
+                            raise ValueError(f"RBE asset {binary_name} exceeded the extraction size limit.")
+                        digest.update(chunk)
+                        output.write(chunk)
+        else:
+            raise ValueError(f"Unsupported RBE archive format: {archive_kind}")
+
+        if count <= 0:
+            raise ValueError(f"RBE asset contained an empty {binary_name}.")
+        os.replace(temporary, destination)
+        return count, digest.hexdigest()
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def prepare_cloud_node_deployment(project_root: Path) -> int:
+    """Download, verify and package every official RBE Cloud Node platform binary."""
+    tag = os.environ.get("RBE_CLOUD_NODE_RELEASE_TAG", RBE_CLOUD_NODE_RELEASE_TAG).strip()
+    try:
+        release = fetch_rbe_cloud_node_release(tag)
+        version_match = re.fullmatch(r"rbe-bin-v([0-9]+\.[0-9]+\.[0-9]+)", tag)
+        if not version_match:
+            raise ValueError(f"Unexpected RBE release tag: {tag}")
+        version = version_match.group(1)
+        source_commit_match = re.search(r"Built from \[([0-9a-f]{40})\]", str(release.get("body") or ""))
+        source_commit = source_commit_match.group(1) if source_commit_match else None
+        asset_map = {
+            asset["name"]: asset
+            for asset in release.get("assets", [])
+            if isinstance(asset, dict) and isinstance(asset.get("name"), str)
+        }
+
+        binary_assets: Dict[str, Dict[str, object]] = {}
+        build_ids = set()
+        for target, (slug, archive_kind, _binary_name, _compatibility) in RBE_CLOUD_NODE_TARGETS.items():
+            suffix = "zip" if archive_kind == "zip" else r"tar\.gz"
+            pattern = re.compile(
+                rf"^rbe-{re.escape(version)}-{re.escape(slug)}-build\.([0-9]+\.[0-9]+)\.{suffix}$"
+            )
+            matches = [(name, asset, pattern.fullmatch(name)) for name, asset in asset_map.items()]
+            matches = [(name, asset, match) for name, asset, match in matches if match]
+            if len(matches) != 1:
+                raise ValueError(f"RBE release {tag} must contain exactly one {slug} Cloud Node archive.")
+            name, asset, match = matches[0]
+            build_ids.add(match.group(1))
+            binary_assets[target] = asset
+        if len(build_ids) != 1:
+            raise ValueError(f"RBE release {tag} mixes multiple build revisions: {sorted(build_ids)}.")
+        build_id = next(iter(build_ids))
+        checksum_name = f"SHA256SUMS-build.{build_id}.txt"
+        checksum_asset = asset_map.get(checksum_name)
+        if not checksum_asset:
+            raise ValueError(f"RBE release is missing its checksum asset {checksum_name}.")
+
+        target_dir = project_root / "target"
+        cache_dir = target_dir / "cloud-node-release-cache" / tag
+        checksum_path, checksum_asset_hash = download_verified_rbe_asset(
+            checksum_asset, cache_dir, max_bytes=2 * 1024 * 1024
+        )
+        checksum_lines = checksum_path.read_text(encoding="utf-8").splitlines()
+        checksum_map: Dict[str, str] = {}
+        for line in checksum_lines:
+            match = re.fullmatch(r"([0-9a-fA-F]{64})\s+\*?([A-Za-z0-9._-]+)", line.strip())
+            if match:
+                checksum_map[match.group(2)] = match.group(1).lower()
+
+        staging_root = target_dir / "cloud-node-deployment-staging"
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+        staging_root.mkdir(parents=True, exist_ok=True)
+        targets_manifest: Dict[str, object] = {}
+        try:
+            for target, (slug, archive_kind, binary_name, compatibility) in RBE_CLOUD_NODE_TARGETS.items():
+                asset = binary_assets[target]
+                archive_path, archive_sha = download_verified_rbe_asset(asset, cache_dir)
+                if checksum_map.get(str(asset["name"])) != archive_sha:
+                    raise ValueError(f"RBE SHA256SUMS entry for {asset['name']} does not match the verified Release digest.")
+                binary_relative = Path("binaries") / target / binary_name
+                binary_path = staging_root / binary_relative
+                size, binary_sha = extract_rbe_cloud_node_archive(
+                    archive_path, archive_kind, binary_name, binary_path
+                )
+                targets_manifest[target] = {
+                    "path": binary_relative.as_posix(),
+                    "sha256": binary_sha,
+                    "size": size,
+                    "archive": str(asset["name"]),
+                    "archiveSha256": archive_sha,
+                    "compatibility": compatibility,
+                }
+                log_ok(f"Prepared Cloud Node {target}: {size:,} bytes, SHA-256 {binary_sha}")
+
+            template_dir = project_root / "tools" / "cloud-node-deployment"
+            for name in ("README.md", "setup.py", "LICENSE-RBE.txt", "NOTICE-RBE.txt"):
+                source = template_dir / name
+                if not source.is_file():
+                    raise ValueError(f"Cloud Node deployment template is missing {source}.")
+                shutil.copy2(source, staging_root / name)
+
+            manifest = {
+                "formatVersion": 1,
+                "kind": "gitmanager-cloud-node-deployment",
+                "product": "GitManager Cloud Node Setup",
+                "rbeRelease": {
+                    "repository": "Kastrick8/RBE",
+                    "tag": tag,
+                    "buildTag": f"rbe-bin-v{version}-build.{build_id}",
+                    "version": version,
+                    "sourceCommit": source_commit,
+                    "publishedAt": release.get("published_at"),
+                    "releaseUrl": release.get("html_url"),
+                    "checksumAsset": checksum_name,
+                    "checksumAssetSha256": checksum_asset_hash,
+                },
+                "targets": targets_manifest,
+            }
+            (staging_root / "manifest.json").write_text(
+                json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            output_dir = target_dir / "deployment"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            archive_name = f"GitManager-Cloud-Node-Setup-{tag}-build.{build_id}.zip"
+            final_archive = output_dir / archive_name
+            temporary_archive = output_dir / (archive_name + ".part")
+            if temporary_archive.exists():
+                temporary_archive.unlink()
+            with zipfile.ZipFile(
+                temporary_archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
+            ) as bundle:
+                files = sorted(
+                    path for path in staging_root.rglob("*") if path.is_file() and not path.is_symlink()
+                )
+                for file_path in files:
+                    relative = file_path.relative_to(staging_root).as_posix()
+                    bundle.write(file_path, relative)
+            os.replace(temporary_archive, final_archive)
+            log_ok(f"Created all-platform Cloud Node deployment ZIP: {final_archive}")
+            log_info(f"Included targets: {', '.join(sorted(targets_manifest))}")
+            return 0
+        finally:
+            if staging_root.exists():
+                shutil.rmtree(staging_root)
+    except (OSError, ValueError, RuntimeError, urllib.error.URLError, zipfile.BadZipFile, tarfile.TarError) as error:
+        log_err(f"Cloud Node deployment packaging failed: {error}")
+        return 1
+
+
 def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
+
     """Create a temporary Tauri signing overlay only when a real signer is configured."""
     if platform.system() != "Windows":
         return None
@@ -682,6 +998,11 @@ def run_build_or_dev(
         cmd.extend(["check", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
         return subprocess.call(cmd)
 
+    if mode == "build" and os.environ.get("GITMANAGER_SKIP_CLOUD_NODE_BUNDLE") != "1":
+        cloud_node_result = prepare_cloud_node_deployment(project_root)
+        if cloud_node_result != 0:
+            return cloud_node_result
+
     if mode == "build" and platform.system() == "Windows":
         runtime_result = prepare_windows_python_runtime(project_root)
         if runtime_result != 0:
@@ -759,7 +1080,7 @@ def main() -> int:
         "mode",
         nargs="?",
         default="build",
-        choices=["deps", "check", "dev", "build", "prepare-runtime", "prepare-sidecar"],
+        choices=["deps", "check", "dev", "build", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node"],
         help="Action: deps, check, dev, build, prepare-runtime, or prepare-sidecar.",
     )
     parser.add_argument(
@@ -788,6 +1109,8 @@ def main() -> int:
 
     if args.mode == "prepare-runtime":
         return prepare_windows_python_runtime(project_root)
+    if args.mode == "prepare-cloud-node":
+        return prepare_cloud_node_deployment(project_root)
 
     check_os_system_dependencies()
     sanitize_tauri_v2_config(project_root)
