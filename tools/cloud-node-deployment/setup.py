@@ -496,7 +496,9 @@ def derive_public_key(binary, config, key_file):
 def validate_settings_with_binary(binary, config, key_file):
     env = os.environ.copy()
     env[KEY_ENV] = "file:" + str(key_file.resolve())
-    result = run_checked([binary, "--config=" + str(config), "evaluate"], env=env, timeout=60)
+    # sync-plan validates the parsed settings and opens the local store without
+    # scanning/hashing the entire watched NAS folder during installation.
+    result = run_checked([binary, "--config=" + str(config), "sync-plan"], env=env, timeout=30)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise SetupError(f"Cloud Node rejected the generated settings: {detail}")
