@@ -141,26 +141,21 @@ or the desktop WebView runtime:
 
 ```text
 gitm
+gitm scan ~/Projects ~/Repos --depth 8
+gitm inspect .
 gitm status .
 gitm log . --limit 25
 gitm branches .
 gitm remotes .
+gitm update check .
+gitm update pull .
 gitm backup . --kind local
 gitm backup . --kind remote
 gitm backups . --kind local
 gitm restore . --id <snapshot-id> --kind local --to ../recovered --yes
-gitm scan ~/Projects ~/Repos --depth 8
-gitm inspect .
-gitm status .
-gitm log . --limit 20
-gitm branches .
-gitm remotes .
-gitm update check .
-gitm update pull .
 gitm cleaner preview --scope repository --path .
 gitm cleaner apply --scope repository --path . --confirm YES
 ```
-
 The inspection commands use Git's native repository data. Remote URLs are
 redacted before they are printed; use Git itself to inspect or change
 credential-related settings.

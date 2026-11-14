@@ -142,7 +142,7 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 ---
 
-## 7. Windows production installer and signing
+## 6. Windows production installer and signing
 
 On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager and its background service, and creates:
 
@@ -162,7 +162,7 @@ GitManager does not export or store the certificate's private key. A self-signed
 For tagged Windows CI releases, configure repository secrets `WINDOWS_SIGNING_CERTIFICATE` (base64 PFX) and `WINDOWS_SIGNING_PASSWORD`, plus the repository variable `WINDOWS_SIGNING_THUMBPRINT`. The workflow imports the certificate only on its ephemeral runner, signs the application, service and setup package, verifies the signature, then removes the temporary PFX and certificate. Never commit PFX files, passwords or private keys.
 
 
-## 6. Per-user application storage and installation
+## 7. Per-user application storage and installation
 
 GitManager keeps the application install directory separate from user configuration and data.
 
@@ -182,7 +182,7 @@ The setup finish screen offers **Continue using GitManager** (launch the app) an
 Release builds use size-focused Cargo settings (size optimization, LTO, one codegen unit and symbol stripping), and Tokio is built with only the runtime/time features used by this application. This is an optimization baseline; final installer sizes must still be measured from actual Windows/Linux/macOS release artifacts.
 
 
-## 5. Repository Archives & Native `gitm` CLI
+## 8. Repository Archives & Native `gitm` CLI
 
 GitManager vendors the RBE Cloud Node storage engine under
 `src-tauri/vendor/rbe` and adapts it for complete repository restore points.
