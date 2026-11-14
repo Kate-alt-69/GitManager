@@ -188,7 +188,7 @@ On Linux and macOS, the same folder layout is rooted in the platform's user-loca
 
 The setup finish screen offers **Continue using GitManager** (launch the app) and a separate desktop-shortcut option. Uninstalling the application does not target the config/data siblings.
 
-Release builds use size-focused Cargo settings (size optimization, thin LTO, eight codegen units and symbol stripping) to balance binary size and parallel build time. Each build also reports the number of unique normal/build crates in the workspace; the optimization target is fewer than 500. This is an optimization baseline; final installer sizes must still be measured from actual Windows/Linux/macOS release artifacts.
+Release builds use size-focused Cargo settings (size optimization, thin LTO, eight codegen units and symbol stripping) to balance binary size and parallel build time. The build script reports separate target-specific dependency graphs for `git-manager`, `gitm-cli` and `gitmanager-setup`, plus the deduplicated union. The under-500 target applies to the desktop app graph, not the whole workspace. Cargo's `541/542`-style progress indicator counts compilation units (including build scripts and proc-macro targets), not unique crate packages; use the `GitManager app graph` count when comparing against the target. The Tauri signing overlay is created only when a valid Windows signing thumbprint is configured; otherwise local and CI builds remain intentionally unsigned without invoking SignTool.
 
 
 ## 8. Repository Archives & Native `gitm` CLI
