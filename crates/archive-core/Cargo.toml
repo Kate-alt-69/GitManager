@@ -6,7 +6,7 @@ license = "Apache-2.0"
 description = "GitManager repository snapshot, archive and recovery engine"
 
 [dependencies]
-cloud-node = { path = "../../src-tauri/vendor/rbe/cloud-node" }
+cloud-node = { path = "../../src-tauri/vendor/rbe/cloud-node", default-features = false, features = ["provider-sync"] }
 git2 = { version = "0.20.4", default-features = false, features = ["https", "ssh"] }
 walkdir = "2.5"
 serde = { version = "1", features = ["derive"] }
