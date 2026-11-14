@@ -84,7 +84,7 @@ Setup generates:
 - `cloud-node-private-key.secret`: this node's private Ed25519 key, stored separately.
 - `rbe-peer-registration.json`: this node's public identity for the RBE backend administrator.
 
-Before authentication can succeed, add the generated `rbe-peer-registration.json` object to the RBE backend's `setting.cn.json` under `replication.targets`, preserving any existing targets. The backend must be configured with its own private key and must allow Cloud Node recovery. The `url` member is required by the current RBE settings schema; the current inbound recovery authenticator trusts the peer's `nodeId` and `publicKey` and does not dial that URL.
+Before authentication can succeed, add the generated `rbe-peer-registration.json` object to the RBE backend's Cloud Node config (normally `setting.node.cn.json`, or the file selected with its `--config` option) under `replication.targets`, preserving any existing targets. The backend must be configured with its own private key and must allow Cloud Node recovery. The `url` member is required by the current RBE settings schema; the current inbound recovery authenticator trusts the peer's `nodeId` and `publicKey` and does not dial that URL.
 
 The Cloud Node service retries with bounded backoff while the backend is unavailable or before the new peer has been registered. You can therefore configure the RBE backend after installing the node, then restart the service.
 
