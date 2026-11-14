@@ -92,13 +92,13 @@
           <header class="modal-header setup-modal-header">
             <div>
               <h3 id="setup-modal-title">Set up your workspace</h3>
-              <p id="setup-modal-subtitle" class="setup-modal-subtitle">Choose the folders GitManager should index.</p>
+              <p id="setup-modal-subtitle" class="setup-modal-subtitle">Choose your main repository folder, then add any other locations where you keep projects.</p>
             </div>
             <button id="btn-close-scan-setup" class="icon-close-btn" aria-label="Close setup">&times;</button>
           </header>
           <div class="modal-body setup-modal-body">
             <div class="setup-roots-heading">
-              <div><strong>Scan folders</strong><span>GitManager scans inside each folder for Git repositories.</span></div>
+              <div><strong>Main repository folder</strong><span>Choose the folder containing most of your projects. Additional scan locations can be added below.</span></div>
               <button id="btn-setup-smart-roots" class="btn btn-secondary" type="button">Use recommended folders</button>
             </div>
             <div id="setup-scan-root-list" class="setup-root-list">
@@ -109,7 +109,7 @@
               <input id="setup-manual-root" class="scan-input" type="text" placeholder="Or enter a path, e.g. D:/Project_Customs or D:/" />
               <button id="btn-setup-add-root" class="btn btn-secondary" type="button">Add path</button>
             </div>
-            <p class="setup-hint">Choose one or more project folders. A drive root such as D:/ is supported; scanning an entire drive can take longer. GitManager does not automatically scan every system drive.</p>
+            <p class="setup-hint">The first folder is your main workspace. You can mark any other folder as the main location. A drive root such as D:/ is supported, but scanning an entire drive can take longer. GitManager does not automatically scan every system drive.</p>
             <div class="setup-options">
               <label class="setup-option"><input id="setup-index-dependencies" type="checkbox" checked /> Index Git repositories found inside dependency folders too</label>
               <label class="setup-option"><input id="setup-show-dependencies" type="checkbox" checked /> Include dependency repositories in the default repository view</label>
@@ -126,6 +126,72 @@
                 </select>
               </div>
             </div>
+
+            <section class="setup-archive-section">
+              <div class="setup-roots-heading">
+                <div>
+                  <strong>Repository archives</strong>
+                  <span>Keep up to five complete restore points for each archive type.</span>
+                </div>
+              </div>
+              <div class="setup-archive-path-row">
+                <label for="setup-archive-root">Archive storage folder</label>
+                <div class="setup-add-root">
+                  <input id="setup-archive-root" class="scan-input" type="text" placeholder="Choose a folder on another drive or a cloud-synced drive…" />
+                  <button id="btn-setup-browse-archive-root" class="btn btn-secondary" type="button">Browse…</button>
+                </div>
+                <small>Choose a Google Drive for desktop, OneDrive, Dropbox, or external-drive folder to have that local archive synchronized by the provider's own client.</small>
+              </div>
+              <div class="setup-options setup-archive-options">
+                <label class="setup-option"><input id="setup-archive-local" type="checkbox" checked /> Local Archive — working files, including uncommitted and untracked changes</label>
+                <label class="setup-option"><input id="setup-archive-remote" type="checkbox" checked /> Remote Archive — working files plus Git history and refs, without credential config</label>
+                <div class="form-group setup-depth">
+                  <label for="setup-archive-trigger">Automatic capture</label>
+                  <select id="setup-archive-trigger" class="select-control">
+                    <option value="manual">Manual only</option>
+                    <option value="commit">After Git commits</option>
+                    <option value="change">After file changes settle</option>
+                  </select>
+                </div>
+                <div class="form-group setup-depth">
+                  <label for="setup-archive-quiet">Quiet period for change capture</label>
+                  <select id="setup-archive-quiet" class="select-control">
+                    <option value="500">500 ms — frequent snapshots</option>
+                    <option value="1500" selected>1.5 seconds — recommended</option>
+                    <option value="3000">3 seconds — fewer snapshots</option>
+                    <option value="5000">5 seconds — large projects</option>
+                  </select>
+                </div>
+              </div>
+              <p class="setup-hint">Environment secrets such as .env files, private keys, and credential folders are excluded by default. Cloud provider credentials are never stored in these archives.</p>
+              <div class="setup-cloud-provider">
+                <div class="setup-roots-heading">
+                  <div>
+                    <strong>Cloud object storage</strong>
+                    <span>Optional Cloud Node provider sync, independent of a Drive-synced folder.</span>
+                  </div>
+                </div>
+                <label for="setup-cloud-provider-json">Provider configuration (JSON)</label>
+                <textarea id="setup-cloud-provider-json" class="setup-cloud-provider-json" rows="7" spellcheck="false" placeholder='{
+  "kind": "http",
+  "namespace": "gitmanager",
+  "bucket": "repository-archives",
+  "endpoint": "https://storage.example.com",
+  "auth": {
+    "mode": "bearer",
+    "bearerTokenEnv": "GITMANAGER_ARCHIVE_TOKEN"
+  }
+}'></textarea>
+                <small>Paste one Cloud Node provider object. Use environment-variable names such as <code>bearerTokenEnv</code>, never paste a token or password. Supported providers include S3, Supabase, Azure Blob, Google Cloud Storage and generic HTTPS.</small>
+                <div class="setup-cloud-actions">
+                  <button id="btn-configure-archive-cloud" class="btn btn-secondary" type="button">Configure provider</button>
+                  <button id="btn-check-archive-cloud" class="btn btn-secondary" type="button">Check status</button>
+                  <button id="btn-sync-archive-cloud" class="btn btn-secondary" type="button">Sync now</button>
+                  <button id="btn-disable-archive-cloud" class="btn btn-secondary" type="button">Disable</button>
+                </div>
+                <div id="setup-cloud-status" class="setup-cloud-status" role="status">Cloud object storage is optional. Configure a provider to enable remote synchronization.</div>
+              </div>
+            </section>
             <div id="setup-modal-error" class="modal-error hidden"></div>
           </div>
           <footer class="modal-footer">

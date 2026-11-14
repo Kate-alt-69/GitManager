@@ -1,0 +1,60 @@
+name: Archive Engine & gitm CLI CI
+
+on:
+  push:
+    branches: [main, master, "feature/**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archive-and-desktop:
+    name: Archive, gitm & Tauri backend (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve workspace lockfile
+        run: cargo generate-lockfile
+
+      - name: Build and stage target-specific gitm sidecar
+        run: python build.py prepare-sidecar
+
+      - name: Test the complete Rust workspace on all platforms
+        run: cargo test --locked --workspace --all-targets
+
+      - name: Check the desktop backend and all sidecar dependencies
+        run: cargo check --locked --workspace --all-targets
+
+      - name: Check frontend JavaScript syntax
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate frontend and build-script syntax
+        shell: bash
+        run: |
+          node --check ui/app.js
+          python -m py_compile build.py

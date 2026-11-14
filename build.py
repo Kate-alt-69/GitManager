@@ -5,7 +5,7 @@ Supports: Windows 10 & 11, Linux, and macOS (Zero Node.js / npm required).
 
 Features:
 1. Checks if Rust (`rustc` and `cargo`) is installed across PATH and `~/.cargo/bin`.
-2. Compares the installed Rust version against the target baseline (`1.77.2` for Tauri v2):
+2. Compares the installed Rust version against the workspace baseline (`1.88.0` required by the current filesystem watcher):
    - If a different version is already installed (whether newer, custom/nightly, or older),
      it automatically adapts and uses the ALREADY INSTALLED Rust toolchain on the machine
      instead of failing or forcing a toolchain re-download.
@@ -38,7 +38,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional, Tuple, List
 
-RECOMMENDED_RUST_VERSION = (1, 77, 2)
+RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
 
 
@@ -215,6 +215,34 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except FileNotFoundError:
         return 127, "", f"Command not found: {cmd[0]}"
+
+
+def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
+    """Count unique normal/build Cargo packages in the complete workspace graph."""
+    command = ["cargo"]
+    if toolchain_arg:
+        command.append(toolchain_arg)
+    command.extend([
+        "tree", "--workspace", "--edges", "normal,build",
+        "--prefix", "none", "--format", "{p}",
+    ])
+    code, output, error = run_capture(command, cwd=project_root)
+    if code != 0:
+        log_warn(f"Could not measure the Cargo dependency graph: {error or code}")
+        return None
+
+    packages = set()
+    for line in output.splitlines():
+        value = line.strip()
+        if re.match(r"^[A-Za-z0-9_-]+ v[0-9]", value):
+            packages.add(value)
+
+    count = len(packages)
+    if count < 500:
+        log_ok(f"Workspace dependency graph: {count} unique crates (target: under 500).")
+    else:
+        log_warn(f"Workspace dependency graph: {count} unique crates; the target is under 500.")
+    return count
 
 
 def sanitize_tauri_v2_config(project_root: Path) -> None:
@@ -436,6 +464,123 @@ def check_os_system_dependencies() -> None:
             log_warn("`pkg-config` not found; skipping Linux `.pc` library version checks.")
 
 
+def resolve_rust_target_triple(toolchain_arg: str) -> str:
+    """Return the exact Rust target triple used for the GitManager sidecar."""
+    commands: List[List[str]] = []
+    if toolchain_arg.startswith("+") and shutil.which("rustup"):
+        toolchain = toolchain_arg[1:]
+        commands.append(["rustup", "run", toolchain, "rustc", "--print", "host-tuple"])
+        commands.append(["rustup", "run", toolchain, "rustc", "-vV"])
+    commands.append(["rustc", "--print", "host-tuple"])
+    commands.append(["rustc", "-vV"])
+    for command in commands:
+        code, stdout, _ = run_capture(command)
+        if code != 0 or not stdout:
+            continue
+        if "host-tuple" in command:
+            value = stdout.strip()
+            if value:
+                return value
+        match = re.search(r"(?m)^host:\s*(\S+)\s*$", stdout)
+        if match:
+            return match.group(1)
+    raise RuntimeError("Could not determine the Rust target triple for the gitm sidecar.")
+
+
+def build_gitm_sidecar(
+    project_root: Path,
+    toolchain_arg: str,
+    release: bool,
+) -> int:
+    """Build and stage gitm plus the cross-platform first-run setup sidecar."""
+    profile = "release" if release else "debug"
+    common_prefix = ["cargo"]
+    if toolchain_arg:
+        common_prefix.append(toolchain_arg)
+
+    gitm_cmd = common_prefix + ["build", "--package", "gitm-cli", "--bin", "gitm"]
+    if release:
+        gitm_cmd.append("--release")
+    log_info(f"Building native gitm CLI sidecar: {' '.join(gitm_cmd)}")
+    gitm_result = subprocess.call(gitm_cmd, cwd=str(project_root))
+    if gitm_result != 0:
+        log_err("The standalone gitm CLI failed to build.")
+        return gitm_result
+
+    setup_cmd = common_prefix + ["build", "--package", "gitmanager-setup", "--bin", "gitmanager-setup"]
+    if release:
+        setup_cmd.append("--release")
+    log_info(f"Building GitManager first-run setup companion: {' '.join(setup_cmd)}")
+    setup_result = subprocess.call(setup_cmd, cwd=str(project_root))
+    if setup_result != 0:
+        log_err("The cross-platform GitManager Setup companion failed to build.")
+        return setup_result
+
+    try:
+        host_triple = resolve_rust_target_triple(toolchain_arg)
+    except RuntimeError as error:
+        log_err(str(error))
+        return 1
+
+    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", project_root / "target"))
+    if not target_dir.is_absolute():
+        target_dir = project_root / target_dir
+    target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+    binary_triple = target_triple or host_triple
+    binary_dir = target_dir / target_triple / profile if target_triple else target_dir / profile
+
+    executable_suffix = ".exe" if "windows" in binary_triple else ""
+    artifacts = [
+        (binary_dir / f"gitm{executable_suffix}", f"gitm-{binary_triple}{executable_suffix}"),
+        (binary_dir / f"gitmanager-setup{executable_suffix}", f"gitmanager-setup-{binary_triple}{executable_suffix}"),
+    ]
+    sidecar_dir = project_root / "src-tauri" / "binaries"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    staged: List[Path] = []
+
+    for source, filename in artifacts:
+        if not source.is_file():
+            log_err(f"Cargo completed but the expected sidecar binary is missing: {source}")
+            return 1
+        destination = sidecar_dir / filename
+        try:
+            shutil.copy2(source, destination)
+        except OSError as error:
+            log_err(f"Could not stage sidecar at {destination}: {error}")
+            return 1
+        staged.append(destination)
+        log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
+
+    # Publish a predictable standalone setup helper beside the Cargo outputs:
+    # GitManager-Setup.exe on Windows and GitManager-Setup on Linux/macOS.
+    setup_artifact_name = "GitManager-Setup.exe" if executable_suffix else "GitManager-Setup"
+    setup_artifact = binary_dir / setup_artifact_name
+    try:
+        shutil.copy2(staged[1], setup_artifact)
+    except OSError as error:
+        log_err(f"Could not stage the standalone setup helper at {setup_artifact}: {error}")
+        return 1
+
+    # When CI has imported a production signing certificate, sign both sidecars
+    # and the predictable setup-helper output before Tauri bundles the sidecars.
+    if platform.system() == "Windows" and os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
+        sign_script = project_root / "tools" / "sign_windows_file.ps1"
+        if sign_script.is_file():
+            for target in [*staged, setup_artifact]:
+                sign_cmd = [
+                    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass", "-File", str(sign_script),
+                    "-FilePath", str(target),
+                ]
+                sign_rc = subprocess.call(sign_cmd, cwd=str(project_root))
+                if sign_rc != 0:
+                    log_err(f"Could not sign GitManager build output: {target}")
+                    return sign_rc
+
+    log_ok(f"Created standalone setup helper: {setup_artifact} ({setup_artifact.stat().st_size:,} bytes)")
+    return 0
+
+
 def run_build_or_dev(
     project_root: Path,
     mode: str,
@@ -461,6 +606,11 @@ def run_build_or_dev(
     if mode == "build" and not has_cargo_tauri:
         log_err("The Tauri CLI is required to create GitManager-Setup.exe. Install failed or pass --install-tauri-cli.")
         return 1
+
+    if mode in ("build", "dev"):
+        sidecar_result = build_gitm_sidecar(project_root, toolchain_arg, release)
+        if sidecar_result != 0:
+            return sidecar_result
 
     if has_cargo_tauri:
         cmd = ["cargo"]
@@ -518,8 +668,8 @@ def main() -> int:
         "mode",
         nargs="?",
         default="build",
-        choices=["deps", "check", "dev", "build", "prepare-runtime"],
-        help="Action: deps, check, dev, build (including the Windows setup installer), or prepare-runtime.",
+        choices=["deps", "check", "dev", "build", "prepare-runtime", "prepare-sidecar"],
+        help="Action: deps, check, dev, build, prepare-runtime, or prepare-sidecar.",
     )
     parser.add_argument(
         "--release",
@@ -555,6 +705,8 @@ def main() -> int:
     if toolchain_arg is None:
         return 1
 
+    report_dependency_count(project_root, toolchain_arg)
+
     has_cargo_tauri = check_tauri_rust_cli(
         toolchain_arg,
         auto_install=args.install_tauri_cli or args.mode == "build",
@@ -565,6 +717,9 @@ def main() -> int:
         return 0
 
     is_release = not args.debug
+    if args.mode == "prepare-sidecar":
+        return build_gitm_sidecar(project_root, toolchain_arg, is_release)
+
     return run_build_or_dev(
         project_root=project_root,
         mode=args.mode,

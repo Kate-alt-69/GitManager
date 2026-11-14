@@ -10,7 +10,7 @@
 
 - **Rust Toolchain Detection & Version Adaptation**:
   - Checks if `rustc` and `cargo` are installed in `PATH` or `~/.cargo/bin`.
-  - Compares the installed version against the baseline (`1.77.2`). If a **different version is already installed** on your machine (newer, custom/nightly, or older), `build.py` **automatically uses the version you already have installed** (or picks the best already-installed `rustup` toolchain if multiple exist locally) instead of failing or forcing a toolchain re-download.
+  - Compares the installed version against the workspace baseline (`1.88.0`, required by the filesystem watcher). If a **different version is already installed** on your machine (newer, custom/nightly, or older), `build.py` **automatically uses the version you already have installed** (or picks the best already-installed `rustup` toolchain if multiple exist locally) instead of failing or forcing a toolchain re-download.
 - **Pure-Rust `tauri-cli` (`cargo tauri`) Detection**:
   - Uses the Rust `cargo-tauri` crate binary if already installed, or builds/runs the Rust crate directly with `cargo build --release` / `cargo run` (pass `--install-tauri-cli` if you want `cargo install tauri-cli` run automatically).
 - **OS Native Library Check**:
@@ -142,13 +142,22 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 ---
 
-## 7. Windows production installer and signing
+## 6. Windows production installer and signing
 
-On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager and its background service, and creates:
+On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It creates both Windows installer formats:
 
     target/release/bundle/nsis/GitManager-Setup.exe
+    target/release/bundle/msi/*.msi
 
-The setup installer copies the private CPython runtime after application files have been extracted. It lives under the current user's GitManager data directory and is used only by the bundled Developer Cleaner. It does not install Python machine-wide or modify PATH.
+The NSIS and WiX/MSI files are **application installers**. They install GitManager; they are not the first-run workspace wizard.
+
+The build also creates a separate first-run helper alongside the native binaries:
+
+    target/release/GitManager-Setup.exe
+
+That helper is bundled into the installed app as a Tauri sidecar. It is a tiny, dependency-free Rust launcher; it does not replace or duplicate Tauri. On first launch, the main Tauri app hands its executable path to the helper. The helper relaunches that same Tauri app with `--setup`, so the actual workspace wizard is still rendered by GitManager's Tauri UI/runtime. The helper is built for every supported OS: `GitManager-Setup.exe` on Windows and `GitManager-Setup` on Linux/macOS. The same first-run flow asks for the main repository folder, supports additional scan roots, and then continues into GitManager. If the sidecar is unavailable in a development build, the in-process wizard remains as a fallback.
+
+The Windows installer copies the private CPython runtime after application files have been extracted. It lives under the current user's GitManager data directory and is used only by the bundled Developer Cleaner. It does not install Python machine-wide or modify PATH.
 
 ### Sign the production installer from GitManager
 
@@ -162,7 +171,7 @@ GitManager does not export or store the certificate's private key. A self-signed
 For tagged Windows CI releases, configure repository secrets `WINDOWS_SIGNING_CERTIFICATE` (base64 PFX) and `WINDOWS_SIGNING_PASSWORD`, plus the repository variable `WINDOWS_SIGNING_THUMBPRINT`. The workflow imports the certificate only on its ephemeral runner, signs the application, service and setup package, verifies the signature, then removes the temporary PFX and certificate. Never commit PFX files, passwords or private keys.
 
 
-## 6. Per-user application storage and installation
+## 7. Per-user application storage and installation
 
 GitManager keeps the application install directory separate from user configuration and data.
 
@@ -179,4 +188,48 @@ On Linux and macOS, the same folder layout is rooted in the platform's user-loca
 
 The setup finish screen offers **Continue using GitManager** (launch the app) and a separate desktop-shortcut option. Uninstalling the application does not target the config/data siblings.
 
-Release builds use size-focused Cargo settings (size optimization, LTO, one codegen unit and symbol stripping), and Tokio is built with only the runtime/time features used by this application. This is an optimization baseline; final installer sizes must still be measured from actual Windows/Linux/macOS release artifacts.
+Release builds use size-focused Cargo settings (size optimization, thin LTO, eight codegen units and symbol stripping) to balance binary size and parallel build time. Each build also reports the number of unique normal/build crates in the workspace; the optimization target is fewer than 500. This is an optimization baseline; final installer sizes must still be measured from actual Windows/Linux/macOS release artifacts.
+
+
+## 8. Repository Archives & Native `gitm` CLI
+
+GitManager vendors the RBE Cloud Node storage engine under
+`src-tauri/vendor/rbe` and adapts it for complete repository restore points.
+Archive data is stored as content-addressed file blobs plus immutable manifests,
+so unchanged content is shared across snapshots. Local and Remote Archives are
+separate; each retains up to five complete restore points per repository/type.
+Secret-bearing `.env`/credential/private-key paths are excluded by default. Remote Archives are refused when those paths exist in reachable Git history. Archive identity follows the sanitized Git remote where available, so cloud restore points survive checkout-path changes.
+
+The standalone Rust `gitm` CLI provides local repository scanning,
+inspection, status, commit history, branches, remotes, origin update checks,
+fast-forward-only pulls, backup, restore, Cloud Node synchronization, and the
+preview-first Developer Cleaner, plus an adaptive keyboard/mouse TUI without
+requiring Node.js or the desktop WebView. Cloud Node providers can be configured
+from **Scan Setup → Cloud object storage** or with
+`gitm cloud configure --file provider.json`. The desktop archive panel displays
+provider status and offers an explicit Sync Now action. Provider secrets stay
+in OS environment variables. Google Drive/OneDrive desktop-sync folders can
+also be selected in Scan Setup as local archive destinations.
+
+### Native `gitm` command reference
+
+Run `gitm --help` for the top-level list or `gitm help COMMAND` for focused help.
+
+| Command | Purpose |
+| --- | --- |
+| `gitm` / `gitm tui` | Open the adaptive terminal dashboard. |
+| `gitm scan [ROOT...]` | Find local Git repositories under selected roots. |
+| `gitm inspect [PATH]` | Show repository metadata, refs, remotes, and worktree state. |
+| `gitm status [PATH]` | Show changed and untracked files. |
+| `gitm log [PATH] [--limit N]` | Read recent commits. |
+| `gitm branches [PATH]` / `gitm remotes [PATH]` | Inspect branches and credential-redacted remote URLs. |
+| `gitm update check [PATH]` | Compare the current branch with `origin`. |
+| `gitm update pull [PATH]` | Fast-forward a clean branch only; refuses dirty or diverged worktrees. |
+| `gitm backup [PATH] --kind local` | Save a Local Archive. |
+| `gitm backup [PATH] --kind remote` | Save a Remote Archive including reachable Git history. |
+| `gitm backups [PATH]` | List retained restore points. |
+| `gitm restore [PATH] --id ID --kind KIND --yes` | Restore a selected point after verification. |
+| `gitm cloud status|sync|configure|disable` | Inspect or explicitly synchronize Cloud Node storage. |
+| `gitm cleaner preview|apply|commit-clean|hook` | Use the same preview-first developer cleaner as the desktop. |
+
+See [docs/archive-storage.md](docs/archive-storage.md).

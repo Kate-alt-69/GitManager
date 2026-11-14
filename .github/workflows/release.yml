@@ -73,21 +73,28 @@ jobs:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
           $installer = "target/release/bundle/nsis/GitManager-Setup.exe"
-          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe was not created." }
-          $targets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", $installer)
-          foreach ($target in $targets) {
+          $setupHelper = "target/release/GitManager-Setup.exe"
+          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe NSIS installer was not created." }
+          if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
+
+          $msiFiles = @(Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File -ErrorAction Stop)
+          if ($msiFiles.Count -lt 1) { throw "The WiX MSI package was not created." }
+          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/gitm.exe", $installer) + @($msiFiles | ForEach-Object { $_.FullName })
+          foreach ($target in $signTargets) {
             if (Test-Path -LiteralPath $target) {
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
               if ($LASTEXITCODE -ne 0) { throw "Signing failed for $target." }
             }
           }
+          # gitm and GitManager-Setup are signed before Tauri embeds them as sidecars.
+          $verifyTargets = $signTargets + @("target/release/gitm.exe", $setupHelper)
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             $kits = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\bin"
             if (-not (Test-Path $kits)) { $kits = Join-Path $env:ProgramFiles "Windows Kits\10\bin" }
             $signtool = Get-ChildItem -LiteralPath $kits -Directory | Sort-Object Name -Descending |
               ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
               Where-Object { Test-Path $_ } | Select-Object -First 1
-            foreach ($target in $targets) {
+            foreach ($target in $verifyTargets) {
               if (Test-Path $target) { & $signtool verify /pa /v $target; if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $target" } }
             }
           }
@@ -108,6 +115,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-installers-${{ matrix.platform }}
-          path: target/release/bundle/**
+          path: |
+            target/release/bundle/**
+            target/release/gitm*
+            target/release/GitManager-Setup*
           if-no-files-found: error
           compression-level: 9

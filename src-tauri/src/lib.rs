@@ -1,4 +1,6 @@
 mod process_utils;
+pub mod archive;
+pub mod archive_watcher;
 pub mod git_info;
 pub mod remote_providers;
 pub mod scanner;
@@ -15,6 +17,7 @@ use tauri::path::BaseDirectory;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_shell::ShellExt;
 
 use git_info::{extract_git_repository_info, GitRepositoryInfo};
 use remote_providers::{
@@ -58,6 +61,11 @@ pub struct AppPreferences {
     pub show_dependency_repositories: bool,
     pub repository_settings: HashMap<String, RepositoryPreferences>,
     pub first_run_complete: bool,
+    pub archive_root: String,
+    pub archive_local_enabled: bool,
+    pub archive_remote_enabled: bool,
+    pub archive_trigger: String,
+    pub archive_quiet_ms: u64,
 }
 
 impl Default for AppPreferences {
@@ -73,6 +81,13 @@ impl Default for AppPreferences {
             show_dependency_repositories: true,
             repository_settings: HashMap::new(),
             first_run_complete: false,
+            archive_root: archive::default_archive_root()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            archive_local_enabled: true,
+            archive_remote_enabled: true,
+            archive_trigger: "manual".to_string(),
+            archive_quiet_ms: 1500,
         }
     }
 }
@@ -159,6 +174,16 @@ fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String>
     }
     preferences.scan_roots = retained_roots;
     preferences.max_scan_depth = preferences.max_scan_depth.clamp(2, 16);
+    if preferences.archive_root.trim().is_empty() {
+        preferences.archive_root = archive::default_archive_root()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default();
+    }
+    preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
+    if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
+        preferences.archive_trigger = "manual".to_string();
+    }
+    preferences.archive_quiet_ms = preferences.archive_quiet_ms.clamp(250, 60_000);
     Ok(preferences)
 }
 
@@ -289,6 +314,14 @@ fn save_app_preferences(
     if !(2..=16).contains(&preferences.max_scan_depth) {
         return Err("Scan depth must be between 2 and 16.".to_string());
     }
+    preferences.archive_root = normalize_archive_root(&preferences.archive_root)?;
+    preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
+    if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
+        return Err("Archive trigger must be manual, commit, or change.".to_string());
+    }
+    if !(250..=60_000).contains(&preferences.archive_quiet_ms) {
+        return Err("Archive quiet period must be between 250 and 60000 milliseconds.".to_string());
+    }
 
     let path = preferences_file(&app_handle)?;
     let temporary = path.with_extension("json.tmp");
@@ -317,7 +350,104 @@ fn save_app_preferences(
     if backup.exists() {
         let _ = fs::remove_file(&backup);
     }
+    archive_watcher::restart_archive_watchers(&preferences);
     Ok(preferences)
+}
+
+fn normalize_archive_root(raw: &str) -> Result<String, String> {
+    let candidate = if raw.trim().is_empty() {
+        archive::default_archive_root()?
+    } else {
+        let value = PathBuf::from(raw.trim());
+        if value.is_absolute() {
+            value
+        } else {
+            std::env::current_dir()
+                .map_err(|error| format!("Could not resolve current directory: {error}"))?
+                .join(value)
+        }
+    };
+    fs::create_dir_all(&candidate)
+        .map_err(|error| format!("Could not create archive storage directory: {error}"))?;
+    if !candidate.is_dir() {
+        return Err("Archive storage path must be a directory.".to_string());
+    }
+    candidate.canonicalize()
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|error| format!("Could not resolve archive storage directory: {error}"))
+}
+
+#[tauri::command]
+fn get_default_archive_directory() -> Result<String, String> {
+    archive::default_archive_root().map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn get_archive_cloud_storage_info(archive_root: String) -> Result<archive::ArchiveCloudStorageInfo, String> {
+    archive::archive_cloud_storage_info(&PathBuf::from(archive_root))
+}
+
+#[tauri::command]
+async fn configure_archive_cloud_storage(
+    archive_root: String,
+    provider_json: String,
+) -> Result<archive::ArchiveCloudStorageInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        archive::configure_archive_cloud_storage(Some(&archive_root), &provider_json)
+    })
+    .await
+    .map_err(|error| format!("Cloud archive configuration task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn disable_archive_cloud_storage(archive_root: String) -> Result<archive::ArchiveCloudStorageInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        archive::disable_archive_cloud_storage(Some(&archive_root))
+    })
+    .await
+    .map_err(|error| format!("Cloud archive configuration task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn sync_archive_cloud_storage(archive_root: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || archive::sync_archive_cloud_storage(Some(&archive_root)))
+        .await
+        .map_err(|error| format!("Cloud archive sync task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn capture_repository_archive(
+    repo_path: String,
+    kind: String,
+    archive_root: Option<String>,
+) -> Result<archive::ArchiveSnapshot, String> {
+    tokio::task::spawn_blocking(move || archive::capture_repository(&repo_path, archive_root.as_deref(), &kind))
+        .await.map_err(|error| format!("Archive capture task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_repository_archives(
+    repo_path: String,
+    kind: Option<String>,
+    archive_root: Option<String>,
+) -> Result<Vec<archive::ArchiveSnapshot>, String> {
+    tokio::task::spawn_blocking(move || archive::list_repository_archives(&repo_path, archive_root.as_deref(), kind.as_deref()))
+        .await.map_err(|error| format!("Archive listing task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn restore_repository_archive(
+    repo_path: String,
+    destination_path: String,
+    snapshot_id: String,
+    kind: String,
+    archive_root: Option<String>,
+    confirm_replace: bool,
+) -> Result<archive::ArchiveRestoreResult, String> {
+    tokio::task::spawn_blocking(move || archive::restore_repository_archive(
+        &repo_path, &destination_path, archive_root.as_deref(), &kind, &snapshot_id, confirm_replace
+    ))
+    .await.map_err(|error| format!("Archive restore task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -356,6 +486,36 @@ async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, Stri
 async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, String> {
     tokio::task::spawn_blocking(remote_providers::detect_github_identity).await
         .map_err(|error| format!("GitHub identity detection task failed: {error}"))?
+}
+
+/// Report whether this process is the first-run setup companion.
+#[tauri::command]
+fn is_setup_mode() -> bool {
+    std::env::var_os("GITMANAGER_SETUP_MODE").is_some()
+}
+
+/// Start the packaged setup companion and close the bootstrap window.
+/// If the sidecar is unavailable, the frontend falls back to its in-process
+/// first-run wizard rather than leaving the user without onboarding.
+#[tauri::command]
+fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
+    let current_app = std::env::current_exe()
+        .map_err(|error| format!("Could not locate the running GitManager application: {error}"))?;
+    let command = app_handle
+        .shell()
+        .sidecar("gitmanager-setup")
+        .map_err(|error| format!("GitManager Setup helper is unavailable: {error}"))?
+        .args([current_app.to_string_lossy().to_string()]);
+
+    let (_events, child) = command.spawn()
+        .map_err(|error| format!("Could not start GitManager Setup: {error}"))?;
+
+    // Keep the child handle alive until this bootstrap process exits; dropping
+    // it here can terminate the just-launched setup process on some platforms.
+    std::mem::forget(child);
+
+    app_handle.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -903,6 +1063,7 @@ pub fn run() {
             let state = app.state::<AppState>();
             let preferences = load_app_preferences(app.handle().clone())
                 .unwrap_or_else(|_| AppPreferences::default());
+            archive_watcher::restart_archive_watchers(&preferences);
             spawn_background_update_watcher(
                 app.handle().clone(),
                 state.watcher.enabled.clone(),
@@ -916,6 +1077,14 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             get_default_scan_directories,
+            get_default_archive_directory,
+            get_archive_cloud_storage_info,
+            configure_archive_cloud_storage,
+            disable_archive_cloud_storage,
+            sync_archive_cloud_storage,
+            capture_repository_archive,
+            list_repository_archives,
+            restore_repository_archive,
             get_application_directories,
             load_app_preferences,
             save_app_preferences,
@@ -927,6 +1096,8 @@ pub fn run() {
             scan_machine_repositories,
             inspect_repository,
             detect_github_identity,
+            is_setup_mode,
+            launch_first_run_setup,
             connect_git_account,
             check_repo_updates_now,
             pull_repository_update,
