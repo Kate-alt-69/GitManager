@@ -416,6 +416,156 @@ async fn sync_archive_cloud_storage(archive_root: String) -> Result<String, Stri
         .map_err(|error| format!("Cloud archive sync task failed: {error}"))?
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RbeNodeStatusInfo {
+    address: String,
+    reachable: bool,
+    backend_http_status: Option<u16>,
+    api_route_http_status: Option<u16>,
+    backend_health: Option<Value>,
+    api_route_health: Option<Value>,
+    backend_error: Option<String>,
+    api_route_error: Option<String>,
+    message: String,
+}
+
+fn validate_rbe_node_base_url(address: &str) -> Result<url::Url, String> {
+    let input = address.trim();
+    if input.is_empty() {
+        return Err("Enter the NAS IP address and optional port.".to_string());
+    }
+    let candidate = if input.contains("://") {
+        input.to_string()
+    } else {
+        format!("http://{input}")
+    };
+    let mut parsed = url::Url::parse(&candidate)
+        .map_err(|error| format!("NAS address is not a valid URL or IP: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !matches!(parsed.path(), "" | "/")
+    {
+        return Err(
+            "Use an HTTP or HTTPS LAN IP with an optional port only; paths and embedded credentials are not accepted."
+                .to_string(),
+        );
+    }
+
+    let host = parsed
+        .host()
+        .ok_or_else(|| "NAS address must contain an IP address.".to_string())?;
+    let is_lan_ip = match host {
+        url::Host::Ipv4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || (ip.octets()[0] == 169 && ip.octets()[1] == 254)
+        }
+        url::Host::Ipv6(ip) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+        }
+        url::Host::Domain(_) => false,
+    };
+    if !is_lan_ip {
+        return Err(
+            "For this LAN status check, enter a private, link-local, or loopback IP address—not a public host."
+                .to_string(),
+        );
+    }
+
+    if parsed.port().is_none() {
+        let port = if parsed.scheme() == "https" { 443 } else { 8080 };
+        parsed
+            .set_port(Some(port))
+            .map_err(|_| "Could not apply the default RBE backend port.".to_string())?;
+    }
+    Ok(parsed)
+}
+
+async fn fetch_rbe_health(
+    client: &reqwest::Client,
+    endpoint: url::Url,
+) -> (Option<u16>, Option<Value>, Option<String>) {
+    let response = match client
+        .get(endpoint)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return (None, None, Some(error.to_string())),
+    };
+    let status = response.status().as_u16();
+    let mut response = response;
+    let mut body = Vec::new();
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => return (Some(status), None, Some(error.to_string())),
+        };
+        if body.len().saturating_add(chunk.len()) > 64 * 1024 {
+            return (
+                Some(status),
+                None,
+                Some("RBE health response exceeded the 64 KiB limit.".to_string()),
+            );
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let value = if body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<Value>(&body).ok()
+    };
+    (Some(status), value, None)
+}
+
+#[tauri::command]
+async fn check_rbe_node_status(address: String) -> Result<RbeNodeStatusInfo, String> {
+    let base = validate_rbe_node_base_url(&address)?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(6))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Could not create the RBE status client: {error}"))?;
+
+    let mut backend_endpoint = base.clone();
+    backend_endpoint.set_path("/health");
+    let mut api_endpoint = base.clone();
+    api_endpoint.set_path("/api/health");
+
+    let (backend_http_status, backend_health, backend_error) =
+        fetch_rbe_health(&client, backend_endpoint).await;
+    let (api_route_http_status, api_route_health, api_route_error) =
+        fetch_rbe_health(&client, api_endpoint).await;
+    let reachable = backend_http_status.is_some_and(|status| (200..300).contains(&status));
+    let message = if reachable {
+        "RBE backend is reachable on the LAN. API route status is reported separately.".to_string()
+    } else {
+        "Could not confirm the RBE backend health endpoint. Check the IP, port, host firewall and whether backend is running.".to_string()
+    };
+
+    Ok(RbeNodeStatusInfo {
+        address: base.to_string(),
+        reachable,
+        backend_http_status,
+        api_route_http_status,
+        backend_health,
+        api_route_health,
+        backend_error,
+        api_route_error,
+        message,
+    })
+}
+
 #[tauri::command]
 async fn capture_repository_archive(
     repo_path: String,
@@ -1152,6 +1302,7 @@ pub fn run() {
             configure_archive_cloud_storage,
             disable_archive_cloud_storage,
             sync_archive_cloud_storage,
+            check_rbe_node_status,
             capture_repository_archive,
             list_repository_archives,
             restore_repository_archive,
