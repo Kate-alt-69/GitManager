@@ -194,6 +194,8 @@ let appPreferences = null;
 let dependencyRepoIds = new Set();
 let repositoryKindFilter = "all";
 let activePage = "repositories";
+let activeSettingsSection = "general";
+let activeCloudProvider = "google-drive";
 let cloudNodeReleaseLookupPromise = null;
 let applicationDirectories = null;
 let selectedBranchName = null;
@@ -853,7 +855,7 @@ function renderConnectedAccountsBar() {
 }
 
 function setActivePage(page) {
-  if (!["repositories", "accounts", "cloud-nodes", "settings"].includes(page)) return;
+  if (!["repositories", "accounts", "settings"].includes(page)) return;
   activePage = page;
   document.querySelectorAll(".app-page").forEach((section) => {
     const active = section.id === "page-" + page;
@@ -865,6 +867,38 @@ function setActivePage(page) {
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", active ? "true" : "false");
   });
+}
+
+function setActiveSettingsSection(section) {
+  if (!["general", "cloud"].includes(section)) return;
+  activeSettingsSection = section;
+  document.querySelectorAll("[data-settings-section]").forEach((tab) => {
+    const active = tab.getAttribute("data-settings-section") === section;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  const general = document.getElementById("settings-general-panel");
+  const cloud = document.getElementById("settings-cloud-panel");
+  if (general) general.classList.toggle("hidden", section !== "general");
+  if (cloud) cloud.classList.toggle("hidden", section !== "cloud");
+  if (section === "cloud") void refreshArchiveCloudStatus();
+}
+
+function setActiveCloudProvider(provider) {
+  const supported = ["google-drive", "onedrive", "supabase", "amazon-s3", "s3-compatible", "node"];
+  if (!supported.includes(provider)) return;
+  activeCloudProvider = provider;
+  document.querySelectorAll("[data-cloud-provider]").forEach((tab) => {
+    const active = tab.getAttribute("data-cloud-provider") === provider;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-cloud-panel]").forEach((panel) => {
+    const active = panel.getAttribute("data-cloud-panel") === provider;
+    panel.classList.toggle("hidden", !active);
+    panel.classList.toggle("active", active);
+  });
+  if (provider === "node") void refreshCloudNodeBundleAvailability();
 }
 
 function getRepositoryById(id) {
@@ -2197,12 +2231,12 @@ function wireEventListeners() {
   document.querySelectorAll("[data-page]").forEach((tab) => {
     tab.addEventListener("click", () => {
       const page = tab.getAttribute("data-page");
-      if (page) {
-        setActivePage(page);
-        if (page === "cloud-nodes") void refreshCloudNodeBundleAvailability();
-      }
+      if (page) setActivePage(page);
     });
   });
+  wireCloudSettingsControls();
+  setActiveSettingsSection(activeSettingsSection);
+  setActiveCloudProvider(activeCloudProvider);
   const cloudNodeDownload = document.getElementById("btn-download-cloud-node-setup");
   const cloudNodeRefresh = document.getElementById("btn-refresh-cloud-node-release");
   const cloudNodeArtifacts = document.getElementById("btn-open-cloud-node-artifacts");
@@ -2562,10 +2596,12 @@ function currentArchiveRootForCloud() {
 }
 
 function setArchiveCloudStatus(message, isError = false) {
-  const status = document.getElementById("setup-cloud-status");
-  if (!status) return;
-  status.textContent = message;
-  status.classList.toggle("is-error", Boolean(isError));
+  for (const id of ["cloud-provider-status", "setup-cloud-status"]) {
+    const status = document.getElementById(id);
+    if (!status) continue;
+    status.textContent = message;
+    status.classList.toggle("is-error", Boolean(isError));
+  }
 }
 
 function setArchiveCloudBusy(busy) {
@@ -2573,7 +2609,15 @@ function setArchiveCloudBusy(busy) {
     "btn-configure-archive-cloud",
     "btn-check-archive-cloud",
     "btn-sync-archive-cloud",
-    "btn-disable-archive-cloud"
+    "btn-disable-archive-cloud",
+    "btn-cloud-refresh-status",
+    "btn-cloud-open-provider-setup",
+    "btn-cloud-sync-now",
+    "btn-cloud-google-drive-folder",
+    "btn-cloud-onedrive-folder",
+    "btn-cloud-supabase-configure",
+    "btn-cloud-amazon-s3-configure",
+    "btn-cloud-s3-compatible-configure"
   ]) {
     const button = document.getElementById(id);
     if (button) button.disabled = busy;
@@ -2684,6 +2728,90 @@ async function disableArchiveCloudProvider() {
   }
 }
 
+
+
+function cloudProviderTemplate(provider) {
+  const templates = {
+    supabase: {
+      kind: "supabase",
+      namespace: "gitmanager",
+      bucket: "gitmanager-archives",
+      endpoint: "https://YOUR_PROJECT.supabase.co",
+      auth: { mode: "api-key" }
+    },
+    "amazon-s3": {
+      kind: "amazon-s3",
+      namespace: "gitmanager",
+      bucket: "gitmanager-archives",
+      region: "ap-south-1",
+      auth: { mode: "aws-sig-v4" }
+    },
+    "s3-compatible": {
+      kind: "http",
+      namespace: "gitmanager",
+      bucket: "gitmanager-archives",
+      endpoint: "https://objects.example.com",
+      auth: { mode: "bearer", bearerTokenEnv: "GITMANAGER_ARCHIVE_TOKEN" }
+    }
+  };
+  return templates[provider] || null;
+}
+
+function openCloudProviderConfiguration(provider) {
+  const template = cloudProviderTemplate(provider);
+  if (!template) return;
+  openScanSetup(false);
+  const editor = document.getElementById("setup-cloud-provider-json");
+  if (editor) {
+    editor.value = JSON.stringify(template, null, 2);
+    editor.focus();
+  }
+  setArchiveCloudStatus(
+    "Loaded a " + provider + " provider template into Scan Setup. Replace placeholders and set the named credential environment variables before configuring."
+  );
+}
+
+async function chooseCloudSyncedFolder(provider) {
+  openScanSetup(false);
+  setArchiveCloudStatus(
+    provider + " direct OAuth/API upload is not enabled here. Choose the provider's desktop-synced local folder as the archive destination; its own sync client will upload those files."
+  );
+  await browseForArchiveRoot();
+}
+
+function wireCloudSettingsControls() {
+  document.querySelectorAll("[data-settings-section]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      setActiveSettingsSection(tab.getAttribute("data-settings-section"));
+    });
+  });
+  document.querySelectorAll("[data-cloud-provider]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      setActiveCloudProvider(tab.getAttribute("data-cloud-provider"));
+    });
+  });
+
+  const refresh = document.getElementById("btn-cloud-refresh-status");
+  const openProvider = document.getElementById("btn-cloud-open-provider-setup");
+  const sync = document.getElementById("btn-cloud-sync-now");
+  const googleDrive = document.getElementById("btn-cloud-google-drive-folder");
+  const oneDrive = document.getElementById("btn-cloud-onedrive-folder");
+  const supabase = document.getElementById("btn-cloud-supabase-configure");
+  const amazonS3 = document.getElementById("btn-cloud-amazon-s3-configure");
+  const s3Compatible = document.getElementById("btn-cloud-s3-compatible-configure");
+
+  if (refresh) refresh.addEventListener("click", () => void refreshArchiveCloudStatus());
+  if (openProvider) openProvider.addEventListener("click", () => {
+    setActiveCloudProvider("s3-compatible");
+    openCloudProviderConfiguration("s3-compatible");
+  });
+  if (sync) sync.addEventListener("click", () => void syncArchiveCloudProvider());
+  if (googleDrive) googleDrive.addEventListener("click", () => void chooseCloudSyncedFolder("Google Drive"));
+  if (oneDrive) oneDrive.addEventListener("click", () => void chooseCloudSyncedFolder("Microsoft OneDrive"));
+  if (supabase) supabase.addEventListener("click", () => openCloudProviderConfiguration("supabase"));
+  if (amazonS3) amazonS3.addEventListener("click", () => openCloudProviderConfiguration("amazon-s3"));
+  if (s3Compatible) s3Compatible.addEventListener("click", () => openCloudProviderConfiguration("s3-compatible"));
+}
 
 const CLOUD_NODE_RELEASE_API =
   "https://api.github.com/repos/Kate-alt-69/GitManager/releases/tags/cloud-node-setup-latest";
