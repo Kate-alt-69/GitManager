@@ -79,6 +79,22 @@ provider. Repository captures attempt cloud synchronization automatically
 after their local restore point has been committed. If the provider is offline,
 the local archive remains saved and can be synchronized later.
 
+Automatic archive watching is coordinated between the desktop app and the
+startup `git-manager-service` worker with a per-user OS file lease. Only one
+process watches the configured repositories at a time. When the desktop closes,
+the startup worker retries lease acquisition and takes over; when the desktop
+reopens, it does not create a duplicate watcher. The worker reloads the shared
+preferences periodically, while its Git-remote update checks retain their
+separate two-minute cadence. Up to two archive captures run concurrently.
+
+The startup worker does not need to launch a second `cloud_node.exe` for
+Supabase/S3 provider sync. `gitmanager-archive` links the vendored RBE
+Cloud Node `provider-sync` feature and uses its content-addressed storage and
+provider APIs in-process. The NAS bootstrap installs `backend`, `cloud_node`
+and the RBE runtime there; persistent authenticated LAN peer sync remains
+blocked on the permanent receiver/pairing support described in the deployment
+guide.
+
 Provider credentials must be set in the current user's operating-system
 environment. The JSON stores environment-variable names only; never paste raw
 tokens, passwords, private keys or service-account JSON into provider
