@@ -71,7 +71,8 @@
     "shortDescription": "A free, native Git workspace manager",
     "longDescription": "GitManager is a free and open-source Git workspace manager by Kastrick.",
     "externalBin": [
-      "binaries/gitm"
+      "binaries/gitm",
+      "binaries/gitmanager-setup"
     ]
   }
 }
