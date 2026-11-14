@@ -2694,7 +2694,23 @@ async function autoConnectGitHubIdentity() {
   }
 }
 
+async function refreshAppVersion() {
+  const headerBadge = document.getElementById("app-version-badge");
+  const settingsVersion = document.getElementById("settings-app-version");
+  try {
+    const version = await tauriInvoke("get_app_version");
+    const label = version ? "v" + String(version) : "Unavailable";
+    if (headerBadge) headerBadge.textContent = label;
+    if (settingsVersion) settingsVersion.textContent = label;
+  } catch (error) {
+    if (headerBadge) headerBadge.textContent = "v—";
+    if (settingsVersion) settingsVersion.textContent = "Unavailable";
+    console.warn("Could not resolve GitManager application version:", error);
+  }
+}
+
 async function initializeGitManager() {
+  void refreshAppVersion();
   try {
     applicationDirectories = await tauriInvoke("get_application_directories");
   } catch (error) {
