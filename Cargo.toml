@@ -8,6 +8,8 @@ members = [
     "crates/gitm-cli",
     "crates/gitmanager-setup",
 ]
+# Plain workspace builds target GitManager; sidecars are built explicitly by build.py.
+default-members = ["src-tauri"]
 resolver = "2"
 
 
