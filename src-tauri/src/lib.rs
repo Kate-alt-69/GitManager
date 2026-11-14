@@ -1181,3 +1181,23 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running GitManager Tauri v2 application");
 }
+
+#[cfg(test)]
+mod external_url_tests {
+    use super::normalize_external_url;
+
+    #[test]
+    fn external_urls_require_https_without_credentials() {
+        assert!(normalize_external_url("http://github.com/org/repo").is_err());
+        assert!(normalize_external_url("javascript:alert(1)").is_err());
+        assert!(normalize_external_url("https://user:token@github.com/org/repo").is_err());
+    }
+
+    #[test]
+    fn external_urls_drop_query_and_fragment_data() {
+        assert_eq!(
+            normalize_external_url("https://github.com/org/repo?token=secret#settings").unwrap(),
+            "https://github.com/org/repo"
+        );
+    }
+}
