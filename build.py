@@ -466,150 +466,85 @@ def extract_rbe_cloud_node_archive(
 
 
 def prepare_cloud_node_deployment(project_root: Path) -> int:
-    """Download, verify and package every official RBE Cloud Node platform binary."""
-    tag = os.environ.get("RBE_CLOUD_NODE_RELEASE_TAG", RBE_CLOUD_NODE_RELEASE_TAG).strip()
+    """Build a small bootstrap ZIP; setup.py downloads only the host's RBE runtime."""
     try:
-        release = fetch_rbe_cloud_node_release(tag)
-        version_match = re.fullmatch(r"rbe-bin-v([0-9]+\.[0-9]+\.[0-9]+)", tag)
-        if not version_match:
-            raise ValueError(f"Unexpected RBE release tag: {tag}")
-        version = version_match.group(1)
-        source_commit_match = re.search(r"Built from \[([0-9a-f]{40})\]", str(release.get("body") or ""))
-        source_commit = source_commit_match.group(1) if source_commit_match else None
-        asset_map = {
-            asset["name"]: asset
-            for asset in release.get("assets", [])
-            if isinstance(asset, dict) and isinstance(asset.get("name"), str)
-        }
+        template_dir = project_root / "tools" / "cloud-node-deployment"
+        required = (
+            "README.md",
+            "setup.py",
+            "manifest.json",
+            "settings.json",
+            "setting.node.cn.json",
+            "LICENSE-GITMANAGER.txt",
+            "LICENSE-RBE.txt",
+            "NOTICE-RBE.txt",
+        )
+        for name in required:
+            source = template_dir / name
+            if not source.is_file() or source.is_symlink():
+                raise ValueError(f"RBE node bootstrap template is missing or unsafe: {source}")
 
-        binary_assets: Dict[str, Dict[str, object]] = {}
-        build_ids = set()
-        for target, (slug, archive_kind, _binary_name, _compatibility) in RBE_CLOUD_NODE_TARGETS.items():
-            suffix = "zip" if archive_kind == "zip" else r"tar\.gz"
-            pattern = re.compile(
-                rf"^rbe-{re.escape(version)}-{re.escape(slug)}-build\.([0-9]+\.[0-9]+)\.{suffix}$"
-            )
-            matches = [(name, asset, pattern.fullmatch(name)) for name, asset in asset_map.items()]
-            matches = [(name, asset, match) for name, asset, match in matches if match]
-            if len(matches) != 1:
-                raise ValueError(f"RBE release {tag} must contain exactly one {slug} Cloud Node archive.")
-            name, asset, match = matches[0]
-            build_ids.add(match.group(1))
-            binary_assets[target] = asset
-        if len(build_ids) != 1:
-            raise ValueError(f"RBE release {tag} mixes multiple build revisions: {sorted(build_ids)}.")
-        build_id = next(iter(build_ids))
-        checksum_name = f"SHA256SUMS-build.{build_id}.txt"
-        checksum_asset = asset_map.get(checksum_name)
-        if not checksum_asset:
-            raise ValueError(f"RBE release is missing its checksum asset {checksum_name}.")
+        manifest = json.loads((template_dir / "manifest.json").read_text(encoding="utf-8"))
+        if (
+            manifest.get("formatVersion") != 2
+            or manifest.get("kind") != "gitmanager-rbe-runtime-bootstrap"
+            or manifest.get("rbeRepository") != "Kastrick8/RBE"
+        ):
+            raise ValueError("RBE node bootstrap manifest has an unsupported format.")
+
+        route_root = template_dir / "api"
+        if not route_root.is_dir() or route_root.is_symlink():
+            raise ValueError("RBE node bootstrap package is missing its api/ route folder.")
+        route_files = sorted(
+            path for path in route_root.rglob("*.route")
+            if path.is_file() and not path.is_symlink()
+        )
+        if not route_files or not (route_root / "health.route").is_file():
+            raise ValueError("RBE node bootstrap package must include api/health.route.")
+        for route in route_files:
+            if not route.resolve().is_relative_to(route_root.resolve()):
+                raise ValueError(f"RBE API route escapes its template directory: {route}")
 
         target_dir = project_root / "target"
-        cache_dir = target_dir / "cloud-node-release-cache" / tag
-        checksum_path, checksum_asset_hash = download_verified_rbe_asset(
-            checksum_asset, cache_dir, max_bytes=2 * 1024 * 1024
-        )
-        checksum_lines = checksum_path.read_text(encoding="utf-8").splitlines()
-        checksum_map: Dict[str, str] = {}
-        for line in checksum_lines:
-            match = re.fullmatch(r"([0-9a-fA-F]{64})\s+\*?([A-Za-z0-9._-]+)", line.strip())
-            if match:
-                checksum_map[match.group(2)] = match.group(1).lower()
+        output_dir = target_dir / "deployment"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        archive_name = "GitManager-Cloud-Node-Setup.zip"
+        final_archive = output_dir / archive_name
+        temporary_archive = output_dir / (archive_name + ".part")
+        if temporary_archive.exists():
+            temporary_archive.unlink()
 
-        staging_root = target_dir / "cloud-node-deployment-staging"
-        if staging_root.is_symlink():
-            raise ValueError("Refusing to replace a symlink at the Cloud Node staging path.")
-        if staging_root.exists():
-            shutil.rmtree(staging_root)
-        staging_root.mkdir(parents=True, exist_ok=True)
-        targets_manifest: Dict[str, object] = {}
-        try:
-            for target, (slug, archive_kind, binary_name, compatibility) in RBE_CLOUD_NODE_TARGETS.items():
-                asset = binary_assets[target]
-                archive_path, archive_sha = download_verified_rbe_asset(asset, cache_dir)
-                if checksum_map.get(str(asset["name"])) != archive_sha:
-                    raise ValueError(f"RBE SHA256SUMS entry for {asset['name']} does not match the verified Release digest.")
-                binary_relative = Path("binaries") / target / binary_name
-                binary_path = staging_root / binary_relative
-                size, binary_sha = extract_rbe_cloud_node_archive(
-                    archive_path, archive_kind, binary_name, binary_path
-                )
-                targets_manifest[target] = {
-                    "path": binary_relative.as_posix(),
-                    "sha256": binary_sha,
-                    "size": size,
-                    "archive": str(asset["name"]),
-                    "archiveSha256": archive_sha,
-                    "compatibility": compatibility,
-                }
-                log_ok(f"Prepared Cloud Node {target}: {size:,} bytes, SHA-256 {binary_sha}")
+        package_files = [template_dir / name for name in required] + route_files
+        with zipfile.ZipFile(
+            temporary_archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
+        ) as bundle:
+            for file_path in sorted(package_files, key=lambda path: path.relative_to(template_dir).as_posix()):
+                relative = file_path.relative_to(template_dir).as_posix()
+                bundle.write(file_path, relative)
 
-            template_dir = project_root / "tools" / "cloud-node-deployment"
-            for name in ("README.md", "setup.py", "LICENSE-GITMANAGER.txt", "LICENSE-RBE.txt", "NOTICE-RBE.txt"):
-                source = template_dir / name
-                if not source.is_file():
-                    raise ValueError(f"Cloud Node deployment template is missing {source}.")
-                shutil.copy2(source, staging_root / name)
+        with zipfile.ZipFile(temporary_archive, "r") as packaged:
+            corrupt_entry = packaged.testzip()
+            if corrupt_entry:
+                raise ValueError(f"Generated RBE node bootstrap ZIP failed CRC verification at {corrupt_entry}.")
+            names = set(packaged.namelist())
+            if "api/health.route" not in names:
+                raise ValueError("Generated RBE node bootstrap ZIP is missing api/health.route.")
+            if any(name.startswith("binaries/") or name.endswith((".exe", "/backend", "/cloud_node")) for name in names):
+                raise ValueError("Bootstrap ZIP must not pre-bundle RBE executables.")
+            compile(packaged.read("setup.py"), "tools/cloud-node-deployment/setup.py", "exec")
+            packaged_manifest = json.loads(packaged.read("manifest.json").decode("utf-8"))
+            if packaged_manifest != manifest:
+                raise ValueError("Generated RBE node bootstrap ZIP changed manifest.json.")
 
-            manifest = {
-                "formatVersion": 1,
-                "kind": "gitmanager-cloud-node-deployment",
-                "product": "GitManager Cloud Node Setup",
-                "rbeRelease": {
-                    "repository": "Kastrick8/RBE",
-                    "tag": tag,
-                    "buildTag": f"rbe-bin-v{version}-build.{build_id}",
-                    "version": version,
-                    "sourceCommit": source_commit,
-                    "publishedAt": release.get("published_at"),
-                    "releaseUrl": release.get("html_url"),
-                    "checksumAsset": checksum_name,
-                    "checksumAssetSha256": checksum_asset_hash,
-                },
-                "targets": targets_manifest,
-            }
-            (staging_root / "manifest.json").write_text(
-                json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-
-            output_dir = target_dir / "deployment"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            archive_name = f"GitManager-Cloud-Node-Setup-{tag}-build.{build_id}.zip"
-            final_archive = output_dir / archive_name
-            temporary_archive = output_dir / (archive_name + ".part")
-            if temporary_archive.exists():
-                temporary_archive.unlink()
-            with zipfile.ZipFile(
-                temporary_archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
-            ) as bundle:
-                files = sorted(
-                    path for path in staging_root.rglob("*") if path.is_file() and not path.is_symlink()
-                )
-                for file_path in files:
-                    relative = file_path.relative_to(staging_root).as_posix()
-                    bundle.write(file_path, relative)
-            with zipfile.ZipFile(temporary_archive, "r") as packaged:
-                corrupt_entry = packaged.testzip()
-                if corrupt_entry:
-                    raise ValueError(f"Generated Cloud Node ZIP failed CRC verification at {corrupt_entry}.")
-                packaged_manifest = json.loads(packaged.read("manifest.json").decode("utf-8"))
-                compile(packaged.read("setup.py"), "tools/cloud-node-deployment/setup.py", "exec")
-                for target, entry in packaged_manifest["targets"].items():
-                    payload = packaged.read(entry["path"])
-                    if len(payload) != entry["size"] or hashlib.sha256(payload).hexdigest() != entry["sha256"]:
-                        raise ValueError(f"Generated Cloud Node ZIP failed binary verification for {target}.")
-            os.replace(temporary_archive, final_archive)
-            log_ok(f"Created and verified all-platform Cloud Node deployment ZIP: {final_archive}")
-            log_info(f"Included targets: {', '.join(sorted(targets_manifest))}")
-            return 0
-        finally:
-            if staging_root.exists():
-                shutil.rmtree(staging_root)
-    except (OSError, ValueError, RuntimeError, urllib.error.URLError, zipfile.BadZipFile, tarfile.TarError) as error:
-        log_err(f"Cloud Node deployment packaging failed: {error}")
+        os.replace(temporary_archive, final_archive)
+        size = final_archive.stat().st_size
+        log_ok(f"Created verified RBE node bootstrap ZIP: {final_archive} ({size:,} bytes)")
+        log_info("Included: setup.py, RBE settings templates, /api routes and licenses.")
+        log_info("RBE binaries are downloaded and checksum-verified for the target machine when setup.py runs.")
+        return 0
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+        log_err(f"RBE node bootstrap packaging failed: {error}")
         return 1
-
 
 def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
     """Write an explicit Windows signing override for every release build.
