@@ -26,7 +26,7 @@ recovery = []
 # Inbound RBE server; kept separate from GitManager's desktop archive client.
 server = ["peer-auth", "recovery"]
 local-sync = []
-registry-ingest = ["provider-sync", "dep:storage-sync-journal"]
+registry-ingest = ["provider-sync"]
 journal-ingest = ["dep:storage-sync-journal"]
 [dependencies]
 atomic-io = { path = "../atomic-io" }
