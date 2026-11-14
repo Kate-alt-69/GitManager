@@ -170,11 +170,11 @@
                 <section id="cloud-provider-s3-compatible" class="cloud-provider-panel hidden" role="tabpanel" aria-label="S3-compatible storage" data-cloud-panel="s3-compatible">
                   <div class="settings-card settings-card-wide">
                     <div class="settings-card-heading">
-                      <div><h3>S3-compatible / custom HTTPS storage</h3><p>Configure a supported custom HTTPS object endpoint.</p></div>
+                      <div><h3>S3-compatible storage</h3><p>Use a custom endpoint with AWS SigV4 request signing.</p></div>
                       <span class="settings-icon" aria-hidden="true">⇄</span>
                     </div>
-                    <p class="settings-value">The current generic HTTP object provider is available for compatible APIs. It is not yet a guarantee of compatibility with every S3 clone or custom SigV4 endpoint; validate the provider's object API and auth mode before enabling it.</p>
-                    <div class="settings-actions"><button id="btn-cloud-s3-compatible-configure" class="btn btn-primary" type="button">Configure HTTPS endpoint</button></div>
+                    <p class="settings-value">The Amazon S3 adapter accepts a custom endpoint and uses path-style bucket URLs with SigV4 signing. This works with S3-compatible services that implement that request format. Set RBE_CN_PROV_AMAZON_ACCESS_KEY and RBE_CN_PROV_AMAZON_SECRET_KEY in the operating system environment; use the endpoint and region value supplied by your storage vendor.</p>
+                    <div class="settings-actions"><button id="btn-cloud-s3-compatible-configure" class="btn btn-primary" type="button">Configure S3 endpoint</button></div>
                   </div>
                 </section>
                 <section id="cloud-provider-node" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Cloud Node setup" data-cloud-panel="node">
