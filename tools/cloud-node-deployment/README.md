@@ -106,7 +106,7 @@ On Linux, the user service can be inspected with `systemctl --user status cloud-
 
 The binaries are downloaded by GitManager's build step from the official `Kastrick8/RBE` GitHub Release. The build verifies each complete upstream archive against both GitHub's Release API SHA-256 digest and the release's `SHA256SUMS` file, then extracts only the root-level `cloud_node` executable. `manifest.json` records each executable's SHA-256 and the exact RBE release/build provenance. Setup verifies the selected binary again before installing it.
 
-RBE is distributed under Apache License 2.0; see `LICENSE-RBE.txt`. The RBE source and release documentation are available at:
+GitManager and the vendored setup tool are distributed under Apache License 2.0; see `LICENSE-GITMANAGER.txt`. The separately distributed RBE binary is Apache License 2.0; see `LICENSE-RBE.txt` and `NOTICE-RBE.txt`. The RBE source and release documentation are available at:
 
 - https://github.com/Kastrick8/RBE
 - https://github.com/Kastrick8/RBE/blob/main/doc/cloud-node.md
