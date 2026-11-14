@@ -4,7 +4,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\\s', '').ToUpperInvariant()
+$thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\s', '').ToUpperInvariant()
 
 if ([string]::IsNullOrWhiteSpace($thumbprint)) {
     throw "[GitManager] The signing helper was invoked without WINDOWS_SIGNING_THUMBPRINT. Unsigned builds must clear Tauri signCommand before bundling."
