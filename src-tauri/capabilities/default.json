@@ -15,7 +15,12 @@
       "allow": [
         {
           "name": "binaries/gitmanager-setup",
-          "sidecar": true
+          "sidecar": true,
+          "args": [
+            {
+              "validator": ".+"
+            }
+          ]
         }
       ]
     }
