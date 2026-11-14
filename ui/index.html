@@ -191,6 +191,14 @@
                       <button id="btn-open-cloud-node-guide" class="btn btn-secondary" type="button">Deployment guide</button>
                     </div>
                     <div id="cloud-node-release-status" class="repository-setting-status" role="status">Checking the RBE node bootstrap release…</div>
+                    <div class="cloud-node-address-box">
+                      <label for="cloud-node-address-input">NAS / RBE backend LAN address</label>
+                      <div class="cloud-node-address-row">
+                        <input id="cloud-node-address-input" class="scan-input" type="text" inputmode="url" autocomplete="off" placeholder="192.168.1.50:8080" />
+                        <button id="btn-check-cloud-node-address" class="btn btn-secondary" type="button">Check backend</button>
+                      </div>
+                      <div id="cloud-node-address-status" class="repository-setting-status" role="status">Enter the NAS IP and port to check /health and /api/health.</div>
+                    </div>
                     <div class="cloud-node-install-commands">
                       <div class="path-row"><span>Windows</span><code>py setup.py</code></div>
                       <div class="path-row"><span>Linux / macOS</span><code>python3 setup.py</code></div>
