@@ -39,3 +39,4 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 gitmanager-archive = { path = "../crates/archive-core" }
 notify = "8.2.2"
+fs2 = "0.4"
