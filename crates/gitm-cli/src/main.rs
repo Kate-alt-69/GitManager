@@ -1474,7 +1474,9 @@ fn print_snapshot(snapshot: &ArchiveSnapshot) {
 
 #[cfg(test)]
 mod tests {
-    use super::positional;
+    use super::{perform_fast_forward_update, positional, RemoteUpdateState};
+    use git2::Repository;
+    use std::path::Path;
 
     #[test]
     fn nested_help_flags_are_detected_before_command_execution() {
