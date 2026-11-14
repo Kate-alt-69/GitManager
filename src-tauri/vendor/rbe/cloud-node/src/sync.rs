@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::format::{BlobBody, BlobKind, BlobManifest};
-use crate::registry_ingest::ensure_registry_ingest_committed;
+use crate::registry_guard::ensure_registry_ingest_committed;
 use crate::store::CloudNodeStore;
 
 const SYNC_HEADER_MAGIC: &[u8; 8] = b"RBECNSY1";
