@@ -79,7 +79,7 @@ jobs:
 
           $msiFiles = @(Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File -ErrorAction Stop)
           if ($msiFiles.Count -lt 1) { throw "The WiX MSI package was not created." }
-          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", $installer) + @($msiFiles | ForEach-Object { $_.FullName })
+          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/gitm.exe", $installer) + @($msiFiles | ForEach-Object { $_.FullName })
           foreach ($target in $signTargets) {
             if (Test-Path -LiteralPath $target) {
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
