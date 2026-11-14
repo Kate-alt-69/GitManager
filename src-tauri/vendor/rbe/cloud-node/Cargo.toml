@@ -14,6 +14,10 @@ path = "src/lib.rs"
 [features]
 default = ["client"]
 client = ["dep:reqwest", "dep:tokio-util"]
+# GitManager's desktop/archive integration is a Cloud Node client. The
+# Ed25519 authentication server is available to RBE consumers but stays
+# opt-in so desktop builds do not compile server-only crypto code.
+server = ["dep:ed25519-dalek"]
 
 [dependencies]
 atomic-io = { path = "../atomic-io" }
@@ -24,7 +28,7 @@ serde_json = "1"
 sha2 = "0.10"
 hex = "0.4"
 fs2 = "0.4"
-ed25519-dalek = "2"
+ed25519-dalek = { version = "2", optional = true }
 rand = "0.8"
 tokio = { version = "1", default-features = false, features = ["fs", "io-util", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
