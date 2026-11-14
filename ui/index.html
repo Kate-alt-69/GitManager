@@ -25,9 +25,6 @@
           <button class="app-tab" type="button" role="tab" aria-selected="false" aria-controls="page-accounts" data-page="accounts">
             <svg class="tab-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="6" cy="5" r="2.25" stroke="currentColor" stroke-width="1.25"/><path d="M1.8 13c.35-2.15 1.8-3.3 4.2-3.3s3.85 1.15 4.2 3.3M11 4.1a2.1 2.1 0 0 1 0 4.05M11.8 10c1.35.45 2.1 1.4 2.35 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg><span>Accounts</span>
           </button>
-          <button class="app-tab" type="button" role="tab" aria-selected="false" aria-controls="page-cloud-nodes" data-page="cloud-nodes">
-            <svg class="tab-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2" width="12" height="4" rx="1" stroke="currentColor" stroke-width="1.25"/><rect x="2" y="10" width="12" height="4" rx="1" stroke="currentColor" stroke-width="1.25"/><path d="M4.5 4h.1M4.5 12h.1M7 4h5M7 12h5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg><span>Cloud Nodes</span>
-          </button>
           <button class="app-tab" type="button" role="tab" aria-selected="false" aria-controls="page-settings" data-page="settings">
             <svg class="tab-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.6 1.75h2.8l.4 1.55c.38.13.73.33 1.05.58l1.55-.28 1.4 2.42-1.12 1.12c.05.4.05.8 0 1.2l1.12 1.12-1.4 2.42-1.55-.28c-.32.25-.67.45-1.05.58l-.4 1.55H6.6l-.4-1.55a4.7 4.7 0 0 1-1.05-.58l-1.55.28-1.4-2.42L3.32 8.3a5.2 5.2 0 0 1 0-1.2L2.2 5.98l1.4-2.42 1.55.28c.32-.25.67-.45 1.05-.58z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><circle cx="8" cy="7.7" r="2" stroke="currentColor" stroke-width="1.1"/></svg><span>Settings</span>
           </button>
@@ -79,62 +76,16 @@
           <section class="page-section"><div class="section-heading"><div><h3>Connected accounts</h3><p>Connections are held for this app session. Provider tokens are not written into GitManager config.</p></div></div><div id="accounts-connected-list" class="accounts-connected-list"></div></section>
           <section class="page-section"><div class="section-heading"><div><h3>Remote repositories</h3><p>Repositories returned by your connected provider accounts.</p></div><span id="accounts-repository-count" class="badge-pill">0 repositories</span></div><div id="accounts-repositories-list" class="dashboard-card-grid accounts-repository-grid"></div></section>
         </section>
-        <section id="page-cloud-nodes" class="app-page hidden" role="tabpanel" aria-label="Cloud Nodes">
-          <div class="page-heading">
-            <div>
-              <div class="dashboard-eyebrow">REMOTE INFRASTRUCTURE</div>
-              <h2>Cloud Nodes</h2>
-              <p>Deploy a standalone RBE Cloud Node to a NAS or another computer. The node runs independently from the GitManager desktop app.</p>
-            </div>
-          </div>
-          <div class="settings-grid">
-            <section class="settings-card settings-card-wide">
-              <div class="settings-card-heading">
-                <div>
-                  <h3>Portable deployment package</h3>
-                  <p>One self-configuring ZIP with the official RBE binary for every supported platform.</p>
-                </div>
-                <span class="settings-icon" aria-hidden="true">⇩</span>
-              </div>
-              <div class="settings-actions cloud-node-platform-badges" aria-label="Included platforms">
-                <span class="badge-pill">Windows x64</span>
-                <span class="badge-pill">Linux x64</span>
-                <span class="badge-pill">Linux ARM64</span>
-                <span class="badge-pill">macOS Intel</span>
-                <span class="badge-pill">macOS Apple Silicon</span>
-              </div>
-              <p class="settings-value">Extract the ZIP on the target machine and run the Python setup script. It detects the operating system, installs the matching <code>cloud_node</code> binary, creates a local node identity, writes its configuration and can register a per-user background service. No Cloud Node binary is embedded in <code>git-manager.exe</code>.</p>
-              <div class="settings-actions">
-                <button id="btn-download-cloud-node-setup" class="btn btn-primary" type="button" disabled>Checking package…</button>
-                <button id="btn-refresh-cloud-node-release" class="btn btn-secondary" type="button">Check availability</button>
-                <button id="btn-open-cloud-node-artifacts" class="btn btn-secondary" type="button">View build artifacts</button>
-                <button id="btn-open-cloud-node-guide" class="btn btn-secondary" type="button">Deployment guide</button>
-              </div>
-              <div id="cloud-node-release-status" class="repository-setting-status" role="status">Checking the standalone Cloud Node release…</div>
-            </section>
-            <section class="settings-card">
-              <div class="settings-card-heading">
-                <div><h3>Run it on the target machine</h3><p>No GitManager installation is required on the NAS or remote computer.</p></div>
-                <span class="settings-icon" aria-hidden="true">⌘</span>
-              </div>
-              <div class="path-row"><span>Windows</span><code>py setup.py</code></div>
-              <div class="path-row"><span>Linux</span><code>python3 setup.py</code></div>
-              <div class="path-row"><span>macOS</span><code>python3 setup.py</code></div>
-              <p class="settings-footnote">Python 3.9 or newer is required. The script selects the matching binary from the ZIP and asks for the watched folder, storage root and RBE backend details.</p>
-            </section>
-            <section class="settings-card">
-              <div class="settings-card-heading">
-                <div><h3>Connect to your RBE backend</h3><p>The NAS node initiates its authenticated connection outbound.</p></div>
-                <span class="settings-icon" aria-hidden="true">⇄</span>
-              </div>
-              <p class="settings-value">The setup script creates the node's private key on the target machine and writes a public peer-registration JSON file. An RBE administrator adds that object to the backend Cloud Node config (normally <code>setting.node.cn.json</code>) under <code>replication.targets</code>.</p>
-              <p class="settings-footnote">The ZIP contains no machine-specific private key or credentials. Use a dedicated watched data folder: the current upstream localSync scanner has no secret-file ignore list, so files placed inside that folder can be synchronized.</p>
-            </section>
-          </div>
-        </section>
+        <section id="page-settings" class="app-page hidden" role="tabpanel" aria-label="Settings">
         <section id="page-settings" class="app-page hidden" role="tabpanel" aria-label="Settings">
           <div class="page-heading"><div><div class="dashboard-eyebrow">GITMANAGER</div><h2>Settings</h2><p>Manage discovery, background updates, maintenance tools and where GitManager stores its files.</p></div></div>
-          <div class="settings-grid">
+
+          <div class="settings-subnav" role="tablist" aria-label="Settings sections">
+            <button class="settings-subtab active" type="button" role="tab" aria-selected="true" aria-controls="settings-general-panel" data-settings-section="general">General</button>
+            <button class="settings-subtab" type="button" role="tab" aria-selected="false" aria-controls="settings-cloud-panel" data-settings-section="cloud">Cloud</button>
+          </div>
+          <section id="settings-general-panel" class="settings-panel" role="tabpanel" aria-label="General settings">
+            <div class="settings-grid">
             <section class="settings-card settings-card-wide"><div class="settings-card-heading"><div><h3>Repository discovery</h3><p>Choose which folders GitManager scans for local Git repositories.</p></div><span class="settings-icon">⌕</span></div><div id="settings-scan-root-summary" class="settings-value">Loading scan folders…</div><div class="settings-actions"><button id="btn-open-scan-settings" class="btn btn-secondary" type="button">Configure folders</button><button id="btn-scan-repos" class="btn btn-primary" type="button">Scan now</button></div><div class="quick-scan-row"><input id="scan-path-input" type="text" class="scan-input" placeholder="Optional one-time scan folder…" /><button id="btn-browse-folder" class="btn btn-secondary" type="button">Browse</button></div></section>
             <section class="settings-card"><div class="settings-card-heading"><div><h3>Background updates</h3><p>Check remotes and register the user-level background service.</p></div><span class="settings-icon">↻</span></div><p class="settings-value" id="settings-service-description">The service checks configured local repositories for safe fast-forward updates.</p><div class="settings-actions"><button id="btn-check-updates-now" class="btn btn-secondary" type="button">Check updates</button><button id="btn-register-os-service" class="btn btn-secondary" type="button">Enable background service</button></div></section>
             <section class="settings-card"><div class="settings-card-heading"><div><h3>Developer cleaner</h3><p>Preview generated files and developer caches before cleaning them.</p></div><span class="settings-icon">⌁</span></div><p class="settings-value">Nothing is removed until you inspect a preview and explicitly confirm the action.</p><div class="settings-actions"><button id="btn-open-cleaner" class="btn btn-secondary" type="button">Open Developer Cleaner</button></div></section>
@@ -151,7 +102,113 @@
               <div class="path-row"><span>Version</span><code id="settings-app-version">Loading…</code></div>
               <div class="about-version-note">GitManager · Pure-Rust local and remote Git workspace</div>
             </section>
-          </div>
+
+            </div>
+          </section>
+          <section id="settings-cloud-panel" class="settings-panel hidden" role="tabpanel" aria-label="Cloud settings">
+            <div class="page-heading cloud-settings-heading">
+              <div>
+                <div class="dashboard-eyebrow">CLOUD STORAGE</div>
+                <h3>Cloud sync and local NAS</h3>
+                <p>Choose an archive destination or provision a separate RBE node. Provider sign-in and peer pairing are shown only where the current implementation supports them.</p>
+              </div>
+              <div class="settings-actions">
+                <button id="btn-cloud-refresh-status" class="btn btn-secondary" type="button">Refresh storage status</button>
+              </div>
+            </div>
+            <div class="cloud-provider-layout">
+              <nav class="cloud-provider-tabs" role="tablist" aria-label="Cloud providers">
+                <button class="cloud-provider-tab active" type="button" role="tab" aria-selected="true" aria-controls="cloud-provider-google-drive" data-cloud-provider="google-drive">Google Drive</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-onedrive" data-cloud-provider="onedrive">Microsoft OneDrive</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-supabase" data-cloud-provider="supabase">Supabase</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-amazon-s3" data-cloud-provider="amazon-s3">Amazon S3</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-s3-compatible" data-cloud-provider="s3-compatible">S3 / HTTPS</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-node" data-cloud-provider="node">Cloud Node setup</button>
+              </nav>
+              <div class="cloud-provider-panels">
+                <section id="cloud-provider-google-drive" class="cloud-provider-panel active" role="tabpanel" aria-label="Google Drive" data-cloud-panel="google-drive">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Google Drive</h3><p>Use a Google Drive for desktop synced folder as a local archive destination.</p></div>
+                      <span class="settings-icon" aria-hidden="true">G</span>
+                    </div>
+                    <p class="settings-value">Direct Google Account OAuth and Drive API upload are not wired into GitManager yet. For now, install Google's desktop sync client, choose its local mirrored folder in Scan Setup, and store local archive copies there.</p>
+                    <div class="settings-actions"><button id="btn-cloud-google-drive-folder" class="btn btn-primary" type="button">Choose Drive sync folder</button></div>
+                    <p class="settings-footnote">This is local-folder storage through the Google sync client, not a direct Drive API connection.</p>
+                  </div>
+                </section>
+                <section id="cloud-provider-onedrive" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Microsoft OneDrive" data-cloud-panel="onedrive">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Microsoft OneDrive</h3><p>Use a OneDrive synced folder as a local archive destination.</p></div>
+                      <span class="settings-icon" aria-hidden="true">☁</span>
+                    </div>
+                    <p class="settings-value">Direct Microsoft Account OAuth and Graph API upload are not wired into GitManager yet. For now, use the OneDrive desktop client's local folder as an archive destination in Scan Setup.</p>
+                    <div class="settings-actions"><button id="btn-cloud-onedrive-folder" class="btn btn-primary" type="button">Choose OneDrive folder</button></div>
+                    <p class="settings-footnote">This is local-folder storage through the OneDrive sync client, not a direct Microsoft Graph connection.</p>
+                  </div>
+                </section>
+                <section id="cloud-provider-supabase" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Supabase" data-cloud-panel="supabase">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Supabase Storage</h3><p>Connect an object bucket using the existing RBE provider-backed archive engine.</p></div>
+                      <span class="settings-icon" aria-hidden="true">S</span>
+                    </div>
+                    <p class="settings-value">Supabase Storage is supported through provider configuration. The API key stays in the GitManager process environment as RBE_CN_PROV_SUPABASE_API_KEY; it is not stored in the provider JSON.</p>
+                    <div class="settings-actions"><button id="btn-cloud-supabase-configure" class="btn btn-primary" type="button">Configure Supabase</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-amazon-s3" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Amazon S3" data-cloud-panel="amazon-s3">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Amazon S3</h3><p>Use a bucket with the native S3 SigV4 provider.</p></div>
+                      <span class="settings-icon" aria-hidden="true">S3</span>
+                    </div>
+                    <p class="settings-value">The provider reads credentials from RBE_CN_PROV_AMAZON_ACCESS_KEY and RBE_CN_PROV_AMAZON_SECRET_KEY, with an optional session token. Credentials are not written into GitManager settings.</p>
+                    <div class="settings-actions"><button id="btn-cloud-amazon-s3-configure" class="btn btn-primary" type="button">Configure Amazon S3</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-s3-compatible" class="cloud-provider-panel hidden" role="tabpanel" aria-label="S3-compatible storage" data-cloud-panel="s3-compatible">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>S3-compatible / custom HTTPS storage</h3><p>Configure a supported custom HTTPS object endpoint.</p></div>
+                      <span class="settings-icon" aria-hidden="true">⇄</span>
+                    </div>
+                    <p class="settings-value">The current generic HTTP object provider is available for compatible APIs. It is not yet a guarantee of compatibility with every S3 clone or custom SigV4 endpoint; validate the provider's object API and auth mode before enabling it.</p>
+                    <div class="settings-actions"><button id="btn-cloud-s3-compatible-configure" class="btn btn-primary" type="button">Configure HTTPS endpoint</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-node" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Cloud Node setup" data-cloud-panel="node">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Local copy / Cloud Node NAS</h3><p>Install an RBE backend and Cloud Node runtime on another computer or NAS.</p></div>
+                      <span class="settings-icon" aria-hidden="true">▤</span>
+                    </div>
+                    <p class="settings-value">The ZIP contains setup.py, the ready-to-copy /api route files, settings.json and setting.node.cn.json. On the target machine, setup.py downloads only that machine's complete RBE runtime (backend, cloud_node, Container and Service), verifies the release checksums, and installs the binaries beside /api.</p>
+                    <div class="settings-actions">
+                      <button id="btn-download-cloud-node-setup" class="btn btn-primary" type="button" disabled>Checking package…</button>
+                      <button id="btn-refresh-cloud-node-release" class="btn btn-secondary" type="button">Check availability</button>
+                      <button id="btn-open-cloud-node-artifacts" class="btn btn-secondary" type="button">View build artifacts</button>
+                      <button id="btn-open-cloud-node-guide" class="btn btn-secondary" type="button">Deployment guide</button>
+                    </div>
+                    <div id="cloud-node-release-status" class="repository-setting-status" role="status">Checking the RBE node bootstrap release…</div>
+                    <div class="cloud-node-install-commands">
+                      <div class="path-row"><span>Windows</span><code>py setup.py</code></div>
+                      <div class="path-row"><span>Linux / macOS</span><code>python3 setup.py</code></div>
+                    </div>
+                    <p class="settings-footnote">The target requires Python 3.9+ and network access during setup. The current RBE release's CN peer receiver is still a temporary boot-recovery listener, not yet a permanent LAN pairing service. Normal backend status endpoints are installed separately.</p>
+                  </div>
+                </section>
+              </div>
+            </div>
+            <div id="cloud-provider-status" class="repository-setting-status" role="status">Cloud storage status has not been checked yet.</div>
+            <div class="settings-actions">
+              <button id="btn-cloud-open-provider-setup" class="btn btn-secondary" type="button">Open provider configuration</button>
+              <button id="btn-cloud-sync-now" class="btn btn-primary" type="button">Sync archives now</button>
+            </div>
+            <p class="settings-footnote">Provider credentials are read from environment variables. GitManager keeps local archive restore points even when a remote provider is unavailable.</p>
+          </section>
+
         </section>
       </main>
 
