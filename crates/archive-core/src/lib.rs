@@ -2284,4 +2284,85 @@ mod logical_namespace_tests {
         );
         assert!(legacy_index_logical_path("other/path").is_none());
     }
+
+    #[test]
+    fn legacy_cloud_index_is_readable_after_namespace_migration() {
+        let root = std::env::temp_dir().join(format!(
+            "gitmanager-legacy-index-{}",
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let store = open_archive_store(&root).unwrap();
+        let legacy_index = ArchiveIndex {
+            format_version: LEGACY_ARCHIVE_FORMAT_VERSION,
+            snapshots: Vec::new(),
+        };
+        let staged = root.join("legacy-index.json");
+        fs::write(&staged, serde_json::to_vec(&legacy_index).unwrap()).unwrap();
+        store
+            .store_file(
+                &staged,
+                "gitmanager/repositories/repository-id/local/index.json",
+            )
+            .unwrap();
+
+        let current_key = index_logical_path("repository-id", ArchiveKind::Local);
+        let loaded = read_index(
+            &local_index_path(&root, "repository-id", ArchiveKind::Local),
+            &store,
+            &current_key,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.format_version, LEGACY_ARCHIVE_FORMAT_VERSION);
+        assert!(loaded.snapshots.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_manifests_remain_valid_with_legacy_blob_addresses() {
+        let repository_id = "repository-id".to_string();
+        let snapshot_id = "snapshot-legacy".to_string();
+        let snapshot = ArchiveSnapshot {
+            id: snapshot_id.clone(),
+            repository_id: repository_id.clone(),
+            repository_name: "repo".to_string(),
+            repository_path: "/tmp/repo".to_string(),
+            kind: ArchiveKind::Local,
+            captured_at: String::new(),
+            captured_at_unix_ms: 1,
+            branch: "main".to_string(),
+            head: None,
+            file_count: 1,
+            directory_count: 0,
+            source_bytes: 3,
+            stored_bytes: 3,
+            manifest_sha256: String::new(),
+            manifest_logical_path: "gitmanager/legacy-manifest.json".to_string(),
+            excluded_paths: Vec::new(),
+        };
+        let digest = "b".repeat(64);
+        let manifest = SnapshotManifest {
+            format_version: LEGACY_ARCHIVE_FORMAT_VERSION,
+            repository_id,
+            snapshot_id,
+            kind: ArchiveKind::Local,
+            directories: Vec::new(),
+            files: vec![SnapshotFile {
+                relative_path: "README.md".to_string(),
+                blob_logical_path: legacy_blob_logical_path(
+                    "repository-id",
+                    ArchiveKind::Local,
+                    &digest,
+                ),
+                content_sha256: digest,
+                size: 3,
+                mode: 0o644,
+            }],
+            remotes: Vec::new(),
+            excluded_paths: Vec::new(),
+        };
+
+        validate_manifest(&manifest, &snapshot).unwrap();
+    }
 }
