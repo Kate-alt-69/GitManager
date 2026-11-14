@@ -14,5 +14,10 @@ fn main() {
         }
     }
 
+    if args.iter().any(|a| a == "--setup") {
+        std::env::set_var("GITMANAGER_SETUP_MODE", "1");
+    }
+
+    // Tauri remains the actual UI/runtime for both normal and first-run modes.
     git_manager_lib::run();
 }
