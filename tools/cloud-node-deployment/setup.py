@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import platform
@@ -381,7 +382,7 @@ def safe_relative_member(name):
         raise SetupError("RBE runtime archive contains an invalid path.")
     normalized = name[2:] if name.startswith("./") else name
     path = PurePosixPath(normalized)
-    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+    if path.is_absolute() or re.match(r"^[A-Za-z]:", normalized) or any(part in ("", ".", "..") for part in path.parts):
         raise SetupError(f"RBE runtime archive contains an unsafe path: {name!r}")
     return path.as_posix()
 
@@ -420,7 +421,7 @@ def extract_runtime_archive(payload, archive_kind, target, stage):
     total = 0
     try:
         if archive_kind == "zip":
-            with zipfile.ZipFile(__import__("io").BytesIO(payload), "r") as archive:
+            with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
                 for item in archive.infolist():
                     if item.is_dir():
                         continue
@@ -521,6 +522,8 @@ def copy_api_routes(install_dir):
     if not source.is_dir() or source.is_symlink():
         raise SetupError("The bootstrap ZIP is missing its bundled api/ route directory.")
     destination = install_dir / "api"
+    if destination.is_symlink():
+        raise SetupError("Refusing to copy API routes through a symbolic link.")
     destination.mkdir(parents=True, exist_ok=True)
     copied = 0
     for route in source.rglob("*.route"):
@@ -544,9 +547,14 @@ def install_runtime(stage, install_dir, target):
     for relative in sorted(expected):
         source = stage.joinpath(*PurePosixPath(relative).parts)
         destination = install_dir.joinpath(*PurePosixPath(relative).parts)
+        current = install_dir
+        for part in PurePosixPath(relative).parts[:-1]:
+            current = current / part
+            if current.is_symlink():
+                raise SetupError(f"Refusing to write through a symbolic link in the install directory: {current}")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.is_symlink():
-            raise SetupError(f"Refusing to replace a symbolic link in the install directory: {destination}")
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            raise SetupError(f"Refusing to replace a non-regular runtime path: {destination}")
         os.replace(source, destination)
         if destination.name != "build-info.json" and os.name != "nt":
             os.chmod(destination, 0o755)
@@ -609,15 +617,19 @@ def derive_public_key(binary, config, key_file):
     return value.lower()
 
 
+def powershell_literal(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def write_launchers(install_dir, backend_path, settings_path, cn_settings_path, key_path):
     if os.name == "nt":
         launcher = install_dir / "run-rbe-node.ps1"
         content = (
             "$ErrorActionPreference = 'Stop'\n"
-            f"$env:{KEY_ENV} = 'file:{key_path}'\n"
-            f"$env:{SETTINGS_ENV} = '{cn_settings_path}'\n"
-            f"Set-Location -LiteralPath '{install_dir}'\n"
-            f"& '{backend_path}' '--settings' '{settings_path}'\n"
+            f"$env:{KEY_ENV} = {powershell_literal('file:' + str(key_path))}\n"
+            f"$env:{SETTINGS_ENV} = {powershell_literal(cn_settings_path)}\n"
+            f"Set-Location -LiteralPath {powershell_literal(install_dir)}\n"
+            f"& {powershell_literal(backend_path)} '--settings' {powershell_literal(settings_path)}\n"
             "exit $LASTEXITCODE\n"
         )
     else:
@@ -666,13 +678,20 @@ def main():
         install_dir = Path(args.install_dir or default_install_directory()).expanduser().resolve()
         if install_dir == Path(install_dir.anchor) or install_dir.is_symlink():
             raise SetupError("Choose a normal, non-symlink installation directory.")
-        install_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if os.name != "nt":
-            os.chmod(install_dir, 0o700)
 
         say("GitManager — RBE NAS runtime setup")
         say(f"Detected host: {target} · {manifest['targets'][target]['compatibility']}")
         say("This ZIP contains the /api routes and settings templates; platform binaries are downloaded now.")
+        if args.verify_only:
+            with tempfile.TemporaryDirectory(prefix="gitmanager-rbe-verify-") as temporary:
+                release = download_runtime(manifest, target, Path(temporary))
+            say("[ OK ] The matching RBE runtime passed both GitHub digest and SHA256SUMS verification.")
+            say(json.dumps(release, indent=2))
+            return 0
+
+        install_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            os.chmod(install_dir, 0o700)
         if any(install_dir.iterdir()) and not (install_dir / "backend.exe").exists() and not (install_dir / "backend").exists():
             if not ask_yes_no(f"{install_dir} is not empty. Install into this directory without deleting its contents?", False):
                 raise SetupError("Setup cancelled; existing files were left untouched.")
@@ -680,10 +699,6 @@ def main():
         with tempfile.TemporaryDirectory(prefix="gitmanager-rbe-runtime-", dir=str(install_dir)) as temporary:
             stage = Path(temporary)
             release = download_runtime(manifest, target, stage)
-            if args.verify_only:
-                say("[ OK ] The matching RBE runtime passed both GitHub digest and SHA256SUMS verification.")
-                say(json.dumps(release, indent=2))
-                return 0
             install_runtime(stage, install_dir, target)
 
         api_count = copy_api_routes(install_dir)
