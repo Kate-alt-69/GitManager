@@ -11,7 +11,8 @@ use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use git2::{BranchType, CheckoutBuilder, Direction, FetchOptions, Repository, ResetType, Sort, StatusOptions};
+use git2::build::CheckoutBuilder;
+use git2::{BranchType, Direction, FetchOptions, Repository, ResetType, Sort, StatusOptions};
 use walkdir::WalkDir;
 use gitmanager_archive::{
     archive_cloud_storage_info, capture_repository, configure_archive_cloud_storage,
