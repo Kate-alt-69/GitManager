@@ -1124,7 +1124,7 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                             if two_column_menu(width) && (7..11).contains(&row) {
                                 let item_row = row - 7;
                                 let left_rows = MENU.len().div_ceil(2);
-                                let right_column = usize::from(usize::from(mouse.column) >= width / 2);
+                                let right_column = usize::from(mouse.column) >= width / 2;
                                 let candidate = if right_column { left_rows + item_row } else { item_row };
                                 if candidate < MENU.len() {
                                     selected = candidate;
