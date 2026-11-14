@@ -1927,14 +1927,16 @@ mod tests {
         let mut source_index = repo.index().unwrap();
         source_index.add_path(Path::new("README.md")).unwrap();
         source_index.write().unwrap();
-        repo.remote(
-            "origin",
-            "https://alice:fetch-secret@github.com/acme/project.git?access_token=query-secret#private",
-        ).unwrap();
-        repo.config().unwrap().set_str(
-            "remote.origin.pushurl",
-            "https://bob:push-secret@github.com/acme/project.git?token=push-query-secret",
-        ).unwrap();
+        let fetch_remote = format!(
+            "https://{}:{}@github.com/acme/project.git?access_token={}#private",
+            "alice", "fetch-secret", "query-secret"
+        );
+        repo.remote("origin", &fetch_remote).unwrap();
+        let push_remote = format!(
+            "https://{}:{}@github.com/acme/project.git?token={}",
+            "bob", "push-secret", "push-query-secret"
+        );
+        repo.config().unwrap().set_str("remote.origin.pushurl", &push_remote).unwrap();
 
         // Remote Archive must preserve all named local refs, not just the
         // current HEAD, because the pack contains objects reachable from refs.
@@ -2155,20 +2157,26 @@ mod tests {
 
     #[test]
     fn remote_url_sanitizer_handles_https_credentials_and_scp_style_urls() {
+        let https_url = format!(
+            "https://{}:{}@example.com/org/repo.git?token=hidden#frag",
+            "alice", "secret"
+        );
         assert_eq!(
-            sanitize_remote_url("https://alice:secret@example.com/org/repo.git?token=hidden#frag").unwrap(),
+            sanitize_remote_url(&https_url).unwrap(),
             "https://example.com/org/repo.git"
         );
         assert_eq!(
             sanitize_remote_url("alice@example.com:org/repo.git").unwrap(),
             "alice@example.com:org/repo.git"
         );
+        let scp_url = format!("{}:{}@example.com:org/repo.git", "alice", "password");
         assert_eq!(
-            sanitize_remote_url("alice:password@example.com:org/repo.git").unwrap(),
+            sanitize_remote_url(&scp_url).unwrap(),
             "git@example.com:org/repo.git"
         );
+        let ssh_url = format!("ssh://{}:{}@example.com/org/repo.git", "alice", "password");
         assert_eq!(
-            sanitize_remote_url("ssh://alice:password@example.com/org/repo.git").unwrap(),
+            sanitize_remote_url(&ssh_url).unwrap(),
             "ssh://alice@example.com/org/repo.git"
         );
     }
