@@ -143,14 +143,12 @@ fn preferences_file(app_handle: &AppHandle) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-#[tauri::command]
-fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String> {
-    let path = preferences_file(&app_handle)?;
+fn read_app_preferences_file(path: &Path) -> Result<AppPreferences, String> {
     if !path.is_file() {
         return Ok(AppPreferences::default());
     }
 
-    let content = fs::read_to_string(&path)
+    let content = fs::read_to_string(path)
         .map_err(|error| format!("Could not read GitManager preferences: {error}"))?;
     if content.len() > 256 * 1024 {
         return Err("GitManager preferences file is unexpectedly large.".to_string());
@@ -186,6 +184,20 @@ fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String>
     }
     preferences.archive_quiet_ms = preferences.archive_quiet_ms.clamp(250, 60_000);
     Ok(preferences)
+}
+
+/// Loads the same validated preferences file from the standalone background
+/// service without requiring a Tauri AppHandle.
+pub fn load_background_preferences() -> Result<AppPreferences, String> {
+    let directories = application_directories()?;
+    let path = PathBuf::from(directories.config_dir).join("preferences.json");
+    read_app_preferences_file(&path)
+}
+
+#[tauri::command]
+fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String> {
+    let path = preferences_file(&app_handle)?;
+    read_app_preferences_file(&path)
 }
 
 
