@@ -2634,6 +2634,14 @@ async function saveScanSetup() {
     error.classList.add("hidden");
     error.textContent = "";
   }
+  const isFirstRun = !appPreferences.firstRunComplete;
+  if (isFirstRun && (!Array.isArray(appPreferences.scanRoots) || appPreferences.scanRoots.length === 0)) {
+    if (error) {
+      error.textContent = "Choose your main repository folder before continuing.";
+      error.classList.remove("hidden");
+    }
+    return;
+  }
   if (save) {
     save.disabled = true;
     save.textContent = "Saving…";
@@ -2663,7 +2671,7 @@ async function saveScanSetup() {
   } finally {
     if (save) {
       save.disabled = false;
-      save.textContent = "Save & Start Indexing";
+      save.textContent = isFirstRun ? "Save & Start Indexing" : "Save Settings & Rescan";
     }
   }
 }
