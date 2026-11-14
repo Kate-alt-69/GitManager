@@ -2704,3 +2704,30 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   .cloud-node-install-commands { grid-template-columns:1fr; }
   .cloud-settings-heading { align-items:flex-start; flex-direction:column; }
 }
+.cloud-node-address-box {
+  margin-top:16px;
+  padding:13px;
+  background:var(--bg-canvas);
+  border:1px solid var(--border-subtle);
+  border-radius:9px;
+}
+.cloud-node-address-box > label {
+  display:block;
+  margin-bottom:8px;
+  color:var(--text-primary);
+  font-size:11.5px;
+  font-weight:650;
+}
+.cloud-node-address-row {
+  display:flex;
+  gap:8px;
+}
+.cloud-node-address-row .scan-input {
+  flex:1 1 auto;
+  min-width:0;
+}
+#cloud-node-address-status { margin-top:8px; }
+#cloud-node-address-status.is-error { color:var(--accent-red, #f85149); }
+@media (max-width:640px) {
+  .cloud-node-address-row { flex-direction:column; }
+}
