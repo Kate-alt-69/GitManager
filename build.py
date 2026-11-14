@@ -248,7 +248,7 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
             "--edges", "normal,build",
             "--target", target_triple,
             "--prefix", "none",
-            "--format", "{p} [{s}]",
+            "--format", "{p}",
         ]
         code, output, error = run_capture(command, cwd=project_root)
         if code != 0:
