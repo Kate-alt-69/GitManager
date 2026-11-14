@@ -17,6 +17,7 @@ use tauri::path::BaseDirectory;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_shell::ShellExt;
 
 use git_info::{extract_git_repository_info, GitRepositoryInfo};
 use remote_providers::{
@@ -485,6 +486,29 @@ async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, Stri
 async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, String> {
     tokio::task::spawn_blocking(remote_providers::detect_github_identity).await
         .map_err(|error| format!("GitHub identity detection task failed: {error}"))?
+}
+
+/// Report whether this process is the first-run setup companion.
+#[tauri::command]
+fn is_setup_mode() -> bool {
+    std::env::var_os("GITMANAGER_SETUP_MODE").is_some()
+}
+
+/// Start the packaged setup companion and close the bootstrap window.
+/// If the sidecar is unavailable, the frontend falls back to its in-process
+/// first-run wizard rather than leaving the user without onboarding.
+#[tauri::command]
+fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
+    let command = app_handle
+        .shell()
+        .sidecar("gitmanager-setup")
+        .map_err(|error| format!("GitManager Setup helper is unavailable: {error}"))?;
+
+    command.spawn()
+        .map_err(|error| format!("Could not start GitManager Setup: {error}"))?;
+
+    app_handle.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1065,6 +1089,8 @@ pub fn run() {
             scan_machine_repositories,
             inspect_repository,
             detect_github_identity,
+            is_setup_mode,
+            launch_first_run_setup,
             connect_git_account,
             check_repo_updates_now,
             pull_repository_update,
