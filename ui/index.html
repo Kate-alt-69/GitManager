@@ -9,15 +9,26 @@
   <body>
     <div id="app" class="app-shell">
       <header class="topbar">
-        <div class="brand">
+        <div class="brand" aria-label="GitManager">
           <div class="brand-logo" aria-hidden="true">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1">
+            <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle>
               <path d="M6 9v6"></path><path d="M18 9a9 9 0 0 1-9 9"></path>
             </svg>
           </div>
-          <div><h1 class="brand-title">GitManager</h1><span class="brand-subtitle">Your local repositories, accounts and Git workspace</span></div>
+          <div class="brand-copy"><h1 class="brand-title">GitManager</h1><span class="brand-subtitle">Your Git workspace</span></div>
         </div>
+        <nav class="top-tab-row" aria-label="Main navigation" role="tablist">
+          <button class="app-tab active" type="button" role="tab" aria-selected="true" aria-controls="page-repositories" data-page="repositories">
+            <svg class="tab-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.25 3.25h4.1l1.15 1.3h6.25v8.2H2.25z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.25 5.15h11.5" stroke="currentColor" stroke-width="1.25"/></svg><span>Repositories</span>
+          </button>
+          <button class="app-tab" type="button" role="tab" aria-selected="false" aria-controls="page-accounts" data-page="accounts">
+            <svg class="tab-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="6" cy="5" r="2.25" stroke="currentColor" stroke-width="1.25"/><path d="M1.8 13c.35-2.15 1.8-3.3 4.2-3.3s3.85 1.15 4.2 3.3M11 4.1a2.1 2.1 0 0 1 0 4.05M11.8 10c1.35.45 2.1 1.4 2.35 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg><span>Accounts</span>
+          </button>
+          <button class="app-tab" type="button" role="tab" aria-selected="false" aria-controls="page-settings" data-page="settings">
+            <svg class="tab-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.6 1.75h2.8l.4 1.55c.38.13.73.33 1.05.58l1.55-.28 1.4 2.42-1.12 1.12c.05.4.05.8 0 1.2l1.12 1.12-1.4 2.42-1.55-.28c-.32.25-.67.45-1.05.58l-.4 1.55H6.6l-.4-1.55a4.7 4.7 0 0 1-1.05-.58l-1.55.28-1.4-2.42L3.32 8.3a5.2 5.2 0 0 1 0-1.2L2.2 5.98l1.4-2.42 1.55.28c.32-.25.67-.45 1.05-.58z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><circle cx="8" cy="7.7" r="2" stroke="currentColor" stroke-width="1.1"/></svg><span>Settings</span>
+          </button>
+        </nav>
         <div id="service-status-pill" class="service-status-pill" title="Background repository update service">
           <svg id="service-spinner-icon" class="loading-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity="0.25" stroke-width="3"></circle>
@@ -25,32 +36,29 @@
           </svg><span id="service-status-text">Svc: Starting…</span>
         </div>
       </header>
-      <nav class="top-tab-row" aria-label="Main navigation" role="tablist">
-        <button class="app-tab active" type="button" role="tab" aria-selected="true" data-page="repositories"><span class="tab-glyph" aria-hidden="true">⌂</span><span>Repositories</span></button>
-        <button class="app-tab" type="button" role="tab" aria-selected="false" data-page="accounts"><span class="tab-glyph" aria-hidden="true">◎</span><span>Accounts</span></button>
-        <button class="app-tab" type="button" role="tab" aria-selected="false" data-page="settings"><span class="tab-glyph" aria-hidden="true">⚙</span><span>Settings</span></button>
-      </nav>
       <div id="update-notifications-tray" class="update-notifications-tray"></div>
       <main class="app-main">
         <section id="page-repositories" class="app-page active" role="tabpanel" aria-label="Repositories">
           <div class="repo-page-controls">
-            <div class="repo-search-wrap"><label class="sr-only" for="repo-search-input">Search local repositories</label><input id="repo-search-input" type="search" class="search-input" placeholder="Search repositories, owners or local paths…" /></div>
-            <div class="repo-filter-row">
-              <div class="segmented-control kind-filter-bar" aria-label="Repository category">
-                <button class="seg-btn active" type="button" data-repo-kind="projects">Projects <span data-repo-kind-count>0</span></button>
-                <button class="seg-btn" type="button" data-repo-kind="dependencies">Dependencies <span data-repo-kind-count>0</span></button>
-                <button class="seg-btn" type="button" data-repo-kind="all">All <span data-repo-kind-count>0</span></button>
+            <div class="repo-toolbar-main">
+              <div class="repo-search-wrap"><label class="sr-only" for="repo-search-input">Search repositories</label><span class="repo-search-icon" aria-hidden="true">⌕</span><input id="repo-search-input" type="search" class="search-input" placeholder="Find a repository…" /></div>
+              <div class="repo-toolbar-filters">
+                <div class="segmented-control kind-filter-bar" aria-label="Repository category">
+                  <button class="seg-btn active" type="button" data-repo-kind="projects">Projects <span data-repo-kind-count>0</span></button>
+                  <button class="seg-btn" type="button" data-repo-kind="dependencies">Dependencies <span data-repo-kind-count>0</span></button>
+                  <button class="seg-btn" type="button" data-repo-kind="all">All <span data-repo-kind-count>0</span></button>
+                </div>
+                <div class="segmented-control availability-filter" role="group" aria-label="Remote availability">
+                  <button id="filter-btn-grouped" class="seg-btn active" type="button" data-filter="grouped">All <span id="count-all">0</span></button>
+                  <button id="filter-btn-remote" class="seg-btn" type="button" data-filter="remote">Remote <span id="count-remote">0</span></button>
+                  <button id="filter-btn-local" class="seg-btn" type="button" data-filter="local">Local <span id="count-local">0</span></button>
+                </div>
+                <span id="filter-fallback-badge" class="fallback-pill hidden">Unified view</span>
               </div>
-              <div class="segmented-control availability-filter" role="group" aria-label="Remote availability">
-                <button id="filter-btn-grouped" class="seg-btn active" type="button" data-filter="grouped">All <span id="count-all">0</span></button>
-                <button id="filter-btn-remote" class="seg-btn" type="button" data-filter="remote">Remote <span id="count-remote">0</span></button>
-                <button id="filter-btn-local" class="seg-btn" type="button" data-filter="local">Local <span id="count-local">0</span></button>
-              </div>
-              <span id="filter-fallback-badge" class="fallback-pill hidden">Unified view</span>
             </div>
             <div class="repo-filter-footer">
-              <p id="filter-status-note" class="filter-note">Showing repositories discovered on this machine.</p>
-              <label class="index-mode-row" for="index-group-select"><span>Group by</span><select id="index-group-select" class="select-control"><option value="folder">Parent folder</option><option value="git_dir">.git location</option><option value="provider">Remote provider</option></select></label>
+              <p id="filter-status-note" class="filter-note">Repositories discovered on this machine.</p>
+              <label class="index-mode-row" for="index-group-select"><span>Group by</span><select id="index-group-select" class="select-control"><option value="none">None</option><option value="folder">Parent folder</option><option value="git_dir">.git location</option><option value="provider">Remote provider</option></select></label>
             </div>
           </div>
           <div id="repo-home-content" class="repo-home-content"></div>
@@ -306,11 +314,6 @@
         </div>
       </div>
       <div id="commit-hover-card" class="commit-hover-card hidden" role="tooltip" aria-live="polite"></div>
-      <nav class="bottom-tab-bar" aria-label="Main navigation" role="tablist">
-        <button class="bottom-tab active" type="button" role="tab" aria-selected="true" data-page="repositories"><span aria-hidden="true">⌂</span><small>Repositories</small></button>
-        <button class="bottom-tab" type="button" role="tab" aria-selected="false" data-page="accounts"><span aria-hidden="true">◎</span><small>Accounts</small></button>
-        <button class="bottom-tab" type="button" role="tab" aria-selected="false" data-page="settings"><span aria-hidden="true">⚙</span><small>Settings</small></button>
-      </nav>
     </div>
 
     <script src="app.js"></script>
