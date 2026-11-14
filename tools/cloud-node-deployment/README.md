@@ -30,13 +30,28 @@ Linux or macOS:
 python3 setup.py
 ```
 
-The setup script detects the local OS and CPU, verifies the selected executable against `manifest.json`, installs it into a per-user application-data directory, asks for the RBE backend connection details and storage location, creates a node identity, and offers to register a per-user background service.
+The setup script detects the local OS and CPU, verifies the selected executable against `manifest.json`, installs it into a per-user application-data directory, asks for the Cloud Node internal storage location and the separate folder whose files should be backed up, asks for the RBE backend connection details, creates a node identity, and offers to register a per-user background service. The selected watched folder is written to RBE's `localSync.directory` setting; without it, the node would have no local folder to scan.
 
 - Windows: Task Scheduler task at user logon.
 - Linux: `systemd --user` unit, when available.
 - macOS: per-user LaunchAgent.
 
 No machine-wide PATH changes or administrator/root privileges are required. The Cloud Node private key is stored separately in a restricted secret file; it is never written into `setting.cn.json`, the peer-registration snippet, or this ZIP.
+
+## Choose the watched folder carefully
+
+The Cloud Node internal `node.storageRoot` and the folder to back up are two
+different paths. The internal store holds Cloud Node's content-addressed data;
+`localSync.directory` is the folder that Cloud Node scans and mirrors.
+
+The current upstream RBE localSync scanner skips symlinks, but it does not
+provide an ignore-file or default secret-file exclusion list. It can therefore
+include hidden files, `.env` files, private keys, credentials and other regular
+files inside the chosen watched folder. Do not select your home directory,
+a whole disk, or a folder containing secrets. Choose a dedicated data folder
+containing only material you intend to replicate, and keep it separate from
+the Cloud Node internal storage directory. Setup displays this warning and
+requires explicit confirmation before continuing.
 
 ## Connect the node to your RBE backend
 
