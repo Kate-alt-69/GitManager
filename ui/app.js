@@ -188,7 +188,7 @@ let selectedRepoId = null;
 let repositoryScanInProgress = false;
 let selectedCommitOid = null;
 let requestedFilter = "grouped";
-let indexGroupingMode = "folder";
+let indexGroupingMode = "none";
 let searchQuery = "";
 let appPreferences = null;
 let dependencyRepoIds = new Set();
@@ -1314,7 +1314,7 @@ function renderRepositoryDashboard(container) {
       ).join("");
       container.innerHTML =
         '<section class="dashboard-view">' +
-          '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2><p>Discovering your Git projects and reading their metadata…</p></div>' +
+          '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">YOUR WORKSPACE</div><h2>Repositories</h2><p>Finding local Git repositories and preparing their details…</p></div>' +
           '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
           '<div class="dashboard-stats dashboard-stats-loading"><div><strong>—</strong><span>Projects</span></div><div><strong>—</strong><span>Dependencies</span></div><div><strong>—</strong><span>Remote-linked</span></div></div>' +
           '<div class="repo-card-grid repo-skeleton-grid">' + skeletonCards + '</div>' +
@@ -1323,7 +1323,7 @@ function renderRepositoryDashboard(container) {
     } else {
       container.innerHTML =
         '<section class="dashboard-view">' +
-          '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2><p>Your local Git projects will appear here.</p></div>' +
+          '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">YOUR WORKSPACE</div><h2>Repositories</h2><p>Your local Git projects, in one place.</p></div>' +
           '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
           '<div class="dashboard-empty"><strong>No repositories indexed yet</strong><span>Add a project folder or choose the recommended development folders to begin.</span></div>' +
         '</section>';
@@ -1347,7 +1347,10 @@ function renderRepositoryDashboard(container) {
     const provider = repo.has_remote ? String(repo.primary_provider || "remote").toUpperCase() : "LOCAL";
     const dirty = Number(repo.dirty_files_count || 0);
     const fullName = repositoryFullName(repo);
-    const displayName = repo.has_remote ? fullName : (repo.name || fullName);
+    const displayName = repo.name || fullName;
+    const repositorySubline = repo.has_remote
+      ? fullName
+      : (repo.parent_folder ? "Local repository · " + String(repo.parent_folder).split(/[\\/]/).filter(Boolean).pop() : "Local repository");
     const lastAuthor = commit && commit.author_name ? commit.author_name : "No commits yet";
     const remoteWebUrl = (repo.remotes || []).find((item) => item.name === "origin")?.web_url ||
       (repo.remotes || [])[0]?.web_url || "";
@@ -1357,7 +1360,7 @@ function renderRepositoryDashboard(container) {
         '<span class="repo-card-top">' +
           '<img class="repo-card-icon" src="' + escapeHtml(icon) + '" alt="" data-fallback="' + escapeHtml(fallback) + '" />' +
           '<span class="repo-card-heading"><strong>' + escapeHtml(displayName) + '</strong><small>' +
-            (repo.has_remote ? escapeHtml(fullName) : 'Local repository') + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
+            escapeHtml(repositorySubline) + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
           '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(provider) + '</span>' +
         '</span>' +
         '<span class="repo-card-commit"><strong>' + escapeHtml(lastAuthor === "No commits yet" ? lastAuthor : "Last commit by " + lastAuthor) + '</strong>' +
@@ -1388,11 +1391,13 @@ function renderRepositoryDashboard(container) {
 
   const groups = new Map();
   repositories.forEach((repo, index) => {
-    let groupKey = repo.parent_folder || "Repositories";
-    if (indexGroupingMode === "git_dir") {
-      groupKey = repo.git_dir || groupKey;
+    let groupKey = "All repositories";
+    if (indexGroupingMode === "folder") {
+      groupKey = repo.parent_folder || "Unknown folder";
+    } else if (indexGroupingMode === "git_dir") {
+      groupKey = repo.git_dir || repo.path || "Unknown Git directory";
     } else if (indexGroupingMode === "provider") {
-      groupKey = repo.has_remote ? "Remote (" + String(repo.primary_provider || "remote").toUpperCase() + ")" : "Local Only (No Remote)";
+      groupKey = repo.has_remote ? String(repo.primary_provider || "remote").toUpperCase() + " repositories" : "Local only";
     }
     if (!groups.has(groupKey)) groups.set(groupKey, []);
     groups.get(groupKey).push(cards[index]);
@@ -1406,7 +1411,7 @@ function renderRepositoryDashboard(container) {
   container.innerHTML =
     '<section class="dashboard-view">' +
       '<div class="dashboard-heading">' +
-        '<div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2>' +
+        '<div><div class="dashboard-eyebrow">YOUR WORKSPACE</div><h2>Repositories</h2>' +
           '<p>' + escapeHtml(roots.length + " scan folder(s) · " + projectCount + " project(s) · " + dependencyCount + " dependency repo(s)") + '</p></div>' +
         '<div class="dashboard-actions"><button id="btn-dashboard-scan" class="btn btn-secondary" ' + (repositoryScanInProgress ? 'disabled' : '') + '>' +
           (repositoryScanInProgress ? 'Scanning…' : 'Scan now') + '</button>' +
