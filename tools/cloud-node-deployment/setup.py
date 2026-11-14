@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import stat
@@ -433,6 +434,8 @@ def extract_runtime_archive(payload, archive_kind, target, stage):
                         raise SetupError(f"RBE runtime archive contains a non-regular file: {relative}")
                     if relative in found:
                         raise SetupError(f"RBE runtime archive contains a duplicate file: {relative}")
+                    if total + item.file_size > MAX_TOTAL_EXTRACT_BYTES:
+                        raise SetupError("RBE runtime archive exceeded the total extraction-size limit.")
                     with archive.open(item, "r") as stream:
                         total += write_extracted_file(stage, relative, stream, item.file_size)
                     found.add(relative)
@@ -448,6 +451,8 @@ def extract_runtime_archive(payload, archive_kind, target, stage):
                         raise SetupError(f"RBE runtime archive contains a non-regular file: {relative}")
                     if relative in found:
                         raise SetupError(f"RBE runtime archive contains a duplicate file: {relative}")
+                    if total + item.size > MAX_TOTAL_EXTRACT_BYTES:
+                        raise SetupError("RBE runtime archive exceeded the total extraction-size limit.")
                     stream = archive.extractfile(item)
                     if stream is None:
                         raise SetupError(f"RBE runtime archive could not read {relative}.")
@@ -531,8 +536,15 @@ def copy_api_routes(install_dir):
             raise SetupError(f"API route must be a regular file: {route}")
         relative = route.relative_to(source)
         target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists() or target.is_symlink():
+        current = destination
+        for part in relative.parts[:-1]:
+            current = current / part
+            if current.is_symlink():
+                raise SetupError(f"Refusing to copy API routes through a symbolic link: {current}")
+            current.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise SetupError(f"Refusing to replace a non-regular API route path: {target}")
+        if target.exists():
             say(f"[KEEP] Existing API route was not overwritten: {target}")
             continue
         target.write_bytes(route.read_bytes())
@@ -567,6 +579,8 @@ def initialize_configuration(install_dir, node_id, api_port):
     settings_template = load_json_file(PACKAGE_ROOT / "settings.json", "settings.json template")
     cn_template = load_json_file(PACKAGE_ROOT / "setting.node.cn.json", "setting.node.cn.json template")
 
+    if settings_path.is_symlink() or (settings_path.exists() and not settings_path.is_file()):
+        raise SetupError("Existing settings.json is not a regular file; it was not followed or overwritten.")
     if settings_path.exists():
         settings = load_json_file(settings_path, "existing settings.json")
         say("[KEEP] Existing settings.json preserved.")
@@ -575,6 +589,8 @@ def initialize_configuration(install_dir, node_id, api_port):
         settings.setdefault("api", {})["port"] = api_port
         save_json(settings_path, settings)
 
+    if cn_settings_path.is_symlink() or (cn_settings_path.exists() and not cn_settings_path.is_file()):
+        raise SetupError("Existing setting.node.cn.json is not a regular file; it was not followed or overwritten.")
     if cn_settings_path.exists():
         cn_settings = load_json_file(cn_settings_path, "existing setting.node.cn.json")
         say("[KEEP] Existing setting.node.cn.json preserved.")
@@ -636,10 +652,10 @@ def write_launchers(install_dir, backend_path, settings_path, cn_settings_path, 
         launcher = install_dir / "run-rbe-node.sh"
         content = (
             "#!/bin/sh\nset -eu\n"
-            f"export {KEY_ENV}='file:{key_path}'\n"
-            f"export {SETTINGS_ENV}='{cn_settings_path}'\n"
-            f"cd '{install_dir}'\n"
-            f"exec '{backend_path}' --settings '{settings_path}'\n"
+            f"export {KEY_ENV}={shlex.quote('file:' + str(key_path))}\n"
+            f"export {SETTINGS_ENV}={shlex.quote(str(cn_settings_path))}\n"
+            f"cd {shlex.quote(str(install_dir))}\n"
+            f"exec {shlex.quote(str(backend_path))} --settings {shlex.quote(str(settings_path))}\n"
         )
     secure_write(launcher, content)
     if os.name != "nt":
@@ -675,9 +691,12 @@ def main():
         target = detect_target()
         api_port = validate_port(args.api_port, "Backend API port")
         node_id = validate_node_id(args.node_id or default_node_id())
-        install_dir = Path(args.install_dir or default_install_directory()).expanduser().resolve()
-        if install_dir == Path(install_dir.anchor) or install_dir.is_symlink():
+        requested_install_dir = Path(args.install_dir or default_install_directory()).expanduser()
+        if requested_install_dir.is_symlink():
             raise SetupError("Choose a normal, non-symlink installation directory.")
+        install_dir = requested_install_dir.resolve()
+        if install_dir == Path(install_dir.anchor):
+            raise SetupError("Choose a normal, non-root installation directory.")
 
         say("GitManager — RBE NAS runtime setup")
         say(f"Detected host: {target} · {manifest['targets'][target]['compatibility']}")
