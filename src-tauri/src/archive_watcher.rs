@@ -86,7 +86,6 @@ pub fn archive_watchers_running() -> bool {
 }
 
 pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
-    let generation = WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let enabled = preferences.first_run_complete
         && preferences.archive_trigger != "manual"
         && (preferences.archive_local_enabled || preferences.archive_remote_enabled);
@@ -96,6 +95,7 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
     let mut config_guard = config_slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     if !enabled {
+        WATCH_GENERATION.fetch_add(1, Ordering::SeqCst);
         *config_guard = None;
         *lease_guard = None;
         WATCHER_RUNNING.store(false, Ordering::SeqCst);
@@ -134,6 +134,7 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
         *lease_guard = Some(Arc::new(file));
     }
 
+    let generation = WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     *config_guard = Some(signature);
     let lease = match lease_guard.as_ref() {
         Some(file) => Arc::clone(file),
