@@ -50,17 +50,30 @@ provider-history implementation are the base for GitManager's repository
 archive layer. The complete upstream Apache-2.0 license and a source notice
 are included beside the vendored crates.
 
-Cloud Node currently supports Amazon S3, Supabase Storage, Azure Blob Storage,
-Google Cloud Storage, and generic HTTPS object storage. Google Cloud Storage is
-not Google Drive: a Google Drive Desktop-synced folder can be used as a local
-filesystem destination, while direct Google Drive API support needs a separate
-provider adapter.
+Cloud Node currently supports Amazon S3 (including custom S3-compatible
+endpoints through SigV4), Supabase Storage, Azure Blob Storage, Google Cloud
+Storage, and generic HTTPS object storage. Google Cloud Storage is not Google
+Drive: a Google Drive Desktop-synced folder can be used as a local filesystem
+destination, while direct Google Drive API support needs a separate provider
+adapter. Microsoft OneDrive works the same way through its Desktop-synced
+folder; direct Microsoft Graph API support is not implemented yet.
 
-The desktop **Scan Setup → Repository archives → Cloud object storage** section
-accepts one provider JSON object. Use **Configure provider** to validate and save
-it, **Check status** to inspect the target and required credential environment
-variable names, **Sync now** to perform an explicit synchronization/retry, and
-**Disable** to stop future synchronization. Disabling removes only the local
+GitManager uses separate Cloud Node logical namespaces for its own content:
+`gitm.archives/` stores content-addressed repository blobs, and
+`gitm.metadata/` stores repository snapshot manifests and indexes.
+`gitm.recovery/` is reserved for future recovery metadata; it is not an
+active separate store yet. New archive manifests use format version 2.
+Existing format-version-1 manifests and `gitmanager/` index/blob paths remain
+readable, and new writes migrate the active index and subsequent captures
+into the new namespaces without deleting retained legacy restore points.
+
+The desktop **Settings → Cloud** section exposes provider-specific tabs.
+Supabase, Amazon S3, and custom SigV4 S3 endpoints feed the existing provider
+configuration and archive synchronization engine. Google Drive and OneDrive
+currently use their desktop sync-client folders rather than direct OAuth/API
+uploads. The Cloud Node setup tab provisions a separate RBE backend/runtime on
+a NAS; its LAN address checker confirms the backend health endpoints only and
+does not currently pair a persistent CN peer. Disabling removes only the local
 provider configuration; it does not delete objects already stored by the
 provider. Repository captures attempt cloud synchronization automatically
 after their local restore point has been committed. If the provider is offline,
