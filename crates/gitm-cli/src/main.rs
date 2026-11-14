@@ -20,12 +20,13 @@ use gitmanager_archive::{
     restore_repository_archive, sync_archive_cloud_storage, ArchiveSnapshot,
 };
 
-const MENU: [&str; 6] = [
+const MENU: [&str; 7] = [
     "Create Local Archive",
     "Create Remote Archive",
     "Browse Restore Points",
     "Show Archive Location",
-    "Cloud Storage: Status & Sync",
+    "Cloud Storage Status",
+    "Sync Cloud Archives",
     "Exit",
 ];
 
@@ -39,22 +40,31 @@ fn two_column_menu(width: usize) -> bool {
 }
 
 fn move_menu_vertical(selected: usize, direction: isize, width: usize) -> usize {
-    if two_column_menu(width) {
-        let column = selected / 3;
-        let row = selected % 3;
-        column * 3 + (row as isize + direction).rem_euclid(3) as usize
-    } else {
-        (selected as isize + direction).rem_euclid(MENU.len() as isize) as usize
+    if !two_column_menu(width) {
+        return (selected as isize + direction).rem_euclid(MENU.len() as isize) as usize;
     }
+    let left_rows = MENU.len().div_ceil(2);
+    let column = usize::from(selected >= left_rows);
+    let row = if column == 0 { selected } else { selected - left_rows };
+    let column_rows = if column == 0 { left_rows } else { MENU.len() - left_rows };
+    let next_row = (row as isize + direction).rem_euclid(column_rows as isize) as usize;
+    if column == 0 { next_row } else { left_rows + next_row }
 }
 
 fn move_menu_horizontal(selected: usize, right: bool, width: usize) -> usize {
     if !two_column_menu(width) {
         return selected;
     }
-    let row = selected % 3;
-    let column = selected / 3;
-    (if right { 1 - column } else { 0 }) * 3 + row
+    let left_rows = MENU.len().div_ceil(2);
+    let right_rows = MENU.len() - left_rows;
+    if right && selected < left_rows {
+        let row = selected;
+        if row < right_rows { left_rows + row } else { selected }
+    } else if !right && selected >= left_rows {
+        selected - left_rows
+    } else {
+        selected
+    }
 }
 
 fn main() {
@@ -916,8 +926,13 @@ fn cloud_status_summary(root: &Path) -> Result<String, String> {
         return Ok(format!("Cloud storage not configured · {}", info.note));
     }
     let provider = info.provider.as_deref().unwrap_or("unknown");
-    let sync = sync_archive_cloud_storage(Some(&root.to_string_lossy()))?;
-    Ok(format!("{provider} cloud storage · {sync}"))
+    let target = info.target.as_deref().unwrap_or("configured");
+    let credentials = if info.auth_environment_variables.is_empty() {
+        "no credential variables required".to_string()
+    } else {
+        format!("credential variables: {}", info.auth_environment_variables.join(", "))
+    };
+    Ok(format!("{provider} · {target} · {credentials} · use Sync Cloud Archives to transfer"))
 }
 
 fn print_cloud_info(info: &gitmanager_archive::ArchiveCloudStorageInfo) {
@@ -1106,12 +1121,16 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                     let row = usize::from(mouse.row);
                     match screen {
                         Screen::Menu => {
-                            if two_column_menu(width) && (7..10).contains(&row) {
+                            if two_column_menu(width) && (7..11).contains(&row) {
                                 let item_row = row - 7;
-                                let right_column = if usize::from(mouse.column) >= width / 2 { 1 } else { 0 };
-                                selected = item_row + right_column * 3;
-                                status = format!("Selected {} · press Enter", MENU[selected]);
-                            } else if !two_column_menu(width) && (7..13).contains(&row) {
+                                let left_rows = MENU.len().div_ceil(2);
+                                let right_column = usize::from(usize::from(mouse.column) >= width / 2);
+                                let candidate = if right_column { left_rows + item_row } else { item_row };
+                                if candidate < MENU.len() {
+                                    selected = candidate;
+                                    status = format!("Selected {} · press Enter", MENU[selected]);
+                                }
+                            } else if !two_column_menu(width) && (7..14).contains(&row) {
                                 selected = row - 7;
                                 status = format!("Selected {} · press Enter", MENU[selected]);
                             }
@@ -1184,7 +1203,14 @@ fn run_tui(repository: PathBuf) -> Result<(), String> {
                         let root = default_archive_root()?;
                         status = match cloud_status_summary(&root) {
                             Ok(summary) => summary,
-                            Err(error) => format!("Cloud sync failed: {error}"),
+                            Err(error) => format!("Cloud status failed: {error}"),
+                        };
+                    }
+                    5 => {
+                        let root = default_archive_root()?;
+                        status = match sync_archive_cloud_storage(Some(&root.to_string_lossy())) {
+                            Ok(result) => format!("Cloud synchronization: {result}"),
+                            Err(error) => format!("Cloud synchronization failed: {error}"),
                         };
                     }
                     _ => break,
@@ -1322,21 +1348,26 @@ fn draw(
             rows.push("Choose an action".to_string());
             if two_column_menu(width) {
                 let column_width = (inner.saturating_sub(2)) / 2;
-                for row in 0..3 {
+                let left_rows = MENU.len().div_ceil(2);
+                for row in 0..left_rows {
                     let left_index = row;
-                    let right_index = row + 3;
+                    let right_index = row + left_rows;
                     let left = format!(
                         "{} [{}] {}",
                         if left_index == selected { if unicode { "❯" } else { ">" } } else { " " },
                         left_index + 1,
                         MENU[left_index],
                     );
-                    let right = format!(
-                        "{} [{}] {}",
-                        if right_index == selected { if unicode { "❯" } else { ">" } } else { " " },
-                        right_index + 1,
-                        MENU[right_index],
-                    );
+                    let right = if right_index < MENU.len() {
+                        format!(
+                            "{} [{}] {}",
+                            if right_index == selected { if unicode { "❯" } else { ">" } } else { " " },
+                            right_index + 1,
+                            MENU[right_index],
+                        )
+                    } else {
+                        String::new()
+                    };
                     rows.push(format!("{}  {}", pad_to_width(&clip(&left, column_width), column_width), clip(&right, column_width)));
                 }
             } else {
@@ -1627,8 +1658,10 @@ mod tests {
     fn menu_moves_vertically_by_column_and_horizontally_by_row() {
         assert_eq!(super::move_menu_vertical(0, 1, 104), 1);
         assert_eq!(super::move_menu_vertical(1, -1, 104), 0);
-        assert_eq!(super::move_menu_horizontal(1, true, 104), 4);
-        assert_eq!(super::move_menu_horizontal(4, false, 104), 1);
+        assert_eq!(super::move_menu_vertical(4, -1, 104), 6);
+        assert_eq!(super::move_menu_horizontal(1, true, 104), 5);
+        assert_eq!(super::move_menu_horizontal(3, true, 104), 3);
+        assert_eq!(super::move_menu_horizontal(5, false, 104), 1);
     }
 
     #[test]
