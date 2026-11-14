@@ -215,9 +215,14 @@ On the destination computer, extract the ZIP and run `py setup.py` on Windows
 or `python3 setup.py` on Linux/macOS. Python 3.9+ is required; the target
 machine does not need Rust, Cargo, Node.js, npm or an internet connection.
 The script detects the host OS/architecture, verifies its bundled binary,
-creates a separate node identity/private key/settings, validates the settings
-with the binary, and offers a per-user background service (Task Scheduler,
-systemd --user or LaunchAgent). It never deletes an existing Cloud Node store.
+creates a separate node identity/private key/settings, asks which local folder
+to watch via RBE's `localSync.directory`, validates the settings with the binary,
+and offers a per-user background service (Task Scheduler, systemd --user or
+LaunchAgent). The Cloud Node's internal `storageRoot` and watched folder are
+kept separate. The current RBE localSync scanner has no ignore-file/secret-file
+exclusion, so setup warns against selecting home folders, whole drives or
+folders containing credentials/private keys and requires explicit confirmation.
+It never deletes an existing Cloud Node store.
 
 The node initiates authenticated outbound synchronization to the configured
 RBE backend. Setup creates a public peer-registration JSON object that the RBE
