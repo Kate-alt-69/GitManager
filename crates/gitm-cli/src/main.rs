@@ -417,6 +417,30 @@ fn remote_update_state(path: &Path) -> Result<RemoteUpdateState, String> {
     Ok(RemoteUpdateState { branch, local_oid, remote_oid, ahead, behind, clean })
 }
 
+fn perform_fast_forward_update(path: &Path, state: &RemoteUpdateState) -> Result<(), String> {
+    if !state.clean {
+        return Err("Refusing to update because the worktree is not clean.".to_string());
+    }
+    if state.ahead > 0 && state.behind > 0 {
+        return Err("Refusing to update because local and origin histories have diverged.".to_string());
+    }
+    if state.behind == 0 {
+        return Ok(());
+    }
+    if state.ahead > 0 {
+        return Err("Refusing to update because local commits are not present on origin.".to_string());
+    }
+
+    let repository = Repository::open(path)
+        .map_err(|error| format!("Could not reopen repository for fast-forward: {error}"))?;
+    let target = repository.find_object(state.remote_oid, None)
+        .map_err(|error| format!("Fetched origin commit is unavailable locally: {error}"))?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.safe();
+    repository.reset(&target, ResetType::Hard, Some(&mut checkout))
+        .map_err(|error| format!("Could not fast-forward to origin/{}: {error}", state.branch))
+}
+
 fn command_update(args: &[String]) -> Result<(), String> {
     let action = args.first().map(String::as_str).unwrap_or("check");
     let path = repository_path_arg(&args[1..])?;
@@ -458,17 +482,7 @@ fn command_update(args: &[String]) -> Result<(), String> {
             if state.ahead > 0 {
                 return Err("Refusing to pull because local commits are not present on origin.".to_string());
             }
-            // remote_update_state has already fetched origin and verified that
-            // this branch can only move forward. Reset through libgit2 to avoid
-            // spawning an external Git process for the common fast-forward path.
-            let repository = Repository::open(&path)
-                .map_err(|error| format!("Could not reopen repository for fast-forward: {error}"))?;
-            let target = repository.find_object(state.remote_oid, None)
-                .map_err(|error| format!("Fetched origin commit is unavailable locally: {error}"))?;
-            let mut checkout = CheckoutBuilder::new();
-            checkout.safe();
-            repository.reset(&target, ResetType::Hard, Some(&mut checkout))
-                .map_err(|error| format!("Could not fast-forward to origin/{}: {error}", state.branch))?;
+            perform_fast_forward_update(&path, &state)?;
             println!(
                 "Fast-forwarded {} to {}.",
                 state.branch,
@@ -1488,6 +1502,94 @@ mod tests {
         }
         assert!(super::command_help("update").contains("fast-forward"));
         assert!(super::command_help("cleaner").contains("Preview is read-only"));
+    }
+
+    #[test]
+    fn native_fast_forward_moves_clean_worktree_to_fetched_commit() {
+        let unique = format!(
+            "gitm-fast-forward-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).unwrap();
+        let repository = Repository::init(&root).unwrap();
+        let signature = git2::Signature::now("GitManager Test", "gitm-test@example.invalid").unwrap();
+
+        std::fs::write(root.join("README.md"), "first\n").unwrap();
+        let mut index = repository.index().unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        let first_tree_id = index.write_tree().unwrap();
+        let first_tree = repository.find_tree(first_tree_id).unwrap();
+        let first = repository.commit(
+            Some("HEAD"), &signature, &signature, "first", &first_tree, &[]
+        ).unwrap();
+        drop(first_tree);
+
+        std::fs::write(root.join("README.md"), "second\n").unwrap();
+        let mut index = repository.index().unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        let second_tree_id = index.write_tree().unwrap();
+        let second_tree = repository.find_tree(second_tree_id).unwrap();
+        let first_commit = repository.find_commit(first).unwrap();
+        let second = repository.commit(
+            Some("HEAD"), &signature, &signature, "second", &second_tree, &[&first_commit]
+        ).unwrap();
+        drop(first_commit);
+        drop(second_tree);
+
+        let state = RemoteUpdateState {
+            branch: repository.head().unwrap().shorthand().unwrap().to_string(),
+            local_oid: first,
+            remote_oid: second,
+            ahead: 0,
+            behind: 1,
+            clean: true,
+        };
+        perform_fast_forward_update(&root, &state).unwrap();
+        assert_eq!(repository.head().unwrap().target(), Some(second));
+        assert_eq!(std::fs::read_to_string(root.join("README.md")).unwrap(), "second\n");
+        drop(repository);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_fast_forward_refuses_dirty_or_diverged_state() {
+        let unique = format!(
+            "gitm-fast-forward-guard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).unwrap();
+        let repository = Repository::init(&root).unwrap();
+        let signature = git2::Signature::now("GitManager Test", "gitm-test@example.invalid").unwrap();
+        let tree_id = repository.index().unwrap().write_tree().unwrap();
+        let tree = repository.find_tree(tree_id).unwrap();
+        let head = repository.commit(
+            Some("HEAD"), &signature, &signature, "initial", &tree, &[]
+        ).unwrap();
+        drop(tree);
+        let state = RemoteUpdateState {
+            branch: repository.head().unwrap().shorthand().unwrap().to_string(),
+            local_oid: head,
+            remote_oid: head,
+            ahead: 0,
+            behind: 1,
+            clean: false,
+        };
+        assert!(perform_fast_forward_update(&root, &state).is_err());
+        let diverged = RemoteUpdateState { clean: true, ahead: 1, behind: 1, ..state };
+        assert!(perform_fast_forward_update(&root, &diverged).is_err());
+        assert_eq!(repository.head().unwrap().target(), Some(head));
+        drop(repository);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
