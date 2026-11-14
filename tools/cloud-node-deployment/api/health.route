@@ -1,0 +1,18 @@
+:import[private, net]
+
+class Route {
+    async get(req) {
+        const health = private.health();
+        const engine = net.ping();
+
+        return {
+            ok: true,
+            status: health.status,
+            uptime: health.uptime,
+            container: health.container,
+            vault: health.vault,
+            errorReporter: health.errorReporter,
+            engine: engine
+        };
+    }
+}
