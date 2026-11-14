@@ -3,10 +3,12 @@
 //! Cloud Node sits below REL/RELC. Language programs never receive node keys,
 //! tunnel identities, topology, storage roots, or direct access to this crate.
 
+#[cfg(feature = "server")]
 mod auth;
 #[cfg(feature = "client")]
 mod client;
 mod config;
+#[cfg(feature = "server")]
 mod crypto;
 mod durable;
 mod format;
@@ -28,12 +30,14 @@ mod provider_sync_guard;
 mod provider_sync_raw;
 mod recovery;
 mod registry_ingest;
+#[cfg(feature = "server")]
 mod server;
 mod settings_path;
 mod store;
 mod sync;
 mod transfer;
 
+#[cfg(feature = "server")]
 pub use auth::{random_session_and_nonce, NodeProof, NodeProofKind, DEFAULT_AUTH_SKEW_MS};
 #[cfg(feature = "client")]
 pub use client::{
@@ -53,6 +57,7 @@ pub use config::{
     ProviderConflictPolicy, ProviderKind, ProviderSettings, ReplicationSettings, ReplicationTarget,
     UpstreamSettings,
 };
+#[cfg(feature = "server")]
 pub use crypto::{
     load_signing_key_from_env, public_key_hex, sign_challenge, verify_challenge,
     CLOUD_NODE_PRIVATE_KEY_ENV,
@@ -76,6 +81,7 @@ pub use recovery::{CloudNodeRecoveryReceiver, RecoveryReceipt};
 pub use registry_ingest::{ingest_registry_export, RegistryIngestResult, RegistryStoredObject};
 #[cfg(feature = "client")]
 pub use registry_ingest::{synchronize_registry_export, RegistrySyncResult};
+#[cfg(feature = "server")]
 pub use server::{
     AcceptedKnock, AuthenticatedSession, CloudNodeAuthenticator, DEFAULT_SESSION_TTL_MS,
     MAX_AUTH_PROOF_BYTES,
