@@ -616,6 +616,22 @@ pub fn restore_repository_archive(
                     .map_err(|error| format!("Could not restore Git push URL for {} in staging: {error}", remote.name))?;
             }
         }
+
+        // The source index is deliberately excluded from Remote Archive. Rebuild
+        // a clean index from the restored HEAD without checking out files, so
+        // captured uncommitted/staged worktree contents remain visible as changes.
+        let mut restored_index = restored_repository.index()
+            .map_err(|error| format!("Could not create the restored Git index: {error}"))?;
+        if let Ok(head) = restored_repository.head() {
+            let head_commit = head.peel_to_commit()
+                .map_err(|error| format!("Could not resolve restored HEAD for index reconstruction: {error}"))?;
+            let head_tree = head_commit.tree()
+                .map_err(|error| format!("Could not read restored HEAD tree for index reconstruction: {error}"))?;
+            restored_index.read_tree(&head_tree)
+                .map_err(|error| format!("Could not rebuild the restored Git index from HEAD: {error}"))?;
+        }
+        restored_index.write()
+            .map_err(|error| format!("Could not write the reconstructed Git index: {error}"))?;
     }
 
     let backup_path = if non_empty {
@@ -1904,6 +1920,13 @@ mod tests {
         fs::create_dir_all(&repository_path).unwrap();
         let repo = Repository::init(&repository_path).unwrap();
         commit_file(&repo, "README.md", "first commit");
+        // Preserve staged working-copy bytes separately from the reachable Git
+        // pack; restore should reconstruct the HEAD index and show this as an
+        // ordinary unstaged worktree modification.
+        fs::write(repository_path.join("README.md"), "staged working copy").unwrap();
+        let mut source_index = repo.index().unwrap();
+        source_index.add_path(Path::new("README.md")).unwrap();
+        source_index.write().unwrap();
         repo.remote(
             "origin",
             "https://alice:fetch-secret@github.com/acme/project.git?access_token=query-secret#private",
@@ -1962,7 +1985,16 @@ mod tests {
             Some(head_oid),
             "Remote Archive must restore tag refs"
         );
-        assert!(!destination.join(".git").join("index").exists(), "source staging index must not be restored");
+        assert!(destination.join(".git").join("index").is_file(), "Remote Archive must reconstruct an index from HEAD");
+        let mut status_options = git2::StatusOptions::new();
+        status_options.include_untracked(true).recurse_untracked_dirs(true);
+        let restored_status = restored.statuses(Some(&mut status_options)).unwrap();
+        assert_eq!(restored_status.len(), 1);
+        assert_eq!(restored_status.get(0).unwrap().path(), Some("README.md"));
+        assert!(
+            restored_status.get(0).unwrap().status().contains(git2::Status::WT_MODIFIED),
+            "staged source content must return as a normal worktree modification"
+        );
         let restored_pack_dir = destination.join(".git").join("objects").join("pack");
         let restored_pack_files = fs::read_dir(&restored_pack_dir).unwrap()
             .filter_map(Result::ok)
@@ -1976,7 +2008,7 @@ mod tests {
         for secret in ["fetch-secret", "push-secret", "query-secret"] {
             assert!(!config.contains(secret));
         }
-        assert_eq!(fs::read_to_string(destination.join("README.md")).unwrap(), "first commit");
+        assert_eq!(fs::read_to_string(destination.join("README.md")).unwrap(), "staged working copy");
         let _ = fs::remove_dir_all(root);
     }
 
