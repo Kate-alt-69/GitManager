@@ -1286,17 +1286,16 @@ impl TerminalSession {
     fn enter() -> Result<Self, String> {
         terminal::enable_raw_mode().map_err(|error| format!("Could not enable terminal input: {error}"))?;
         let mut stdout = io::stdout();
-        let mouse_enabled = env::var("TERM").ok().as_deref() != Some("dumb");
+        let mut mouse_enabled = env::var("TERM").ok().as_deref() != Some("dumb");
         if let Err(error) = execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide) {
             let _ = terminal::disable_raw_mode();
             return Err(format!("Could not enter TUI screen: {error}"));
         }
-        if mouse_enabled {
-            if let Err(error) = execute!(stdout, EnableMouseCapture) {
-                let _ = execute!(stdout, crossterm::cursor::Show, LeaveAlternateScreen);
-                let _ = terminal::disable_raw_mode();
-                return Err(format!("Could not enable TUI mouse selection: {error}"));
-            }
+        if mouse_enabled && execute!(stdout, EnableMouseCapture).is_err() {
+            // Mouse input is an enhancement, not a startup requirement. Some
+            // legacy terminals reject SGR mouse mode while still supporting keys.
+            let _ = execute!(stdout, DisableMouseCapture);
+            mouse_enabled = false;
         }
         Ok(Self { mouse_enabled })
     }
