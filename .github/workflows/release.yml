@@ -79,20 +79,22 @@ jobs:
 
           $msiFiles = @(Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File -ErrorAction Stop)
           if ($msiFiles.Count -lt 1) { throw "The WiX MSI package was not created." }
-          $targets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/gitm.exe", $setupHelper, $installer) + @($msiFiles | ForEach-Object { $_.FullName })
-          foreach ($target in $targets) {
+          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", $installer) + @($msiFiles | ForEach-Object { $_.FullName })
+          foreach ($target in $signTargets) {
             if (Test-Path -LiteralPath $target) {
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
               if ($LASTEXITCODE -ne 0) { throw "Signing failed for $target." }
             }
           }
+          # gitm and GitManager-Setup are signed before Tauri embeds them as sidecars.
+          $verifyTargets = $signTargets + @("target/release/gitm.exe", $setupHelper)
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             $kits = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\bin"
             if (-not (Test-Path $kits)) { $kits = Join-Path $env:ProgramFiles "Windows Kits\10\bin" }
             $signtool = Get-ChildItem -LiteralPath $kits -Directory | Sort-Object Name -Descending |
               ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
               Where-Object { Test-Path $_ } | Select-Object -First 1
-            foreach ($target in $targets) {
+            foreach ($target in $verifyTargets) {
               if (Test-Path $target) { & $signtool verify /pa /v $target; if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $target" } }
             }
           }
