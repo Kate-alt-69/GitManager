@@ -144,11 +144,20 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 ## 6. Windows production installer and signing
 
-On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager and its background service, and creates:
+On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It creates both Windows installer formats:
 
     target/release/bundle/nsis/GitManager-Setup.exe
+    target/release/bundle/msi/GitManager_1.0.0_x64_en-US.msi
 
-The setup installer copies the private CPython runtime after application files have been extracted. It lives under the current user's GitManager data directory and is used only by the bundled Developer Cleaner. It does not install Python machine-wide or modify PATH.
+The NSIS and WiX/MSI files are **application installers**. They install GitManager; they are not the first-run workspace wizard.
+
+The build also creates a separate first-run helper alongside the native binaries:
+
+    target/release/GitManager-Setup.exe
+
+That helper is bundled into the installed app as a Tauri sidecar. The first time `git-manager.exe` starts, it hands off to the helper, which opens the shared onboarding UI. The helper is built for every supported OS: `GitManager-Setup.exe` on Windows and `GitManager-Setup` on Linux/macOS. The same first-run flow asks for the main repository folder, supports additional scan roots, and then continues into GitManager. If the sidecar is unavailable in a development build, the in-process wizard remains as a fallback.
+
+The Windows installer copies the private CPython runtime after application files have been extracted. It lives under the current user's GitManager data directory and is used only by the bundled Developer Cleaner. It does not install Python machine-wide or modify PATH.
 
 ### Sign the production installer from GitManager
 
