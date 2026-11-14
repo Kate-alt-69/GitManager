@@ -1368,7 +1368,7 @@ function renderRepositoryDashboard(container) {
           '<span class="dashboard-ci ci-neutral" data-ci-repo-id="' + escapeHtml(repo.id) + '" aria-label="CI status">Checking CI…</span></span></span>' +
         '<span class="repo-card-meta"><span>' + branchCount + ' branches</span><span>' + tagCount + ' tags</span>' +
           '<span class="' + (dirty ? 'repo-dirty' : 'repo-clean') + '">' + (dirty ? dirty + ' changed' : 'Working tree clean') + '</span></span>' +
-        '<span class="repo-card-hover-details" aria-hidden="true">' +
+        '<span class="repo-card-hover-details">' +
           '<span class="repo-card-hover-row"><span>Location</span><code title="' + escapeHtml(locationLabel) + '">' + escapeHtml(locationLabel) + '</code></span>' +
           '<span class="repo-card-hover-row"><span>History</span><strong>' + escapeHtml(String(commitCount)) + ' commits loaded</strong></span>' +
           '<span class="repo-card-hover-row"><span>Remote</span><strong>' + escapeHtml(remoteWebUrl || (repo.has_remote ? "Remote configured" : "No remote configured")) + '</strong></span>' +
@@ -2411,7 +2411,9 @@ function openScanSetup(isFirstRun) {
   const subtitle = document.getElementById("setup-modal-subtitle");
   const save = document.getElementById("btn-save-scan-setup");
   if (heading) heading.textContent = isFirstRun ? "Set up your workspace" : "Scan settings";
-  if (subtitle) subtitle.textContent = "Choose the folders GitManager should index. A drive root such as D:/ is allowed, but scanning a whole drive can take longer.";
+  if (subtitle) subtitle.textContent = isFirstRun
+    ? "Choose your main repository folder, then add any other locations where you keep projects."
+    : "Choose the folders GitManager should index. A drive root such as D:/ is allowed, but scanning a whole drive can take longer.";
   if (save) save.textContent = isFirstRun ? "Save & Start Indexing" : "Save Settings & Rescan";
   const depth = document.getElementById("setup-scan-depth");
   const hidden = document.getElementById("setup-include-hidden");
