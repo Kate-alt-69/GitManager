@@ -1333,7 +1333,7 @@ function renderRepositoryDashboard(container) {
     return;
   }
 
-  const cards = repositories.map((repo) => {
+  const cards = repositories.map((repo, index) => {
     const icon = resolveRepoIconUrl(repo);
     const fallback = fallbackRepoIconDataUri(repo.primary_provider, repo.name);
     const commit = latestCommitFor(repo);
@@ -1348,7 +1348,7 @@ function renderRepositoryDashboard(container) {
     const dirty = Number(repo.dirty_files_count || 0);
     const fullName = repositoryFullName(repo);
     const displayName = repo.has_remote ? fullName : (repo.name || fullName);
-    const displayOwner = commit && commit.author_name ? commit.author_name : "No commits yet";
+    const lastAuthor = commit && commit.author_name ? commit.author_name : "No commits yet";
     const remoteWebUrl = (repo.remotes || []).find((item) => item.name === "origin")?.web_url ||
       (repo.remotes || [])[0]?.web_url || "";
     const locationLabel = repo.path || repo.git_dir || "Repository path unavailable";
@@ -1360,7 +1360,7 @@ function renderRepositoryDashboard(container) {
             (repo.has_remote ? escapeHtml(fullName) : 'Local repository') + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
           '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(provider) + '</span>' +
         '</span>' +
-        '<span class="repo-card-commit"><strong>' + escapeHtml(displayOwner) + '</strong>' +
+        '<span class="repo-card-commit"><strong>' + escapeHtml(lastAuthor === "No commits yet" ? lastAuthor : "Last commit by " + lastAuthor) + '</strong>' +
           '<small title="' + escapeHtml(commitTitle) + '">' + escapeHtml(commitTitle) + '</small>' +
           '<small class="repo-card-commit-meta">' + escapeHtml(commitSha + (commitDate ? " · " + commitDate : "")) + '</small></span>' +
         '<span class="repo-card-status-row"><span class="repo-card-branch">⑂ ' + escapeHtml(repo.current_branch || "Detached HEAD") + '</span>' +
