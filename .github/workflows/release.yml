@@ -48,6 +48,13 @@ jobs:
                   bad = package.testzip()
                   if bad:
                       raise SystemExit(f"ZIP CRC verification failed at {bad}")
+                  names = set(package.namelist())
+                  required = {"setup.py", "manifest.json", "settings.json", "setting.node.cn.json", "api/health.route"}
+                  missing = required - names
+                  if missing:
+                      raise SystemExit(f"Bootstrap ZIP is missing: {sorted(missing)}")
+                  if any(name.startswith("binaries/") or name.endswith((".exe", "/backend", "/cloud_node")) for name in names):
+                      raise SystemExit("Bootstrap ZIP unexpectedly contains platform binaries")
                   package.extractall(temp)
               setup = pathlib.Path(temp) / "setup.py"
               result = subprocess.run([sys.executable, str(setup), "--verify-only"], check=False)
@@ -187,7 +194,7 @@ jobs:
           compression-level: 9
 
   publish-cloud-node:
-    name: Publish standalone Cloud Node setup bundle
+    name: Publish RBE node bootstrap package
     if: >-
       ${{ github.event_name == 'push' &&
           (github.ref == 'refs/heads/main' ||
