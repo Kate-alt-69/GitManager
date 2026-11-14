@@ -225,7 +225,9 @@ function escapeHtml(raw) {
 }
 
 function fallbackRepoIconDataUri(provider, repoName) {
-  const initial = ((repoName || "G").trim()[0] || "G").toUpperCase();
+  const candidate = ((repoName || "G").trim()[0] || "G").toUpperCase();
+  // Repository names are untrusted data; only a single XML-safe glyph enters the SVG.
+  const initial = /^[A-Z0-9]$/.test(candidate) ? candidate : "G";
   const bg =
     provider === "github"
       ? "#238636"
@@ -239,11 +241,25 @@ function fallbackRepoIconDataUri(provider, repoName) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
-function resolveRepoIconUrl(repo) {
-  if (repo.icon_url && repo.icon_url.startsWith("https://")) {
-    return repo.icon_url;
+function trustedProviderImageUrl(rawUrl) {
+  if (typeof rawUrl !== "string" || !rawUrl.trim()) return "";
+  try {
+    const url = new URL(rawUrl);
+    const allowedHosts = new Set([
+      "github.com",
+      "gitlab.com",
+      "avatars.githubusercontent.com"
+    ]);
+    if (url.protocol !== "https:" || !allowedHosts.has(url.hostname.toLowerCase())) return "";
+    return url.href;
+  } catch (_) {
+    return "";
   }
-  return fallbackRepoIconDataUri(repo.primary_provider, repo.name);
+}
+
+function resolveRepoIconUrl(repo) {
+  return trustedProviderImageUrl(repo.icon_url) ||
+    fallbackRepoIconDataUri(repo.primary_provider, repo.name);
 }
 
 /**
@@ -811,8 +827,9 @@ function renderConnectedAccountsBar() {
     return;
   }
   container.innerHTML = connectedAccounts.map((account) => {
-    const avatar = account.avatar_url || fallbackRepoIconDataUri(account.provider, account.account_login);
-    return '<article class="connected-account-card"><img src="' + escapeHtml(avatar) + '" alt="" class="account-chip-avatar" />' +
+    const fallback = fallbackRepoIconDataUri(account.provider, account.account_login);
+    const avatar = trustedProviderImageUrl(account.avatar_url) || fallback;
+    return '<article class="connected-account-card"><img src="' + escapeHtml(avatar) + '" data-fallback="' + escapeHtml(fallback) + '" alt="" class="account-chip-avatar" />' +
       '<div class="account-chip-text"><strong>' + escapeHtml(account.display_name || account.account_login) + '</strong><span>' +
       escapeHtml(String(account.provider || "").toUpperCase()) + ' · @' + escapeHtml(account.account_login) + '</span></div>' +
       '<span class="account-repo-count">' + (account.repositories || []).length + ' repos</span></article>';
@@ -853,7 +870,7 @@ function renderAccountsPage() {
   container.innerHTML = repositories.map((repo) => {
     const latest = latestCommitFor(repo);
     return '<button type="button" class="dashboard-repo-card account-repo-card" data-account-repo-id="' + escapeHtml(repo.id) + '">' +
-      '<div class="dashboard-card-top"><img class="dashboard-card-icon" src="' + escapeHtml(resolveRepoIconUrl(repo)) + '" alt="" />' +
+      '<div class="dashboard-card-top"><img class="dashboard-card-icon" src="' + escapeHtml(resolveRepoIconUrl(repo)) + '" data-fallback="' + escapeHtml(fallbackRepoIconDataUri(repo.primary_provider, repo.name)) + '" alt="" />' +
       '<div class="dashboard-card-heading"><strong>' + escapeHtml(repositoryFullName(repo)) + '</strong><span>' + escapeHtml(repo.name || "") + '</span></div>' +
       '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(String(repo.primary_provider || "REMOTE").toUpperCase()) + '</span></div>' +
       '<div class="dashboard-card-commit"><span class="dashboard-label">REMOTE REPOSITORY</span><strong>' + escapeHtml(repo.description || (latest ? latest.summary : "Repository discovered through account")) + '</strong>' +
@@ -959,7 +976,7 @@ function renderRepositoryList() {
               src="${escapeHtml(iconSrc)}"
               alt="${escapeHtml(repo.name)} icon"
               class="repo-card-icon"
-              onerror="this.onerror=null;this.src='${fallbackSrc}';"
+              data-fallback="${escapeHtml(fallbackSrc)}"
             />
             <div class="repo-card-body">
               <div class="repo-card-top">
@@ -1425,11 +1442,6 @@ function renderRepositoryDashboard(container) {
       cardSections +
     '</section>';
 
-  container.querySelectorAll(".repo-card-icon").forEach((image) => {
-    image.addEventListener("error", () => {
-      if (image.dataset.fallback) image.src = image.dataset.fallback;
-    }, { once: true });
-  });
   container.querySelectorAll("[data-dashboard-repo-id]").forEach((button) => {
     button.addEventListener("click", () => {
       selectedRepoId = button.getAttribute("data-dashboard-repo-id");
@@ -1591,7 +1603,7 @@ function renderSelectedRepositoryDetails() {
           src="${escapeHtml(iconSrc)}"
           alt="${escapeHtml(repo.name)} icon"
           class="selected-repo-avatar"
-          onerror="this.onerror=null;this.src='${fallbackSrc}';"
+          data-fallback="${escapeHtml(fallbackSrc)}"
         />
         <div>
           <div class="selected-repo-title-row">
@@ -1724,7 +1736,7 @@ function renderSelectedRepositoryDetails() {
           src="${escapeHtml(iconSrc)}"
           alt="Repository Owner Icon"
           class="inspector-repo-icon"
-          onerror="this.onerror=null;this.src='${fallbackSrc}';"
+          data-fallback="${escapeHtml(fallbackSrc)}"
         />
         <div>
           <div class="inspector-repo-title">${escapeHtml(repo.name)}</div>
@@ -2756,6 +2768,16 @@ async function initializeGitManager() {
   }
   void autoConnectGitHubIdentity();
 }
+
+// Use one delegated error handler instead of inline HTML onerror attributes.
+document.addEventListener("error", (event) => {
+  const image = event.target;
+  if (!image || image.tagName !== "IMG" || !image.dataset) return;
+  const fallback = image.dataset.fallback;
+  if (!fallback || image.dataset.fallbackApplied === "true") return;
+  image.dataset.fallbackApplied = "true";
+  image.src = fallback;
+}, true);
 
 window.addEventListener("DOMContentLoaded", () => {
   wireEventListeners();
