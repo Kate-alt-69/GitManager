@@ -67,13 +67,17 @@ Existing format-version-1 manifests and `gitmanager/` index/blob paths remain
 readable, and new writes migrate the active index and subsequent captures
 into the new namespaces without deleting retained legacy restore points.
 
-The desktop **Settings → Cloud** section exposes provider-specific tabs.
-Supabase, Amazon S3, and custom SigV4 S3 endpoints feed the existing provider
-configuration and archive synchronization engine. Google Drive and OneDrive
-currently use their desktop sync-client folders rather than direct OAuth/API
-uploads. The Cloud Node setup tab provisions a separate RBE backend/runtime on
-a NAS; its LAN address checker confirms the backend health endpoints only and
-does not currently pair a persistent CN peer. Disabling removes only the local
+The desktop **Settings → Cloud** section exposes provider-specific tabs
+for Supabase, Azure Blob Storage, Google Cloud Storage, Amazon S3,
+S3-compatible SigV4 endpoints, generic HTTPS object APIs, and the separate
+Cloud Node/NAS installer. Each supported object provider uses the existing
+provider configuration and archive synchronization engine. Credentials remain
+in the operating system environment; the UI templates store environment-variable
+names only. Google Drive and OneDrive currently use their desktop sync-client
+folders rather than direct OAuth/Graph API uploads. The Cloud Node setup tab
+provisions a separate RBE backend/runtime on a NAS; its LAN address checker
+probes the native /health endpoint and the bundled /api/health and /api/status
+routes, but does not currently pair a persistent CN peer. Disabling removes only the local
 provider configuration; it does not delete objects already stored by the
 provider. Repository captures attempt cloud synchronization automatically
 after their local restore point has been committed. If the provider is offline,
