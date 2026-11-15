@@ -683,7 +683,15 @@ def write_launchers(install_dir, backend_path, settings_path, cn_settings_path, 
 
 
 def systemd_literal(value):
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "") + '"'
+    return (
+        '"'
+        + str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("%", "%%")
+        .replace("\n", "")
+        + '"'
+    )
 
 
 def register_windows_backend_service(launcher):
