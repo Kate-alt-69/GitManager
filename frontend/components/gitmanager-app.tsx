@@ -755,7 +755,7 @@ function AccountsPage({
 							<ProviderMark provider={account.provider} />
 							<div className="gm-account-copy"><strong>{account.display_name || account.account_login}</strong><small>{account.account_login} · {account.provider}</small></div>
 							<span className="gm-connected-pill"><i /> Connected</span>
-							{typeof account.repository_count === "number" && <span className="gm-count-chip">{account.repository_count} repos</span>}
+							{account.repositories?.length > 0 && <span className="gm-count-chip">{account.repositories.length} repos</span>}
 						</div>
 					))}
 				</div>
@@ -1011,7 +1011,7 @@ function SettingsPage({
 							<Button onClick={() => void chooseScanRoot()}>Browse…</Button>
 						</div>
 						<div className="gm-form-grid">
-							<Field label="Maximum scan depth" value={draft.maxScanDepth} onChange={(value) => patch({ maxScanDepth: Math.min(32, Math.max(1, Number(value) || 8)) })} type="number" />
+							<Field label="Maximum scan depth" value={draft.maxScanDepth} onChange={(value) => patch({ maxScanDepth: Math.min(16, Math.max(2, Number(value) || 8)) })} type="number" />
 						</div>
 						<Switch label="Include hidden directories" checked={draft.includeHiddenDirs} onChange={(value) => patch({ includeHiddenDirs: value })} description="Include folders such as .config or hidden workspaces." />
 						<Switch label="Index dependency repositories" checked={draft.indexDependencyRepositories} onChange={(value) => patch({ indexDependencyRepositories: value })} description="Discover nested Git projects in node_modules, vendor and similar dependency folders." />
@@ -1031,11 +1031,11 @@ function SettingsPage({
 							<span>Capture trigger</span>
 							<select value={draft.archiveTrigger} onChange={(event) => patch({ archiveTrigger: event.target.value })}>
 								<option value="manual">Manual only</option>
-								<option value="after_commit">After Git commits</option>
-								<option value="filesystem_settled">After filesystem changes settle</option>
+								<option value="commit">After Git commits</option>
+								<option value="change">After filesystem changes settle</option>
 							</select>
 						</label>
-						<Field label="Quiet period (milliseconds)" value={draft.archiveQuietMs} onChange={(value) => patch({ archiveQuietMs: Math.max(250, Number(value) || 1500) })} type="number" />
+						<Field label="Quiet period (milliseconds)" value={draft.archiveQuietMs} onChange={(value) => patch({ archiveQuietMs: Math.min(60000, Math.max(250, Number(value) || 1500)) })} type="number" />
 						<div className="gm-panel-actions"><Button onClick={() => void save()} variant="primary" disabled={saving}>Save archive settings</Button></div>
 					</section>
 

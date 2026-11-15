@@ -81,10 +81,11 @@ export interface ApplicationDirectories {
 export interface ConnectedAccount {
 	provider: string;
 	account_login: string;
-	display_name?: string;
-	avatar_url?: string;
-	repository_count?: number;
-	repositories?: GitRepository[];
+	display_name: string;
+	email: string;
+	avatar_url: string;
+	profile_url: string;
+	repositories: GitRepository[];
 }
 
 export interface UpdateAlert {
@@ -101,14 +102,24 @@ export interface UpdateAlert {
 
 export interface ScanSummary {
 	repositories: GitRepository[];
-	dependencyRepoIds: string[];
+	dependency_repo_ids: string[];
 }
 
 export interface ArchiveSnapshot {
 	id: string;
-	kind: string;
-	capturedAt?: string;
+	repositoryId: string;
+	repositoryName: string;
+	repositoryPath: string;
+	kind: "local" | "remote";
+	capturedAt: string;
+	capturedAtUnixMs: number;
+	branch: string;
+	head: string | null;
 	fileCount: number;
+	directoryCount: number;
+	sourceBytes: number;
 	storedBytes: number;
-	excludedPaths?: string[];
+	manifestSha256: string;
+	manifestLogicalPath: string;
+	excludedPaths: string[];
 }

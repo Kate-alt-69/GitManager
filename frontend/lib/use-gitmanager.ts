@@ -66,7 +66,7 @@ export function useGitManager() {
 				? summary.repositories.filter((repo) => repo.source_kind === "local_scan")
 				: [];
 			setRepositories(local);
-			setDependencies(summary.dependencyRepoIds ?? []);
+			setDependencies(summary.dependency_repo_ids ?? summary.dependencyRepoIds ?? []);
 			setStatus(\`Indexed \${local.length} repositories\`);
 			return local;
 		} catch (cause) {
@@ -229,7 +229,7 @@ export function useGitManager() {
 			unlistenUpdate?.();
 			unlistenState?.();
 		};
-	}, [performScan]);
+	}, [scan]);
 
 	return {
 		available, loading, scanning, version, preferences, setPreferences, directories,
