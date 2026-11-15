@@ -96,6 +96,32 @@ def run_checked(args, *, cwd=None, env=None, timeout=30, capture=True):
         raise SetupError(f"Could not run {args[0]}: {error}") from error
 
 
+def run_interactive(args, *, cwd=None, env=None):
+    """Run an installer-owned CLI with the user's terminal attached."""
+    try:
+        return subprocess.run(
+            [str(item) for item in args],
+            cwd=str(cwd) if cwd is not None else None,
+            env=env,
+            stdin=None,
+            stdout=None,
+            stderr=None,
+            check=False,
+        )
+    except OSError as error:
+        raise SetupError(f"Could not run {args[0]} interactively: {error}") from error
+
+
+def initialize_backend_admin(backend_path, settings_path, install_dir):
+    env = os.environ.copy()
+    result = run_interactive(
+        [backend_path, "--settings", settings_path, "--init-admin"],
+        cwd=install_dir,
+        env=env,
+    )
+    return result.returncode == 0
+
+
 def sha256_bytes(payload):
     return hashlib.sha256(payload).hexdigest()
 
@@ -835,6 +861,7 @@ def main():
     parser.add_argument("--api-port", default="8080", help="Backend API port (default: 8080).")
     parser.add_argument("--node-id", help="Cloud Node identity for this NAS.")
     parser.add_argument("--verify-only", action="store_true", help="Download and verify the matching runtime without installing.")
+    parser.add_argument("--skip-admin-init", action="store_true", help="Do not prompt for local RBE administrator initialization.")
     parser.add_argument("--no-service", action="store_true", help="Do not register or start an OS background service.")
     args = parser.parse_args()
 
@@ -919,11 +946,39 @@ def main():
                 say(f"  {line}")
         say(f"Node registration: {install_dir / 'node-registration.json'}")
         say(f"Start script: {launcher}")
+
+        admin_initialized = False
+        if args.skip_admin_init:
+            say("RBE administrator initialization skipped by --skip-admin-init.")
+        elif not sys.stdin.isatty():
+            say("No interactive terminal is available; administrator initialization was skipped.")
+            say("Run backend --init-admin in a terminal before starting the background service.")
+        elif ask_yes_no(
+            "Initialize or confirm the RBE administrator account now?",
+            True,
+        ):
+            say("RBE will handle the password prompt directly; GitManager does not read or store the password.")
+            try:
+                admin_initialized = initialize_backend_admin(
+                    backend_path, settings_path, install_dir
+                )
+            except SetupError as error:
+                say(f"[ WARNING ] Administrator initialization failed: {error}")
+            if admin_initialized:
+                say("[ OK ] RBE administrator credentials are initialized or were already configured.")
+            else:
+                say("[ WARNING ] Administrator initialization did not complete; the backend will not be auto-started.")
+        else:
+            say("RBE administrator initialization skipped.")
+
         service_registered = False
         if args.no_service:
             say("OS service registration skipped by --no-service.")
+        elif not admin_initialized:
+            say("OS service registration skipped until the RBE administrator account is initialized.")
+            say("After initializing, rerun setup.py or start the backend manually with the launcher.")
         elif ask_yes_no(
-            "Register and start the RBE backend in the background at user login?",
+            "Register and start the initialized RBE backend in the background at user login?",
             True,
         ):
             service_ok, service_message = register_backend_service(install_dir, launcher)
@@ -942,9 +997,13 @@ def main():
         say("A permanent LAN peer-listener/pairing mode is not part of this binary release yet; the normal backend API/status service is installed separately.")
         say("The installer did not open firewall ports, configure TLS, or copy private keys.")
         say("")
-        say("To initialize the RBE administrator account on this machine, run:")
-        say(f"  {backend_path} --init-admin")
-        say("Then start the backend with the generated launcher.")
+        if admin_initialized:
+            say("The RBE administrator is initialized. The generated backend service/launcher can now start normally.")
+        else:
+            say("Before starting the backend, initialize the RBE administrator from a terminal:")
+            say(f"  {backend_path} --settings {settings_path} --init-admin")
+            say("The background service was deliberately not started before this step.")
+            say("After initialization, rerun setup.py to register the OS service, or start the launcher manually.")
         if not service_registered:
             say(f"Backend log: {install_dir / 'logs' / 'backend.log'}")
         return 0
