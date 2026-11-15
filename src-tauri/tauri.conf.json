@@ -16,6 +16,7 @@
         "title": "GitManager — Pure-Rust Local & Remote Git Tree Explorer",
         "width": 1360,
         "height": 860,
+        "center": true,
         "minWidth": 980,
         "minHeight": 640,
         "resizable": true,

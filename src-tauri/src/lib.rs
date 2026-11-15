@@ -26,7 +26,8 @@ use remote_providers::{
     fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
 };
 use scanner::{
-    build_indexed_summary, default_scan_roots, scan_repositories, IndexedRepoSummary, ScanOptions,
+    build_indexed_summary_with_scan_status, default_scan_roots, scan_repositories,
+    scan_repositories_with_report, IndexedRepoSummary, ScanOptions,
 };
 use watcher_service::{
     apply_repository_update, check_all_repos_for_updates, register_os_background_service,
@@ -680,11 +681,11 @@ async fn scan_machine_repositories(
     let options = ScanOptions { root_paths, max_depth, include_hidden_dirs, index_dependency_repositories };
     // Directory walking and libgit2 inspection can be slow on large workspaces.
     // Keep this work off the webview command thread so the desktop UI remains responsive.
-    let local_repos = tokio::task::spawn_blocking(move || scan_repositories(options))
+    let report = tokio::task::spawn_blocking(move || scan_repositories_with_report(options))
         .await.map_err(|error| format!("Repository scan task failed: {error}"))??;
-    if let Ok(mut cache) = state.cached_repos.lock() { *cache = local_repos.clone(); }
+    if let Ok(mut cache) = state.cached_repos.lock() { *cache = report.repositories.clone(); }
     let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
-    Ok(build_indexed_summary(local_repos, &requested))
+    Ok(build_indexed_summary_with_scan_status(report.repositories, &requested, report.truncated))
 }
 #[tauri::command]
 async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {

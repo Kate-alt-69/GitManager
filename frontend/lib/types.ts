@@ -54,6 +54,7 @@ export interface GitRepository {
 	dirty_files_count: number;
 	total_commits_loaded: number;
 	source_kind: string;
+	details_loaded: boolean;
 }
 
 export interface AppPreferences {
@@ -103,6 +104,7 @@ export interface UpdateAlert {
 export interface ScanSummary {
 	repositories: GitRepository[];
 	dependency_repo_ids: string[];
+	scan_truncated?: boolean;
 }
 
 export interface ArchiveSnapshot {

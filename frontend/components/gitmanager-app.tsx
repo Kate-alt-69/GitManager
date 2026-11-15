@@ -334,6 +334,8 @@ function RepositoryDetail({
 	onRescan: () => void;
 }) {
 	const [archives, setArchives] = useState<ArchiveSnapshot[]>([]);
+	const [repositoryDetails, setRepositoryDetails] = useState<GitRepository | null>(repo.details_loaded ? repo : null);
+	const [detailsLoading, setDetailsLoading] = useState(!repo.details_loaded);
 	const [archiveRoot, setArchiveRoot] = useState(preferences.archiveRoot || "");
 	const [archiveStatus, setArchiveStatus] = useState("");
 	const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
@@ -423,8 +425,28 @@ function RepositoryDetail({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [repo.path]);
 
-	const branches = (repo.branches ?? []).filter((branch) => !branch.is_remote);
-	const commits = repo.commits ?? [];
+	useEffect(() => {
+		let active = true;
+		if (repo.details_loaded) {
+			setRepositoryDetails(repo);
+			setDetailsLoading(false);
+			return () => { active = false; };
+		}
+		setRepositoryDetails(null);
+		setDetailsLoading(true);
+		void invoke<GitRepository>("inspect_repository", { repoPath: repo.path }).then((loaded) => {
+			if (active) setRepositoryDetails(loaded);
+		}).catch((error) => {
+			if (active) setArchiveStatus(`Could not load Git Tree details: ${String(error)}`);
+		}).finally(() => {
+			if (active) setDetailsLoading(false);
+		});
+		return () => { active = false; };
+	}, [repo.path, repo.details_loaded]);
+
+	const displayRepo = repositoryDetails ?? repo;
+	const branches = (displayRepo.branches ?? []).filter((branch) => !branch.is_remote);
+	const commits = displayRepo.commits ?? [];
 
 	return (
 		<section className="gm-detail-view">
@@ -447,10 +469,10 @@ function RepositoryDetail({
 			</div>
 
 			<div className="gm-detail-stats">
-				<div><span>Current branch</span><strong><Glyph>⑂</Glyph>{repo.current_branch}</strong></div>
-				<div><span>Commits indexed</span><strong>{repo.total_commits_loaded}</strong></div>
-				<div><span>Working tree</span><strong>{repo.dirty_files_count ? `${repo.dirty_files_count} changed` : "Clean"}</strong></div>
-				<div><span>Remotes</span><strong>{repo.remotes?.length ?? 0}</strong></div>
+				<div><span>Current branch</span><strong><Glyph>⑂</Glyph>{displayRepo.current_branch}</strong></div>
+				<div><span>Commits indexed</span><strong>{displayRepo.total_commits_loaded}</strong></div>
+				<div><span>Working tree</span><strong>{displayRepo.dirty_files_count ? `${displayRepo.dirty_files_count} changed` : "Clean"}</strong></div>
+				<div><span>Remotes</span><strong>{displayRepo.remotes?.length ?? 0}</strong></div>
 			</div>
 
 			<div className="gm-detail-columns">
@@ -459,7 +481,7 @@ function RepositoryDetail({
 						<div><h2>Commit history</h2><p>Recent commits across local and remote branches.</p></div>
 						<span className="gm-count-chip">{commits.length} commits</span>
 					</div>
-					{commits.length === 0 ? <div className="gm-panel-empty">No commits were found for this repository.</div> : (
+					{detailsLoading ? <div className="gm-panel-empty">Loading Git Tree, branches and repository status…</div> : commits.length === 0 ? <div className="gm-panel-empty">No commits were found for this repository.</div> : (
 						<div className="gm-commit-list">
 							{commits.map((commit, index) => (
 								<button
@@ -537,6 +559,21 @@ function RepositoryDetail({
 	);
 }
 
+function RepositorySkeletons() {
+	return (
+		<div className="gm-skeleton-grid" aria-label="Loading repository data" aria-live="polite">
+			{Array.from({ length: 4 }, (_, index) => (
+				<div className="gm-repo-skeleton" key={index}>
+					<div className="gm-skeleton-row"><i className="gm-skeleton gm-skeleton-avatar" /><span className="gm-skeleton gm-skeleton-title" /></div>
+					<span className="gm-skeleton gm-skeleton-line wide" />
+					<span className="gm-skeleton gm-skeleton-line" />
+					<div className="gm-skeleton-row bottom"><span className="gm-skeleton gm-skeleton-chip" /><span className="gm-skeleton gm-skeleton-short" /></div>
+				</div>
+			))}
+		</div>
+	);
+}
+
 function RepositoryPage({
 	repositories,
 	dependencies,
@@ -555,6 +592,7 @@ function RepositoryPage({
 	onPullUpdate,
 	preferences,
 	onRescan,
+	scanTruncated,
 }: {
 	repositories: GitRepository[];
 	dependencies: string[];
@@ -573,6 +611,7 @@ function RepositoryPage({
 	onPullUpdate: (path: string) => void;
 	preferences: AppPreferences;
 	onRescan: () => void;
+	scanTruncated: boolean;
 }) {
 	const dependencySet = useMemo(() => new Set(dependencies), [dependencies]);
 	const visible = useMemo(() => repositories.filter((repo) => {
@@ -613,12 +652,15 @@ function RepositoryPage({
 			</div>
 
 			<EngineGrid columns={4} gap="12px" className="gm-stat-grid">
-				<EngineBox className="gm-stat-card"><span>Repositories</span><strong>{repositories.length}</strong><small>Indexed locally</small></EngineBox>
-				<EngineBox className="gm-stat-card"><span>Remote connected</span><strong>{remoteCount}</strong><small>GitHub, GitLab and more</small></EngineBox>
-				<EngineBox className="gm-stat-card"><span>Working changes</span><strong>{dirtyCount}</strong><small>Repositories with a dirty tree</small></EngineBox>
-				<EngineBox className="gm-stat-card"><span>Dependencies</span><strong>{dependencies.length}</strong><small>Nested or vendored projects</small></EngineBox>
+				{scanning && repositories.length === 0 ? Array.from({ length: 4 }, (_, index) => <EngineBox className="gm-stat-card gm-stat-skeleton" key={index}><span className="gm-skeleton gm-skeleton-label" /><strong className="gm-skeleton gm-skeleton-number" /><small className="gm-skeleton gm-skeleton-label" /></EngineBox>) : <>
+					<EngineBox className="gm-stat-card"><span>Repositories</span><strong>{repositories.length}</strong><small>Indexed locally</small></EngineBox>
+					<EngineBox className="gm-stat-card"><span>Remote connected</span><strong>{remoteCount}</strong><small>GitHub, GitLab and more</small></EngineBox>
+					<EngineBox className="gm-stat-card"><span>Working changes</span><strong>{dirtyCount}</strong><small>Repositories with a dirty tree</small></EngineBox>
+					<EngineBox className="gm-stat-card"><span>Dependencies</span><strong>{dependencies.length}</strong><small>Nested or vendored projects</small></EngineBox>
+				</>}
 			</EngineGrid>
 
+			{scanTruncated && <div className="gm-scan-limit-banner">Discovery reached a safety limit. Narrow your scan folders or depth to inspect the remaining workspace.</div>}
 			{updates.length > 0 && (
 				<div className="gm-update-banner">
 					<div className="gm-update-banner-icon">↑</div>
@@ -662,7 +704,7 @@ function RepositoryPage({
 				<strong>{visible.length} repositories</strong>
 				<span>Click a project to inspect branches, commits and restore points.</span>
 			</div>
-			{visible.length === 0 ? (
+			{visible.length === 0 && scanning ? <RepositorySkeletons /> : visible.length === 0 ? (
 				<EmptyState
 					icon="⌕"
 					title={repositories.length ? "No matching repositories" : "Your workspace is empty"}
@@ -1014,7 +1056,7 @@ function SettingsPage({
 							<Field label="Maximum scan depth" value={draft.maxScanDepth} onChange={(value) => patch({ maxScanDepth: Math.min(16, Math.max(2, Number(value) || 8)) })} type="number" />
 						</div>
 						<Switch label="Include hidden directories" checked={draft.includeHiddenDirs} onChange={(value) => patch({ includeHiddenDirs: value })} description="Include folders such as .config or hidden workspaces." />
-						<Switch label="Index dependency repositories" checked={draft.indexDependencyRepositories} onChange={(value) => patch({ indexDependencyRepositories: value })} description="Discover nested Git projects in node_modules, vendor and similar dependency folders." />
+						<Switch label="Index dependency repositories" checked={draft.indexDependencyRepositories} onChange={(value) => patch({ indexDependencyRepositories: value })} description="Only search node_modules, vendor and build folders when no regular repositories are found." />
 						<Switch label="Show dependency repositories" checked={draft.showDependencyRepositories} onChange={(value) => patch({ showDependencyRepositories: value })} description="Include nested dependencies in the default repository list." />
 						<div className="gm-panel-actions"><Button onClick={onScan}><Glyph>↻</Glyph> Scan now</Button></div>
 					</section>
@@ -1329,6 +1371,19 @@ export function GitManagerApp() {
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const selectedRepo = git.repositories.find((repo) => repo.id === selectedId) ?? null;
 
+	if (git.loading) {
+		return (
+			<div className="gm-boot-screen" role="status" aria-live="polite">
+				<div className="gm-boot-card">
+					<div className="gm-boot-mark">GM</div>
+					<strong>Loading GitManager</strong>
+					<span>Starting your native workspace…</span>
+					<div className="gm-boot-progress"><i /></div>
+				</div>
+			</div>
+		);
+	}
+
 	return (
 		<EngineBox className="gm-app-shell">
 			<Sidebar
@@ -1348,7 +1403,7 @@ export function GitManagerApp() {
 					onScan={() => void git.scan()}
 				/>
 				<main className="gm-main">
-					{git.loading && <div className="gm-loading-bar"><i /></div>}
+					{(git.loading || git.scanning) && <div className="gm-loading-bar"><i /></div>}
 					{git.error && <div className="gm-error-banner"><span>{git.error}</span><button onClick={() => git.setError("")}>Dismiss</button></div>}
 					{page === "repositories" && (
 						<RepositoryPage
@@ -1364,6 +1419,7 @@ export function GitManagerApp() {
 							setKind={setKind}
 							scanning={git.scanning}
 							onScan={() => void git.scan()}
+							scanTruncated={git.scanTruncated}
 							onCheckUpdates={() => void git.checkUpdates()}
 							updates={git.updates}
 							onPullUpdate={(path) => void git.pullUpdate(path)}

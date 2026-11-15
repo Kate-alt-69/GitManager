@@ -122,7 +122,7 @@ fn map_github_repositories(items: Vec<GithubRepoItem>, display_name: &str, owner
                 summary: description, author_name: display_name.to_string(), author_email: owner_email.to_string(),
                 timestamp: 0, date_iso, parents: vec![], branches: vec![default_branch], tags: vec!["remote".to_string()],
                 is_head: true, lane: 0 }],
-            dirty_files_count: 0, total_commits_loaded: 1, source_kind: "remote_account".to_string(),
+            dirty_files_count: 0, total_commits_loaded: 1, source_kind: "remote_account".to_string(), details_loaded: true,
         }
     }).collect()
 }
@@ -337,7 +337,7 @@ async fn fetch_github_account(req: ProviderAccountRequest) -> Result<ConnectedAc
                 }],
                 dirty_files_count: 0,
                 total_commits_loaded: 1,
-                source_kind: "remote_account".to_string(),
+                source_kind: "remote_account".to_string(), details_loaded: true,
             }
         })
         .collect();
@@ -487,7 +487,7 @@ async fn fetch_gitlab_account(req: ProviderAccountRequest) -> Result<ConnectedAc
                 }],
                 dirty_files_count: 0,
                 total_commits_loaded: 1,
-                source_kind: "remote_account".to_string(),
+                source_kind: "remote_account".to_string(), details_loaded: true,
             }
         })
         .collect();

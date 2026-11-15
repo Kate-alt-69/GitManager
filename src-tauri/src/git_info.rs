@@ -64,6 +64,7 @@ pub struct GitRepositoryInfo {
     pub dirty_files_count: usize,
     pub total_commits_loaded: usize,
     pub source_kind: String, // "local_scan" | "remote_account" | "synced"
+    pub details_loaded: bool,
 }
 
 /// Parses a Git remote URL (SSH or HTTPS) to extract host, provider, owner, repo slug, and avatar/icon URL
@@ -134,8 +135,17 @@ pub fn parse_remote_url(remote_name: &str, raw_url: &str) -> RemoteEndpoint {
     }
 }
 
-/// Extracts complete Git metadata, `.git/config` details, owner/email, remotes, branches, and full Git commit tree
+/// Extracts full Git metadata for a selected repository.
 pub fn extract_git_repository_info(workdir: &Path, git_dir_path: &Path) -> Result<GitRepositoryInfo, String> {
+    extract_git_repository_info_with_detail(workdir, git_dir_path, true)
+}
+
+/// Extracts only repository-card metadata and HEAD.
+pub fn extract_git_repository_summary(workdir: &Path, git_dir_path: &Path) -> Result<GitRepositoryInfo, String> {
+    extract_git_repository_info_with_detail(workdir, git_dir_path, false)
+}
+
+fn extract_git_repository_info_with_detail(workdir: &Path, git_dir_path: &Path, load_details: bool) -> Result<GitRepositoryInfo, String> {
     let repo = Repository::open(workdir).map_err(|e| format!("Failed to open git repo at {:?}: {}", workdir, e))?;
 
     let name = workdir
@@ -188,135 +198,103 @@ pub fn extract_git_repository_info(workdir: &Path, git_dir_path: &Path) -> Resul
         }
     }
 
-    // Resolve the origin default branch from its symbolic remote HEAD. Do not guess.
-    let default_branch = repo.find_reference("refs/remotes/origin/HEAD").ok()
-        .and_then(|reference| reference.symbolic_target().map(str::to_string))
-        .and_then(|target| target.strip_prefix("refs/remotes/origin/").map(str::to_string));
+    let default_branch = if load_details {
+        repo.find_reference("refs/remotes/origin/HEAD").ok()
+            .and_then(|reference| reference.symbolic_target().map(str::to_string))
+            .and_then(|target| target.strip_prefix("refs/remotes/origin/").map(str::to_string))
+    } else { None };
 
-    // Map OIDs to branch names & tag names for the full Git tree
     let mut oid_branches: HashMap<String, Vec<String>> = HashMap::new();
     let mut branches_info: Vec<BranchInfo> = Vec::new();
-    let mut current_branch = "HEAD (detached)".to_string();
-    let head_oid = repo.head().ok().and_then(|h| h.target()).map(|id| id.to_string());
-
-    if let Ok(head_ref) = repo.head() {
-        if head_ref.is_branch() {
-            if let Some(short) = head_ref.shorthand() {
-                current_branch = short.to_string();
+    if load_details {
+        if let Ok(branches) = repo.branches(None) {
+            for branch_res in branches.flatten() {
+                let (branch, branch_type) = branch_res;
+                let branch_name = branch.name().ok().flatten().unwrap_or("unknown").to_string();
+                let is_head = branch.is_head();
+                let is_remote = matches!(branch_type, BranchType::Remote);
+                let target_oid = branch.get().target().map(|id| id.to_string()).unwrap_or_default();
+                let upstream = branch.upstream().ok()
+                    .and_then(|value| value.name().ok().flatten().map(str::to_string));
+                if !target_oid.is_empty() {
+                    oid_branches.entry(target_oid.clone()).or_default().push(branch_name.clone());
+                }
+                let is_default = default_branch.as_ref().map(|name| {
+                    branch_name == name.as_str() || branch_name == format!("origin/{name}")
+                }).unwrap_or(false);
+                branches_info.push(BranchInfo { name: branch_name, is_head, is_remote, target_oid, upstream, is_default });
             }
         }
     }
 
-    if let Ok(branches) = repo.branches(None) {
-        for branch_res in branches.flatten() {
-            let (branch, b_type) = branch_res;
-            let b_name = branch
-                .name()
-                .ok()
-                .flatten()
-                .unwrap_or("unknown")
-                .to_string();
-            let is_head = branch.is_head();
-            let is_remote = matches!(b_type, BranchType::Remote);
-            let target_oid = branch
-                .get()
-                .target()
-                .map(|id| id.to_string())
-                .unwrap_or_default();
-            let upstream = branch
-                .upstream()
-                .ok()
-                .and_then(|u| u.name().ok().flatten().map(|s| s.to_string()));
-
-            if !target_oid.is_empty() {
-                oid_branches
-                    .entry(target_oid.clone())
-                    .or_default()
-                    .push(b_name.clone());
-            }
-
-            let is_default = default_branch.as_ref().map(|name| {
-                b_name == name.as_str() || b_name == format!("origin/{name}")
-            }).unwrap_or(false);
-            branches_info.push(BranchInfo {
-                name: b_name,
-                is_head,
-                is_remote,
-                target_oid,
-                upstream,
-                is_default,
-            });
-        }
-    }
-
-    let mut oid_tags: HashMap<String, Vec<String>> = HashMap::new();
-    let _ = repo.tag_foreach(|oid, name_bytes| {
-        let raw_name = String::from_utf8_lossy(name_bytes).to_string();
-        let clean_tag = raw_name.trim_start_matches("refs/tags/").to_string();
-        let resolved_oid = repo
-            .find_tag(oid)
-            .ok()
-            .map(|t| t.target_id().to_string())
-            .unwrap_or_else(|| oid.to_string());
-        oid_tags.entry(resolved_oid).or_default().push(clean_tag);
-        true
-    });
-
-    // Walk commit graph across all refs to build the visual Git Tree
     let mut commits: Vec<CommitNode> = Vec::new();
-    if let Ok(mut revwalk) = repo.revwalk() {
-        let _ = revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME);
-        if revwalk.push_glob("refs/heads/*").is_err() {
-            let _ = revwalk.push_head();
-        }
-        let _ = revwalk.push_glob("refs/remotes/*");
-
-        let mut active_lanes: Vec<Option<String>> = Vec::new();
-
-        for (idx, oid_res) in revwalk.enumerate() {
-            if idx >= 180 {
-                break; // Cap per-repo initial tree nodes for snappy UI rendering
-            }
-            if let Ok(oid) = oid_res {
-                if let Ok(commit) = repo.find_commit(oid) {
-                    let oid_str = oid.to_string();
-                    let short_oid = oid_str.chars().take(7).collect();
-                    let author = commit.author();
-                    let a_name = author.name().unwrap_or("Unknown Author").to_string();
-                    let a_email = author.email().unwrap_or("unknown@local").to_string();
-
-                    if owner_name.is_empty() {
-                        owner_name = a_name.clone();
+    if load_details {
+        let mut oid_tags: HashMap<String, Vec<String>> = HashMap::new();
+        let _ = repo.tag_foreach(|oid, name_bytes| {
+            let raw_name = String::from_utf8_lossy(name_bytes).to_string();
+            let clean_tag = raw_name.trim_start_matches("refs/tags/").to_string();
+            let resolved_oid = repo.find_tag(oid).ok()
+                .map(|tag| tag.target_id().to_string())
+                .unwrap_or_else(|| oid.to_string());
+            oid_tags.entry(resolved_oid).or_default().push(clean_tag);
+            true
+        });
+        if let Ok(mut revwalk) = repo.revwalk() {
+            let _ = revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME);
+            if revwalk.push_glob("refs/heads/*").is_err() { let _ = revwalk.push_head(); }
+            let _ = revwalk.push_glob("refs/remotes/*");
+            let mut active_lanes: Vec<Option<String>> = Vec::new();
+            for (index, oid_result) in revwalk.enumerate() {
+                if index >= 180 { break; }
+                if let Ok(oid) = oid_result {
+                    if let Ok(commit) = repo.find_commit(oid) {
+                        let oid_string = oid.to_string();
+                        let short_oid = oid_string.chars().take(7).collect();
+                        let author = commit.author();
+                        let author_name = author.name().unwrap_or("Unknown Author").to_string();
+                        let author_email = author.email().unwrap_or("unknown@local").to_string();
+                        if owner_name.is_empty() { owner_name = author_name.clone(); }
+                        if owner_email.is_empty() { owner_email = author_email.clone(); }
+                        let parents: Vec<String> = commit.parent_ids().map(|parent| parent.to_string()).collect();
+                        let lane = assign_commit_lane(&oid_string, &parents, &mut active_lanes);
+                        let seconds = commit.time().seconds();
+                        let date_iso = chrono::DateTime::from_timestamp(seconds, 0)
+                            .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_else(|| "Unknown date".to_string());
+                        commits.push(CommitNode {
+                            oid: oid_string.clone(), short_oid,
+                            message: commit.message().unwrap_or("").trim().to_string(),
+                            summary: commit.summary().unwrap_or("(no commit message)").to_string(),
+                            author_name, author_email, timestamp: seconds, date_iso, parents,
+                            branches: oid_branches.remove(&oid_string).unwrap_or_default(),
+                            tags: oid_tags.remove(&oid_string).unwrap_or_default(),
+                            is_head: head_oid.as_deref() == Some(oid_string.as_str()), lane,
+                        });
                     }
-                    if owner_email.is_empty() {
-                        owner_email = a_email.clone();
-                    }
-
-                    let parents: Vec<String> = commit.parent_ids().map(|p| p.to_string()).collect();
-                    let lane = assign_commit_lane(&oid_str, &parents, &mut active_lanes);
-
-                    let secs = commit.time().seconds();
-                    let date_iso = chrono::DateTime::from_timestamp(secs, 0)
-                        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                        .unwrap_or_else(|| "Unknown date".to_string());
-
-                    commits.push(CommitNode {
-                        oid: oid_str.clone(),
-                        short_oid,
-                        message: commit.message().unwrap_or("").trim().to_string(),
-                        summary: commit.summary().unwrap_or("(no commit message)").to_string(),
-                        author_name: a_name,
-                        author_email: a_email,
-                        timestamp: secs,
-                        date_iso,
-                        parents,
-                        branches: oid_branches.remove(&oid_str).unwrap_or_default(),
-                        tags: oid_tags.remove(&oid_str).unwrap_or_default(),
-                        is_head: head_oid.as_deref() == Some(oid_str.as_str()),
-                        lane,
-                    });
                 }
             }
+        }
+    } else if let Ok(head_reference) = repo.head() {
+        if let Ok(commit) = head_reference.peel_to_commit() {
+            let oid = commit.id().to_string();
+            let author = commit.author();
+            let author_name = author.name().unwrap_or("Unknown Author").to_string();
+            let author_email = author.email().unwrap_or("unknown@local").to_string();
+            if owner_name.is_empty() { owner_name = author_name.clone(); }
+            if owner_email.is_empty() { owner_email = author_email.clone(); }
+            let seconds = commit.time().seconds();
+            let date_iso = chrono::DateTime::from_timestamp(seconds, 0)
+                .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "Unknown date".to_string());
+            let short_oid = oid.chars().take(7).collect();
+            commits.push(CommitNode {
+                oid, short_oid, message: commit.message().unwrap_or("").trim().to_string(),
+                summary: commit.summary().unwrap_or("(no commit message)").to_string(),
+                author_name, author_email, timestamp: seconds, date_iso,
+                parents: commit.parent_ids().map(|parent| parent.to_string()).collect(),
+                branches: if current_branch == "HEAD (detached)" { Vec::new() } else { vec![current_branch.clone()] },
+                tags: Vec::new(), is_head: true, lane: 0,
+            });
         }
     }
 
@@ -327,12 +305,14 @@ pub fn extract_git_repository_info(workdir: &Path, git_dir_path: &Path) -> Resul
         owner_email = "local@unconfigured.git".to_string();
     }
 
-    // Count modified/untracked working tree files
+    // Avoid recursively enumerating untracked trees during list discovery.
     let mut dirty_files_count = 0;
-    let mut status_opts = StatusOptions::new();
-    status_opts.include_untracked(true);
-    if let Ok(statuses) = repo.statuses(Some(&mut status_opts)) {
-        dirty_files_count = statuses.len();
+    if load_details {
+        let mut status_opts = StatusOptions::new();
+        status_opts.include_untracked(true).recurse_untracked_dirs(false);
+        if let Ok(statuses) = repo.statuses(Some(&mut status_opts)) {
+            dirty_files_count = statuses.len();
+        }
     }
 
     let has_remote = !remotes.is_empty();
@@ -372,6 +352,7 @@ pub fn extract_git_repository_info(workdir: &Path, git_dir_path: &Path) -> Resul
         commits,
         dirty_files_count,
         source_kind: "local_scan".to_string(),
+        details_loaded: load_details,
     })
 }
 

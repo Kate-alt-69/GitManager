@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke, isTauriRuntime, listen } from "./tauri";
 import type {
 	AppPreferences,
@@ -27,9 +27,11 @@ const DEFAULT_PREFERENCES: AppPreferences = {
 };
 
 export function useGitManager() {
+	const scanInFlight = useRef(false);
 	const [available, setAvailable] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [scanning, setScanning] = useState(false);
+	const [scanTruncated, setScanTruncated] = useState(false);
 	const [version, setVersion] = useState("—");
 	const [preferences, setPreferences] = useState<AppPreferences>(DEFAULT_PREFERENCES);
 	const [directories, setDirectories] = useState<ApplicationDirectories | null>(null);
@@ -46,6 +48,8 @@ export function useGitManager() {
 			setStatus("Open GitManager as a desktop app to access local repositories.");
 			return [];
 		}
+		if (scanInFlight.current) return [];
+		scanInFlight.current = true;
 		setScanning(true);
 		setStatus("Indexing repositories…");
 		setError("");
@@ -65,7 +69,10 @@ export function useGitManager() {
 				: [];
 			setRepositories(local);
 			setDependencies(summary.dependency_repo_ids ?? []);
-			setStatus(`Indexed ${local.length} repositories`);
+			setScanTruncated(Boolean(summary.scan_truncated));
+			setStatus(summary.scan_truncated
+				? `Indexed ${local.length} repositories · stopped at a safety limit`
+				: `Indexed ${local.length} repositories`);
 			return local;
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
@@ -73,6 +80,7 @@ export function useGitManager() {
 			setStatus("Repository scan failed");
 			return [];
 		} finally {
+			scanInFlight.current = false;
 			setScanning(false);
 		}
 	}, []);
@@ -181,25 +189,26 @@ export function useGitManager() {
 						setSetupOpen(true);
 					}
 				} else {
-					await performScan(resolved);
+					// Paint the application shell first; native discovery fills the skeleton cards.
+					setLoading(false);
+					void performScan(resolved);
 				}
 
-				try {
-					const identity = await invoke<{ login?: string }>("detect_github_identity");
-					if (identity?.login) {
-						const account = await invoke<ConnectedAccount>("connect_git_account", {
-							provider: "github",
-							usernameOrHost: "",
-							accessToken: null,
-						});
-						if (active) setAccounts((current) => [
-							...current.filter((item) => item.account_login !== account.account_login),
-							account,
-						]);
-					}
-				} catch {
+				// GitHub CLI identity lookup is independent and must not delay first paint.
+				void invoke<{ login?: string }>("detect_github_identity").then(async (identity) => {
+					if (!active || !identity?.login) return;
+					const account = await invoke<ConnectedAccount>("connect_git_account", {
+						provider: "github",
+						usernameOrHost: "",
+						accessToken: null,
+					});
+					if (active) setAccounts((current) => [
+						...current.filter((item) => item.account_login !== account.account_login),
+						account,
+					]);
+				}).catch(() => {
 					// Missing GitHub CLI authentication is normal; manual connection remains available.
-				}
+				});
 			} catch (cause) {
 				const message = cause instanceof Error ? cause.message : String(cause);
 				if (active) {
@@ -230,7 +239,7 @@ export function useGitManager() {
 	}, [scan]);
 
 	return {
-		available, loading, scanning, version, preferences, setPreferences, directories,
+		available, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, updates, setupOpen, setSetupOpen,
 		status, error, setError, scan, savePreferences, checkUpdates, pullUpdate, connectAccount,
 	};
