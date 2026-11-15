@@ -435,10 +435,13 @@ struct RbeNodeStatusInfo {
     reachable: bool,
     backend_http_status: Option<u16>,
     api_route_http_status: Option<u16>,
+    api_status_http_status: Option<u16>,
     backend_health: Option<Value>,
     api_route_health: Option<Value>,
+    api_status_health: Option<Value>,
     backend_error: Option<String>,
     api_route_error: Option<String>,
+    api_status_error: Option<String>,
     message: String,
 }
 
@@ -557,14 +560,18 @@ async fn check_rbe_node_status(address: String) -> Result<RbeNodeStatusInfo, Str
     backend_endpoint.set_path("/health");
     let mut api_endpoint = base.clone();
     api_endpoint.set_path("/api/health");
+    let mut api_status_endpoint = base.clone();
+    api_status_endpoint.set_path("/api/status");
 
     let (backend_http_status, backend_health, backend_error) =
         fetch_rbe_health(&client, backend_endpoint).await;
     let (api_route_http_status, api_route_health, api_route_error) =
         fetch_rbe_health(&client, api_endpoint).await;
+    let (api_status_http_status, api_status_health, api_status_error) =
+        fetch_rbe_health(&client, api_status_endpoint).await;
     let reachable = backend_http_status.is_some_and(|status| (200..300).contains(&status));
     let message = if reachable {
-        "RBE backend is reachable on the LAN. API route status is reported separately.".to_string()
+        "RBE backend is reachable on the LAN. Custom health and status route responses are reported separately.".to_string()
     } else {
         "Could not confirm the RBE backend health endpoint. Check the IP, port, host firewall and whether backend is running.".to_string()
     };
@@ -574,10 +581,13 @@ async fn check_rbe_node_status(address: String) -> Result<RbeNodeStatusInfo, Str
         reachable,
         backend_http_status,
         api_route_http_status,
+        api_status_http_status,
         backend_health,
         api_route_health,
+        api_status_health,
         backend_error,
         api_route_error,
+        api_status_error,
         message,
     })
 }
