@@ -2149,6 +2149,73 @@ mod tests {
     }
 
     #[test]
+    fn cloud_provider_templates_validate_and_report_expected_environment_variables() {
+        let cases = [
+            (
+                "azure",
+                serde_json::json!({
+                    "kind": "azure-blob",
+                    "namespace": "gitmanager",
+                    "bucket": "gitmanager-archives",
+                    "account": "exampleaccount",
+                    "auth": {
+                        "mode": "azure-sas",
+                        "sasTokenEnv": "RBE_CN_PROV_AZURE_SAS_TOKEN"
+                    }
+                }),
+                vec!["RBE_CN_PROV_AZURE_SAS_TOKEN"],
+            ),
+            (
+                "gcs",
+                serde_json::json!({
+                    "kind": "google-cloud-storage",
+                    "namespace": "gitmanager",
+                    "bucket": "gitmanager-archives",
+                    "auth": {
+                        "mode": "oauth-bearer",
+                        "oauthTokenEnv": "RBE_CN_PROV_GOOGLE_OAUTH_TOKEN"
+                    }
+                }),
+                vec!["RBE_CN_PROV_GOOGLE_OAUTH_TOKEN"],
+            ),
+            (
+                "http",
+                serde_json::json!({
+                    "kind": "http",
+                    "namespace": "gitmanager",
+                    "bucket": "gitmanager-archives",
+                    "endpoint": "https://objects.example.invalid",
+                    "auth": {
+                        "mode": "bearer",
+                        "bearerTokenEnv": "RBE_CN_PROV_HTTP_BEARER_TOKEN"
+                    }
+                }),
+                vec!["RBE_CN_PROV_HTTP_BEARER_TOKEN"],
+            ),
+        ];
+
+        for (label, provider, expected_environment) in cases {
+            let root = temp_root(&format!("provider-template-{label}"));
+            let provider_json = serde_json::to_string(&provider).unwrap();
+            let configured = configure_archive_cloud_storage(
+                Some(root.to_str().unwrap()),
+                &provider_json,
+            )
+            .unwrap();
+            assert!(configured.configured, "{label} provider did not configure");
+
+            let info = archive_cloud_storage_info(&root).unwrap();
+            for environment_name in expected_environment {
+                assert!(
+                    info.auth_environment_variables.iter().any(|name| name == environment_name),
+                    "{label} provider did not report {environment_name}"
+                );
+            }
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
     fn remote_archive_rejects_nested_git_metadata() {
         let root = temp_root("nested-git");
         let repository_path = root.join("repository");
