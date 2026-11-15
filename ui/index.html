@@ -120,6 +120,8 @@
                 <button class="cloud-provider-tab active" type="button" role="tab" aria-selected="true" aria-controls="cloud-provider-google-drive" data-cloud-provider="google-drive">Google Drive</button>
                 <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-onedrive" data-cloud-provider="onedrive">Microsoft OneDrive</button>
                 <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-supabase" data-cloud-provider="supabase">Supabase</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-azure-blob" data-cloud-provider="azure-blob">Azure Blob</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-google-cloud-storage" data-cloud-provider="google-cloud-storage">Google Cloud Storage</button>
                 <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-amazon-s3" data-cloud-provider="amazon-s3">Amazon S3</button>
                 <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-s3-compatible" data-cloud-provider="s3-compatible">S3-compatible</button>
                 <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-node" data-cloud-provider="node">Cloud Node setup</button>
@@ -157,6 +159,26 @@
                     <div class="settings-actions"><button id="btn-cloud-supabase-configure" class="btn btn-primary" type="button">Configure Supabase</button></div>
                   </div>
                 </section>
+                <section id="cloud-provider-azure-blob" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Azure Blob Storage" data-cloud-panel="azure-blob">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Azure Blob Storage</h3><p>Use an Azure Storage container with a SAS token from your operating system environment.</p></div>
+                      <span class="settings-icon" aria-hidden="true">AZ</span>
+                    </div>
+                    <p class="settings-value">The provider uses the account name and container (bucket) below. Store the SAS token in RBE_CN_PROV_AZURE_SAS_TOKEN; the token is never saved in GitManager's JSON settings.</p>
+                    <div class="settings-actions"><button id="btn-cloud-azure-blob-configure" class="btn btn-primary" type="button">Configure Azure Blob</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-google-cloud-storage" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Google Cloud Storage" data-cloud-panel="google-cloud-storage">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Google Cloud Storage</h3><p>Connect a GCS bucket using an OAuth bearer token from your environment.</p></div>
+                      <span class="settings-icon" aria-hidden="true">GCS</span>
+                    </div>
+                    <p class="settings-value">This is Google Cloud Storage, not Google Drive. Supply a valid access token through RBE_CN_PROV_GOOGLE_OAUTH_TOKEN. Direct Google Drive API upload remains separate and is not implemented here.</p>
+                    <div class="settings-actions"><button id="btn-cloud-google-cloud-storage-configure" class="btn btn-primary" type="button">Configure GCS</button></div>
+                  </div>
+                </section>
                 <section id="cloud-provider-amazon-s3" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Amazon S3" data-cloud-panel="amazon-s3">
                   <div class="settings-card settings-card-wide">
                     <div class="settings-card-heading">
@@ -175,6 +197,16 @@
                     </div>
                     <p class="settings-value">The Amazon S3 adapter accepts a custom endpoint and uses path-style bucket URLs with SigV4 signing. This works with S3-compatible services that implement that request format. Set RBE_CN_PROV_AMAZON_ACCESS_KEY and RBE_CN_PROV_AMAZON_SECRET_KEY in the operating system environment; use the endpoint and region value supplied by your storage vendor.</p>
                     <div class="settings-actions"><button id="btn-cloud-s3-compatible-configure" class="btn btn-primary" type="button">Configure S3 endpoint</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-http" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Custom HTTPS object storage" data-cloud-panel="http">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Custom HTTPS object storage</h3><p>Use the existing generic HTTP object adapter for a compatible object API.</p></div>
+                      <span class="settings-icon" aria-hidden="true">HTTPS</span>
+                    </div>
+                    <p class="settings-value">Configure the HTTPS endpoint and use RBE_CN_PROV_HTTP_BEARER_TOKEN by default. The generic adapter is not guaranteed to support every vendor's proprietary API or authentication scheme.</p>
+                    <div class="settings-actions"><button id="btn-cloud-http-configure" class="btn btn-primary" type="button">Configure HTTPS storage</button></div>
                   </div>
                 </section>
                 <section id="cloud-provider-node" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Cloud Node setup" data-cloud-panel="node">
