@@ -878,7 +878,7 @@ async fn control_background_service(
     }
 
     let os_kind = if cfg!(target_os = "windows") {
-        "Windows Service (svchost / sc.exe)"
+        "Windows Task Scheduler (user logon)"
     } else if cfg!(target_os = "macos") {
         "macOS LaunchAgent (launchd)"
     } else {
