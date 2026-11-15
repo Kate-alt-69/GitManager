@@ -298,7 +298,7 @@ pub fn register_os_background_service() -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         let task_name = "GitManager Background Service";
-        let task_command = format!("\\\"{}\\\" --svchost-worker", service_bin.display());
+        let task_command = format!("\"{}\" --svchost-worker", service_bin.display());
         let create = hidden_command("schtasks.exe")
             .args(["/Create", "/SC", "ONLOGON", "/TN", task_name, "/TR"])
             .arg(&task_command)
