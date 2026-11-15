@@ -1,12 +1,23 @@
 export type TauriEvent<T> = { payload: T };
 export type Unlisten = () => void;
 
+export interface NativeDialogOptions {
+	title?: string;
+	multiple?: boolean;
+	directory?: boolean;
+	defaultPath?: string;
+	filters?: Array<{ name: string; extensions: string[] }>;
+}
+
 type TauriGlobal = {
 	core?: {
 		invoke?: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 	};
 	event?: {
 		listen?: <T>(event: string, handler: (event: TauriEvent<T>) => void) => Promise<Unlisten>;
+	};
+	dialog?: {
+		open?: (options?: NativeDialogOptions) => Promise<string | string[] | null>;
 	};
 };
 
@@ -46,4 +57,13 @@ export async function listen<T>(
 	const subscribe = window.__TAURI__?.event?.listen;
 	if (!subscribe) return () => undefined;
 	return subscribe<T>(eventName, (event) => handler(event.payload));
+}
+
+/** Open the native Tauri file/folder picker without exposing shell permissions. */
+export async function openDialog(options: NativeDialogOptions): Promise<string | string[] | null> {
+	const open = window.__TAURI__?.dialog?.open;
+	if (!open) {
+		throw new Error("The native file picker is unavailable outside the GitManager desktop runtime.");
+	}
+	return open(options);
 }

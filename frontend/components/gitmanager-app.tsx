@@ -6,7 +6,7 @@ import {
 	EngineGrid,
 } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
-import { invoke } from "../lib/tauri";
+import { invoke, openDialog } from "../lib/tauri";
 import type {
 	AppPreferences,
 	ArchiveSnapshot,
@@ -715,6 +715,8 @@ function AccountsPage({
 		}
 	}
 
+	const remoteRepositories = accounts.flatMap((account) => account.repositories ?? []);
+
 	return (
 		<div className="gm-page-content">
 			<div className="gm-page-heading">
@@ -758,6 +760,16 @@ function AccountsPage({
 					))}
 				</div>
 			</div>
+			<section className="gm-panel gm-connected-panel">
+				<div className="gm-panel-heading"><div><h2>Remote repositories</h2><p>Repositories returned by your connected provider identities.</p></div><span className="gm-count-chip">{remoteRepositories.length}</span></div>
+				{remoteRepositories.length === 0 ? <p className="gm-muted-copy" style={{ padding: "0 15px" }}>Connect a provider account to load its remote repository list.</p> : remoteRepositories.map((repo) => (
+					<button className="gm-account-row gm-remote-repo-row" type="button" key={repo.id} onClick={() => repo.web_url && void invoke("open_external_url", { url: repo.web_url }).catch((error) => window.alert(String(error)))}>
+						<RepoAvatar repo={repo} />
+						<div className="gm-account-copy"><strong>{repo.owner_name ? repo.owner_name + "/" : ""}{repo.name}</strong><small>{repo.current_branch || "default branch"} · {repo.primary_provider || "remote"}</small></div>
+						<span className="gm-connected-pill">↗ Open</span>
+					</button>
+				))}
+			</section>
 		</div>
 	);
 }
@@ -786,6 +798,11 @@ function SettingsPage({
 	const [cloudStatus, setCloudStatus] = useState("");
 	const [cloudNodeAddress, setCloudNodeAddress] = useState(preferences.cloudNodeAddress || "");
 	const [cloudBusy, setCloudBusy] = useState(false);
+	const [certificates, setCertificates] = useState<Array<{ thumbprint: string; subject: string; notAfter: string }>>([]);
+	const [selectedThumbprint, setSelectedThumbprint] = useState("");
+	const [installerPath, setInstallerPath] = useState("");
+	const [signingStatus, setSigningStatus] = useState("Windows Authenticode signing is available when a valid CurrentUser Code Signing certificate is installed.");
+	const [signingBusy, setSigningBusy] = useState(false);
 
 	function patch(values: Partial<AppPreferences>) {
 		setDraft((current) => ({ ...current, ...values }));
@@ -796,6 +813,84 @@ function SettingsPage({
 		if (!value || draft.scanRoots.some((root) => root.toLowerCase() === value.toLowerCase())) return;
 		patch({ scanRoots: [...draft.scanRoots, value] });
 		setNewRoot("");
+	}
+
+	async function chooseScanRoot() {
+		try {
+			const selected = await openDialog({ title: "Choose a repository scan folder", directory: true, multiple: false });
+			const path = Array.isArray(selected) ? selected[0] : selected;
+			if (path) {
+				patch({ scanRoots: draft.scanRoots.some((root) => root.toLowerCase() === path.toLowerCase()) ? draft.scanRoots : [...draft.scanRoots, path] });
+			}
+		} catch (cause) {
+			setMessage(cause instanceof Error ? cause.message : String(cause));
+		}
+	}
+
+	async function chooseArchiveRoot() {
+		try {
+			const selected = await openDialog({ title: "Choose an archive destination", directory: true, multiple: false });
+			const path = Array.isArray(selected) ? selected[0] : selected;
+			if (path) patch({ archiveRoot: path });
+		} catch (cause) {
+			setMessage(cause instanceof Error ? cause.message : String(cause));
+		}
+	}
+
+	async function refreshCertificates() {
+		setSigningBusy(true);
+		setSigningStatus("Reading CurrentUser Code Signing certificates…");
+		try {
+			const found = await invoke<Array<{ thumbprint: string; subject: string; notAfter: string }>>("list_windows_signing_certificates");
+			setCertificates(found ?? []);
+			setSelectedThumbprint(found?.[0]?.thumbprint ?? "");
+			setSigningStatus(found?.length
+				? found.length + " usable Code Signing certificate(s) found."
+				: "No valid Code Signing certificate with a private key was found in CurrentUser\\My.");
+		} catch (cause) {
+			setCertificates([]);
+			setSelectedThumbprint("");
+			setSigningStatus(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setSigningBusy(false);
+		}
+	}
+
+	async function chooseInstaller() {
+		try {
+			const selected = await openDialog({
+				title: "Choose the GitManager Windows installer",
+				directory: false,
+				multiple: false,
+				filters: [{ name: "Windows installer", extensions: ["exe", "msi"] }],
+			});
+			const path = Array.isArray(selected) ? selected[0] : selected;
+			if (path) setInstallerPath(path);
+		} catch (cause) {
+			setSigningStatus(cause instanceof Error ? cause.message : String(cause));
+		}
+	}
+
+	async function signInstaller() {
+		if (!selectedThumbprint || !installerPath.trim()) {
+			setSigningStatus("Choose a certificate and Windows .exe or .msi installer first.");
+			return;
+		}
+		setSigningBusy(true);
+		setSigningStatus("Creating a SHA-256 Authenticode signature and timestamp…");
+		try {
+			const result = await invoke<{ chainTrusted?: boolean }>("sign_windows_installer", {
+				installerPath: installerPath.trim(),
+				thumbprint: selectedThumbprint,
+			});
+			setSigningStatus(result.chainTrusted
+				? "Signature created and trust chain verified. SmartScreen reputation may still build over time."
+				: "Signature created, but Windows could not verify the trust chain. This may be a self-signed or untrusted certificate.");
+		} catch (cause) {
+			setSigningStatus("Signing failed: " + (cause instanceof Error ? cause.message : String(cause)));
+		} finally {
+			setSigningBusy(false);
+		}
 	}
 
 	async function save() {
@@ -912,7 +1007,8 @@ function SettingsPage({
 						</div>
 						<div className="gm-add-root">
 							<input value={newRoot} onChange={(event) => setNewRoot(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addRoot(); }} placeholder="C:\\Users\\you\\Projects or /home/you/projects" />
-							<Button onClick={addRoot}>Add folder</Button>
+							<Button onClick={addRoot}>Add path</Button>
+							<Button onClick={() => void chooseScanRoot()}>Browse…</Button>
 						</div>
 						<div className="gm-form-grid">
 							<Field label="Maximum scan depth" value={draft.maxScanDepth} onChange={(value) => patch({ maxScanDepth: Math.min(32, Math.max(1, Number(value) || 8)) })} type="number" />
@@ -925,7 +1021,10 @@ function SettingsPage({
 
 					<section className="gm-panel gm-settings-card">
 						<div className="gm-panel-heading"><div><h2>Automatic archives</h2><p>Control restore-point capture and retention through GitManager's archive engine.</p></div><span className="gm-panel-icon">▤</span></div>
-						<Field label="Archive folder" value={draft.archiveRoot} onChange={(value) => patch({ archiveRoot: value })} placeholder="Default application archive directory" />
+						<div className="gm-add-root">
+							<input aria-label="Archive folder" value={draft.archiveRoot} onChange={(event) => patch({ archiveRoot: event.target.value })} placeholder="Default application archive directory" />
+							<Button onClick={() => void chooseArchiveRoot()}>Browse…</Button>
+						</div>
 						<Switch label="Local archives" checked={draft.archiveLocalEnabled} onChange={(value) => patch({ archiveLocalEnabled: value })} description="Capture working-tree files, including uncommitted changes." />
 						<Switch label="Remote archives" checked={draft.archiveRemoteEnabled} onChange={(value) => patch({ archiveRemoteEnabled: value })} description="Capture a self-contained archive of Git refs and history." />
 						<label className="gm-field">
@@ -947,6 +1046,27 @@ function SettingsPage({
 							<Button onClick={() => void invoke("check_repo_updates_now", { rootPaths: draft.scanRoots })}>Check remotes</Button>
 							<Button variant="primary" onClick={() => void invoke("control_background_service", { enableInApp: true, installOsService: true })}>Enable background service</Button>
 						</div>
+					</section>
+
+					<section className="gm-panel gm-settings-card">
+						<div className="gm-panel-heading"><div><h2>Production signing</h2><p>Sign a Windows installer with a certificate installed for this Windows user.</p></div><span className="gm-panel-icon">✓</span></div>
+						<label className="gm-field">
+							<span>Code Signing certificate</span>
+							<select value={selectedThumbprint} onChange={(event) => setSelectedThumbprint(event.target.value)} disabled={signingBusy || certificates.length === 0}>
+								<option value="">Choose a certificate…</option>
+								{certificates.map((certificate) => <option key={certificate.thumbprint} value={certificate.thumbprint}>{certificate.subject} · expires {certificate.notAfter}</option>)}
+							</select>
+						</label>
+						<div className="gm-add-root">
+							<input value={installerPath} onChange={(event) => setInstallerPath(event.target.value)} placeholder="Choose a GitManager-Setup.exe or .msi installer…" />
+							<Button onClick={() => void chooseInstaller()} disabled={signingBusy}>Choose file…</Button>
+						</div>
+						<div className="gm-panel-actions">
+							<Button onClick={() => void refreshCertificates()} disabled={signingBusy}>Refresh certificates</Button>
+							<Button variant="primary" onClick={() => void signInstaller()} disabled={signingBusy || !selectedThumbprint || !installerPath.trim()}>Sign installer</Button>
+						</div>
+						<p className="gm-muted-copy" style={{ padding: "0 15px" }}>{signingStatus}</p>
+						<p className="gm-muted-copy" style={{ padding: "0 15px" }}>The signing operation runs in the native Rust backend. The certificate's private key never leaves the Windows Certificate Store.</p>
 					</section>
 
 					<section className="gm-panel gm-settings-card">
@@ -1132,6 +1252,24 @@ function SetupDialog({
 	function patch(values: Partial<AppPreferences>) {
 		setDraft((current) => ({ ...current, ...values }));
 	}
+	async function chooseSetupRoot() {
+		try {
+			const selected = await openDialog({ title: "Choose your main projects folder", directory: true, multiple: false });
+			const path = Array.isArray(selected) ? selected[0] : selected;
+			if (path) patch({ scanRoots: draft.scanRoots.some((root) => root.toLowerCase() === path.toLowerCase()) ? draft.scanRoots : [...draft.scanRoots, path] });
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		}
+	}
+	async function chooseSetupArchiveRoot() {
+		try {
+			const selected = await openDialog({ title: "Choose an archive destination", directory: true, multiple: false });
+			const path = Array.isArray(selected) ? selected[0] : selected;
+			if (path) patch({ archiveRoot: path });
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		}
+	}
 	async function save() {
 		setSaving(true);
 		setError("");
@@ -1161,13 +1299,20 @@ function SetupDialog({
 							setNewRoot("");
 						}
 					}} placeholder="Add a folder path…" />
-					<Button onClick={() => { if (newRoot.trim()) patch({ scanRoots: [...draft.scanRoots, newRoot.trim()] }); setNewRoot(""); }}>Add</Button>
+					<Button onClick={() => { if (newRoot.trim()) patch({ scanRoots: [...draft.scanRoots, newRoot.trim()] }); setNewRoot(""); }}>Add path</Button>
+					<Button onClick={() => void chooseSetupRoot()}>Browse…</Button>
 				</div>
 				<Switch label="Show dependency repositories" checked={draft.showDependencyRepositories} onChange={(value) => patch({ showDependencyRepositories: value })} />
-				<label className="gm-field"><span>Archive destination</span><input value={draft.archiveRoot} onChange={(event) => patch({ archiveRoot: event.target.value })} placeholder="Default application archive folder" /></label>
+				<div className="gm-field">
+					<span>Archive destination</span>
+					<div className="gm-add-root">
+						<input value={draft.archiveRoot} onChange={(event) => patch({ archiveRoot: event.target.value })} placeholder="Default application archive folder" />
+						<Button onClick={() => void chooseSetupArchiveRoot()}>Browse…</Button>
+					</div>
+				</div>
 				{error && <div className="gm-inline-error">{error}</div>}
 				<div className="gm-modal-actions">
-					<Button onClick={onClose}>Close</Button>
+					{draft.firstRunComplete && <Button onClick={onClose}>Close</Button>}
 					<Button variant="primary" onClick={() => void save()} disabled={saving || draft.scanRoots.length === 0}>{saving ? "Saving…" : "Save & start indexing"}</Button>
 				</div>
 			</div>

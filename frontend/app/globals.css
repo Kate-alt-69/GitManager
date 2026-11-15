@@ -282,6 +282,8 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 .gm-inline-error { margin: 8px 15px; color: #ff8f87; font-size: 10px; }
 .gm-inline-success { margin: 8px 15px; color: #7bd88f; font-size: 10px; }
 .gm-account-row { display: flex; align-items: center; gap: 10px; padding: 13px 15px; border-bottom: 1px solid #27313b; }
+.gm-remote-repo-row { width: 100%; border: 0; border-bottom: 1px solid #27313b; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.gm-remote-repo-row:hover { background: #1b2734; }
 .gm-account-row:last-child { border-bottom: 0; }
 .gm-account-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .gm-account-copy strong { color: #dce6f0; font-size: 11px; }
