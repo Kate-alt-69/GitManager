@@ -49,9 +49,22 @@ class SecretFilePermissionTests(unittest.TestCase):
                 sddl = result.stdout.strip().upper()
                 self.assertIn("D:", sddl)
                 dacl = sddl.split("D:", 1)[1].split("S:", 1)[0]
-                self.assertIn(sid.upper(), dacl)
-                for broad_sid in ("S-1-1-0", "S-1-5-11", "S-1-5-32-545"):
+                current_user_aces = ["(A;;FA;;;" + sid.upper() + ")"]
+                # SDDL uses the LA alias for the built-in local Administrator
+                # account (RID 500), even when icacls was given its full SID.
+                if sid.rsplit("-", 1)[-1] == "500":
+                    current_user_aces.append("(A;;FA;;;LA)")
+                self.assertTrue(
+                    any(ace in dacl for ace in current_user_aces),
+                    "The DACL must grant full control only to the current user: " + dacl,
+                )
+                for broad_sid, alias in (
+                    ("S-1-1-0", "WD"),
+                    ("S-1-5-11", "AU"),
+                    ("S-1-5-32-545", "BU"),
+                ):
                     self.assertNotIn(broad_sid, dacl)
+                    self.assertNotIn(";;;" + alias + ")", dacl)
             else:
                 self.assertEqual(stat.S_IMODE(secret_file.stat().st_mode), 0o600)
                 setup.restrict_secret_file_permissions(secret_file)
