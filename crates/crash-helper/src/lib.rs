@@ -564,7 +564,29 @@ fn read_ui_message(mut stream: TcpStream) -> Option<UiMessage> {
     serde_json::from_slice(&bytes).ok()
 }
 
+#[cfg(windows)]
+fn suppress_windows_application_error_dialogs() {
+    // These process error-mode flags are inherited by the UI child process.
+    // SEM_NOGPFAULTERRORBOX suppresses the Windows Error Reporting dialog;
+    // SEM_FAILCRITICALERRORS prevents critical-error message boxes.
+    const SEM_FAILCRITICALERRORS: u32 = 0x0001;
+    const SEM_NOGPFAULTERRORBOX: u32 = 0x0002;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetErrorMode(mode: u32) -> u32;
+    }
+
+    unsafe {
+        let _previous = SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    }
+}
+
+#[cfg(not(windows))]
+fn suppress_windows_application_error_dialogs() {}
+
 fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
+    suppress_windows_application_error_dialogs();
     if arguments.len() < 2 {
         return 2;
     }

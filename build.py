@@ -880,7 +880,7 @@ def build_gitm_sidecar(
     toolchain_arg: str,
     release: bool,
 ) -> int:
-    """Build and stage gitm plus the cross-platform first-run setup sidecar."""
+    """Build and stage gitm, first-run setup, crash_helper and the independent service."""
     profile = "release" if release else "debug"
     common_prefix = ["cargo"]
     if toolchain_arg:

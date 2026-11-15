@@ -155,7 +155,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe NSIS installer was not created." }
           if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
 
-          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/gitm.exe", $installer)
+          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/crash_helper.exe", "target/release/gitm.exe", $installer)
           $verifyTargets = $signTargets + @("target/release/gitm.exe", $setupHelper)
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
