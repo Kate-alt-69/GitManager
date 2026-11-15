@@ -8,6 +8,7 @@ import {
 import { useGitManager } from "../lib/use-gitmanager";
 import { invoke, openDialog } from "../lib/tauri";
 import type {
+	ApplicationDirectories,
 	AppPreferences,
 	ArchiveSnapshot,
 	ConnectedAccount,
@@ -825,7 +826,7 @@ function SettingsPage({
 	onOpenCleaner,
 }: {
 	preferences: AppPreferences;
-	directories: { softwareRoot: string; configDir: string; dataDir: string } | null;
+	directories: ApplicationDirectories | null;
 	onSave: (next: AppPreferences) => Promise<unknown>;
 	onScan: () => void;
 	onOpenCleaner: () => void;
