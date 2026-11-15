@@ -28,7 +28,7 @@ pub struct ServiceStatusInfo {
     pub running_in_background: bool,
     pub checking_now: bool,
     pub os_service_registered: bool,
-    pub os_service_kind: String, // "Windows Service (svchost / sc.exe)" | "Linux systemd user service" | "macOS launchd agent"
+    pub os_service_kind: String, // "Windows Task Scheduler (user logon)" | "Linux systemd user service" | "macOS launchd agent"
     pub poll_interval_seconds: u64,
     pub pending_updates: Vec<RepoUpdateNotification>,
 }
