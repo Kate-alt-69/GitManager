@@ -1378,7 +1378,22 @@ pub fn run() {
 
 #[cfg(test)]
 mod rbe_node_address_tests {
-    use super::validate_rbe_node_base_url;
+    use super::{validate_rbe_node_base_url, AppPreferences};
+
+    #[test]
+    fn older_preferences_without_a_saved_node_address_remain_compatible() {
+        let preferences: AppPreferences = serde_json::from_str("{}").unwrap();
+        assert!(preferences.cloud_node_address.is_empty());
+    }
+
+    #[test]
+    fn a_saved_node_address_round_trips_with_preferences() {
+        let mut preferences = AppPreferences::default();
+        preferences.cloud_node_address = "http://192.168.1.50:8080/".to_string();
+        let encoded = serde_json::to_string(&preferences).unwrap();
+        let decoded: AppPreferences = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.cloud_node_address, preferences.cloud_node_address);
+    }
 
     #[test]
     fn accepts_private_lan_ipv4_and_defaults_to_backend_port() {
