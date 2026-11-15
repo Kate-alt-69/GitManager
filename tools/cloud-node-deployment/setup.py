@@ -619,6 +619,19 @@ def initialize_configuration(install_dir, node_id, api_port):
     return settings_path, cn_settings_path, key_path, settings, cn_settings
 
 
+def validate_cloud_node_configuration(binary, config):
+    result = run_checked(
+        [binary, "--config=" + str(config), "evaluate"],
+        cwd=config.parent,
+        env=os.environ.copy(),
+        timeout=30,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise SetupError(f"RBE Cloud Node rejected setting.node.cn.json: {detail}")
+    return result.stdout.strip()
+
+
 def derive_public_key(binary, config, key_file):
     env = os.environ.copy()
     env[KEY_ENV] = "file:" + str(key_file.resolve())
@@ -730,6 +743,9 @@ def main():
         cloud_node_path = install_dir / cloud_node_name
         if not backend_path.is_file() or not cloud_node_path.is_file():
             raise SetupError("The RBE backend or Cloud Node binary was not installed at its expected location.")
+        cloud_node_config_status = validate_cloud_node_configuration(
+            cloud_node_path, cn_settings_path
+        )
         public_key = derive_public_key(cloud_node_path, cn_settings_path, key_path)
         launcher = write_launchers(
             install_dir, backend_path, settings_path, cn_settings_path, key_path
@@ -758,6 +774,10 @@ def main():
         say(f"Cloud Node settings: {cn_settings_path}")
         say(f"Cloud Node private key: {key_path} (never share this file)")
         say(f"Cloud Node public key: {public_key}")
+        if cloud_node_config_status:
+            say("Cloud Node config validation:")
+            for line in cloud_node_config_status.splitlines()[:12]:
+                say(f"  {line}")
         say(f"Node registration: {install_dir / 'node-registration.json'}")
         say(f"Start script: {launcher}")
         say("")
