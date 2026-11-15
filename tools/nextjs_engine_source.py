@@ -52,14 +52,23 @@ def log_error(message: str) -> None:
 
 
 def request_bytes(url: str, limit: int, accept: str) -> bytes:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": accept,
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
+    parsed_url = urllib.parse.urlsplit(url)
+    if parsed_url.scheme != "https" or parsed_url.hostname not in {"api.github.com", "codeload.github.com"}:
+        raise RuntimeError("Refusing to request Engine source data from an untrusted host.")
+
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": accept,
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    # GitHub Actions supplies a short-lived, read-scoped token to avoid the
+    # strict unauthenticated API rate limit on multi-platform installer builds.
+    # Local builds remain usable without a token and never prompt for credentials.
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if parsed_url.hostname == "api.github.com" and token and not any(char in token for char in "\\r\\n"):
+        headers["Authorization"] = "Bearer " + token
+
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             parsed = urllib.parse.urlsplit(response.geturl())
