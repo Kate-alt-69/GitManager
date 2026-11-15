@@ -124,7 +124,13 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
                 return false;
             }
         };
-        let file = match OpenOptions::new().create(true).read(true).write(true).open(&path) {
+        let file = match OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+        {
             Ok(file) => file,
             Err(error) => {
                 eprintln!("GitManager archive watcher: could not open {}: {error}", path.display());
@@ -551,6 +557,7 @@ mod tests {
 
         let first = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&path)
@@ -559,6 +566,7 @@ mod tests {
 
         let second = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&path)
