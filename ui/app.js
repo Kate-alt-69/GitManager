@@ -2782,19 +2782,15 @@ async function checkCloudNodeAddress() {
     const result = await tauriInvoke("check_rbe_node_status", { address });
     const normalizedAddress = String(result.address || address);
     let persistenceNote = "";
-    if (appPreferences) {
-      const previousAddress = String(appPreferences.cloudNodeAddress || "");
-      appPreferences.cloudNodeAddress = normalizedAddress;
-      try {
-        appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
-        if (input) input.value = String(appPreferences.cloudNodeAddress || normalizedAddress);
-        if (input) input.dataset.preferenceLoaded = "true";
-        persistenceNote = " · Address saved for next launch.";
-      } catch (saveError) {
-        appPreferences.cloudNodeAddress = previousAddress;
-        persistenceNote = " · Address could not be saved: " +
-          String((saveError && saveError.message) || saveError);
-      }
+    try {
+      const savedAddress = await tauriInvoke("save_cloud_node_address", { address: normalizedAddress });
+      if (appPreferences) appPreferences.cloudNodeAddress = savedAddress;
+      if (input) input.value = savedAddress;
+      if (input) input.dataset.preferenceLoaded = "true";
+      persistenceNote = " · Address saved for next launch.";
+    } catch (saveError) {
+      persistenceNote = " · Address could not be saved: " +
+        String((saveError && saveError.message) || saveError);
     }
     const backendCode = result.backendHttpStatus == null ? "unavailable" : "HTTP " + result.backendHttpStatus;
     const apiCode = result.apiRouteHttpStatus == null ? "unavailable" : "HTTP " + result.apiRouteHttpStatus;
