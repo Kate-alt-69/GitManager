@@ -68,6 +68,7 @@ pub struct AppPreferences {
     pub archive_remote_enabled: bool,
     pub archive_trigger: String,
     pub archive_quiet_ms: u64,
+    pub cloud_node_address: String,
 }
 
 impl Default for AppPreferences {
@@ -90,6 +91,7 @@ impl Default for AppPreferences {
             archive_remote_enabled: true,
             archive_trigger: "manual".to_string(),
             archive_quiet_ms: 1500,
+            cloud_node_address: String::new(),
         }
     }
 }
@@ -184,6 +186,14 @@ fn read_app_preferences_file(path: &Path) -> Result<AppPreferences, String> {
         preferences.archive_trigger = "manual".to_string();
     }
     preferences.archive_quiet_ms = preferences.archive_quiet_ms.clamp(250, 60_000);
+    let saved_node_address = preferences.cloud_node_address.trim();
+    preferences.cloud_node_address = if saved_node_address.is_empty() {
+        String::new()
+    } else {
+        validate_rbe_node_base_url(saved_node_address)
+            .map(|address| address.to_string())
+            .unwrap_or_default()
+    };
     Ok(preferences)
 }
 
@@ -336,6 +346,12 @@ fn save_app_preferences(
     if !(250..=60_000).contains(&preferences.archive_quiet_ms) {
         return Err("Archive quiet period must be between 250 and 60000 milliseconds.".to_string());
     }
+    let saved_node_address = preferences.cloud_node_address.trim();
+    preferences.cloud_node_address = if saved_node_address.is_empty() {
+        String::new()
+    } else {
+        validate_rbe_node_base_url(saved_node_address)?.to_string()
+    };
 
     let path = preferences_file(&app_handle)?;
     let temporary = path.with_extension("json.tmp");
