@@ -67,7 +67,7 @@ struct ServiceResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SuspensionRecord {
-    suspended_until_unix_ms: u64,
+    suspended_until_unix_ms: Option<u64>,
 }
 
 struct ServiceState {
@@ -75,25 +75,35 @@ struct ServiceState {
     persistence_path: PathBuf,
 }
 
+fn read_suspension_record(path: &Path) -> Option<Option<SystemTime>> {
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() > MAX_MESSAGE_BYTES as usize {
+        return Some(None);
+    }
+    let record: SuspensionRecord = serde_json::from_slice(&bytes).ok()?;
+    Some(record.suspended_until_unix_ms.and_then(|milliseconds| {
+        UNIX_EPOCH.checked_add(Duration::from_millis(milliseconds))
+    }))
+}
+
+fn deadline_to_unix_ms(until: SystemTime) -> std::io::Result<u64> {
+    let milliseconds = until
+        .duration_since(UNIX_EPOCH)
+        .map_err(std::io::Error::other)?
+        .as_millis();
+    milliseconds
+        .try_into()
+        .map_err(|_| std::io::Error::other("Suspension deadline is out of range."))
+}
+
 impl ServiceState {
     fn load(persistence_path: PathBuf) -> Self {
         let now = SystemTime::now();
-        let stored_deadline = fs::read(&persistence_path)
-            .ok()
-            .filter(|bytes| bytes.len() <= MAX_MESSAGE_BYTES as usize)
-            .and_then(|bytes| serde_json::from_slice::<SuspensionRecord>(&bytes).ok())
-            .and_then(|record| {
-                UNIX_EPOCH.checked_add(Duration::from_millis(record.suspended_until_unix_ms))
-            });
-
         let maximum_deadline = now + Duration::from_secs(MAX_SUSPENSION_SECONDS);
-        let suspended_until = stored_deadline
+        let suspended_until = read_suspension_record(&persistence_path)
+            .flatten()
             .filter(|deadline| *deadline > now)
             .map(|deadline| deadline.min(maximum_deadline));
-
-        if suspended_until.is_none() {
-            let _ = fs::remove_file(&persistence_path);
-        }
 
         Self {
             suspended_until: Mutex::new(suspended_until),
@@ -102,31 +112,25 @@ impl ServiceState {
     }
 
     fn persist_locked(&self, deadline: Option<SystemTime>) -> std::io::Result<()> {
-        match deadline {
-            Some(until) => {
-                let milliseconds = until
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(std::io::Error::other)?
-                    .as_millis();
-                let record = SuspensionRecord {
-                    suspended_until_unix_ms: milliseconds
-                        .try_into()
-                        .map_err(|_| std::io::Error::other("Suspension deadline is out of range."))?,
-                };
-                write_private_json(&self.persistence_path, &record)
-            }
-            None => match fs::remove_file(&self.persistence_path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error),
-            },
-        }
+        let record = SuspensionRecord {
+            suspended_until_unix_ms: deadline.map(deadline_to_unix_ms).transpose()?,
+        };
+        write_private_json(&self.persistence_path, &record)
     }
 
     fn status(&self, message: impl Into<String>) -> ServiceStatus {
         let now = SystemTime::now();
         let mut deadline = self.suspended_until.lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // The helper can queue a suspend/resume request while this service is
+        // starting or its IPC endpoint is briefly unavailable. Re-read the
+        // tiny state file so a running service observes those external changes.
+        if let Some(persisted_deadline) = read_suspension_record(&self.persistence_path) {
+            *deadline = persisted_deadline
+                .filter(|until| *until > now)
+                .map(|until| until.min(now + Duration::from_secs(MAX_SUSPENSION_SECONDS)));
+        }
 
         if deadline.as_ref().is_some_and(|until| *until <= now) {
             *deadline = None;
@@ -135,7 +139,7 @@ impl ServiceState {
 
         let remaining = deadline
             .as_ref()
-            .and_then(|until| until.duration_since(now).ok())
+            .and_then(|until| (*until).duration_since(now).ok())
             .map(|duration| duration.as_secs().max(1))
             .unwrap_or(0);
 
@@ -169,7 +173,9 @@ impl ServiceState {
         *deadline = None;
         let message = match self.persist_locked(None) {
             Ok(()) => "Background service active".to_string(),
-            Err(error) => format!("Background service resumed, but its saved suspension state could not be cleared: {error}"),
+            Err(error) => format!(
+                "Background service resumed, but its saved suspension state could not be cleared: {error}"
+            ),
         };
         drop(deadline);
         self.status(message)
@@ -179,7 +185,6 @@ impl ServiceState {
         self.status("status").suspended
     }
 }
-
 /// Owns the service-control listener and single-instance lock for the service lifetime.
 pub struct ServiceControlServer {
     state: Arc<ServiceState>,
@@ -369,12 +374,50 @@ pub fn request_service_status() -> Result<ServiceStatus, String> {
     send_service_command(ServiceCommand::Status)
 }
 
+/// Persists the suspension request before attempting IPC. If the service is
+/// not running yet, its next startup loads the deadline and remains paused.
 pub fn request_service_suspend(seconds: u64) -> Result<ServiceStatus, String> {
-    send_service_command(ServiceCommand::Suspend { seconds })
+    let seconds = seconds.clamp(MIN_SUSPENSION_SECONDS, MAX_SUSPENSION_SECONDS);
+    let until = SystemTime::now() + Duration::from_secs(seconds);
+    let data_dir = gitmanager_data_dir()?;
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Could not create service state directory: {error}"))?;
+    let path = data_dir.join(SUSPENSION_FILE);
+    let record = SuspensionRecord {
+        suspended_until_unix_ms: Some(deadline_to_unix_ms(until)
+            .map_err(|error| format!("Could not encode suspension deadline: {error}"))?),
+    };
+    write_private_json(&path, &record)
+        .map_err(|error| format!("Could not queue background-service suspension: {error}"))?;
+
+    match send_service_command(ServiceCommand::Suspend { seconds }) {
+        Ok(status) => Ok(status),
+        Err(error) => Ok(ServiceStatus {
+            suspended: true,
+            remaining_seconds: seconds,
+            message: format!("Background-service suspension queued for {seconds} seconds; the service will observe the persisted state on its next poll: {error}"),
+        }),
+    }
 }
 
+/// Persists activation first, so a service that starts after the UI can see
+/// that it should be active rather than applying an old suspension request.
 pub fn request_service_resume() -> Result<ServiceStatus, String> {
-    send_service_command(ServiceCommand::Resume)
+    let data_dir = gitmanager_data_dir()?;
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Could not create service state directory: {error}"))?;
+    let path = data_dir.join(SUSPENSION_FILE);
+    write_private_json(&path, &SuspensionRecord { suspended_until_unix_ms: None })
+        .map_err(|error| format!("Could not queue background-service activation: {error}"))?;
+
+    match send_service_command(ServiceCommand::Resume) {
+        Ok(status) => Ok(status),
+        Err(error) => Ok(ServiceStatus {
+            suspended: false,
+            remaining_seconds: 0,
+            message: format!("Background-service activation queued for its next control poll: {error}"),
+        }),
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -821,10 +864,11 @@ pub fn run_helper_from_args() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServiceState, DEFAULT_SUSPENSION_SECONDS, MAX_SUSPENSION_SECONDS,
-        MIN_SUSPENSION_SECONDS,
+        ServiceState, SuspensionRecord, DEFAULT_SUSPENSION_SECONDS,
+        MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS,
     };
     use super::Uuid;
+    use std::fs;
     use std::time::{Duration, SystemTime};
 
     #[test]
@@ -871,7 +915,29 @@ mod tests {
         assert!(recovered_status.remaining_seconds <= 60);
 
         assert!(!restarted_process.resume().suspended);
-        assert!(!path.exists());
+        assert!(!ServiceState::load(path.clone()).is_suspended());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn running_service_observes_a_queued_external_suspend_and_resume() {
+        let path = std::env::temp_dir()
+            .join(format!("gitmanager-crash-helper-{}.json", Uuid::new_v4()));
+        let service = ServiceState::load(path.clone());
+        assert!(!service.is_suspended());
+
+        let deadline = SystemTime::now() + Duration::from_secs(45);
+        let queued = SuspensionRecord {
+            suspended_until_unix_ms: Some(super::deadline_to_unix_ms(deadline).unwrap()),
+        };
+        super::write_private_json(&path, &queued).unwrap();
+        assert!(service.is_suspended());
+
+        let active = SuspensionRecord { suspended_until_unix_ms: None };
+        super::write_private_json(&path, &active).unwrap();
+        assert!(!service.is_suspended());
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]
