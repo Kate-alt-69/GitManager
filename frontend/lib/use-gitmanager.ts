@@ -7,6 +7,7 @@ import type {
 	ApplicationDirectories,
 	ConnectedAccount,
 	GitRepository,
+	ScanSummary,
 	UpdateAlert,
 } from "./types";
 
@@ -52,10 +53,7 @@ export function useGitManager() {
 			const rootPaths = customRoot?.trim()
 				? [customRoot.trim()]
 				: currentPreferences.scanRoots;
-			const summary = await invoke<{
-				repositories?: GitRepository[];
-				dependency_repo_ids?: string[];
-			}>("scan_machine_repositories", {
+			const summary = await invoke<ScanSummary>("scan_machine_repositories", {
 				rootPaths,
 				maxDepth: currentPreferences.maxScanDepth || 8,
 				includeHiddenDirs: Boolean(currentPreferences.includeHiddenDirs),
