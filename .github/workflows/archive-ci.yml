@@ -36,16 +36,40 @@ jobs:
           import json
           import pathlib
 
-          root = pathlib.Path(".cache/nextjs-engine/source/.gitmanager-frontend/out")
+          root = pathlib.Path(".cache/nextjs-engine/workspace/out")
           index = root / "index.html"
           metadata = root / "engine-source.json"
           if not index.is_file() or index.stat().st_size < 1024:
               raise SystemExit("Next.js static export is missing or unexpectedly small.")
           if not metadata.is_file():
               raise SystemExit("Engine source provenance manifest is missing.")
+
+          source_root = pathlib.Path(".cache/nextjs-engine/source")
+          workspace = pathlib.Path(".cache/nextjs-engine/workspace")
+          required_source = [
+              source_root / "app" / "page.tsx",
+              source_root / "src" / "engine" / "index.ts",
+              source_root / "scripts",
+              source_root / "tests",
+              source_root / "examples",
+              source_root / "docs",
+          ]
+          required_workspace = [
+              workspace / "src" / "engine" / "index.ts",
+              workspace / "scripts",
+              workspace / "tests",
+              workspace / "examples",
+              workspace / "docs",
+              workspace / "app" / "page.tsx",
+          ]
+          missing = [str(path) for path in required_source + required_workspace if not path.exists()]
+          if missing:
+              raise SystemExit("Full Engine repository workspace is incomplete: " + ", ".join(missing))
           source = json.loads(metadata.read_text(encoding="utf-8"))
           if not source.get("commit") or source.get("branch") != "main-3":
               raise SystemExit("Engine source provenance does not identify a resolved main-3 commit.")
+          if source.get("workspace_mode") != "full-engine-repository-with-gitmanager-app-overlay" or not source.get("source_app_preserved"):
+              raise SystemExit("The build did not preserve the full Engine root and original app-router source.")
           assets = root / "_next" / "static"
           if not assets.is_dir():
               raise SystemExit("Next.js static assets were not exported.")

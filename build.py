@@ -646,7 +646,7 @@ def sanitize_tauri_v2_config(project_root: Path) -> None:
             build_cfg["frontendDist"] = build_cfg.pop("distDir")
             changed = True
 
-        expected_frontend_dist = "../.cache/nextjs-engine/source/.gitmanager-frontend/out"
+        expected_frontend_dist = "../.cache/nextjs-engine/workspace/out"
         if build_cfg.get("frontendDist") != expected_frontend_dist:
             build_cfg["frontendDist"] = expected_frontend_dist
             changed = True

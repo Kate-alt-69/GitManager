@@ -1,7 +1,6 @@
-const path = require("node:path");
-const withEngine = require("../src/engine/plugins/enginePlugin");
+const withEngine = require("./src/engine/plugins/enginePlugin");
 
-/** @type {import('next').NextConfig} */
+/** @type {import("next").NextConfig} */
 const nextConfig = {
 	output: "export",
 	distDir: "dist",
@@ -11,7 +10,11 @@ const nextConfig = {
 	},
 	turbopack: {
 		resolveAlias: {
-			"@/engine": path.resolve(__dirname, "../src/engine"),
+			fs: { browser: "./app/__turbopack_stub__.ts" },
+			"fs/promises": { browser: "./app/__turbopack_stub__.ts" },
+			path: { browser: "./app/__turbopack_stub__.ts" },
+			os: { browser: "./app/__turbopack_stub__.ts" },
+			crypto: { browser: "./app/__turbopack_stub__.ts" },
 		},
 	},
 };

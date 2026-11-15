@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "identifier": "com.gitmanager.desktop",
   "build": {
-    "frontendDist": "../.cache/nextjs-engine/source/.gitmanager-frontend/out",
+    "frontendDist": "../.cache/nextjs-engine/workspace/out",
     "beforeBuildCommand": "python ../tools/nextjs_engine_source.py build --project-root ..",
     "beforeDevCommand": "python ../tools/nextjs_engine_source.py dev --project-root ..",
     "devUrl": "http://localhost:3000"
