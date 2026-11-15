@@ -2755,11 +2755,12 @@ async function checkCloudNodeAddress() {
     const result = await tauriInvoke("check_rbe_node_status", { address });
     const backendCode = result.backendHttpStatus == null ? "unavailable" : "HTTP " + result.backendHttpStatus;
     const apiCode = result.apiRouteHttpStatus == null ? "unavailable" : "HTTP " + result.apiRouteHttpStatus;
+    const statusCode = result.apiStatusHttpStatus == null ? "unavailable" : "HTTP " + result.apiStatusHttpStatus;
     const backendState = result.reachable ? "Backend reachable" : "Backend not confirmed reachable";
-    const detail = result.backendError || result.apiRouteError || result.message || "";
+    const detail = result.backendError || result.apiRouteError || result.apiStatusError || result.message || "";
     if (status) {
       status.textContent = backendState + " at " + String(result.address || address) +
-        " · /health: " + backendCode + " · /api/health: " + apiCode +
+        " · /health: " + backendCode + " · /api/health: " + apiCode + " · /api/status: " + statusCode +
         (detail ? " · " + detail : "") +
         (result.reachable ? " · This checks status only; it does not pair or authenticate a peer." : "");
       status.classList.toggle("is-error", !result.reachable);
