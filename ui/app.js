@@ -2796,10 +2796,24 @@ async function checkCloudNodeAddress() {
     const apiCode = result.apiRouteHttpStatus == null ? "unavailable" : "HTTP " + result.apiRouteHttpStatus;
     const statusCode = result.apiStatusHttpStatus == null ? "unavailable" : "HTTP " + result.apiStatusHttpStatus;
     const backendState = result.reachable ? "Backend reachable" : "Backend not confirmed reachable";
+    const healthPayload = result.apiStatusHealth || result.apiRouteHealth || result.backendHealth;
+    const healthDetails = [];
+    if (healthPayload && typeof healthPayload === "object") {
+      if (typeof healthPayload.status === "string" && healthPayload.status) {
+        healthDetails.push("state " + healthPayload.status);
+      }
+      if (typeof healthPayload.uptime === "number" && Number.isFinite(healthPayload.uptime)) {
+        healthDetails.push("uptime " + Math.floor(healthPayload.uptime) + "s");
+      }
+      if (typeof healthPayload.vault === "boolean") {
+        healthDetails.push("Vault " + (healthPayload.vault ? "ready" : "not ready"));
+      }
+    }
     const detail = result.backendError || result.apiRouteError || result.apiStatusError || result.message || "";
     if (status) {
       status.textContent = backendState + " at " + normalizedAddress +
         " · /health: " + backendCode + " · /api/health: " + apiCode + " · /api/status: " + statusCode +
+        (healthDetails.length ? " · " + healthDetails.join(", ") : "") +
         (detail ? " · " + detail : "") +
         (result.reachable ? " · Status check only; this does not pair or authenticate a peer." : "") +
         persistenceNote;
