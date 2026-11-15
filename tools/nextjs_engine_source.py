@@ -69,7 +69,7 @@ def request_bytes(url: str, limit: int, accept: str) -> bytes:
     # strict unauthenticated API rate limit on multi-platform installer builds.
     # Local builds remain usable without a token and never prompt for credentials.
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if parsed_url.hostname == "api.github.com" and token and not any(char in token for char in "\\r\\n"):
+    if parsed_url.hostname == "api.github.com" and token and not any(char in token for char in "\r\n"):
         headers["Authorization"] = "Bearer " + token
 
     request = urllib.request.Request(url, headers=headers)
