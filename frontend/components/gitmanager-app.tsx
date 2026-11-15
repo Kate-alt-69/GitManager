@@ -625,7 +625,6 @@ function RepositoryPage({
 		return queryMatch && providerMatch && kindMatch;
 	}), [repositories, query, filter, kind, dependencySet]);
 	const remoteCount = repositories.filter((repo) => repo.has_remote).length;
-	const dirtyCount = repositories.filter((repo) => repo.dirty_files_count > 0).length;
 
 	if (selectedRepo) {
 		return (

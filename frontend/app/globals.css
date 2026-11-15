@@ -461,3 +461,6 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 	.gm-nav-item { flex: 1 0 auto; padding: 0 7px; font-size: 10px; }
 	.gm-skeleton-grid { grid-template-columns: 1fr; }
 }
+
+.gm-status-pending { display: inline-flex; align-items: center; gap: 5px; color: #778390; font-size: 9px; }
+.gm-status-pending i { width: 6px; height: 6px; border-radius: 50%; background: #697785; }
