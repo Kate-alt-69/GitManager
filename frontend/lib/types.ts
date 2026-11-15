@@ -75,6 +75,7 @@ export interface AppPreferences {
 
 export interface ApplicationDirectories {
 	softwareRoot: string;
+	installDir: string;
 	configDir: string;
 	dataDir: string;
 }

@@ -119,7 +119,7 @@ pub fn scan_repositories_with_report(options: ScanOptions) -> Result<ScanReport,
 fn run_scan_pass(roots: &[PathBuf], config: Arc<ScanConfig>, dependency_fallback: bool) -> ScanReport {
     let mut pending = VecDeque::new();
     for root in roots {
-        let root_is_dependency = root.file_name().map(is_dependency_name).unwrap_or(false);
+        let root_is_dependency = path_has_dependency_component(root);
         if root_is_dependency && !dependency_fallback { continue; }
         pending.push_back(ScanTask { root: root.clone(), path: root.clone(), depth: 0 });
     }
@@ -135,8 +135,16 @@ fn run_scan_pass(roots: &[PathBuf], config: Arc<ScanConfig>, dependency_fallback
         truncated: Arc::new(AtomicBool::new(false)),
     };
 
+    // A selected scan root may itself be the repository, not merely its parent.
+    // Register it without descending into its .git database.
+    for root in roots {
+        if root.join(".git").exists() && path_has_dependency_component(root) == dependency_fallback {
+            register_repository(&root.join(".git"), &shared);
+        }
+    }
+
     thread::scope(|scope| {
-        for _ in 0..SCAN_WORKERS {
+        for _ in 0..scan_worker_count() {
             let worker = shared.clone();
             scope.spawn(move || scan_worker(worker));
         }
@@ -149,6 +157,14 @@ fn run_scan_pass(roots: &[PathBuf], config: Arc<ScanConfig>, dependency_fallback
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
     ScanReport { repositories, truncated: shared.truncated.load(Ordering::Relaxed) }
+}
+
+fn scan_worker_count() -> usize {
+    // Never use more than two scan threads. On machines with multiple logical
+    // processors, keep one available for the UI and other foreground work.
+    std::thread::available_parallelism()
+        .map(|count| count.get().saturating_sub(1).clamp(1, SCAN_WORKERS))
+        .unwrap_or(1)
 }
 
 fn scan_worker(shared: ScanShared) {
@@ -208,7 +224,7 @@ fn scan_one_directory(task: &ScanTask, shared: &ScanShared) -> Vec<ScanTask> {
         if name == ".git" {
             let relative = path.strip_prefix(&task.root).unwrap_or(path.as_path());
             let inside_dependency = path_has_dependency_component(relative)
-                || task.root.file_name().map(is_dependency_name).unwrap_or(false);
+                || path_has_dependency_component(&task.root);
             if inside_dependency == shared.dependency_fallback {
                 register_repository(&path, shared);
             }
@@ -267,11 +283,6 @@ fn path_key(path: &Path) -> String {
     #[cfg(not(windows))] { value }
 }
 
-fn is_dependency_name(name: &std::ffi::OsStr) -> bool {
-    let part = name.to_string_lossy().to_lowercase();
-    DEPENDENCY_DIRECTORY_NAMES.contains(&part.as_str())
-}
-
 fn path_has_dependency_component(path: &Path) -> bool {
     path.components().any(|component| {
         let part = component.as_os_str().to_string_lossy().to_lowercase();
@@ -290,7 +301,7 @@ fn should_visit_directory(
 
     let dependency_index = components.iter()
         .position(|part| DEPENDENCY_DIRECTORY_NAMES.contains(&part.as_str()));
-    let root_is_dependency = root.file_name().map(is_dependency_name).unwrap_or(false);
+    let root_is_dependency = path_has_dependency_component(root);
     if !dependency_fallback && (dependency_index.is_some() || root_is_dependency) { return false; }
 
     if dependency_fallback {
@@ -349,6 +360,19 @@ mod tests {
         let root = Path::new("/workspace");
         assert!(!should_visit_directory(&root.join(".cache"), root, 1, false, false));
         assert!(should_visit_directory(&root.join(".cache"), root, 1, true, false));
+    }
+
+    #[test]
+    fn scan_roots_already_inside_dependency_trees_use_fallback_mode() {
+        let root = Path::new("/workspace/node_modules/example-package");
+        assert!(!should_visit_directory(&root.join("src"), root, 1, false, false));
+        assert!(should_visit_directory(&root.join("src"), root, 1, false, true));
+    }
+
+    #[test]
+    fn dependency_paths_are_detected_above_the_selected_root() {
+        let root = Path::new("/workspace/node_modules/example-package");
+        assert!(super::path_has_dependency_component(root));
     }
 }
 

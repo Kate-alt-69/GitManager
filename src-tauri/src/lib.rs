@@ -100,27 +100,37 @@ impl Default for AppPreferences {
 #[serde(rename_all = "camelCase")]
 struct ApplicationDirectories {
     software_root: String,
+    install_dir: String,
     config_dir: String,
     data_dir: String,
 }
 
-fn application_directories() -> Result<ApplicationDirectories, String> {
-    let local_data = dirs::data_local_dir()
-        .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
+fn application_directory_layout(local_data: &Path) -> ApplicationDirectories {
     let software_root = local_data.join("kastrick's_software");
+    let install_dir = software_root.join("GitManager");
     let config_dir = software_root.join("config").join("GitManager");
     let data_dir = software_root.join("data").join("GitManager");
-
-    fs::create_dir_all(&config_dir)
-        .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
-    fs::create_dir_all(&data_dir)
-        .map_err(|error| format!("Could not create GitManager data directory: {error}"))?;
-
-    Ok(ApplicationDirectories {
+    ApplicationDirectories {
         software_root: software_root.to_string_lossy().to_string(),
+        install_dir: install_dir.to_string_lossy().to_string(),
         config_dir: config_dir.to_string_lossy().to_string(),
         data_dir: data_dir.to_string_lossy().to_string(),
-    })
+    }
+}
+
+fn application_directories() -> Result<ApplicationDirectories, String> {
+    // On Windows dirs::data_local_dir resolves to %LOCALAPPDATA%; on macOS/Linux
+    // it selects the corresponding per-user local application-data location.
+    let local_data = dirs::data_local_dir()
+        .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
+    let directories = application_directory_layout(&local_data);
+
+    fs::create_dir_all(&directories.config_dir)
+        .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
+    fs::create_dir_all(&directories.data_dir)
+        .map_err(|error| format!("Could not create GitManager data directory: {error}"))?;
+
+    Ok(directories)
 }
 
 #[tauri::command]
@@ -1462,5 +1472,24 @@ mod external_url_tests {
             normalize_external_url("https://github.com/org/repo?token=secret#settings").unwrap(),
             "https://github.com/org/repo"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod application_path_tests {
+    use super::application_directory_layout;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn install_config_and_data_share_the_kastrick_product_root() {
+        let local_data = Path::new("local-app-data");
+        let paths = application_directory_layout(local_data);
+        let product_root = local_data.join("kastrick's_software");
+
+        assert_eq!(PathBuf::from(paths.software_root), product_root);
+        assert_eq!(PathBuf::from(paths.install_dir), product_root.join("GitManager"));
+        assert_eq!(PathBuf::from(paths.config_dir), product_root.join("config").join("GitManager"));
+        assert_eq!(PathBuf::from(paths.data_dir), product_root.join("data").join("GitManager"));
     }
 }

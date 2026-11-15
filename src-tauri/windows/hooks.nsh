@@ -1,11 +1,18 @@
 ; GitManager per-user installer customizations.
-; The install directory is separate from user config and data.
+; Product layout:
+;   %LOCALAPPDATA%\kastrick's_software\GitManager
+;   %LOCALAPPDATA%\kastrick's_software\config\GitManager
+;   %LOCALAPPDATA%\kastrick's_software\data\GitManager
 
 !define MUI_FINISHPAGE_RUN_TEXT "Continue using GitManager"
 
 !macro NSIS_HOOK_PREINSTALL
-  StrCpy $INSTDIR "$LOCALAPPDATA\kastrick's_software\GitManager"
+  SetShellVarContext current
+  StrCpy $0 "$LOCALAPPDATA\kastrick's_software"
+  StrCpy $INSTDIR "$0\GitManager"
   CreateDirectory "$INSTDIR"
+  CreateDirectory "$0\config\GitManager"
+  CreateDirectory "$0\data\GitManager"
   SetOutPath "$INSTDIR"
 !macroend
 
