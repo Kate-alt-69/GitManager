@@ -84,12 +84,13 @@ after their local restore point has been committed. If the provider is offline,
 the local archive remains saved and can be synchronized later.
 
 Automatic archive watching is coordinated between the desktop app and the
-startup `git-manager-service` worker with a per-user OS file lease. Only one
+OS background worker (the installed GitManager executable with `--background-service`) with a per-user OS file lease. Only one
 process watches the configured repositories at a time. When the desktop closes,
-the startup worker retries lease acquisition and takes over; when the desktop
+the headless worker retries lease acquisition and takes over; when the desktop
 reopens, it does not create a duplicate watcher. The worker reloads the shared
 preferences periodically, while its Git-remote update checks retain their
-separate two-minute cadence. Up to two archive captures run concurrently.
+separate two-minute cadence. Native installers launch the bundled main
+executable in this mode; they do not rely on a separately copied service binary. Up to two archive captures run concurrently.
 
 The startup worker does not need to launch a second `cloud_node.exe` for
 Supabase/S3 provider sync. `gitmanager-archive` links the vendored RBE
