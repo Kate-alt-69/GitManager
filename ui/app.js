@@ -885,7 +885,17 @@ function setActiveSettingsSection(section) {
 }
 
 function setActiveCloudProvider(provider) {
-  const supported = ["google-drive", "onedrive", "supabase", "amazon-s3", "s3-compatible", "node"];
+  const supported = [
+    "google-drive",
+    "onedrive",
+    "supabase",
+    "azure-blob",
+    "google-cloud-storage",
+    "amazon-s3",
+    "s3-compatible",
+    "http",
+    "node"
+  ];
   if (!supported.includes(provider)) return;
   activeCloudProvider = provider;
   document.querySelectorAll("[data-cloud-provider]").forEach((tab) => {
@@ -2616,8 +2626,11 @@ function setArchiveCloudBusy(busy) {
     "btn-cloud-google-drive-folder",
     "btn-cloud-onedrive-folder",
     "btn-cloud-supabase-configure",
+    "btn-cloud-azure-blob-configure",
+    "btn-cloud-google-cloud-storage-configure",
     "btn-cloud-amazon-s3-configure",
-    "btn-cloud-s3-compatible-configure"
+    "btn-cloud-s3-compatible-configure",
+    "btn-cloud-http-configure"
   ]) {
     const button = document.getElementById(id);
     if (button) button.disabled = busy;
@@ -2788,7 +2801,20 @@ function cloudProviderTemplate(provider) {
       namespace: "gitmanager",
       bucket: "gitmanager-archives",
       endpoint: "https://YOUR_PROJECT.supabase.co",
-      auth: { mode: "api-key" }
+      auth: { mode: "api-key", apiKeyEnv: "RBE_CN_PROV_SUPABASE_API_KEY" }
+    },
+    "azure-blob": {
+      kind: "azure-blob",
+      namespace: "gitmanager",
+      bucket: "gitmanager-archives",
+      account: "YOUR_AZURE_STORAGE_ACCOUNT",
+      auth: { mode: "azure-sas", sasTokenEnv: "RBE_CN_PROV_AZURE_SAS_TOKEN" }
+    },
+    "google-cloud-storage": {
+      kind: "google-cloud-storage",
+      namespace: "gitmanager",
+      bucket: "gitmanager-archives",
+      auth: { mode: "oauth-bearer", oauthTokenEnv: "RBE_CN_PROV_GOOGLE_OAUTH_TOKEN" }
     },
     "amazon-s3": {
       kind: "amazon-s3",
@@ -2804,6 +2830,13 @@ function cloudProviderTemplate(provider) {
       region: "auto",
       endpoint: "https://YOUR-S3-ENDPOINT",
       auth: { mode: "aws-sig-v4" }
+    },
+    http: {
+      kind: "http",
+      namespace: "gitmanager",
+      bucket: "gitmanager-archives",
+      endpoint: "https://objects.example.com",
+      auth: { mode: "bearer", bearerTokenEnv: "RBE_CN_PROV_HTTP_BEARER_TOKEN" }
     }
   };
   return templates[provider] || null;
@@ -2849,8 +2882,11 @@ function wireCloudSettingsControls() {
   const googleDrive = document.getElementById("btn-cloud-google-drive-folder");
   const oneDrive = document.getElementById("btn-cloud-onedrive-folder");
   const supabase = document.getElementById("btn-cloud-supabase-configure");
+  const azureBlob = document.getElementById("btn-cloud-azure-blob-configure");
+  const googleCloudStorage = document.getElementById("btn-cloud-google-cloud-storage-configure");
   const amazonS3 = document.getElementById("btn-cloud-amazon-s3-configure");
   const s3Compatible = document.getElementById("btn-cloud-s3-compatible-configure");
+  const httpStorage = document.getElementById("btn-cloud-http-configure");
   const nodeAddressCheck = document.getElementById("btn-check-cloud-node-address");
 
   if (refresh) refresh.addEventListener("click", () => void refreshArchiveCloudStatus());
@@ -2863,8 +2899,11 @@ function wireCloudSettingsControls() {
   if (googleDrive) googleDrive.addEventListener("click", () => void chooseCloudSyncedFolder("Google Drive"));
   if (oneDrive) oneDrive.addEventListener("click", () => void chooseCloudSyncedFolder("Microsoft OneDrive"));
   if (supabase) supabase.addEventListener("click", () => openCloudProviderConfiguration("supabase"));
+  if (azureBlob) azureBlob.addEventListener("click", () => openCloudProviderConfiguration("azure-blob"));
+  if (googleCloudStorage) googleCloudStorage.addEventListener("click", () => openCloudProviderConfiguration("google-cloud-storage"));
   if (amazonS3) amazonS3.addEventListener("click", () => openCloudProviderConfiguration("amazon-s3"));
   if (s3Compatible) s3Compatible.addEventListener("click", () => openCloudProviderConfiguration("s3-compatible"));
+  if (httpStorage) httpStorage.addEventListener("click", () => openCloudProviderConfiguration("http"));
 }
 
 const CLOUD_NODE_RELEASE_API =
