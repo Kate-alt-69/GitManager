@@ -329,6 +329,51 @@ fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     Ok(normalized)
 }
 
+fn write_app_preferences_file(path: &Path, preferences: &AppPreferences) -> Result<(), String> {
+    let temporary = path.with_extension("json.tmp");
+    let backup = path.with_extension("json.bak");
+    let content = serde_json::to_vec_pretty(preferences)
+        .map_err(|error| format!("Could not serialize GitManager preferences: {error}"))?;
+    fs::write(&temporary, content)
+        .map_err(|error| format!("Could not write GitManager preferences: {error}"))?;
+
+    // Keep the previous valid file recoverable if the final rename fails.
+    let had_previous = path.exists();
+    if had_previous {
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|error| format!("Could not clear the old preferences backup: {error}"))?;
+        }
+        fs::rename(path, &backup)
+            .map_err(|error| format!("Could not stage the previous preferences file: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        if had_previous {
+            let _ = fs::rename(&backup, path);
+        }
+        return Err(format!("Could not save GitManager preferences: {error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_cloud_node_address(app_handle: AppHandle, address: String) -> Result<String, String> {
+    let address = address.trim();
+    let normalized = if address.is_empty() {
+        String::new()
+    } else {
+        validate_rbe_node_base_url(address)?.to_string()
+    };
+    let path = preferences_file(&app_handle)?;
+    let mut preferences = read_app_preferences_file(&path)?;
+    preferences.cloud_node_address = normalized.clone();
+    write_app_preferences_file(&path, &preferences)?;
+    Ok(normalized)
+}
+
 #[tauri::command]
 fn save_app_preferences(
     app_handle: AppHandle,
@@ -354,32 +399,7 @@ fn save_app_preferences(
     };
 
     let path = preferences_file(&app_handle)?;
-    let temporary = path.with_extension("json.tmp");
-    let backup = path.with_extension("json.bak");
-    let content = serde_json::to_vec_pretty(&preferences)
-        .map_err(|error| format!("Could not serialize GitManager preferences: {error}"))?;
-    fs::write(&temporary, content)
-        .map_err(|error| format!("Could not write GitManager preferences: {error}"))?;
-
-    // Keep the previous valid file recoverable if the final rename fails.
-    let had_previous = path.exists();
-    if had_previous {
-        if backup.exists() {
-            fs::remove_file(&backup)
-                .map_err(|error| format!("Could not clear the old preferences backup: {error}"))?;
-        }
-        fs::rename(&path, &backup)
-            .map_err(|error| format!("Could not stage the previous preferences file: {error}"))?;
-    }
-    if let Err(error) = fs::rename(&temporary, &path) {
-        if had_previous {
-            let _ = fs::rename(&backup, &path);
-        }
-        return Err(format!("Could not save GitManager preferences: {error}"));
-    }
-    if backup.exists() {
-        let _ = fs::remove_file(&backup);
-    }
+    write_app_preferences_file(&path, &preferences)?;
     archive_watcher::restart_archive_watchers(&preferences);
     Ok(preferences)
 }
@@ -1346,6 +1366,7 @@ pub fn run() {
             disable_archive_cloud_storage,
             sync_archive_cloud_storage,
             check_rbe_node_status,
+            save_cloud_node_address,
             capture_repository_archive,
             list_repository_archives,
             restore_repository_archive,
