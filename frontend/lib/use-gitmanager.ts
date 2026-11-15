@@ -208,21 +208,9 @@ export function useGitManager() {
 					void performScan(resolved);
 				}
 
-				// GitHub CLI identity lookup is independent and must not delay first paint.
-				void invoke<{ login?: string }>("detect_github_identity").then(async (identity) => {
-					if (!active || !identity?.login) return;
-					const account = await invoke<ConnectedAccount>("connect_git_account", {
-						provider: "github",
-						usernameOrHost: "",
-						accessToken: null,
-					});
-					if (active) setAccounts((current) => [
-						...current.filter((item) => item.account_login !== account.account_login),
-						account,
-					]);
-				}).catch(() => {
-					// Missing GitHub CLI authentication is normal; manual connection remains available.
-				});
+				// GitHub CLI detection is intentionally deferred to Accounts.
+				// The explicit Connect provider action uses the existing gh session
+				// when its username and token fields are left blank.
 			} catch (cause) {
 				const message = cause instanceof Error ? cause.message : String(cause);
 				if (active) {
