@@ -461,8 +461,25 @@ fn send_ui_message_from_env(kind: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The internal child marker alone is insufficient: a normal user launch
+/// cannot bypass the supervisor merely by supplying the same command-line flag.
+pub fn is_supervised_child(args: &[std::ffi::OsString]) -> bool {
+    args.iter().any(|argument| argument.to_string_lossy() == "--crash-helper-child")
+        && std::env::var_os("GITMANAGER_CRASH_HELPER_ADDRESS").is_some()
+        && std::env::var_os("GITMANAGER_CRASH_HELPER_TOKEN").is_some()
+}
+
+pub fn report_supervisor_launch_failure(reason: &str) {
+    append_incident(
+        reason,
+        0,
+        None,
+        Err("The UI supervisor could not start; background service control was not attempted.".to_string()),
+    );
+}
+
 pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Result<bool, String> {
-    if args.iter().any(|argument| argument.to_string_lossy() == "--crash-helper-child") {
+    if is_supervised_child(args) {
         return Ok(false);
     }
     let helper = match find_crash_helper(current_exe) {
