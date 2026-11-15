@@ -27,15 +27,28 @@ class SecretFilePermissionTests(unittest.TestCase):
 
             if os.name == "nt":
                 sid = setup.windows_current_user_sid()
-                system_root = Path(os.environ["SystemRoot"])
-                icacls = system_root / "System32" / "icacls.exe"
-                result = setup.run_checked([icacls, secret_file], timeout=15)
-                self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-                self.assertIn(sid, result.stdout)
-                for broad_sid in ("S-1-1-0", "S-1-5-11", "S-1-5-32-545"):
-                    self.assertNotIn(broad_sid, result.stdout)
-
                 setup.restrict_secret_file_permissions(secret_file)
+                system_root = Path(os.environ["SystemRoot"])
+                powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+                quoted_path = "'" + str(secret_file).replace("'", "''") + "'"
+                result = setup.run_checked(
+                    [
+                        powershell,
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        f"(Get-Acl -LiteralPath {quoted_path}).Sddl",
+                    ],
+                    timeout=15,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+                sddl = result.stdout.strip().upper()
+                self.assertIn("D:", sddl)
+                dacl = sddl.split("D:", 1)[1].split("S:", 1)[0]
+                self.assertIn(sid.upper(), dacl)
+                for broad_sid in ("S-1-1-0", "S-1-5-11", "S-1-5-32-545"):
+                    self.assertNotIn(broad_sid, dacl)
             else:
                 self.assertEqual(stat.S_IMODE(secret_file.stat().st_mode), 0o600)
                 setup.restrict_secret_file_permissions(secret_file)
@@ -56,8 +69,16 @@ class BootstrapManifestTests(unittest.TestCase):
         self.assertTrue((setup.PACKAGE_ROOT / "settings.json").is_file())
         self.assertTrue((setup.PACKAGE_ROOT / "setting.node.cn.json").is_file())
         config = json.loads((setup.PACKAGE_ROOT / "setting.node.cn.json").read_text(encoding="utf-8"))
-        self.assertIn("node", config)
+        self.assertEqual(config["formatVersion"], 1)
+        self.assertEqual(config["node"]["mode"], "primary")
+        self.assertEqual(config["node"]["backupVersions"], 5)
+        self.assertEqual(config["node"]["videoChunkBytes"], 4 * 1024 * 1024)
         self.assertIn("replication", config)
+        self.assertFalse(config["replication"]["requireBootRecovery"])
+        route = (setup.PACKAGE_ROOT / "api" / "health.route").read_text(encoding="utf-8")
+        self.assertIn(":import[net]", route)
+        self.assertIn("net.ping()", route)
+        self.assertNotIn("private.health()", route)
 
     def test_safe_relative_member_rejects_traversal_and_windows_drive_paths(self) -> None:
         for unsafe in ("../backend", "dep/../../backend", "/backend", r"dep\backend", "C:/backend"):
