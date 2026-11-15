@@ -8,6 +8,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::archive;
 use crate::archive_watcher;
 use crate::load_background_preferences;
 use crate::watcher_service::{
@@ -16,6 +17,31 @@ use crate::watcher_service::{
 
 const PREFERENCE_REFRESH: Duration = Duration::from_secs(30);
 const REMOTE_UPDATE_INTERVAL: Duration = Duration::from_secs(120);
+const CLOUD_ARCHIVE_SYNC_INTERVAL: Duration = Duration::from_secs(300);
+
+fn retry_cloud_archive_sync(archive_root: &str) {
+    match archive::archive_cloud_storage_info(Path::new(archive_root)) {
+        Ok(info) if info.configured => {
+            match archive::sync_archive_cloud_storage(Some(archive_root)) {
+                Ok(action) if action != "None" => {
+                    eprintln!("GitManager background service: cloud archive sync {action}.");
+                }
+                Ok(_) => {}
+                Err(error) if error.contains("Another GitManager archive operation is already running") => {
+                    // A capture/configuration sync owns the shared provider lock.
+                    // The next five-minute cycle retries after that operation.
+                }
+                Err(error) => {
+                    eprintln!("GitManager background service: cloud archive sync failed: {error}");
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("GitManager background service: cloud archive configuration check failed: {error}");
+        }
+    }
+}
 
 fn repository_auto_update_enabled(repo_path: &str) -> bool {
     let repo = match git2::Repository::open(repo_path) {
@@ -41,11 +67,17 @@ fn repository_auto_update_enabled(repo_path: &str) -> bool {
 pub fn run() -> ! {
     let mut notified_commits: HashSet<String> = HashSet::new();
     let mut last_remote_check = Instant::now() - REMOTE_UPDATE_INTERVAL;
+    let mut last_cloud_archive_sync = Instant::now() - CLOUD_ARCHIVE_SYNC_INTERVAL;
 
     loop {
         match load_background_preferences() {
             Ok(preferences) => {
                 let _ = archive_watcher::restart_archive_watchers(&preferences);
+
+                if last_cloud_archive_sync.elapsed() >= CLOUD_ARCHIVE_SYNC_INTERVAL {
+                    retry_cloud_archive_sync(&preferences.archive_root);
+                    last_cloud_archive_sync = Instant::now();
+                }
 
                 if last_remote_check.elapsed() >= REMOTE_UPDATE_INTERVAL {
                     let updates = check_all_repos_for_updates(preferences.scan_roots.clone());
