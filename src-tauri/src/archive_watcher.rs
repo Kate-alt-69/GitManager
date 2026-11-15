@@ -81,17 +81,25 @@ fn watcher_lease_path() -> Result<PathBuf, String> {
     Ok(data_dir.join("archive-watcher.lock"))
 }
 
-fn watcher_config_signature(preferences: &AppPreferences) -> String {
+fn watcher_config_signature(
+    preferences: &AppPreferences,
+    repositories: Option<&[GitRepositoryInfo]>,
+) -> String {
+    let repository_paths = repositories.map(|items| {
+        items.iter().map(|repository| repository.path.as_str()).collect::<Vec<_>>()
+    });
     serde_json::to_string(&(
         &preferences.scan_roots,
         preferences.max_scan_depth,
         preferences.include_hidden_dirs,
+        preferences.index_dependency_repositories,
         preferences.first_run_complete,
         &preferences.archive_root,
         preferences.archive_local_enabled,
         preferences.archive_remote_enabled,
         &preferences.archive_trigger,
         preferences.archive_quiet_ms,
+        repository_paths,
     ))
     .unwrap_or_default()
 }
@@ -133,7 +141,7 @@ fn restart_archive_watchers_with_scan(
         return false;
     }
 
-    let signature = watcher_config_signature(preferences);
+    let signature = watcher_config_signature(preferences, discovered_repositories.as_deref());
     if config_guard.as_deref() == Some(signature.as_str())
         && lease_guard.is_some()
         && WATCHER_RUNNING.load(Ordering::SeqCst)
