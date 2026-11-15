@@ -67,7 +67,7 @@ export function useGitManager() {
 				: [];
 			setRepositories(local);
 			setDependencies(summary.dependency_repo_ids ?? summary.dependencyRepoIds ?? []);
-			setStatus(\`Indexed \${local.length} repositories\`);
+			setStatus(`Indexed ${local.length} repositories`);
 			return local;
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
@@ -99,7 +99,7 @@ export function useGitManager() {
 				rootPaths: preferences.scanRoots,
 			});
 			setUpdates(found ?? []);
-			setStatus(found?.length ? \`\${found.length} update available\` : "All repositories are up to date");
+			setStatus(found?.length ? `${found.length} update available` : "All repositories are up to date");
 			return found ?? [];
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
@@ -140,7 +140,7 @@ export function useGitManager() {
 			)),
 			account,
 		]);
-		setStatus(\`Connected \${account.account_login}\`);
+		setStatus(`Connected ${account.account_login}`);
 		return account;
 	}, []);
 
