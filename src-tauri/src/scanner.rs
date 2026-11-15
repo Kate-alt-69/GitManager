@@ -317,7 +317,10 @@ fn truncate_scan(shared: &ScanShared) {
 }
 
 fn path_key(path: &Path) -> String {
-    let value = path.to_string_lossy().to_string();
+    // Canonical paths use the host separator, while user-configured roots and
+    // tests may use either slash style. Normalize separators before comparing
+    // parent/child prefixes so Windows paths cannot bypass root deduplication.
+    let value = path.to_string_lossy().replace('\\', "/");
     #[cfg(windows)] { value.to_lowercase() }
     #[cfg(not(windows))] { value }
 }
@@ -334,11 +337,7 @@ fn normalize_scan_roots(mut candidates: Vec<PathBuf>) -> Vec<PathBuf> {
         let already_covered = roots.iter().any(|parent: &PathBuf| {
             let parent_key = path_key(parent);
             if candidate_key == parent_key { return true; }
-            let prefix = format!(
-                "{}{}",
-                parent_key.trim_end_matches(std::path::MAIN_SEPARATOR),
-                std::path::MAIN_SEPARATOR
-            );
+            let prefix = format!("{}/", parent_key.trim_end_matches('/'));
             candidate_key.starts_with(&prefix)
         });
         if !already_covered { roots.push(candidate); }
@@ -451,6 +450,16 @@ mod tests {
             PathBuf::from("/workspace"),
         ]);
         assert_eq!(roots, vec![PathBuf::from("/workspace")]);
+    }
+
+    #[test]
+    fn normalizes_windows_separator_variants_when_deduplicating_roots() {
+        let roots = normalize_scan_roots(vec![
+            PathBuf::from(r"C:\Projects\GitManager\frontend"),
+            PathBuf::from(r"C:/Projects/GitManager"),
+            PathBuf::from(r"C:\Projects\GitManager"),
+        ]);
+        assert_eq!(roots, vec![PathBuf::from(r"C:/Projects/GitManager")]);
     }
 
     #[test]

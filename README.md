@@ -144,12 +144,11 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 ## 6. Windows production installer and signing
 
-On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It creates both Windows installer formats:
+On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It creates a current-user NSIS application installer:
 
     target/release/bundle/nsis/GitManager-Setup.exe
-    target/release/bundle/msi/*.msi
 
-The NSIS and WiX/MSI files are **application installers**. They install GitManager; they are not the first-run workspace wizard.
+The Windows MSI target is intentionally disabled for the per-user build. Tauri's generated MSI resource components currently use file key paths under the user profile, which fail Windows Installer ICE38/ICE64 validation. We do not suppress those checks: a valid per-user MSI needs HKCU registry key paths and explicit user-profile directory cleanup for every generated component. The NSIS installer already supports the required current-user install layout without elevation.
 
 The build also creates a separate first-run helper alongside the native binaries:
 
