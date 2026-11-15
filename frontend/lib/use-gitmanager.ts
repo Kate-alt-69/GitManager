@@ -87,6 +87,18 @@ export function useGitManager() {
 
 	const scan = useCallback((customRoot?: string) => performScan(preferences, customRoot), [performScan, preferences]);
 
+	// Report only after the desktop hook is ready. The independent crash_helper
+	// treats a missing heartbeat as an unresponsive UI.
+	useEffect(() => {
+		if (!available || loading || !isTauriRuntime()) return;
+		const heartbeat = () => {
+			void invoke("report_ui_heartbeat").catch(() => undefined);
+		};
+		heartbeat();
+		const timer = window.setInterval(heartbeat, 3000);
+		return () => window.clearInterval(timer);
+	}, [available, loading]);
+
 	const savePreferences = useCallback(async (next: AppPreferences) => {
 		const saved = await invoke<AppPreferences>("save_app_preferences", {
 			preferences: { ...next, firstRunComplete: true },
@@ -162,6 +174,8 @@ export function useGitManager() {
 				setStatus("Desktop runtime not detected");
 				return;
 			}
+			// A successful UI startup explicitly reactivates a temporarily paused service.
+			void invoke("resume_background_service").catch(() => undefined);
 			try {
 				const [appVersion, paths, saved] = await Promise.all([
 					invoke<string>("get_app_version"),

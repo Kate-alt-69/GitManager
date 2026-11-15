@@ -904,6 +904,24 @@ def build_gitm_sidecar(
         log_err("The cross-platform GitManager Setup companion failed to build.")
         return setup_result
 
+    service_cmd = common_prefix + ["build", "--package", "git-manager", "--bin", "git-manager-service"]
+    helper_cmd = common_prefix + ["build", "--package", "crash-helper", "--bin", "crash_helper"]
+    if release:
+        service_cmd.append("--release")
+        helper_cmd.append("--release")
+
+    log_info(f"Building independent GitManager background service: {' '.join(service_cmd)}")
+    service_result = subprocess.call(service_cmd, cwd=str(project_root))
+    if service_result != 0:
+        log_err("The standalone GitManager background service failed to build.")
+        return service_result
+
+    log_info(f"Building crash_helper UI supervisor: {' '.join(helper_cmd)}")
+    helper_result = subprocess.call(helper_cmd, cwd=str(project_root))
+    if helper_result != 0:
+        log_err("The crash_helper supervisor failed to build.")
+        return helper_result
+
     try:
         host_triple = resolve_rust_target_triple(toolchain_arg)
     except RuntimeError as error:
@@ -921,6 +939,8 @@ def build_gitm_sidecar(
     artifacts = [
         (binary_dir / f"gitm{executable_suffix}", f"gitm-{binary_triple}{executable_suffix}"),
         (binary_dir / f"gitmanager-setup{executable_suffix}", f"gitmanager-setup-{binary_triple}{executable_suffix}"),
+        (binary_dir / f"crash_helper{executable_suffix}", f"crash_helper-{binary_triple}{executable_suffix}"),
+        (binary_dir / f"git-manager-service{executable_suffix}", f"git-manager-service-{binary_triple}{executable_suffix}"),
     ]
     sidecar_dir = project_root / "src-tauri" / "binaries"
     sidecar_dir.mkdir(parents=True, exist_ok=True)
@@ -1026,9 +1046,8 @@ def run_build_or_dev(
         if rc != 0 or mode != "build":
             return rc
 
-        # The installed GitManager executable also supports --background-service.
-        # OS registration launches that bundled executable, so no separate BGW
-        # binary has to be copied into native installers.
+        # The dedicated service executable and crash_helper are bundled as
+        # separate sidecars; the background service never shares the UI process tree.
         if platform.system() == "Windows" and name_windows_setup_installer(project_root) is None:
             return 1
         return 0

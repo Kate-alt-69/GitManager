@@ -108,6 +108,19 @@ pub fn archive_watchers_running() -> bool {
     WATCHER_RUNNING.load(Ordering::SeqCst)
 }
 
+/// Stop accepting new archive events/captures while retaining archive data.
+/// Already-running transactional capture workers are allowed to finish safely.
+pub fn stop_archive_watchers() {
+    WATCH_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if let Some(slot) = WATCHER_CONFIG.get() {
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+    if let Some(slot) = WATCHER_LEASE.get() {
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+    WATCHER_RUNNING.store(false, Ordering::SeqCst);
+}
+
 pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
     restart_archive_watchers_with_scan(preferences, None)
 }

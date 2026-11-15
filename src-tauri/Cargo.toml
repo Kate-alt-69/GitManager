@@ -38,5 +38,6 @@ tokio = { version = "1.40", default-features = false, features = ["rt", "rt-mult
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 gitmanager-archive = { path = "../crates/archive-core" }
+crash-helper = { path = "../crates/crash-helper" }
 notify = "8.2.2"
 fs2 = "0.4"

@@ -1,6 +1,5 @@
-// Standalone entry point for development and explicit Cargo invocations.
-// Production OS integration launches the already-installed GitManager binary
-// with --background-service, so installers do not need a second executable.
+// Dedicated per-user background process. OS service managers launch this
+// executable directly; it remains independent from the Tauri desktop UI.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

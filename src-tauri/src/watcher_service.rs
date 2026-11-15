@@ -1,11 +1,11 @@
 use git2::{Direction, FetchOptions, Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use crate::process_utils::hidden_command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::scanner::{default_scan_roots, scan_repositories, ScanOptions};
 
@@ -297,21 +297,58 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-pub fn register_os_background_service() -> Result<String, String> {
-    // Tauri bundles the main executable, not an unbundled sibling BGW binary.
-    // The installed application enters its shared headless worker when given
-    // --background-service, so every platform launches the exact bundled file.
-    let current_exe = std::env::current_exe().map_err(|error| {
-        format!("Could not resolve the installed GitManager executable: {error}")
-    })?;
+fn resolve_background_service_executable(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("Could not resolve GitManager's executable: {error}"))?;
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let mut directories = Vec::new();
+
+    if let Some(parent) = current_exe.parent() {
+        directories.push(parent.to_path_buf());
+    }
+    if let Ok(resources) = app_handle.path().resource_dir() {
+        directories.push(resources);
+    }
+    if let Some(parent) = current_exe.parent().and_then(Path::parent) {
+        directories.push(parent.join("Resources"));
+        directories.push(parent.join("resources"));
+    }
+
+    for directory in directories {
+        let direct = directory.join(format!("git-manager-service{suffix}"));
+        if direct.is_file() {
+            return Ok(direct);
+        }
+        if let Ok(entries) = std::fs::read_dir(&directory) {
+            let mut candidates = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.is_file()
+                        && path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.starts_with("git-manager-service-") && name.ends_with(suffix))
+                })
+                .collect::<Vec<_>>();
+            candidates.sort();
+            if let Some(path) = candidates.into_iter().next() {
+                return Ok(path);
+            }
+        }
+    }
+
+    Err("The packaged git-manager-service executable was not found. Rebuild the installer with the service sidecar included.".to_string())
+}
+
+/// Registers or starts the dedicated service executable. The service remains
+/// independent from the Tauri UI and crash_helper process.
+pub fn register_os_background_service(app_handle: AppHandle) -> Result<String, String> {
+    let service_exe = resolve_background_service_executable(&app_handle)?;
 
     #[cfg(target_os = "windows")]
     {
         let task_name = "GitManager Background Service";
-        let task_command = format!(
-            "\"{}\" --background-service",
-            current_exe.display()
-        );
+        let task_command = format!("\"{}\"", service_exe.display());
         let create = hidden_command("schtasks.exe")
             .args(["/Create", "/SC", "ONLOGON", "/TN", task_name, "/TR"])
             .arg(&task_command)
@@ -325,16 +362,13 @@ pub fn register_os_background_service() -> Result<String, String> {
             } else {
                 detail.into_owned()
             };
-            return Err(format!(
-                "Could not register the current-user GitManager background task: {}",
-                detail.trim()
-            ));
+            return Err(format!("Could not register GitManager Background Service: {}", detail.trim()));
         }
 
         let start = hidden_command("schtasks.exe")
             .args(["/Run", "/TN", task_name])
             .output()
-            .map_err(|error| format!("Could not start the GitManager background task: {error}"))?;
+            .map_err(|error| format!("Could not start GitManager Background Service: {error}"))?;
         if !start.status.success() {
             let detail = String::from_utf8_lossy(&start.stderr);
             let detail = if detail.trim().is_empty() {
@@ -342,24 +376,16 @@ pub fn register_os_background_service() -> Result<String, String> {
             } else {
                 detail.into_owned()
             };
-            return Err(format!(
-                "The current-user GitManager task was registered but could not be started: {}",
-                detail.trim()
-            ));
+            return Err(format!("GitManager Background Service was registered but could not start: {}", detail.trim()));
         }
 
-        // Best-effort cleanup of the previous experimental LocalSystem service.
-        let _ = hidden_command("sc.exe")
-            .args(["stop", "GitManagerUpdateSvc"])
-            .output();
-        let _ = hidden_command("sc.exe")
-            .args(["delete", "GitManagerUpdateSvc"])
-            .output();
+        let _ = hidden_command("sc.exe").args(["stop", "GitManagerUpdateSvc"]).output();
+        let _ = hidden_command("sc.exe").args(["delete", "GitManagerUpdateSvc"]).output();
 
-        return Ok(
-            "Registered and started the current-user Windows Task Scheduler job; it resumes at user logon."
-                .to_string(),
-        );
+        return Ok(format!(
+            "Registered and started the independent Windows background service at {}.",
+            service_exe.display()
+        ));
     }
 
     #[cfg(target_os = "linux")]
@@ -375,18 +401,20 @@ pub fn register_os_background_service() -> Result<String, String> {
 Description=GitManager Background Repository and Archive Watcher
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart={} --background-service
-Restart=always
+ExecStart={}
+Restart=on-failure
 RestartSec=10
 UMask=0077
 
 [Install]
 WantedBy=default.target
 "#,
-            systemd_quote(&current_exe.to_string_lossy())
+            systemd_quote(&service_exe.to_string_lossy())
         );
         std::fs::write(&unit_path, unit_content)
             .map_err(|error| format!("Could not write {}: {error}", unit_path.display()))?;
@@ -396,29 +424,21 @@ WantedBy=default.target
             .output()
             .map_err(|error| format!("Could not reload the systemd user manager: {error}"))?;
         if !reload.status.success() {
-            return Err(format!(
-                "Could not reload the systemd user manager: {}",
-                String::from_utf8_lossy(&reload.stderr).trim()
-            ));
+            return Err(format!("Could not reload systemd user manager: {}", String::from_utf8_lossy(&reload.stderr).trim()));
         }
         let enable = hidden_command("systemctl")
             .args(["--user", "enable", "--now", "gitmanager-updater.service"])
             .output()
             .map_err(|error| format!("Could not enable GitManager's systemd user service: {error}"))?;
         if !enable.status.success() {
-            return Err(format!(
-                "Could not enable/start GitManager's systemd user service: {}",
-                String::from_utf8_lossy(&enable.stderr).trim()
-            ));
+            return Err(format!("Could not enable/start GitManager's systemd user service: {}", String::from_utf8_lossy(&enable.stderr).trim()));
         }
-        return Ok("Registered and started the Linux per-user systemd service.".to_string());
+        return Ok(format!("Registered and started the independent Linux systemd service at {}.", service_exe.display()));
     }
 
     #[cfg(target_os = "macos")]
     {
-        let uid_result = hidden_command("id")
-            .arg("-u")
-            .output()
+        let uid_result = hidden_command("id").arg("-u").output()
             .map_err(|error| format!("Could not determine the current macOS user ID: {error}"))?;
         if !uid_result.status.success() {
             return Err("Could not determine the current macOS user ID.".to_string());
@@ -434,7 +454,7 @@ WantedBy=default.target
             .map_err(|error| format!("Could not create {}: {error}", agents_dir.display()))?;
         let label = "com.gitmanager.updater";
         let plist_path = agents_dir.join(format!("{label}.plist"));
-        let executable = xml_escape(&current_exe.to_string_lossy());
+        let executable = xml_escape(&service_exe.to_string_lossy());
         let plist_content = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -442,9 +462,10 @@ WantedBy=default.target
 <dict>
   <key>Label</key><string>com.gitmanager.updater</string>
   <key>ProgramArguments</key>
-  <array><string>{executable}</string><string>--background-service</string></array>
+  <array><string>{executable}</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
   <key>ProcessType</key><string>Background</string>
 </dict>
 </plist>
@@ -471,32 +492,23 @@ WantedBy=default.target
             .output()
             .map_err(|error| format!("Could not load the GitManager LaunchAgent: {error}"))?;
         if !bootstrap.status.success() {
-            return Err(format!(
-                "Could not load the GitManager LaunchAgent: {}",
-                String::from_utf8_lossy(&bootstrap.stderr).trim()
-            ));
+            return Err(format!("Could not load the GitManager LaunchAgent: {}", String::from_utf8_lossy(&bootstrap.stderr).trim()));
         }
         let enable = hidden_command("launchctl")
             .args(["enable", &format!("{domain}/{label}")])
             .output()
             .map_err(|error| format!("Could not enable the GitManager LaunchAgent: {error}"))?;
         if !enable.status.success() {
-            return Err(format!(
-                "Could not enable the GitManager LaunchAgent: {}",
-                String::from_utf8_lossy(&enable.stderr).trim()
-            ));
+            return Err(format!("Could not enable the GitManager LaunchAgent: {}", String::from_utf8_lossy(&enable.stderr).trim()));
         }
         let start = hidden_command("launchctl")
             .args(["kickstart", "-k", &format!("{domain}/{label}")])
             .output()
             .map_err(|error| format!("Could not start the GitManager LaunchAgent: {error}"))?;
         if !start.status.success() {
-            return Err(format!(
-                "Could not start the GitManager LaunchAgent: {}",
-                String::from_utf8_lossy(&start.stderr).trim()
-            ));
+            return Err(format!("Could not start the GitManager LaunchAgent: {}", String::from_utf8_lossy(&start.stderr).trim()));
         }
-        return Ok("Registered and started the macOS per-user LaunchAgent.".to_string());
+        return Ok(format!("Registered and started the independent macOS LaunchAgent at {}.", service_exe.display()));
     }
 
     #[allow(unreachable_code)]

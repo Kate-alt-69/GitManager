@@ -926,9 +926,20 @@ async fn pull_repository_update(
 }
 
 #[tauri::command]
+fn report_ui_heartbeat() -> Result<(), String> {
+    crash_helper::report_ui_heartbeat_from_env()
+}
+
+#[tauri::command]
+fn resume_background_service() -> Result<crash_helper::ServiceStatus, String> {
+    crash_helper::request_service_resume()
+}
+
+#[tauri::command]
 async fn control_background_service(
     enable_in_app: Option<bool>,
     install_os_service: Option<bool>,
+    app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ServiceStatusInfo, String> {
     if let Some(en) = enable_in_app {
@@ -936,7 +947,7 @@ async fn control_background_service(
     }
 
     if install_os_service == Some(true) {
-        tokio::task::spawn_blocking(register_os_background_service)
+        tokio::task::spawn_blocking(move || register_os_background_service(app_handle))
             .await
             .map_err(|error| format!("Background service registration task failed: {error}"))??;
         state
@@ -1420,6 +1431,8 @@ pub fn run() {
             check_repo_updates_now,
             pull_repository_update,
             control_background_service,
+            report_ui_heartbeat,
+            resume_background_service,
             cleaner_preview,
             cleaner_apply,
             set_repository_commit_clean

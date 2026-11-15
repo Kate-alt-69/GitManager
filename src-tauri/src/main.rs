@@ -2,18 +2,31 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let argument_is = |expected: &str| arguments.iter().any(|argument| argument.to_string_lossy() == expected);
 
-    // The installed GitManager executable is also the per-user background
-    // worker. It uses the same preferences and watcher lease as the desktop.
-    if args.iter().any(|argument| argument == "--background-service") {
+    // Preserve compatibility with installations that still have the older
+    // scheduled-task command while new installs use git-manager-service.
+    if argument_is("--background-service") {
         git_manager_lib::background_service::run();
     }
 
-    if args.iter().any(|argument| argument == "--setup") {
+    if argument_is("--setup") {
         std::env::set_var("GITMANAGER_SETUP_MODE", "1");
     }
 
-    // Tauri remains the actual UI/runtime for normal and first-run modes.
+    // Normal desktop launches are handed to crash_helper. The helper then
+    // starts this executable as a child and remains alive after UI exit.
+    if !argument_is("--crash-helper-child") {
+        if let Ok(current_exe) = std::env::current_exe() {
+            match crash_helper::launch_supervisor(&current_exe, &arguments) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => eprintln!("GitManager crash_helper could not start: {error}"),
+            }
+        }
+    }
+
     git_manager_lib::run();
+    crash_helper::report_ui_shutdown_from_env();
 }
