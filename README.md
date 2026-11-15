@@ -23,7 +23,7 @@ python3 build.py deps
 # Run in development mode (uses your already-installed Rust toolchain)
 python3 build.py dev
 
-# Build optimized native release binaries (both `git-manager` GUI and `git-manager-service` daemon)
+# Build optimized native release binaries (GitManager GUI with built-in headless background mode, plus CLI/setup sidecars)
 python3 build.py build
 
 # Prepare the isolated CPython runtime used by Windows installers
@@ -32,14 +32,14 @@ python3 build.py prepare-runtime
 
 ---
 
-## 2. Background Repository Update Service (`svchost` / OS Service + Loading Spinner)
+## 2. Background Repository Update Service (User-Level OS Service + Loading Spinner)
 
-Implemented in `src-tauri/src/watcher_service.rs` and `src-tauri/src/bin/git_manager_service.rs`:
+Implemented in `src-tauri/src/background_service.rs` and `src-tauri/src/watcher_service.rs`. The installed GitManager executable enters this worker with `--background-service`; the standalone `git-manager-service` Cargo target is only a thin development wrapper:
 
 - **OS Service Registration & Background Worker**:
-  - **Windows 10 & 11**: Registers `GitManagerUpdateSvc` via `sc.exe` (Windows Service / `svchost` background service model) or spawns `git-manager-service.exe` (`--svchost-worker`) in the background.
-  - **Linux**: Registers and starts `~/.config/systemd/user/gitmanager-updater.service` via `systemctl --user`.
-  - **macOS**: Registers and loads `~/Library/LaunchAgents/com.gitmanager.updater.plist` via `launchctl`.
+  - **Windows 10 & 11**: Registers a current-user Task Scheduler task that launches the installed GitManager executable with `--background-service` at logon and starts it immediately. It no longer uses the experimental LocalSystem `GitManagerUpdateSvc`.
+  - **Linux**: Registers and starts `~/.config/systemd/user/gitmanager-updater.service` via `systemctl --user`, launching the same installed executable in headless mode.
+  - **macOS**: Registers and loads `~/Library/LaunchAgents/com.gitmanager.updater.plist` via `launchctl`, launching the same installed executable in headless mode.
 - **Automatic Update Notification Prompt**:
   - Periodically polls remote `origin` heads (`libgit2` fetch / `ls-remote`) across all indexed repositories.
   - Whenever a repository has new upstream commits, it triggers both an OS desktop notification and an in-app interactive banner asking:
@@ -224,7 +224,7 @@ The starter backend API binds to `0.0.0.0:8080` by default. After startup, the n
 
 GitManager's repository archive engine now writes its own content-addressed blobs under `gitm.archives/` and snapshot manifests/indexes under `gitm.metadata/`. `gitm.recovery/` is reserved for future recovery metadata. Existing format-version-1 `gitmanager/` index and blob paths remain readable while new captures move to format version 2.
 
-Automatic archive watching is shared by the desktop app and the startup `git-manager-service` worker through a per-user OS file lease, so only one watcher handles repository events at a time. If the desktop exits, the background worker takes over on its next preference refresh. The worker uses the vendored Cloud Node provider-sync API in-process for Supabase/S3 uploads; it does not need to spawn a second `cloud_node.exe` for that. A permanent authenticated LAN peer listener/pairing flow is still required before GitManager can sync directly to the NAS by IP.
+Automatic archive watching is shared by the desktop app and the installed GitManager executable running with `--background-service`, through a per-user OS file lease, so only one watcher handles repository events at a time. If the desktop exits, the background worker takes over on its next preference refresh. The native installers already contain the executable used by the OS service; no unbundled BGW binary is required. The worker uses the vendored Cloud Node provider-sync API in-process for Supabase/S3 uploads; it does not need to spawn a second `cloud_node.exe` for that. A permanent authenticated LAN peer listener/pairing flow is still required before GitManager can sync directly to the NAS by IP.
 
 For CI, the lightweight ZIP is built once by the `cloud-node-deployment` job and uploaded as the `gitmanager-cloud-node-deployment` artifact. The package is not duplicated inside Windows, Linux or macOS GitManager installers. See [the deployment guide](tools/cloud-node-deployment/README.md), [RBE Cloud Node documentation](https://github.com/Kastrick8/RBE/blob/main/doc/cloud-node.md), [RBE API route documentation](https://github.com/Kastrick8/RBE/blob/main/api/README.md), and [the official RBE binary release](https://github.com/Kastrick8/RBE/releases/tag/rbe-bin-v0.1.0).
 
