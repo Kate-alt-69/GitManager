@@ -199,6 +199,19 @@ fn extract_git_repository_info_with_detail(workdir: &Path, git_dir_path: &Path, 
         }
     }
 
+    let head_reference = repo.head().ok();
+    let head_oid = head_reference.as_ref()
+        .and_then(|reference| reference.target())
+        .map(|oid| oid.to_string());
+    let mut current_branch = "HEAD (detached)".to_string();
+    if let Some(reference) = head_reference.as_ref() {
+        if reference.is_branch() {
+            if let Some(short_name) = reference.shorthand() {
+                current_branch = short_name.to_string();
+            }
+        }
+    }
+
     let default_branch = if load_details {
         repo.find_reference("refs/remotes/origin/HEAD").ok()
             .and_then(|reference| reference.symbolic_target().map(str::to_string))
