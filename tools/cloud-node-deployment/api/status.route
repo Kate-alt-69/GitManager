@@ -1,14 +1,18 @@
-:import[net]
+:import[private, net]
 
 class Route {
     async get(req) {
-        const engine = net.ping();
+        const health = private.health();
         return {
             ok: true,
-            status: "available",
             service: "RBE Backend API",
+            status: health.status,
+            uptime: health.uptime,
+            container: health.container,
+            vault: health.vault,
+            errorReporter: health.errorReporter,
             endpoint: req.path,
-            engine: engine
+            engine: net.ping()
         };
     }
 }
