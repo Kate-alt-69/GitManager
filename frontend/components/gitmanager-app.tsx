@@ -1158,6 +1158,7 @@ function SettingsPage({
 					<h2>GitManager</h2>
 					<p>A native Git workspace manager powered by Rust, Tauri, React and Next.js Engine.</p>
 					<div className="gm-about-paths">
+						<div><span>Application install</span><code>{directories?.installDir || "Unavailable"}</code></div>
 						<div><span>Software root</span><code>{directories?.softwareRoot || "Unavailable"}</code></div>
 						<div><span>Configuration</span><code>{directories?.configDir || "Unavailable"}</code></div>
 						<div><span>Application data</span><code>{directories?.dataDir || "Unavailable"}</code></div>

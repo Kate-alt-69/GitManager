@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use fs2::FileExt;
 
 use crate::git_info::{extract_git_repository_summary, GitRepositoryInfo};
 
@@ -90,6 +92,9 @@ pub fn scan_repositories(options: ScanOptions) -> Result<Vec<GitRepositoryInfo>,
 /// a fallback, and only when the primary scan finds no regular repositories.
 pub fn scan_repositories_with_report(options: ScanOptions) -> Result<ScanReport, String> {
     let _scan_guard = ACTIVE_SCAN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // A second process (the standalone background service) shares this lease.
+    // It keeps only one two-thread crawl active across the whole user session.
+    let _process_scan_lease = acquire_process_scan_lease()?;
     let config = Arc::new(ScanConfig {
         max_depth: options.max_depth.unwrap_or(8).clamp(2, 16),
         include_hidden: options.include_hidden_dirs.unwrap_or(false),
@@ -157,6 +162,29 @@ fn run_scan_pass(roots: &[PathBuf], config: Arc<ScanConfig>, dependency_fallback
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
     ScanReport { repositories, truncated: shared.truncated.load(Ordering::Relaxed) }
+}
+
+fn acquire_process_scan_lease() -> Result<File, String> {
+    let local_data = dirs::data_local_dir()
+        .ok_or_else(|| "Could not resolve the current user's local data directory for scan ownership.".to_string())?;
+    let data_dir = local_data
+        .join("kastrick's_software")
+        .join("data")
+        .join("GitManager");
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Could not create repository scan state directory: {error}"))?;
+
+    let lock_path = data_dir.join("repository-scan.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| format!("Could not open repository scan lease {}: {error}", lock_path.display()))?;
+    FileExt::lock_exclusive(&file)
+        .map_err(|error| format!("Could not acquire repository scan lease {}: {error}", lock_path.display()))?;
+    Ok(file)
 }
 
 fn scan_worker_count() -> usize {
