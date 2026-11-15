@@ -9,6 +9,7 @@ import stat
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -102,6 +103,47 @@ class BootstrapManifestTests(unittest.TestCase):
                 f"{'b' * 64}  rbe-runtime.zip\n".encode("utf-8"),
                 "rbe-runtime.zip",
                 digest,
+            )
+
+
+class BackendAdminInitializationTests(unittest.TestCase):
+    def test_admin_initialization_uses_interactive_terminal_and_selected_settings(self) -> None:
+        completed = setup.subprocess.CompletedProcess(
+            args=["backend", "--init-admin"],
+            returncode=0,
+        )
+        with mock.patch.object(setup, "run_interactive", return_value=completed) as run:
+            initialized = setup.initialize_backend_admin(
+                Path("/opt/rbe/backend"),
+                Path("/opt/rbe/settings.json"),
+                Path("/opt/rbe"),
+            )
+        self.assertTrue(initialized)
+        args = run.call_args.args[0]
+        self.assertEqual(
+            args,
+            [
+                Path("/opt/rbe/backend"),
+                "--settings",
+                Path("/opt/rbe/settings.json"),
+                "--init-admin",
+            ],
+        )
+        self.assertEqual(run.call_args.kwargs["cwd"], Path("/opt/rbe"))
+        self.assertIsNotNone(run.call_args.kwargs["env"])
+
+    def test_admin_initialization_failure_prevents_success(self) -> None:
+        completed = setup.subprocess.CompletedProcess(
+            args=["backend", "--init-admin"],
+            returncode=2,
+        )
+        with mock.patch.object(setup, "run_interactive", return_value=completed):
+            self.assertFalse(
+                setup.initialize_backend_admin(
+                    Path("/opt/rbe/backend"),
+                    Path("/opt/rbe/settings.json"),
+                    Path("/opt/rbe"),
+                )
             )
 
 
