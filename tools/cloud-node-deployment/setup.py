@@ -948,16 +948,23 @@ def main():
         say(f"Start script: {launcher}")
 
         admin_initialized = False
+        admin_secret_supplied = bool(
+            os.environ.get("RBE_ADMIN_PASSWORD")
+            or os.environ.get("RBE_ADMIN_PASSWORD_FILE")
+        )
         if args.skip_admin_init:
             say("RBE administrator initialization skipped by --skip-admin-init.")
-        elif not sys.stdin.isatty():
-            say("No interactive terminal is available; administrator initialization was skipped.")
-            say("Run backend --init-admin in a terminal before starting the background service.")
-        elif ask_yes_no(
+        elif not sys.stdin.isatty() and not admin_secret_supplied:
+            say("No interactive terminal or RBE admin password environment input is available.")
+            say("Run backend --settings settings.json --init-admin in a terminal before starting the background service.")
+        elif not sys.stdin.isatty() or ask_yes_no(
             "Initialize or confirm the RBE administrator account now?",
             True,
         ):
-            say("RBE will handle the password prompt directly; GitManager does not read or store the password.")
+            if admin_secret_supplied:
+                say("RBE will use its RBE_ADMIN_PASSWORD or RBE_ADMIN_PASSWORD_FILE input.")
+            else:
+                say("RBE will handle the password prompt directly; GitManager does not read or store the password.")
             try:
                 admin_initialized = initialize_backend_admin(
                     backend_path, settings_path, install_dir
