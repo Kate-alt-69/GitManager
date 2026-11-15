@@ -2805,34 +2805,34 @@ function cloudProviderTemplate(provider) {
   const templates = {
     supabase: {
       kind: "supabase",
-      namespace: "gitmanager",
+      namespace: "gitm",
       bucket: "gitmanager-archives",
       endpoint: "https://YOUR_PROJECT.supabase.co",
       auth: { mode: "api-key", apiKeyEnv: "RBE_CN_PROV_SUPABASE_API_KEY" }
     },
     "azure-blob": {
       kind: "azure-blob",
-      namespace: "gitmanager",
+      namespace: "gitm",
       bucket: "gitmanager-archives",
       account: "YOUR_AZURE_STORAGE_ACCOUNT",
       auth: { mode: "azure-sas", sasTokenEnv: "RBE_CN_PROV_AZURE_SAS_TOKEN" }
     },
     "google-cloud-storage": {
       kind: "google-cloud-storage",
-      namespace: "gitmanager",
+      namespace: "gitm",
       bucket: "gitmanager-archives",
       auth: { mode: "oauth-bearer", oauthTokenEnv: "RBE_CN_PROV_GOOGLE_OAUTH_TOKEN" }
     },
     "amazon-s3": {
       kind: "amazon-s3",
-      namespace: "gitmanager",
+      namespace: "gitm",
       bucket: "gitmanager-archives",
       region: "ap-south-1",
       auth: { mode: "aws-sig-v4" }
     },
     "s3-compatible": {
       kind: "amazon-s3",
-      namespace: "gitmanager",
+      namespace: "gitm",
       bucket: "gitmanager-archives",
       region: "auto",
       endpoint: "https://YOUR-S3-ENDPOINT",
@@ -2840,7 +2840,7 @@ function cloudProviderTemplate(provider) {
     },
     http: {
       kind: "http",
-      namespace: "gitmanager",
+      namespace: "gitm",
       bucket: "gitmanager-archives",
       endpoint: "https://objects.example.com",
       auth: { mode: "bearer", bearerTokenEnv: "RBE_CN_PROV_HTTP_BEARER_TOKEN" }
