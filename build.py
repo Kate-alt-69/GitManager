@@ -529,7 +529,14 @@ def prepare_cloud_node_deployment(project_root: Path) -> int:
             names = set(packaged.namelist())
             if "api/health.route" not in names:
                 raise ValueError("Generated RBE node bootstrap ZIP is missing api/health.route.")
-            if any(name.startswith("binaries/") or name.endswith((".exe", "/backend", "/cloud_node")) for name in names):
+            binary_names = {
+                "backend", "backend.exe", "cloud_node", "cloud_node.exe",
+                "container", "container.exe", "service", "service.exe",
+            }
+            if any(
+                name.startswith("binaries/") or name.rsplit("/", 1)[-1].lower() in binary_names
+                for name in names
+            ):
                 raise ValueError("Bootstrap ZIP must not pre-bundle RBE executables.")
             compile(packaged.read("setup.py"), "tools/cloud-node-deployment/setup.py", "exec")
             packaged_manifest = json.loads(packaged.read("manifest.json").decode("utf-8"))
