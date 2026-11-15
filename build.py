@@ -499,8 +499,12 @@ def prepare_cloud_node_deployment(project_root: Path) -> int:
             path for path in route_root.rglob("*.route")
             if path.is_file() and not path.is_symlink()
         )
-        if not route_files or not (route_root / "health.route").is_file():
-            raise ValueError("RBE node bootstrap package must include api/health.route.")
+        if (
+            not route_files
+            or not (route_root / "health.route").is_file()
+            or not (route_root / "status.route").is_file()
+        ):
+            raise ValueError("RBE node bootstrap package must include api/health.route and api/status.route.")
         for route in route_files:
             if not route.resolve().is_relative_to(route_root.resolve()):
                 raise ValueError(f"RBE API route escapes its template directory: {route}")
@@ -527,8 +531,8 @@ def prepare_cloud_node_deployment(project_root: Path) -> int:
             if corrupt_entry:
                 raise ValueError(f"Generated RBE node bootstrap ZIP failed CRC verification at {corrupt_entry}.")
             names = set(packaged.namelist())
-            if "api/health.route" not in names:
-                raise ValueError("Generated RBE node bootstrap ZIP is missing api/health.route.")
+            if not {"api/health.route", "api/status.route"}.issubset(names):
+                raise ValueError("Generated RBE node bootstrap ZIP is missing its health/status routes.")
             binary_names = {
                 "backend", "backend.exe", "cloud_node", "cloud_node.exe",
                 "container", "container.exe", "service", "service.exe",
