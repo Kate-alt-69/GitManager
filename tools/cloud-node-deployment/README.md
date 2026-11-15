@@ -38,6 +38,8 @@ Linux or macOS:
 
     python3 setup.py
 
+Pass `--no-service` to install without registering a background service.
+
 The installer detects the OS and CPU architecture, fetches the latest stable RBE release metadata, selects only that machine's archive, verifies the GitHub Release asset digest and matching SHA256SUMS entry, then safely extracts the complete runtime. The --verify-only option downloads and verifies the matching runtime but does not install it.
 
 The official runtime archive contains the complete platform set:
@@ -52,7 +54,7 @@ The official runtime archive contains the complete platform set:
 
 The installer places these files beside one another in the install directory, keeping dep/ under the backend directory. It copies the bundled api/ folder beside backend so RBE's file-based route discovery can find the .route files. It also creates/preserves settings.json, setting.node.cn.json, the private-key file, and node-registration.json.
 
-The installer never deletes existing data or overwrites existing settings/API routes. On upgrades, the downloaded runtime files are replaced only after the selected RBE archive has passed both checksum checks.
+The installer never deletes existing data or overwrites existing settings/API routes. On upgrades, the downloaded runtime files are replaced only after the selected RBE archive has passed both checksum checks. After it validates the Cloud Node configuration, setup creates a log-backed backend launcher and asks whether to register the backend at user login: Windows Task Scheduler, a per-user Linux systemd unit, or a macOS LaunchAgent. Use `--no-service` to skip OS registration and start the launcher manually. The Linux unit is user-scoped; on a headless NAS that must start before login, an administrator can enable user lingering with `loginctl enable-linger <user>`.
 
 ## Backend status and API routes
 
