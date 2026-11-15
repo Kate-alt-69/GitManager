@@ -13,7 +13,7 @@ The ZIP is a small bootstrap package, not a multi-architecture binary archive. I
 
 - setup.py and manifest.json
 - settings.json and setting.node.cn.json starter configurations
-- an api/ folder with the RBE health and example .route files
+- an api/ folder with the RBE health, status and example .route files
 - GitManager/RBE license and notice files
 
 It deliberately does not contain backend, cloud_node, Container or Service binaries. This avoids shipping five copies of the RBE runtime to every NAS.
@@ -62,6 +62,7 @@ The included settings.json binds the backend API to 0.0.0.0:8080 by default. Aft
 
 - http://127.0.0.1:8080/health — native backend health endpoint
 - http://127.0.0.1:8080/api/health — bundled api/health.route
+- http://127.0.0.1:8080/api/status — bundled api/status.route
 
 Use the backend's actual configured port if settings.json was already present and preserved. GitManager's Settings → Cloud → Cloud Node setup page can check a private LAN IP and report the native /health and bundled /api/health responses. This verifies backend reachability only; it does not authenticate/pair a peer or enable persistent Cloud Node synchronization. The installer does not open firewall ports or create a TLS certificate. Restrict LAN access with the host firewall and configure HTTPS before exposing an endpoint beyond a trusted local network.
 
