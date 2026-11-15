@@ -881,7 +881,14 @@ function setActiveSettingsSection(section) {
   const cloud = document.getElementById("settings-cloud-panel");
   if (general) general.classList.toggle("hidden", section !== "general");
   if (cloud) cloud.classList.toggle("hidden", section !== "cloud");
-  if (section === "cloud") void refreshArchiveCloudStatus();
+  if (section === "cloud") {
+    const addressInput = document.getElementById("cloud-node-address-input");
+    if (addressInput && appPreferences && addressInput.dataset.preferenceLoaded !== "true") {
+      addressInput.value = String(appPreferences.cloudNodeAddress || "");
+      addressInput.dataset.preferenceLoaded = "true";
+    }
+    void refreshArchiveCloudStatus();
+  }
 }
 
 function setActiveCloudProvider(provider) {
@@ -2773,16 +2780,33 @@ async function checkCloudNodeAddress() {
   }
   try {
     const result = await tauriInvoke("check_rbe_node_status", { address });
+    const normalizedAddress = String(result.address || address);
+    let persistenceNote = "";
+    if (appPreferences) {
+      const previousAddress = String(appPreferences.cloudNodeAddress || "");
+      appPreferences.cloudNodeAddress = normalizedAddress;
+      try {
+        appPreferences = await tauriInvoke("save_app_preferences", { preferences: appPreferences });
+        if (input) input.value = String(appPreferences.cloudNodeAddress || normalizedAddress);
+        if (input) input.dataset.preferenceLoaded = "true";
+        persistenceNote = " · Address saved for next launch.";
+      } catch (saveError) {
+        appPreferences.cloudNodeAddress = previousAddress;
+        persistenceNote = " · Address could not be saved: " +
+          String((saveError && saveError.message) || saveError);
+      }
+    }
     const backendCode = result.backendHttpStatus == null ? "unavailable" : "HTTP " + result.backendHttpStatus;
     const apiCode = result.apiRouteHttpStatus == null ? "unavailable" : "HTTP " + result.apiRouteHttpStatus;
     const statusCode = result.apiStatusHttpStatus == null ? "unavailable" : "HTTP " + result.apiStatusHttpStatus;
     const backendState = result.reachable ? "Backend reachable" : "Backend not confirmed reachable";
     const detail = result.backendError || result.apiRouteError || result.apiStatusError || result.message || "";
     if (status) {
-      status.textContent = backendState + " at " + String(result.address || address) +
+      status.textContent = backendState + " at " + normalizedAddress +
         " · /health: " + backendCode + " · /api/health: " + apiCode + " · /api/status: " + statusCode +
         (detail ? " · " + detail : "") +
-        (result.reachable ? " · This checks status only; it does not pair or authenticate a peer." : "");
+        (result.reachable ? " · Status check only; this does not pair or authenticate a peer." : "") +
+        persistenceNote;
       const customRoutesHealthy = [result.apiRouteHttpStatus, result.apiStatusHttpStatus]
         .every((code) => code != null && code >= 200 && code < 300);
       status.classList.toggle("is-error", !result.reachable || !customRoutesHealthy);
