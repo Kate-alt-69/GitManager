@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import stat
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -156,6 +157,40 @@ class RuntimeArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="gitmanager-rbe-symlink-") as directory:
             with self.assertRaises(setup.SetupError):
                 setup.extract_runtime_archive(payload, "zip", "windows-x64", Path(directory))
+
+    def make_linux_archive(self, *, symlink_cloud_node=False) -> bytes:
+        output = io.BytesIO()
+        names = setup.REQUIRED_FILES["linux-x64"]
+        with tarfile.open(fileobj=output, mode="w:gz") as archive:
+            for name in names:
+                if symlink_cloud_node and name == "cloud_node":
+                    item = tarfile.TarInfo(name)
+                    item.type = tarfile.SYMTYPE
+                    item.linkname = "backend"
+                    archive.addfile(item)
+                    continue
+                payload = b'{"release":"test"}' if name == "build-info.json" else b"test-runtime-binary"
+                item = tarfile.TarInfo(name)
+                item.size = len(payload)
+                item.mode = 0o755 if name != "build-info.json" else 0o644
+                archive.addfile(item, io.BytesIO(payload))
+        return output.getvalue()
+
+    def test_extracts_complete_linux_runtime_tarball(self) -> None:
+        payload = self.make_linux_archive()
+        with tempfile.TemporaryDirectory(prefix="gitmanager-rbe-tar-") as directory:
+            stage = Path(directory)
+            setup.extract_runtime_archive(payload, "tar.gz", "linux-x64", stage)
+            for relative in setup.REQUIRED_FILES["linux-x64"]:
+                self.assertTrue((stage / relative).is_file(), relative)
+            self.assertTrue((stage / "dep" / "container").is_file())
+            self.assertTrue((stage / "dep" / "service").is_file())
+
+    def test_rejects_tar_symlink_for_required_runtime_binary(self) -> None:
+        payload = self.make_linux_archive(symlink_cloud_node=True)
+        with tempfile.TemporaryDirectory(prefix="gitmanager-rbe-tar-symlink-") as directory:
+            with self.assertRaises(setup.SetupError):
+                setup.extract_runtime_archive(payload, "tar.gz", "linux-x64", Path(directory))
 
 
 if __name__ == "__main__":
