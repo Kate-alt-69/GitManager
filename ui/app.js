@@ -2763,7 +2763,9 @@ async function checkCloudNodeAddress() {
         " · /health: " + backendCode + " · /api/health: " + apiCode + " · /api/status: " + statusCode +
         (detail ? " · " + detail : "") +
         (result.reachable ? " · This checks status only; it does not pair or authenticate a peer." : "");
-      status.classList.toggle("is-error", !result.reachable);
+      const customRoutesHealthy = [result.apiRouteHttpStatus, result.apiStatusHttpStatus]
+        .every((code) => code != null && code >= 200 && code < 300);
+      status.classList.toggle("is-error", !result.reachable || !customRoutesHealthy);
     }
   } catch (error) {
     if (status) {
