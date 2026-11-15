@@ -279,14 +279,12 @@ pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
 /// preferences and holds the same archive-watcher lease as the desktop app.
 #[cfg(target_os = "linux")]
 fn systemd_quote(value: &str) -> String {
-    format!(
-        "\\"{}\\"",
-        value
-            .replace('\\\\', "\\\\\\\\")
-            .replace('"', "\\\\\"")
-            .replace('%', "%%")
-            .replace('\\n', "")
-    )
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%")
+        .replace('\n', "");
+    format!("\"{escaped}\"")
 }
 
 #[cfg(target_os = "macos")]
@@ -296,7 +294,7 @@ fn xml_escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-        .replace('\\'', "&apos;")
+        .replace('\'', "&apos;")
 }
 
 pub fn register_os_background_service() -> Result<String, String> {
@@ -311,7 +309,7 @@ pub fn register_os_background_service() -> Result<String, String> {
     {
         let task_name = "GitManager Background Service";
         let task_command = format!(
-            "\\\"{}\\\" --background-service",
+            "\"{}\" --background-service",
             current_exe.display()
         );
         let create = hidden_command("schtasks.exe")
@@ -404,7 +402,17 @@ pub fn register_os_background_service() -> Result<String, String> {
 
     #[cfg(target_os = "macos")]
     {
-        let uid = unsafe { libc::getuid() };
+        let uid_result = hidden_command("id")
+            .arg("-u")
+            .output()
+            .map_err(|error| format!("Could not determine the current macOS user ID: {error}"))?;
+        if !uid_result.status.success() {
+            return Err("Could not determine the current macOS user ID.".to_string());
+        }
+        let uid = String::from_utf8_lossy(&uid_result.stdout).trim().to_string();
+        if uid.is_empty() || !uid.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("The current macOS user ID was invalid.".to_string());
+        }
         let agents_dir = dirs::home_dir()
             .ok_or_else(|| "Could not resolve the user's home directory for LaunchAgents.".to_string())?
             .join("Library/LaunchAgents");
@@ -414,7 +422,19 @@ pub fn register_os_background_service() -> Result<String, String> {
         let plist_path = agents_dir.join(format!("{label}.plist"));
         let executable = xml_escape(&current_exe.to_string_lossy());
         let plist_content = format!(
-            "<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n<!DOCTYPE plist PUBLIC \\\"-//Apple//DTD PLIST 1.0//EN\\\" \\\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\\\">\\n<plist version=\\\"1.0\\\">\\n<dict>\\n  <key>Label</key><string>{label}</string>\\n  <key>ProgramArguments</key>\\n  <array><string>{executable}</string><string>--background-service</string></array>\\n  <key>RunAtLoad</key><true/>\\n  <key>KeepAlive</key><true/>\\n  <key>ProcessType</key><string>Background</string>\\n</dict>\\n</plist>\\n"
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.gitmanager.updater</string>
+  <key>ProgramArguments</key>
+  <array><string>{executable}</string><string>--background-service</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+"#
         );
         let temporary = plist_path.with_extension("plist.tmp");
         std::fs::write(&temporary, plist_content)
