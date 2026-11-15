@@ -24,6 +24,14 @@ static WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 static WATCHER_RUNNING: AtomicBool = AtomicBool::new(false);
 static WATCHER_LEASE: OnceLock<Mutex<Option<Arc<File>>>> = OnceLock::new();
 static WATCHER_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+/// Returns whether a non-blocking fs2 lock failed because another owner holds it.
+///
+/// fs2 exposes the platform-specific contention error kind; on Windows this
+/// is not necessarily std::io::ErrorKind::WouldBlock.
+fn is_watcher_lease_contended(error: &std::io::Error) -> bool {
+    error.kind() == fs2::lock_contended_error().kind()
+}
 const MAX_WATCHED_REPOSITORIES: usize = 256;
 const MAX_CONCURRENT_ARCHIVES: usize = 2;
 const COMMIT_SETTLE: Duration = Duration::from_millis(180);
@@ -138,7 +146,7 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
             }
         };
         if let Err(error) = file.try_lock_exclusive() {
-            if error.kind() != std::io::ErrorKind::WouldBlock {
+            if !is_watcher_lease_contended(&error) {
                 eprintln!("GitManager archive watcher: could not acquire {}: {error}", path.display());
             }
             return false;
@@ -496,7 +504,7 @@ fn capture_enabled_archives(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_event, is_project_file_event, WatchedRepository};
+    use super::{apply_event, is_project_file_event, is_watcher_lease_contended, WatchedRepository};
     use fs2::FileExt;
     use notify::{Event, EventKind};
     use std::path::{Path, PathBuf};
@@ -574,7 +582,11 @@ mod tests {
         let error = second
             .try_lock_exclusive()
             .expect_err("second watcher must not acquire the same lease");
-        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(
+            is_watcher_lease_contended(&error),
+            "a held watcher lease should use fs2's platform-specific contention error kind; got {error:?}, expected {:?}",
+            fs2::lock_contended_error().kind()
+        );
 
         FileExt::unlock(&first).expect("release first watcher lease");
         second.try_lock_exclusive().expect("second watcher can acquire released lease");
