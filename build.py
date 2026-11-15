@@ -886,41 +886,30 @@ def build_gitm_sidecar(
     if toolchain_arg:
         common_prefix.append(toolchain_arg)
 
-    gitm_cmd = common_prefix + ["build", "--package", "gitm-cli", "--bin", "gitm"]
+    commands = [
+        (
+            "native gitm CLI",
+            common_prefix + ["build", "--package", "gitm-cli", "--bin", "gitm"],
+        ),
+        (
+            "GitManager first-run setup companion",
+            common_prefix + ["build", "--package", "gitmanager-setup", "--bin", "gitmanager-setup"],
+        ),
+        (
+            "crash_helper UI supervisor",
+            common_prefix + ["build", "--package", "crash-helper", "--bin", "crash_helper"],
+        ),
+    ]
     if release:
-        gitm_cmd.append("--release")
-    log_info(f"Building native gitm CLI sidecar: {' '.join(gitm_cmd)}")
-    gitm_result = subprocess.call(gitm_cmd, cwd=str(project_root))
-    if gitm_result != 0:
-        log_err("The standalone gitm CLI failed to build.")
-        return gitm_result
+        for _, command in commands:
+            command.append("--release")
 
-    setup_cmd = common_prefix + ["build", "--package", "gitmanager-setup", "--bin", "gitmanager-setup"]
-    if release:
-        setup_cmd.append("--release")
-    log_info(f"Building GitManager first-run setup companion: {' '.join(setup_cmd)}")
-    setup_result = subprocess.call(setup_cmd, cwd=str(project_root))
-    if setup_result != 0:
-        log_err("The cross-platform GitManager Setup companion failed to build.")
-        return setup_result
-
-    service_cmd = common_prefix + ["build", "--package", "git-manager", "--bin", "git-manager-service"]
-    helper_cmd = common_prefix + ["build", "--package", "crash-helper", "--bin", "crash_helper"]
-    if release:
-        service_cmd.append("--release")
-        helper_cmd.append("--release")
-
-    log_info(f"Building independent GitManager background service: {' '.join(service_cmd)}")
-    service_result = subprocess.call(service_cmd, cwd=str(project_root))
-    if service_result != 0:
-        log_err("The standalone GitManager background service failed to build.")
-        return service_result
-
-    log_info(f"Building crash_helper UI supervisor: {' '.join(helper_cmd)}")
-    helper_result = subprocess.call(helper_cmd, cwd=str(project_root))
-    if helper_result != 0:
-        log_err("The crash_helper supervisor failed to build.")
-        return helper_result
+    for description, command in commands:
+        log_info(f"Building {description}: {' '.join(command)}")
+        result = subprocess.call(command, cwd=str(project_root))
+        if result != 0:
+            log_err(f"The {description} failed to build.")
+            return result
 
     try:
         host_triple = resolve_rust_target_triple(toolchain_arg)
@@ -936,28 +925,82 @@ def build_gitm_sidecar(
     binary_dir = target_dir / target_triple / profile if target_triple else target_dir / profile
 
     executable_suffix = ".exe" if "windows" in binary_triple else ""
+    sidecar_dir = project_root / "src-tauri" / "binaries"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+
     artifacts = [
         (binary_dir / f"gitm{executable_suffix}", f"gitm-{binary_triple}{executable_suffix}"),
         (binary_dir / f"gitmanager-setup{executable_suffix}", f"gitmanager-setup-{binary_triple}{executable_suffix}"),
         (binary_dir / f"crash_helper{executable_suffix}", f"crash_helper-{binary_triple}{executable_suffix}"),
-        (binary_dir / f"git-manager-service{executable_suffix}", f"git-manager-service-{binary_triple}{executable_suffix}"),
     ]
-    sidecar_dir = project_root / "src-tauri" / "binaries"
-    sidecar_dir.mkdir(parents=True, exist_ok=True)
     staged: List[Path] = []
 
-    for source, filename in artifacts:
-        if not source.is_file():
-            log_err(f"Cargo completed but the expected sidecar binary is missing: {source}")
+    # Tauri's build script validates and copies every externalBin entry even
+    # when Cargo is compiling the git-manager-service binary. Stage the three
+    # independent tools first, before compiling the Tauri package.
+    for source_path, filename in artifacts:
+        if not source_path.is_file():
+            log_err(f"Cargo completed but the expected sidecar binary is missing: {source_path}")
             return 1
         destination = sidecar_dir / filename
         try:
-            shutil.copy2(source, destination)
+            shutil.copy2(source_path, destination)
         except OSError as error:
             log_err(f"Could not stage sidecar at {destination}: {error}")
             return 1
         staged.append(destination)
         log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
+
+    service_filename = f"git-manager-service-{binary_triple}{executable_suffix}"
+    service_sidecar = sidecar_dir / service_filename
+    service_source = binary_dir / f"git-manager-service{executable_suffix}"
+
+    # The service is a binary in the Tauri package, whose build script itself
+    # requires every declared externalBin file to exist. Keep any previous
+    # working sidecar as a backup, then supply a temporary placeholder so the
+    # first service build can run. The real Cargo output replaces it immediately.
+    service_backup: Optional[Path] = None
+    try:
+        if service_sidecar.is_file():
+            service_backup = service_sidecar.with_name(service_sidecar.name + ".previous-build")
+            if service_backup.exists():
+                service_backup.unlink()
+            shutil.copy2(service_sidecar, service_backup)
+        service_sidecar.write_bytes(b"")
+    except OSError as error:
+        log_err(f"Could not prepare the service sidecar build placeholder: {error}")
+        return 1
+
+    service_cmd = common_prefix + ["build", "--package", "git-manager", "--bin", "git-manager-service"]
+    if release:
+        service_cmd.append("--release")
+    log_info(f"Building independent GitManager background service: {' '.join(service_cmd)}")
+    service_result = subprocess.call(service_cmd, cwd=str(project_root))
+    if service_result != 0 or not service_source.is_file():
+        try:
+            if service_sidecar.exists():
+                service_sidecar.unlink()
+            if service_backup and service_backup.is_file():
+                shutil.copy2(service_backup, service_sidecar)
+                service_backup.unlink()
+        except OSError as error:
+            log_warn(f"Could not restore the previous service sidecar after a failed build: {error}")
+        if service_result != 0:
+            log_err("The standalone GitManager background service failed to build.")
+            return service_result
+        log_err(f"Cargo completed but the expected service binary is missing: {service_source}")
+        return 1
+
+    try:
+        shutil.copy2(service_source, service_sidecar)
+        if service_backup and service_backup.is_file():
+            service_backup.unlink()
+    except OSError as error:
+        log_err(f"Could not stage the built background service at {service_sidecar}: {error}")
+        return 1
+
+    staged.append(service_sidecar)
+    log_ok(f"Prepared Tauri sidecar: {service_sidecar} ({service_sidecar.stat().st_size:,} bytes)")
 
     # Publish a predictable standalone setup helper beside the Cargo outputs:
     # GitManager-Setup.exe on Windows and GitManager-Setup on Linux/macOS.
@@ -969,7 +1012,7 @@ def build_gitm_sidecar(
         log_err(f"Could not stage the standalone setup helper at {setup_artifact}: {error}")
         return 1
 
-    # When CI has imported a production signing certificate, sign both sidecars
+    # When CI has imported a production signing certificate, sign every sidecar
     # and the predictable setup-helper output before Tauri bundles the sidecars.
     if platform.system() == "Windows" and os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
         sign_script = project_root / "tools" / "sign_windows_file.ps1"
@@ -987,7 +1030,6 @@ def build_gitm_sidecar(
 
     log_ok(f"Created standalone setup helper: {setup_artifact} ({setup_artifact.stat().st_size:,} bytes)")
     return 0
-
 
 def run_build_or_dev(
     project_root: Path,
