@@ -2367,7 +2367,14 @@ function wireEventListeners() {
         });
         setServiceCheckingVisual(false, `Svc Active (${info.os_service_kind})`);
       } catch (e) {
-        setServiceCheckingVisual(false, "Svc: Active (Background Worker)");
+        setServiceCheckingVisual(false, "Svc: Registration failed");
+        const description = document.getElementById("settings-service-description");
+        if (description) {
+          description.textContent =
+            "The OS background service could not be registered: " +
+            String((e && e.message) || e) +
+            ". Automatic archive watching will continue only while GitManager is open.";
+        }
       }
     });
   }
