@@ -102,7 +102,8 @@ def request_bytes(url: str, limit: int, accept: str) -> bytes:
             if error.code not in RETRYABLE_HTTP_STATUS:
                 raise RuntimeError("Could not access the Next.js Engine source: " + str(error)) from error
             last_error = error
-            error.close()
+            if error.fp is not None:
+                error.close()
         except (http.client.HTTPException, OSError) as error:
             # IncompleteRead is raised by http.client when a chunked response
             # ends before the advertised chunk length. Discard this partial
