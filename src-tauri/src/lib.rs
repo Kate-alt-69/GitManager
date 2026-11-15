@@ -26,8 +26,7 @@ use remote_providers::{
     fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
 };
 use scanner::{
-    build_indexed_summary_with_scan_status, default_scan_roots, scan_repositories,
-    scan_repositories_with_report, IndexedRepoSummary, ScanOptions,
+    build_indexed_summary_with_scan_status, default_scan_roots, scan_repositories_with_report, IndexedRepoSummary, ScanOptions,
 };
 use watcher_service::{
     apply_repository_update, check_all_repos_for_updates, register_os_background_service,

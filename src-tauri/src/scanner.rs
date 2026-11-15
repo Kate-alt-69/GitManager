@@ -119,7 +119,7 @@ pub fn scan_repositories_with_report(options: ScanOptions) -> Result<ScanReport,
 fn run_scan_pass(roots: &[PathBuf], config: Arc<ScanConfig>, dependency_fallback: bool) -> ScanReport {
     let mut pending = VecDeque::new();
     for root in roots {
-        let root_is_dependency = path_has_dependency_component(root);
+        let root_is_dependency = root.file_name().map(is_dependency_name).unwrap_or(false);
         if root_is_dependency && !dependency_fallback { continue; }
         pending.push_back(ScanTask { root: root.clone(), path: root.clone(), depth: 0 });
     }
@@ -205,10 +205,10 @@ fn scan_one_directory(task: &ScanTask, shared: &ScanShared) -> Vec<ScanTask> {
         let depth = task.depth + 1;
 
         // .git can be a directory or a worktree pointer file. Never descend into it.
-        if name.eq_ignore_ascii_case(".git") {
+        if name == ".git" {
             let relative = path.strip_prefix(&task.root).unwrap_or(path.as_path());
             let inside_dependency = path_has_dependency_component(relative)
-                || path_has_dependency_component(&task.root);
+                || task.root.file_name().map(is_dependency_name).unwrap_or(false);
             if inside_dependency == shared.dependency_fallback {
                 register_repository(&path, shared);
             }
@@ -267,6 +267,11 @@ fn path_key(path: &Path) -> String {
     #[cfg(not(windows))] { value }
 }
 
+fn is_dependency_name(name: &std::ffi::OsStr) -> bool {
+    let part = name.to_string_lossy().to_lowercase();
+    DEPENDENCY_DIRECTORY_NAMES.contains(&part.as_str())
+}
+
 fn path_has_dependency_component(path: &Path) -> bool {
     path.components().any(|component| {
         let part = component.as_os_str().to_string_lossy().to_lowercase();
@@ -285,7 +290,7 @@ fn should_visit_directory(
 
     let dependency_index = components.iter()
         .position(|part| DEPENDENCY_DIRECTORY_NAMES.contains(&part.as_str()));
-    let root_is_dependency = path_has_dependency_component(root);
+    let root_is_dependency = root.file_name().map(is_dependency_name).unwrap_or(false);
     if !dependency_fallback && (dependency_index.is_some() || root_is_dependency) { return false; }
 
     if dependency_fallback {
@@ -304,7 +309,6 @@ fn should_visit_directory(
     true
 }
 
-const DEPENDENCY_PATH_NAMES: &[&str] = DEPENDENCY_DIRECTORY_NAMES;
 fn is_dependency_repository_path(path: &str) -> bool {
     path_has_dependency_component(Path::new(path))
 }
