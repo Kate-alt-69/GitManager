@@ -270,11 +270,13 @@ pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
     ))
 }
 
-/// Registers or starts the OS-level background watcher service:
-/// - Windows 10/11: registers `GitManagerUpdateSvc` via `sc.exe` (hosted alongside Windows services / `svchost` model)
-///   or launches the background service daemon `git-manager-service.exe --background-service`.
+/// Registers or starts the per-user OS background watcher:
+/// - Windows 10/11: creates and runs a current-user Task Scheduler logon task.
 /// - Linux: writes `~/.config/systemd/user/gitmanager-updater.service` and starts it via `systemctl --user`.
 /// - macOS: writes `~/Library/LaunchAgents/com.gitmanager.updater.plist` and loads it via `launchctl`.
+///
+/// The worker must run as the interactive user so it reads the same per-user
+/// preferences and holds the same archive-watcher lease as the desktop app.
 pub fn register_os_background_service() -> Result<String, String> {
     let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let service_bin = current_exe
@@ -295,31 +297,58 @@ pub fn register_os_background_service() -> Result<String, String> {
 
     #[cfg(target_os = "windows")]
     {
-        let bin_quoted = format!("\"{}\" --svchost-worker", service_bin.display());
-        let sc_out = hidden_command("sc.exe")
-            .args([
-                "create",
-                "GitManagerUpdateSvc",
-                &format!("binPath= {}", bin_quoted),
-                "start= auto",
-                "DisplayName= \"GitManager Background Repository Update Service\"",
-            ])
+        let task_name = "GitManager Background Service";
+        let task_command = format!("\\\"{}\\\" --svchost-worker", service_bin.display());
+        let create = hidden_command("schtasks.exe")
+            .args(["/Create", "/SC", "ONLOGON", "/TN", task_name, "/TR"])
+            .arg(&task_command)
+            .args(["/RL", "LIMITED", "/F"])
+            .output()
+            .map_err(|error| format!("Could not invoke Windows Task Scheduler: {error}"))?;
+        if !create.status.success() {
+            let detail = String::from_utf8_lossy(&create.stderr);
+            let detail = if detail.trim().is_empty() {
+                String::from_utf8_lossy(&create.stdout).into_owned()
+            } else {
+                detail.into_owned()
+            };
+            return Err(format!(
+                "Could not register the current-user GitManager background task: {}",
+                detail.trim()
+            ));
+        }
+
+        let start = hidden_command("schtasks.exe")
+            .args(["/Run", "/TN", task_name])
+            .output()
+            .map_err(|error| format!("Could not start the GitManager background task: {error}"))?;
+        if !start.status.success() {
+            let detail = String::from_utf8_lossy(&start.stderr);
+            let detail = if detail.trim().is_empty() {
+                String::from_utf8_lossy(&start.stdout).into_owned()
+            } else {
+                detail.into_owned()
+            };
+            return Err(format!(
+                "The current-user GitManager task was registered but could not be started: {}",
+                detail.trim()
+            ));
+        }
+
+        // Best-effort cleanup of the previous experimental LocalSystem service.
+        // It could not read this user's Local AppData preferences and is no
+        // longer used by the per-user Task Scheduler implementation.
+        let _ = hidden_command("sc.exe")
+            .args(["stop", "GitManagerUpdateSvc"])
+            .output();
+        let _ = hidden_command("sc.exe")
+            .args(["delete", "GitManagerUpdateSvc"])
             .output();
 
-        // Also ensure background worker process is spawned immediately even without Administrator elevation
-        let _ = hidden_command(&service_bin)
-            .arg("--svchost-worker")
-            .spawn();
-
-        match sc_out {
-            Ok(o) if o.status.success() => {
-                let _ = hidden_command("sc.exe").args(["start", "GitManagerUpdateSvc"]).output();
-                return Ok("Registered & started Windows Service 'GitManagerUpdateSvc' (sc.exe / svchost background model).".to_string());
-            }
-            _ => {
-                return Ok("Started GitManager background update service worker process (Windows user-session daemon).".to_string());
-            }
-        }
+        return Ok(
+            "Registered and started the current-user Windows Task Scheduler job; it resumes at user logon."
+                .to_string(),
+        );
     }
 
     #[cfg(target_os = "linux")]
