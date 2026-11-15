@@ -53,7 +53,11 @@ jobs:
                   missing = required - names
                   if missing:
                       raise SystemExit(f"Bootstrap ZIP is missing: {sorted(missing)}")
-                  if any(name.startswith("binaries/") or name.endswith((".exe", "/backend", "/cloud_node")) for name in names):
+                  binary_names = {
+                      "backend", "backend.exe", "cloud_node", "cloud_node.exe",
+                      "container", "container.exe", "service", "service.exe",
+                  }
+                  if any(name.startswith("binaries/") or name.rsplit("/", 1)[-1].lower() in binary_names for name in names):
                       raise SystemExit("Bootstrap ZIP unexpectedly contains platform binaries")
                   package.extractall(temp)
               setup = pathlib.Path(temp) / "setup.py"
