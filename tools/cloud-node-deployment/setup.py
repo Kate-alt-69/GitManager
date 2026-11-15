@@ -457,7 +457,11 @@ def extract_runtime_archive(payload, archive_kind, target, stage):
                     if relative not in required:
                         continue
                     mode = (item.external_attr >> 16) & 0xFFFF
-                    if stat.S_ISLNK(mode) or (mode and not stat.S_ISREG(mode)):
+                    file_type = stat.S_IFMT(mode)
+                    # ZIP entries created on Windows may omit Unix file-type bits.
+                    # Treat an unspecified type as a regular file, but continue to
+                    # reject symlinks, directories, devices, sockets and FIFOs.
+                    if file_type not in (0, stat.S_IFREG):
                         raise SetupError(f"RBE runtime archive contains a non-regular file: {relative}")
                     if relative in found:
                         raise SetupError(f"RBE runtime archive contains a duplicate file: {relative}")
