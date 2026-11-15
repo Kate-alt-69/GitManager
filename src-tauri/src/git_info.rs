@@ -64,6 +64,7 @@ pub struct GitRepositoryInfo {
     pub dirty_files_count: usize,
     pub total_commits_loaded: usize,
     pub source_kind: String, // "local_scan" | "remote_account" | "synced"
+    #[serde(default)]
     pub details_loaded: bool,
 }
 

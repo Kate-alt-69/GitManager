@@ -307,9 +307,11 @@ function RepositoryCard({
 			<p className="gm-repo-path" title={repo.path}>{repo.path}</p>
 			<div className="gm-repo-card-meta">
 				<span className="gm-branch-meta"><Glyph>⑂</Glyph>{repo.current_branch || "HEAD"}</span>
-				{repo.dirty_files_count > 0
-					? <span className="gm-dirty-meta"><i />{repo.dirty_files_count} changed</span>
-					: <span className="gm-clean-meta"><i />Clean</span>}
+				{!repo.details_loaded
+					? <span className="gm-status-pending"><i />Open to check</span>
+					: repo.dirty_files_count > 0
+						? <span className="gm-dirty-meta"><i />{repo.dirty_files_count} changed</span>
+						: <span className="gm-clean-meta"><i />Clean</span>}
 				{dependency && <span className="gm-dependency-chip">Dependency</span>}
 			</div>
 			<div className="gm-repo-card-footer">
@@ -655,7 +657,7 @@ function RepositoryPage({
 				{scanning && repositories.length === 0 ? Array.from({ length: 4 }, (_, index) => <EngineBox className="gm-stat-card gm-stat-skeleton" key={index}><span className="gm-skeleton gm-skeleton-label" /><strong className="gm-skeleton gm-skeleton-number" /><small className="gm-skeleton gm-skeleton-label" /></EngineBox>) : <>
 					<EngineBox className="gm-stat-card"><span>Repositories</span><strong>{repositories.length}</strong><small>Indexed locally</small></EngineBox>
 					<EngineBox className="gm-stat-card"><span>Remote connected</span><strong>{remoteCount}</strong><small>GitHub, GitLab and more</small></EngineBox>
-					<EngineBox className="gm-stat-card"><span>Working changes</span><strong>{dirtyCount}</strong><small>Repositories with a dirty tree</small></EngineBox>
+					<EngineBox className="gm-stat-card"><span>Working changes</span><strong>—</strong><small>Checked when a repository is opened</small></EngineBox>
 					<EngineBox className="gm-stat-card"><span>Dependencies</span><strong>{dependencies.length}</strong><small>Nested or vendored projects</small></EngineBox>
 				</>}
 			</EngineGrid>
