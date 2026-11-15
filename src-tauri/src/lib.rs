@@ -491,6 +491,9 @@ fn validate_rbe_node_base_url(address: &str) -> Result<url::Url, String> {
         );
     }
 
+    if parsed.port() == Some(0) {
+        return Err("NAS backend port must be between 1 and 65535.".to_string());
+    }
     if parsed.port().is_none() {
         let port = if parsed.scheme() == "https" { 443 } else { 8080 };
         parsed
@@ -1364,9 +1367,10 @@ mod rbe_node_address_tests {
     }
 
     #[test]
-    fn rejects_public_hosts_and_non_ip_names() {
+    fn rejects_public_hosts_non_ip_names_and_port_zero() {
         assert!(validate_rbe_node_base_url("https://8.8.8.8").is_err());
         assert!(validate_rbe_node_base_url("nas.example.com:8080").is_err());
+        assert!(validate_rbe_node_base_url("192.168.1.50:0").is_err());
     }
 
     #[test]
