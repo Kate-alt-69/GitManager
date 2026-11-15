@@ -54,7 +54,7 @@ export function useGitManager() {
 				: currentPreferences.scanRoots;
 			const summary = await invoke<{
 				repositories?: GitRepository[];
-				dependencyRepoIds?: string[];
+				dependency_repo_ids?: string[];
 			}>("scan_machine_repositories", {
 				rootPaths,
 				maxDepth: currentPreferences.maxScanDepth || 8,
@@ -66,7 +66,7 @@ export function useGitManager() {
 				? summary.repositories.filter((repo) => repo.source_kind === "local_scan")
 				: [];
 			setRepositories(local);
-			setDependencies(summary.dependency_repo_ids ?? summary.dependencyRepoIds ?? []);
+			setDependencies(summary.dependency_repo_ids ?? []);
 			setStatus(`Indexed ${local.length} repositories`);
 			return local;
 		} catch (cause) {
