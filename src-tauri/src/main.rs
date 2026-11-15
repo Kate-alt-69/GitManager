@@ -2,22 +2,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    // If launched by Windows Service / svchost worker flag (`--svchost-worker`), run the background update loop
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--svchost-worker") {
-        loop {
-            let updates = git_manager_lib::watcher_service::check_all_repos_for_updates(Vec::new());
-            for upd in updates {
-                git_manager_lib::watcher_service::send_os_desktop_notification(&upd);
-            }
-            std::thread::sleep(std::time::Duration::from_secs(120));
-        }
+
+    // The installed GitManager executable is also the per-user background
+    // worker. It uses the same preferences and watcher lease as the desktop.
+    if args.iter().any(|argument| argument == "--background-service") {
+        git_manager_lib::background_service::run();
     }
 
-    if args.iter().any(|a| a == "--setup") {
+    if args.iter().any(|argument| argument == "--setup") {
         std::env::set_var("GITMANAGER_SETUP_MODE", "1");
     }
 
-    // Tauri remains the actual UI/runtime for both normal and first-run modes.
+    // Tauri remains the actual UI/runtime for normal and first-run modes.
     git_manager_lib::run();
 }
