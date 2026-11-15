@@ -133,9 +133,8 @@ def resolve_latest_green_commit() -> Tuple[str, str, Dict[str, Dict[str, object]
             if current is None or str(run.get("updated_at") or "") > str(current.get("updated_at") or ""):
                 latest_runs[key] = run
 
-        commits = {sha for sha, _ in latest_runs}
-        if any(all((sha, check) in latest_runs for check in REQUIRED_CHECKS) for sha in commits):
-            break
+        # Inspect the full recent run window before selecting a candidate. A
+        # partially paginated workflow set must not hide a newer green commit.
 
     by_commit: Dict[str, Dict[str, Dict[str, object]]] = {}
     for (sha, name), run in latest_runs.items():
@@ -416,18 +415,23 @@ def build_frontend(project_root: Path, mode: str) -> int:
         if not npm:
             raise RuntimeError("npm was not found after dependency installation.")
 
+        node = shutil.which("node")
+        next_cli = source_root / "node_modules" / "next" / "dist" / "bin" / "next"
+        if not node or not next_cli.is_file():
+            raise RuntimeError("The fetched Engine source did not install a runnable Next.js CLI.")
+
         if mode == "dev":
             command = [
-                npm, "exec", "--", "next", "dev", str(workspace),
+                node, str(next_cli), "dev",
                 "--hostname", "127.0.0.1", "--port", "3000",
             ]
             log_info("Starting the Engine-backed Next.js development server at http://localhost:3000")
-            return run_command(command, source_root, environment)
+            return run_command(command, workspace, environment)
 
         output_dir = workspace / "out"
-        command = [npm, "exec", "--", "next", "build", str(workspace)]
+        command = [node, str(next_cli), "build"]
         log_info("Building the GitManager frontend as a Next.js static export.")
-        result = run_command(command, source_root, environment)
+        result = run_command(command, workspace, environment)
         if result != 0:
             return result
         if not (output_dir / "index.html").is_file() or not (output_dir / "_next" / "static").is_dir():
