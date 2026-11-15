@@ -174,8 +174,6 @@ export function useGitManager() {
 				setStatus("Desktop runtime not detected");
 				return;
 			}
-			// A successful UI startup explicitly reactivates a temporarily paused service.
-			void invoke("resume_background_service").catch(() => undefined);
 			try {
 				const [appVersion, paths, saved] = await Promise.all([
 					invoke<string>("get_app_version"),
