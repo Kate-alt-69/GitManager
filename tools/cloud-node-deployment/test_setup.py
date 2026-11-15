@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import stat
 import tempfile
 import unittest
@@ -100,6 +101,26 @@ class BootstrapManifestTests(unittest.TestCase):
                 "rbe-runtime.zip",
                 digest,
             )
+
+
+class LauncherTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX shell launcher quoting is not used on Windows")
+    def test_unix_launcher_quotes_paths_with_spaces_and_apostrophes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gitmanager RBE ' setup-") as directory:
+            install_dir = Path(directory)
+            launcher = setup.write_launchers(
+                install_dir,
+                install_dir / "backend",
+                install_dir / "settings file.json",
+                install_dir / "setting.node.cn.json",
+                install_dir / "private key.secret",
+            )
+            content = launcher.read_text(encoding="utf-8")
+            self.assertIn(shlex.quote("file:" + str(install_dir / "private key.secret")), content)
+            self.assertIn(shlex.quote(str(install_dir / "setting.node.cn.json")), content)
+            self.assertIn(shlex.quote(str(install_dir / "settings file.json")), content)
+            self.assertIn(">> ", content)
+            self.assertIn("2>&1", content)
 
 
 class RuntimeArchiveTests(unittest.TestCase):
