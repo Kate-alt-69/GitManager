@@ -1015,19 +1015,9 @@ def run_build_or_dev(
         if rc != 0 or mode != "build":
             return rc
 
-        # Also build the standalone background update service executable.
-        svc_cmd = ["cargo"]
-        if toolchain_arg:
-            svc_cmd.append(toolchain_arg)
-        svc_cmd.extend(["build", "--bin", "git-manager-service"])
-        if release:
-            svc_cmd.append("--release")
-        log_info(f"Building background service binary: {' '.join(svc_cmd)}")
-        service_rc = subprocess.call(svc_cmd, cwd=str(src_tauri_dir))
-        if service_rc != 0:
-            log_err("The background service binary failed to build.")
-            return service_rc
-
+        # The installed GitManager executable also supports --background-service.
+        # OS registration launches that bundled executable, so no separate BGW
+        # binary has to be copied into native installers.
         if platform.system() == "Windows" and name_windows_setup_installer(project_root) is None:
             return 1
         return 0
