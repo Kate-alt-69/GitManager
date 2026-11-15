@@ -270,3 +270,16 @@ Run `gitm --help` for the top-level list or `gitm help COMMAND` for focused help
 | `gitm cleaner preview|apply|commit-clean|hook` | Use the same preview-first developer cleaner as the desktop. |
 
 See [docs/archive-storage.md](docs/archive-storage.md).
+
+## Next.js Engine frontend
+
+GitManager keeps its native Rust/Tauri backend. Its frontend is compiled as a static Next.js export using the Generation 3 source from [Kastrick8/nextjs-engine](https://github.com/Kastrick8/nextjs-engine/tree/main-3).
+
+The build does **not** install the published npm package. Before a frontend build, `tools/nextjs_engine_source.py` queries the Engine repository's `main-3` branch and selects the newest reachable commit whose Engine runtime CI, cross-browser CI, CodeQL, and code-quality checks have all completed successfully. That source archive is downloaded into `.cache/nextjs-engine/`, then built with the Engine compiler and Next.js. The resolved SHA and required CI evidence are written to `out/engine-source.json` for build provenance; no Engine commit is hard-coded in GitManager.
+
+A build requires Node.js 20.9 or newer (Node.js 22 is used in CI), npm, Python, Rust, and the Tauri CLI. Node.js and npm are build-time tools only; they are not bundled into the installed GitManager app. An internet connection and a reachable green Engine CI candidate are required. If the resolver cannot verify a green source commit, the frontend build stops rather than using unverified source.
+
+Use `python build.py frontend-build` to build the static frontend alone, or `python build.py frontend-dev` to run the Next.js development server. The normal `python build.py build` and `python build.py dev` workflows invoke the same steps automatically through Tauri's hooks.
+
+The first integration keeps the existing GitManager DOM/IPC UI as a compatibility layer inside the Engine/Next.js shell. This preserves the existing Rust command contract while providing a controlled route to migrate individual screens to Engine components.
+

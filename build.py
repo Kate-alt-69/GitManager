@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-GitManager Pure-Rust Tauri v2 Dependency Checker & Build Script
-Supports: Windows 10 & 11, Linux, and macOS (Zero Node.js / npm required).
+GitManager Tauri v2 Dependency Checker & Build Script
+Supports Windows 10 & 11, Linux, and macOS. The frontend is compiled with Node.js before Tauri packages the static export.
 
 Features:
 1. Checks if Rust (`rustc` and `cargo`) is installed across PATH and `~/.cargo/bin`.
@@ -626,7 +626,7 @@ def sanitize_tauri_v2_config(project_root: Path) -> None:
     """
     Validates and auto-fixes `src-tauri/tauri.conf.json` against the Tauri v2 schema:
     - Removes Tauri v1 legacy keys from `build` (such as `build.withGlobalTauri` or `build.distDir`).
-    - Ensures `app.withGlobalTauri = true` and `build.frontendDist = "../ui"`.
+    - Ensures the Engine-backed static export and Tauri build/dev hooks are configured.
     """
     conf_path = project_root / "src-tauri" / "tauri.conf.json"
     if not conf_path.is_file():
@@ -646,9 +646,20 @@ def sanitize_tauri_v2_config(project_root: Path) -> None:
             build_cfg["frontendDist"] = build_cfg.pop("distDir")
             changed = True
 
-        if build_cfg.get("frontendDist") != "../ui":
-            build_cfg["frontendDist"] = "../ui"
+        expected_frontend_dist = "../.cache/nextjs-engine/source/.gitmanager-frontend/out"
+        if build_cfg.get("frontendDist") != expected_frontend_dist:
+            build_cfg["frontendDist"] = expected_frontend_dist
             changed = True
+
+        expected_hooks = {
+            "beforeBuildCommand": "python ../tools/nextjs_engine_source.py build --project-root ..",
+            "beforeDevCommand": "python ../tools/nextjs_engine_source.py dev --project-root ..",
+            "devUrl": "http://localhost:3000",
+        }
+        for key, expected in expected_hooks.items():
+            if build_cfg.get(key) != expected:
+                build_cfg[key] = expected
+                changed = True
 
         app_cfg = data.setdefault("app", {})
         if app_cfg.get("withGlobalTauri") is not True:
@@ -1046,8 +1057,8 @@ def main() -> int:
         "mode",
         nargs="?",
         default="build",
-        choices=["deps", "check", "dev", "build", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node"],
-        help="Action: deps, check, dev, build, prepare-runtime, prepare-sidecar, or prepare-cloud-node.",
+        choices=["deps", "check", "dev", "build", "frontend-build", "frontend-dev", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node"],
+        help="Action: deps, check, dev, build, frontend-build, frontend-dev, prepare-runtime, prepare-sidecar, or prepare-cloud-node.",
     )
     parser.add_argument(
         "--release",
@@ -1077,6 +1088,16 @@ def main() -> int:
         return prepare_windows_python_runtime(project_root)
     if args.mode == "prepare-cloud-node":
         return prepare_cloud_node_deployment(project_root)
+    if args.mode in ("frontend-build", "frontend-dev"):
+        frontend_tool = project_root / "tools" / "nextjs_engine_source.py"
+        frontend_mode = "build" if args.mode == "frontend-build" else "dev"
+        return subprocess.call([
+            sys.executable,
+            str(frontend_tool),
+            frontend_mode,
+            "--project-root",
+            str(project_root),
+        ])
 
     check_os_system_dependencies()
     sanitize_tauri_v2_config(project_root)

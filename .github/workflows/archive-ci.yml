@@ -11,6 +11,47 @@ permissions:
   contents: read
 
 jobs:
+  nextjs-engine-frontend:
+    name: Next.js Engine static frontend
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve the newest CI-green Engine source and build the Tauri frontend
+        run: python tools/nextjs_engine_source.py build --project-root .
+
+      - name: Verify the static export and source provenance
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+
+          root = pathlib.Path(".cache/nextjs-engine/source/.gitmanager-frontend/out")
+          index = root / "index.html"
+          metadata = root / "engine-source.json"
+          if not index.is_file() or index.stat().st_size < 1024:
+              raise SystemExit("Next.js static export is missing or unexpectedly small.")
+          if not metadata.is_file():
+              raise SystemExit("Engine source provenance manifest is missing.")
+          source = json.loads(metadata.read_text(encoding="utf-8"))
+          if not source.get("commit") or source.get("branch") != "main-3":
+              raise SystemExit("Engine source provenance does not identify a resolved main-3 commit.")
+          assets = root / "_next" / "static"
+          if not assets.is_dir():
+              raise SystemExit("Next.js static assets were not exported.")
+          print("Built GitManager frontend with Engine commit", source["commit"])
+          PY
+
   archive-and-desktop:
     name: Archive, gitm & Tauri backend (${{ matrix.platform }})
     strategy:

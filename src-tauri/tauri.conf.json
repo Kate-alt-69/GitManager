@@ -4,7 +4,10 @@
   "version": "1.0.0",
   "identifier": "com.gitmanager.desktop",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../.cache/nextjs-engine/source/.gitmanager-frontend/out",
+    "beforeBuildCommand": "python ../tools/nextjs_engine_source.py build --project-root ..",
+    "beforeDevCommand": "python ../tools/nextjs_engine_source.py dev --project-root ..",
+    "devUrl": "http://localhost:3000"
   },
   "app": {
     "withGlobalTauri": true,
