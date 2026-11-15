@@ -392,8 +392,11 @@ def prepare_workspace(project_root: Path, source_root: Path) -> Path:
     app_source = frontend_source / "app"
     required_frontend_files = (
         app_source / "page.tsx",
+        app_source / "error.tsx",
+        app_source / "global-error.tsx",
         frontend_source / "components" / "gitmanager-app.tsx",
         frontend_source / "lib" / "use-gitmanager.ts",
+        frontend_source / "instrumentation.ts",
         frontend_source / "next.config.js",
     )
     missing = [str(path.relative_to(project_root)) for path in required_frontend_files if not path.is_file()]
@@ -428,6 +431,9 @@ def prepare_workspace(project_root: Path, source_root: Path) -> Path:
         workspace / "examples",
         workspace / "docs",
         workspace / "app" / "page.tsx",
+        workspace / "app" / "error.tsx",
+        workspace / "app" / "global-error.tsx",
+        workspace / "instrumentation.ts",
     )
     if workspace.exists():
         if not marker.is_file():
@@ -468,6 +474,10 @@ def prepare_workspace(project_root: Path, source_root: Path) -> Path:
     if workspace_app.exists():
         shutil.rmtree(workspace_app)
     shutil.copytree(app_source, workspace_app)
+    # The Engine plugin generates Node-only error instrumentation by default.
+    # GitManager is a static Tauri export, so overlay its browser-safe boundaries
+    # and empty server hook into the disposable workspace (never into Engine source).
+    shutil.copy2(frontend_source / "instrumentation.ts", workspace / "instrumentation.ts")
     (workspace_app / "__turbopack_stub__.ts").write_text(
         "export default {};\n",
         encoding="utf-8",
@@ -495,6 +505,7 @@ def prepare_workspace(project_root: Path, source_root: Path) -> Path:
             "frontend_sha256": frontend_sha256,
             "workspace_mode": "full-engine-repository-with-gitmanager-app-overlay",
             "engine_source_app_preserved": True,
+            "gitmanager_runtime_error_handling_overlay": True,
         }, indent=2) + "\n",
         encoding="utf-8",
     )
