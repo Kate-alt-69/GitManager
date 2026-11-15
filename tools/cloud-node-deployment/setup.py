@@ -550,8 +550,12 @@ def copy_api_routes(install_dir):
             continue
         target.write_bytes(route.read_bytes())
         copied += 1
-    if not (destination / "health.route").is_file():
-        raise SetupError("The installed api/ directory does not contain health.route.")
+    missing_routes = [
+        name for name in ("health.route", "status.route")
+        if not (destination / name).is_file()
+    ]
+    if missing_routes:
+        raise SetupError("The installed api/ directory is missing: " + ", ".join(missing_routes))
     return copied
 
 
