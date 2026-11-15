@@ -410,7 +410,7 @@ fn save_app_preferences(
 
     let path = preferences_file(&app_handle)?;
     write_app_preferences_file(&path, &preferences)?;
-    archive_watcher::restart_archive_watchers(&preferences);
+    // The next UI scan supplies discovered repositories to the archive watcher.
     Ok(preferences)
 }
 
@@ -687,12 +687,33 @@ async fn scan_machine_repositories(
     root_paths: Vec<String>, max_depth: Option<usize>, include_hidden_dirs: Option<bool>,
     filter_mode: Option<String>, index_dependency_repositories: Option<bool>, state: State<'_, AppState>,
 ) -> Result<IndexedRepoSummary, String> {
-    let options = ScanOptions { root_paths, max_depth, include_hidden_dirs, index_dependency_repositories };
+    let options = ScanOptions {
+        root_paths: root_paths.clone(),
+        max_depth,
+        include_hidden_dirs,
+        index_dependency_repositories,
+    };
     // Directory walking and libgit2 inspection can be slow on large workspaces.
     // Keep this work off the webview command thread so the desktop UI remains responsive.
     let report = tokio::task::spawn_blocking(move || scan_repositories_with_report(options))
         .await.map_err(|error| format!("Repository scan task failed: {error}"))??;
     if let Ok(mut cache) = state.cached_repos.lock() { *cache = report.repositories.clone(); }
+
+    // Reuse discovery for archive watcher setup only when it exactly matches the
+    // saved preferences. Custom one-off scans do not replace configured watch roots.
+    if let Ok(preferences) = load_background_preferences() {
+        let scan_matches_preferences = root_paths == preferences.scan_roots
+            && max_depth.unwrap_or(8) == preferences.max_scan_depth
+            && include_hidden_dirs.unwrap_or(false) == preferences.include_hidden_dirs
+            && index_dependency_repositories.unwrap_or(true) == preferences.index_dependency_repositories;
+        if scan_matches_preferences {
+            archive_watcher::restart_archive_watchers_with_repositories(
+                &preferences,
+                report.repositories.clone(),
+            );
+        }
+    }
+
     let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
     Ok(build_indexed_summary_with_scan_status(report.repositories, &requested, report.truncated))
 }
@@ -1357,7 +1378,7 @@ pub fn run() {
             let state = app.state::<AppState>();
             let preferences = load_app_preferences(app.handle().clone())
                 .unwrap_or_else(|_| AppPreferences::default());
-            archive_watcher::restart_archive_watchers(&preferences);
+            // The next UI scan supplies discovered repositories to the archive watcher.
             spawn_background_update_watcher(
                 app.handle().clone(),
                 state.watcher.enabled.clone(),

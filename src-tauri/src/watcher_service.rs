@@ -553,7 +553,10 @@ pub fn spawn_background_update_watcher(
     scan_roots: Vec<String>,
 ) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(120));
+        let mut interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(120),
+            Duration::from_secs(120),
+        );
         loop {
             interval.tick().await;
             if !enabled.load(Ordering::Relaxed) {

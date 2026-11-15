@@ -66,7 +66,8 @@ fn repository_auto_update_enabled(repo_path: &str) -> bool {
 /// filesystem notifications at a time, and the other retries periodically.
 pub fn run() -> ! {
     let mut notified_commits: HashSet<String> = HashSet::new();
-    let mut last_remote_check = Instant::now() - REMOTE_UPDATE_INTERVAL;
+    // Keep the first remote update discovery out of application/service startup.
+    let mut last_remote_check = Instant::now();
     let mut last_cloud_archive_sync = Instant::now() - CLOUD_ARCHIVE_SYNC_INTERVAL;
 
     loop {

@@ -17,6 +17,7 @@ use fs2::FileExt;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 
 use crate::archive;
+use crate::git_info::GitRepositoryInfo;
 use crate::scanner::{scan_repositories, ScanOptions};
 use crate::AppPreferences;
 
@@ -100,6 +101,22 @@ pub fn archive_watchers_running() -> bool {
 }
 
 pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
+    restart_archive_watchers_with_scan(preferences, None)
+}
+
+/// Starts archive watchers from the repository list the UI has already discovered.
+/// This prevents a second full directory scan during desktop startup.
+pub fn restart_archive_watchers_with_repositories(
+    preferences: &AppPreferences,
+    repositories: Vec<GitRepositoryInfo>,
+) -> bool {
+    restart_archive_watchers_with_scan(preferences, Some(repositories))
+}
+
+fn restart_archive_watchers_with_scan(
+    preferences: &AppPreferences,
+    discovered_repositories: Option<Vec<GitRepositoryInfo>>,
+) -> bool {
     let enabled = preferences.first_run_complete
         && preferences.archive_trigger != "manual"
         && (preferences.archive_local_enabled || preferences.archive_remote_enabled);
@@ -171,6 +188,7 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
     let archive_root = preferences.archive_root.clone();
     let local_enabled = preferences.archive_local_enabled;
     let remote_enabled = preferences.archive_remote_enabled;
+    let index_dependencies = preferences.index_dependency_repositories;
 
     WATCHER_RUNNING.store(true, Ordering::SeqCst);
     let spawned = thread::Builder::new()
@@ -178,17 +196,20 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
         .spawn(move || {
             let _lease = lease;
             let _run_guard = WatcherRunGuard { generation };
-            let repositories = match scan_repositories(ScanOptions {
-                root_paths: roots,
-                max_depth: Some(max_depth.clamp(2, 16)),
-                include_hidden_dirs: Some(include_hidden),
-                index_dependency_repositories: Some(true),
-            }) {
-                Ok(repositories) => repositories,
-                Err(error) => {
-                    eprintln!("GitManager archive watcher: repository discovery failed: {error}");
-                    return;
-                }
+            let repositories = match discovered_repositories {
+                Some(repositories) => repositories,
+                None => match scan_repositories(ScanOptions {
+                    root_paths: roots,
+                    max_depth: Some(max_depth.clamp(2, 16)),
+                    include_hidden_dirs: Some(include_hidden),
+                    index_dependency_repositories: Some(index_dependencies),
+                }) {
+                    Ok(repositories) => repositories,
+                    Err(error) => {
+                        eprintln!("GitManager archive watcher: repository discovery failed: {error}");
+                        return;
+                    }
+                },
             };
             if generation != WATCH_GENERATION.load(Ordering::SeqCst) {
                 return;
