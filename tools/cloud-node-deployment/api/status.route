@@ -1,0 +1,14 @@
+:import[net]
+
+class Route {
+    async get(req) {
+        const engine = net.ping();
+        return {
+            ok: true,
+            status: "available",
+            service: "RBE Backend API",
+            endpoint: req.path,
+            engine: engine
+        };
+    }
+}
