@@ -317,12 +317,17 @@ fn truncate_scan(shared: &ScanShared) {
 }
 
 fn path_key(path: &Path) -> String {
-    // Canonical paths use the host separator, while user-configured roots and
-    // tests may use either slash style. Normalize separators before comparing
-    // parent/child prefixes so Windows paths cannot bypass root deduplication.
-    let value = path.to_string_lossy().replace('\\', "/");
-    #[cfg(windows)] { value.to_lowercase() }
-    #[cfg(not(windows))] { value }
+    #[cfg(windows)]
+    {
+        // Windows accepts either slash style in configured paths. Canonicalize
+        // them before testing path-component boundaries.
+        path.to_string_lossy().replace('\\', "/").to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        // Backslash is a legal filename character on Unix; preserve it.
+        path.to_string_lossy().to_string()
+    }
 }
 
 fn normalize_scan_roots(mut candidates: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -452,6 +457,7 @@ mod tests {
         assert_eq!(roots, vec![PathBuf::from("/workspace")]);
     }
 
+    #[cfg(windows)]
     #[test]
     fn normalizes_windows_separator_variants_when_deduplicating_roots() {
         let roots = normalize_scan_roots(vec![
