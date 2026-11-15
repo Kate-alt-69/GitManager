@@ -277,28 +277,43 @@ pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
 ///
 /// The worker must run as the interactive user so it reads the same per-user
 /// preferences and holds the same archive-watcher lease as the desktop app.
+#[cfg(target_os = "linux")]
+fn systemd_quote(value: &str) -> String {
+    format!(
+        "\\"{}\\"",
+        value
+            .replace('\\\\', "\\\\\\\\")
+            .replace('"', "\\\\\"")
+            .replace('%', "%%")
+            .replace('\\n', "")
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\\'', "&apos;")
+}
+
 pub fn register_os_background_service() -> Result<String, String> {
-    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let service_bin = current_exe
-        .parent()
-        .map(|p| {
-            let candidate = if cfg!(windows) {
-                p.join("git-manager-service.exe")
-            } else {
-                p.join("git-manager-service")
-            };
-            if candidate.exists() {
-                candidate
-            } else {
-                current_exe.clone()
-            }
-        })
-        .unwrap_or(current_exe);
+    // Tauri bundles the main executable, not an unbundled sibling BGW binary.
+    // The installed application enters its shared headless worker when given
+    // --background-service, so every platform launches the exact bundled file.
+    let current_exe = std::env::current_exe().map_err(|error| {
+        format!("Could not resolve the installed GitManager executable: {error}")
+    })?;
 
     #[cfg(target_os = "windows")]
     {
         let task_name = "GitManager Background Service";
-        let task_command = format!("\"{}\" --svchost-worker", service_bin.display());
+        let task_command = format!(
+            "\\\"{}\\\" --background-service",
+            current_exe.display()
+        );
         let create = hidden_command("schtasks.exe")
             .args(["/Create", "/SC", "ONLOGON", "/TN", task_name, "/TR"])
             .arg(&task_command)
@@ -336,8 +351,6 @@ pub fn register_os_background_service() -> Result<String, String> {
         }
 
         // Best-effort cleanup of the previous experimental LocalSystem service.
-        // It could not read this user's Local AppData preferences and is no
-        // longer used by the per-user Task Scheduler implementation.
         let _ = hidden_command("sc.exe")
             .args(["stop", "GitManagerUpdateSvc"])
             .output();
@@ -353,41 +366,107 @@ pub fn register_os_background_service() -> Result<String, String> {
 
     #[cfg(target_os = "linux")]
     {
-        if let Some(home) = dirs::home_dir() {
-            let systemd_dir = home.join(".config/systemd/user");
-            let _ = std::fs::create_dir_all(&systemd_dir);
-            let unit_path = systemd_dir.join("gitmanager-updater.service");
-            let unit_content = format!(
-                "[Unit]\nDescription=GitManager Background Repository Update Watcher\nAfter=network.target\n\n[Service]\nExecStart=\"{}\" --svchost-worker\nRestart=always\nRestartSec=60\n\n[Install]\nWantedBy=default.target\n",
-                service_bin.display()
-            );
-            let _ = std::fs::write(&unit_path, unit_content);
-            let _ = hidden_command("systemctl").args(["--user", "daemon-reload"]).output();
-            let _ = hidden_command("systemctl")
-                .args(["--user", "enable", "--now", "gitmanager-updater.service"])
-                .output();
+        let home = dirs::home_dir()
+            .ok_or_else(|| "Could not resolve the user's home directory for systemd.".to_string())?;
+        let systemd_dir = home.join(".config/systemd/user");
+        std::fs::create_dir_all(&systemd_dir)
+            .map_err(|error| format!("Could not create {}: {error}", systemd_dir.display()))?;
+        let unit_path = systemd_dir.join("gitmanager-updater.service");
+        let unit_content = format!(
+            "[Unit]\\nDescription=GitManager Background Repository and Archive Watcher\\nWants=network-online.target\\nAfter=network-online.target\\n\\n[Service]\\nType=simple\\nExecStart={} --background-service\\nRestart=always\\nRestartSec=10\\n\\n[Install]\\nWantedBy=default.target\\n",
+            systemd_quote(&current_exe.to_string_lossy())
+        );
+        std::fs::write(&unit_path, unit_content)
+            .map_err(|error| format!("Could not write {}: {error}", unit_path.display()))?;
+
+        let reload = hidden_command("systemctl")
+            .args(["--user", "daemon-reload"])
+            .output()
+            .map_err(|error| format!("Could not reload the systemd user manager: {error}"))?;
+        if !reload.status.success() {
+            return Err(format!(
+                "Could not reload the systemd user manager: {}",
+                String::from_utf8_lossy(&reload.stderr).trim()
+            ));
         }
-        return Ok("Registered & started Linux systemd user service (gitmanager-updater.service).".to_string());
+        let enable = hidden_command("systemctl")
+            .args(["--user", "enable", "--now", "gitmanager-updater.service"])
+            .output()
+            .map_err(|error| format!("Could not enable GitManager's systemd user service: {error}"))?;
+        if !enable.status.success() {
+            return Err(format!(
+                "Could not enable/start GitManager's systemd user service: {}",
+                String::from_utf8_lossy(&enable.stderr).trim()
+            ));
+        }
+        return Ok("Registered and started the Linux per-user systemd service.".to_string());
     }
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(home) = dirs::home_dir() {
-            let agents_dir = home.join("Library/LaunchAgents");
-            let _ = std::fs::create_dir_all(&agents_dir);
-            let plist_path = agents_dir.join("com.gitmanager.updater.plist");
-            let plist_content = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key><string>com.gitmanager.updater</string>\n  <key>ProgramArguments</key>\n  <array><string>{}</string><string>--svchost-worker</string></array>\n  <key>RunAtLoad</key><true/>\n  <key>StartInterval</key><integer>180</integer>\n</dict>\n</plist>\n",
-                service_bin.display()
-            );
-            let _ = std::fs::write(&plist_path, plist_content);
-            let _ = hidden_command("launchctl").args(["load", "-w", &plist_path.to_string_lossy()]).output();
+        let uid = unsafe { libc::getuid() };
+        let agents_dir = dirs::home_dir()
+            .ok_or_else(|| "Could not resolve the user's home directory for LaunchAgents.".to_string())?
+            .join("Library/LaunchAgents");
+        std::fs::create_dir_all(&agents_dir)
+            .map_err(|error| format!("Could not create {}: {error}", agents_dir.display()))?;
+        let label = "com.gitmanager.updater";
+        let plist_path = agents_dir.join(format!("{label}.plist"));
+        let executable = xml_escape(&current_exe.to_string_lossy());
+        let plist_content = format!(
+            "<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?>\\n<!DOCTYPE plist PUBLIC \\\"-//Apple//DTD PLIST 1.0//EN\\\" \\\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\\\">\\n<plist version=\\\"1.0\\\">\\n<dict>\\n  <key>Label</key><string>{label}</string>\\n  <key>ProgramArguments</key>\\n  <array><string>{executable}</string><string>--background-service</string></array>\\n  <key>RunAtLoad</key><true/>\\n  <key>KeepAlive</key><true/>\\n  <key>ProcessType</key><string>Background</string>\\n</dict>\\n</plist>\\n"
+        );
+        let temporary = plist_path.with_extension("plist.tmp");
+        std::fs::write(&temporary, plist_content)
+            .map_err(|error| format!("Could not write {}: {error}", temporary.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
+                .map_err(|error| format!("Could not restrict LaunchAgent permissions: {error}"))?;
         }
-        return Ok("Registered & started macOS LaunchAgent (com.gitmanager.updater).".to_string());
+        std::fs::rename(&temporary, &plist_path)
+            .map_err(|error| format!("Could not publish {}: {error}", plist_path.display()))?;
+
+        let domain = format!("gui/{uid}");
+        let _ = hidden_command("launchctl")
+            .args(["bootout", &format!("{domain}/{label}")])
+            .output();
+        let bootstrap = hidden_command("launchctl")
+            .args(["bootstrap", &domain, &plist_path.to_string_lossy()])
+            .output()
+            .map_err(|error| format!("Could not load the GitManager LaunchAgent: {error}"))?;
+        if !bootstrap.status.success() {
+            return Err(format!(
+                "Could not load the GitManager LaunchAgent: {}",
+                String::from_utf8_lossy(&bootstrap.stderr).trim()
+            ));
+        }
+        let enable = hidden_command("launchctl")
+            .args(["enable", &format!("{domain}/{label}")])
+            .output()
+            .map_err(|error| format!("Could not enable the GitManager LaunchAgent: {error}"))?;
+        if !enable.status.success() {
+            return Err(format!(
+                "Could not enable the GitManager LaunchAgent: {}",
+                String::from_utf8_lossy(&enable.stderr).trim()
+            ));
+        }
+        let start = hidden_command("launchctl")
+            .args(["kickstart", "-k", &format!("{domain}/{label}")])
+            .output()
+            .map_err(|error| format!("Could not start the GitManager LaunchAgent: {error}"))?;
+        if !start.status.success() {
+            return Err(format!(
+                "Could not start the GitManager LaunchAgent: {}",
+                String::from_utf8_lossy(&start.stderr).trim()
+            ));
+        }
+        return Ok("Registered and started the macOS per-user LaunchAgent.".to_string());
     }
 
     #[allow(unreachable_code)]
-    Ok("Background update watcher service active.".to_string())
+    Err("Background service registration is unavailable on this platform.".to_string())
 }
 
 /// Triggers an OS-level desktop toast notification when the background service finds a repo update
