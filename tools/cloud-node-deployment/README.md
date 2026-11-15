@@ -38,7 +38,7 @@ Linux or macOS:
 
     python3 setup.py
 
-Pass `--no-service` to install without registering a background service.
+Pass `--no-service` to install without registering a background service, or `--skip-admin-init` to defer the administrator password prompt to a later manual step.
 
 The installer detects the OS and CPU architecture, fetches the latest stable RBE release metadata, selects only that machine's archive, verifies the GitHub Release asset digest and matching SHA256SUMS entry, then safely extracts the complete runtime. The --verify-only option downloads and verifies the matching runtime but does not install it.
 
@@ -66,19 +66,19 @@ The included settings.json binds the backend API to 0.0.0.0:8080 by default. Aft
 
 Use the backend's actual configured port if settings.json was already present and preserved. GitManager's Settings → Cloud → Cloud Node setup page can check a private LAN IP and report the native /health and bundled /api/health responses. This verifies backend reachability only; it does not authenticate/pair a peer or enable persistent Cloud Node synchronization. The installer does not open firewall ports or create a TLS certificate. Restrict LAN access with the host firewall and configure HTTPS before exposing an endpoint beyond a trusted local network.
 
-Initialize the RBE administrator account before the first normal backend run:
+Before the backend is registered as a background service, setup offers to initialize or confirm the RBE administrator account using RBE's own hidden terminal password prompt. GitManager does not read or store that password. When setup is run without an interactive terminal, or with --skip-admin-init, it leaves the backend service stopped until you initialize the account manually.
 
 Windows:
 
-    .\backend.exe --init-admin
+    .\backend.exe --settings .\settings.json --init-admin
     .\run-rbe-node.ps1
 
 Linux/macOS:
 
-    ./backend --init-admin
+    ./backend --settings ./settings.json --init-admin
     ./run-rbe-node.sh
 
-The generated start script sets RBE_CLOUD_NODE_PRIVATE_KEY to a protected file: reference and points RBE_CN_SETTINGS at the installed setting.node.cn.json. The private key itself is never written into JSON or copied into the ZIP.
+After manual initialization, rerun setup.py to register the optional OS service, or launch the generated script directly. The generated start script sets RBE_CLOUD_NODE_PRIVATE_KEY to a protected file: reference and points RBE_CN_SETTINGS at the installed setting.node.cn.json. The private key itself is never written into JSON or copied into the ZIP.
 
 ## Cloud Node configuration and GitManager namespace
 
