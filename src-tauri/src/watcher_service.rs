@@ -371,7 +371,21 @@ pub fn register_os_background_service() -> Result<String, String> {
             .map_err(|error| format!("Could not create {}: {error}", systemd_dir.display()))?;
         let unit_path = systemd_dir.join("gitmanager-updater.service");
         let unit_content = format!(
-            "[Unit]\\nDescription=GitManager Background Repository and Archive Watcher\\nWants=network-online.target\\nAfter=network-online.target\\n\\n[Service]\\nType=simple\\nExecStart={} --background-service\\nRestart=always\\nRestartSec=10\\n\\n[Install]\\nWantedBy=default.target\\n",
+            r#"[Unit]
+Description=GitManager Background Repository and Archive Watcher
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart={} --background-service
+Restart=always
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=default.target
+"#,
             systemd_quote(&current_exe.to_string_lossy())
         );
         std::fs::write(&unit_path, unit_content)
