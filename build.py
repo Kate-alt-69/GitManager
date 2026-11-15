@@ -652,8 +652,8 @@ def sanitize_tauri_v2_config(project_root: Path) -> None:
             changed = True
 
         expected_hooks = {
-            "beforeBuildCommand": "python ../tools/nextjs_engine_source.py build --project-root ..",
-            "beforeDevCommand": "python ../tools/nextjs_engine_source.py dev --project-root ..",
+            "beforeBuildCommand": "python tools/nextjs_engine_source.py build --project-root .",
+            "beforeDevCommand": "python tools/nextjs_engine_source.py dev --project-root .",
             "devUrl": "http://localhost:3000",
         }
         for key, expected in expected_hooks.items():
