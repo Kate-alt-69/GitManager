@@ -150,8 +150,9 @@ pub fn run() -> ! {
             }
         }
 
-        if !service_control.is_suspended() {
-            thread::sleep(PREFERENCE_REFRESH);
+        let refresh_deadline = Instant::now() + PREFERENCE_REFRESH;
+        while Instant::now() < refresh_deadline && !service_control.is_suspended() {
+            thread::sleep(Duration::from_secs(1));
         }
     }
 }

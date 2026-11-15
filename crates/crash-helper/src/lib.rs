@@ -348,7 +348,7 @@ fn send_ui_message_from_env(kind: &str) -> Result<(), String> {
 }
 
 pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Result<bool, String> {
-    if args.iter().any(|argument| argument == "--crash-helper-child") {
+    if args.iter().any(|argument| argument.to_string_lossy() == "--crash-helper-child") {
         return Ok(false);
     }
     let helper = match find_crash_helper(current_exe) {
@@ -543,7 +543,7 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
         return 2;
     }
     let application = PathBuf::from(&arguments[0]);
-    let separator = arguments.iter().position(|argument| argument == "--");
+    let separator = arguments.iter().position(|argument| argument.to_string_lossy() == "--");
     let app_args = separator
         .map(|index| arguments.iter().skip(index + 1).cloned().collect::<Vec<_>>())
         .unwrap_or_default();
@@ -604,16 +604,17 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
                         if message.token == token {
                             match message.kind.as_str() {
                                 "heartbeat" => {
+                                    let first_heartbeat = last_heartbeat.is_none();
                                     last_heartbeat = Some(Instant::now());
                                     stale_since = None;
-                                    if suspended {
-                                        append_incident(
-                                            "UI heartbeat recovered; service resumed",
-                                            pid, None, request_service_resume()
-                                        );
+                                    if suspended || first_heartbeat {
+                                        let reason = if suspended {
+                                            "UI heartbeat recovered; service resumed"
+                                        } else {
+                                            "UI became responsive; service activated"
+                                        };
+                                        append_incident(reason, pid, None, request_service_resume());
                                         suspended = false;
-                                    } else {
-                                        let _ = request_service_resume();
                                     }
                                 }
                                 "shutdown" => {
@@ -691,7 +692,7 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
 
 pub fn run_helper_from_args() -> i32 {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if arguments.first().is_some_and(|argument| argument == "--supervise") {
+    if arguments.first().is_some_and(|argument| argument.to_string_lossy() == "--supervise") {
         run_supervisor(arguments.into_iter().skip(1).collect())
     } else {
         2
