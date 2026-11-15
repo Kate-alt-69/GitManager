@@ -60,11 +60,13 @@ The installer never deletes existing data or overwrites existing settings/API ro
 
 The included settings.json binds the backend API to 0.0.0.0:8080 by default. After starting the backend, these endpoints should be available:
 
-- http://127.0.0.1:8080/health — native backend health endpoint
-- http://127.0.0.1:8080/api/health — bundled api/health.route
-- http://127.0.0.1:8080/api/status — bundled api/status.route
+- http://127.0.0.1:8080/health — native RBE backend health endpoint
+- http://127.0.0.1:8080/api/health — bundled api/health.route with RBE private health fields and engine ping
+- http://127.0.0.1:8080/api/status — bundled api/status.route with backend, container, Vault, error-reporter and engine status
 
-Use the backend's actual configured port if settings.json was already present and preserved. GitManager's Settings → Cloud → Cloud Node setup page can check a private LAN IP and report the native /health and bundled /api/health responses. This verifies backend reachability only; it does not authenticate/pair a peer or enable persistent Cloud Node synchronization. The installer does not open firewall ports or create a TLS certificate. Restrict LAN access with the host firewall and configure HTTPS before exposing an endpoint beyond a trusted local network.
+The native `/health` path is reserved by RBE. The two `/api/*` endpoints come from the ZIP's sibling `api/` route files and are compiled/validated by RBE during backend startup.
+
+Use the backend's actual configured port if settings.json was already present and preserved. GitManager's Settings → Cloud → Cloud Node setup page can check a private LAN IP and report the native /health plus bundled /api/health and /api/status responses. This verifies backend reachability only; it does not authenticate/pair a peer or enable persistent Cloud Node synchronization. The installer does not open firewall ports or create a TLS certificate. Restrict LAN access with the host firewall and configure HTTPS before exposing an endpoint beyond a trusted local network.
 
 Before the backend is registered as a background service, setup offers to initialize or confirm the RBE administrator account using RBE's own hidden terminal password prompt. GitManager does not read or store that password. For unattended installs, RBE's supported RBE_ADMIN_PASSWORD or RBE_ADMIN_PASSWORD_FILE environment input can be supplied to the setup process; the backend consumes and removes that value in its own process. When setup is run without a terminal and without one of those inputs, or with --skip-admin-init, it leaves the backend service stopped until you initialize the account manually.
 
