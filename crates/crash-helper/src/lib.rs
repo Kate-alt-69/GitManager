@@ -368,13 +368,39 @@ fn find_crash_helper(current_exe: &Path) -> Option<PathBuf> {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     let triple = host_target_triple();
 
-    let directories = [
+    let mut directories = vec![
         executable_dir.to_path_buf(),
         executable_dir.join("resources"),
         executable_dir.join("Resources"),
         executable_dir.join("../Resources"),
         executable_dir.join("../resources"),
     ];
+
+    // Linux packages may place Tauri resources outside the executable's
+    // directory. Match the productName used by tauri.conf.json, while also
+    // accepting normalized package-directory variants from distro tooling.
+    #[cfg(target_os = "linux")]
+    {
+        const PRODUCT_DIRS: &[&str] = &["GitManager", "gitmanager", "git-manager"];
+
+        if let Some(prefix) = executable_dir.parent() {
+            for product in PRODUCT_DIRS {
+                directories.push(prefix.join("lib").join(product));
+            }
+        }
+
+        if let Some(app_dir) = std::env::var_os("APPDIR") {
+            let app_resources = PathBuf::from(app_dir).join("usr").join("lib");
+            for product in PRODUCT_DIRS {
+                directories.push(app_resources.join(product));
+            }
+        }
+
+        for product in PRODUCT_DIRS {
+            directories.push(PathBuf::from("/usr/lib").join(product));
+        }
+    }
+
     let names = [
         format!("crash_helper{suffix}"),
         format!("crash_helper-{triple}{suffix}"),
