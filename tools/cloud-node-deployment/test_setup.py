@@ -123,6 +123,12 @@ class LauncherTests(unittest.TestCase):
             self.assertIn(">> ", content)
             self.assertIn("2>&1", content)
 
+    def test_systemd_launcher_paths_escape_specifiers_and_quotes(self) -> None:
+        literal = setup.systemd_literal('/srv/GitManager 100% "RBE"')
+        self.assertTrue(literal.startswith('"') and literal.endswith('"'))
+        self.assertIn("100%%", literal)
+        self.assertIn('\\"RBE\\"', literal)
+
 
 class RuntimeArchiveTests(unittest.TestCase):
     def make_windows_archive(self, *, symlink_cloud_node=False) -> bytes:
