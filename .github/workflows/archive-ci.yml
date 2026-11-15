@@ -134,3 +134,4 @@ jobs:
           python -m py_compile tools/cloud-node-deployment/setup.py
           python -m py_compile tools/cloud-node-deployment/test_setup.py
           python tools/cloud-node-deployment/test_setup.py
+          python tools/test_nextjs_engine_source.py
