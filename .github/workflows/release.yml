@@ -49,7 +49,7 @@ jobs:
                   if bad:
                       raise SystemExit(f"ZIP CRC verification failed at {bad}")
                   names = set(package.namelist())
-                  required = {"setup.py", "manifest.json", "settings.json", "setting.node.cn.json", "api/health.route"}
+                  required = {"setup.py", "manifest.json", "settings.json", "setting.node.cn.json", "api/health.route", "api/status.route"}
                   missing = required - names
                   if missing:
                       raise SystemExit(f"Bootstrap ZIP is missing: {sorted(missing)}")
