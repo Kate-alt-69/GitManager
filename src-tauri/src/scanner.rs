@@ -106,13 +106,15 @@ pub fn scan_repositories_with_report(options: ScanOptions) -> Result<ScanReport,
         options.root_paths.into_iter().map(PathBuf::from).collect()
     };
 
-    let mut roots = Vec::new();
-    let mut unique = HashSet::new();
+    let mut root_candidates = Vec::new();
     for raw in raw_roots {
         if !raw.is_dir() { continue; }
         let root = fs::canonicalize(&raw).unwrap_or(raw);
-        if unique.insert(path_key(&root)) { roots.push(root); }
+        root_candidates.push(root);
     }
+    // A configured parent root already covers its descendants. Removing nested
+    // roots avoids repeating the same directory walk for overlapping settings.
+    let roots = normalize_scan_roots(root_candidates);
 
     let primary = run_scan_pass(&roots, Arc::clone(&config), false);
     if !primary.repositories.is_empty() || !config.index_dependencies || primary.truncated {
@@ -187,11 +189,15 @@ fn acquire_process_scan_lease() -> Result<File, String> {
     Ok(file)
 }
 
+fn scan_worker_count_for(available: usize) -> usize {
+    if available >= 2 { SCAN_WORKERS } else { 1 }
+}
+
 fn scan_worker_count() -> usize {
-    // Never use more than two scan threads. On machines with multiple logical
-    // processors, keep one available for the UI and other foreground work.
+    // Use two discovery workers on a multi-processor machine, but stay
+    // single-threaded on a single-core environment.
     std::thread::available_parallelism()
-        .map(|count| count.get().saturating_sub(1).clamp(1, SCAN_WORKERS))
+        .map(|count| scan_worker_count_for(count.get()))
         .unwrap_or(1)
 }
 
@@ -242,6 +248,11 @@ fn scan_one_directory(task: &ScanTask, shared: &ScanShared) -> Vec<ScanTask> {
         if shared.entries_seen.fetch_add(1, Ordering::Relaxed) + 1 > MAX_SCAN_ENTRIES {
             truncate_scan(shared);
             break;
+        }
+        // Yield occasionally so large directory enumerations share CPU time
+        // with the foreground UI and the operating system.
+        if shared.entries_seen.load(Ordering::Relaxed) % 128 == 0 {
+            thread::yield_now();
         }
         let Ok(entry) = entry_result else { continue };
         let path = entry.path();
@@ -311,6 +322,31 @@ fn path_key(path: &Path) -> String {
     #[cfg(not(windows))] { value }
 }
 
+fn normalize_scan_roots(mut candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+    candidates.sort_by(|left, right| {
+        left.components().count().cmp(&right.components().count())
+            .then_with(|| path_key(left).cmp(&path_key(right)))
+    });
+
+    let mut roots = Vec::new();
+    for candidate in candidates {
+        let candidate_key = path_key(&candidate);
+        let already_covered = roots.iter().any(|parent: &PathBuf| {
+            let parent_key = path_key(parent);
+            if candidate_key == parent_key { return true; }
+            let prefix = format!(
+                "{}{}",
+                parent_key.trim_end_matches(std::path::MAIN_SEPARATOR),
+                std::path::MAIN_SEPARATOR
+            );
+            candidate_key.starts_with(&prefix)
+        });
+        if !already_covered { roots.push(candidate); }
+    }
+    roots
+}
+
+
 fn path_has_dependency_component(path: &Path) -> bool {
     path.components().any(|component| {
         let part = component.as_os_str().to_string_lossy().to_lowercase();
@@ -354,8 +390,11 @@ fn is_dependency_repository_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_dependency_repository_path, should_visit_directory};
-    use std::path::{Path, MAIN_SEPARATOR};
+    use super::{
+        is_dependency_repository_path, normalize_scan_roots, scan_worker_count_for,
+        should_visit_directory,
+    };
+    use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
     #[test]
     fn classifies_dependency_directory_paths() {
@@ -401,6 +440,24 @@ mod tests {
     fn dependency_paths_are_detected_above_the_selected_root() {
         let root = Path::new("/workspace/node_modules/example-package");
         assert!(super::path_has_dependency_component(root));
+    }
+
+    #[test]
+    fn drops_duplicate_and_nested_scan_roots() {
+        let roots = normalize_scan_roots(vec![
+            PathBuf::from("/workspace/projects/app"),
+            PathBuf::from("/workspace"),
+            PathBuf::from("/workspace/projects"),
+            PathBuf::from("/workspace"),
+        ]);
+        assert_eq!(roots, vec![PathBuf::from("/workspace")]);
+    }
+
+    #[test]
+    fn uses_two_workers_when_at_least_two_processors_exist() {
+        assert_eq!(scan_worker_count_for(1), 1);
+        assert_eq!(scan_worker_count_for(2), 2);
+        assert_eq!(scan_worker_count_for(16), 2);
     }
 }
 
