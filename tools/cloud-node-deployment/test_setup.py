@@ -80,9 +80,14 @@ class BootstrapManifestTests(unittest.TestCase):
         self.assertIn("replication", config)
         self.assertFalse(config["replication"]["requireBootRecovery"])
         route = (setup.PACKAGE_ROOT / "api" / "health.route").read_text(encoding="utf-8")
-        self.assertIn(":import[net]", route)
+        self.assertIn(":import[private, net]", route)
+        self.assertIn("private.health()", route)
         self.assertIn("net.ping()", route)
-        self.assertNotIn("private.health()", route)
+        self.assertIn("uptime: health.uptime", route)
+        status = (setup.PACKAGE_ROOT / "api" / "status.route").read_text(encoding="utf-8")
+        self.assertIn("private.health()", status)
+        self.assertIn("vault: health.vault", status)
+        self.assertIn("errorReporter: health.errorReporter", status)
 
     def test_safe_relative_member_rejects_traversal_and_windows_drive_paths(self) -> None:
         for unsafe in ("../backend", "dep/../../backend", "/backend", r"dep\backend", "C:/backend"):
