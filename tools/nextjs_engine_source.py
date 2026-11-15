@@ -7,6 +7,7 @@ pinned in GitManager source.
 """
 
 import argparse
+import http.client
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,6 +39,8 @@ MAX_API_BYTES = 12 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 250 * 1024 * 1024
 MAX_MEMBER_BYTES = 80 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 50000
+REQUEST_ATTEMPTS = 3
+RETRYABLE_HTTP_STATUS = frozenset((408, 429, 500, 502, 503, 504))
 
 
 def log_ok(message: str) -> None:
@@ -69,31 +73,61 @@ def request_bytes(url: str, limit: int, accept: str) -> bytes:
         headers["Authorization"] = "Bearer " + token
 
     request = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            parsed = urllib.parse.urlsplit(response.geturl())
-            if parsed.scheme != "https" or parsed.hostname not in {"api.github.com", "codeload.github.com"}:
-                raise RuntimeError("Refusing an Engine download redirect to an untrusted host.")
-            declared = response.headers.get("Content-Length")
-            if declared:
-                try:
-                    if int(declared) > limit:
+    last_error = None
+    for attempt in range(REQUEST_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                parsed = urllib.parse.urlsplit(response.geturl())
+                if parsed.scheme != "https" or parsed.hostname not in {"api.github.com", "codeload.github.com"}:
+                    raise RuntimeError("Refusing an Engine download redirect to an untrusted host.")
+                declared = response.headers.get("Content-Length")
+                if declared:
+                    try:
+                        if int(declared) > limit:
+                            raise RuntimeError("The Engine response exceeds the configured download limit.")
+                    except ValueError:
+                        raise RuntimeError("The Engine response returned an invalid content length.")
+                chunks = []
+                total = 0
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > limit:
                         raise RuntimeError("The Engine response exceeds the configured download limit.")
-                except ValueError:
-                    raise RuntimeError("The Engine response returned an invalid content length.")
-            chunks = []
-            total = 0
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > limit:
-                    raise RuntimeError("The Engine response exceeds the configured download limit.")
-                chunks.append(chunk)
-            return b"".join(chunks)
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise RuntimeError("Could not access the Next.js Engine source: " + str(error)) from error
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except urllib.error.HTTPError as error:
+            if error.code not in RETRYABLE_HTTP_STATUS:
+                raise RuntimeError("Could not access the Next.js Engine source: " + str(error)) from error
+            last_error = error
+            error.close()
+        except (http.client.HTTPException, OSError) as error:
+            # IncompleteRead is raised by http.client when a chunked response
+            # ends before the advertised chunk length. Discard this partial
+            # body and retry the complete bounded request from the beginning.
+            last_error = error
+
+        if attempt + 1 < REQUEST_ATTEMPTS:
+            delay = min(2 ** attempt, 4)
+            log_info(
+                "GitHub source request was interrupted; retrying in "
+                + str(delay)
+                + "s (attempt "
+                + str(attempt + 2)
+                + "/"
+                + str(REQUEST_ATTEMPTS)
+                + ")."
+            )
+            time.sleep(delay)
+
+    raise RuntimeError(
+        "Could not access the Next.js Engine source after "
+        + str(REQUEST_ATTEMPTS)
+        + " attempts: "
+        + str(last_error)
+    ) from last_error
 
 
 def github_json(url: str) -> Dict[str, object]:
