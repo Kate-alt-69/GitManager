@@ -469,13 +469,15 @@ pub fn is_supervised_child(args: &[std::ffi::OsString]) -> bool {
         && std::env::var_os("GITMANAGER_CRASH_HELPER_TOKEN").is_some()
 }
 
+fn record_supervisor_start_failure(reason: &str) {
+    let service_result = request_service_suspend(DEFAULT_SUSPENSION_SECONDS);
+    append_incident(reason, 0, None, service_result);
+}
+
 pub fn report_supervisor_launch_failure(reason: &str) {
-    append_incident(
-        reason,
-        0,
-        None,
-        Err("The UI supervisor could not start; background service control was not attempted.".to_string()),
-    );
+    // Persist the suspension intent even when the helper sidecar itself is
+    // missing or cannot be started. The independent service observes the file.
+    record_supervisor_start_failure(reason);
 }
 
 pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Result<bool, String> {
@@ -730,19 +732,20 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(listener) => listener,
         Err(error) => {
-            append_incident(
-                &format!("Could not open UI heartbeat listener: {error}"),
-                0, None, Err("Service suspension not attempted".to_string())
-            );
+            record_supervisor_start_failure(&format!("Could not open UI heartbeat listener: {error}"));
             return 2;
         }
     };
-    if listener.set_nonblocking(true).is_err() {
+    if let Err(error) = listener.set_nonblocking(true) {
+        record_supervisor_start_failure(&format!("Could not configure UI heartbeat listener: {error}"));
         return 2;
     }
     let address = match listener.local_addr() {
         Ok(address) => address.to_string(),
-        Err(_) => return 2,
+        Err(error) => {
+            record_supervisor_start_failure(&format!("Could not resolve UI heartbeat listener address: {error}"));
+            return 2;
+        }
     };
     let token = Uuid::new_v4().to_string();
 
@@ -760,10 +763,7 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     let mut child: Child = match child_command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            append_incident(
-                &format!("Could not start GitManager UI: {error}"),
-                0, None, Err("Service suspension not attempted".to_string())
-            );
+            record_supervisor_start_failure(&format!("Could not start GitManager UI: {error}"));
             return 1;
         }
     };
