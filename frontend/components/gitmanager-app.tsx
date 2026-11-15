@@ -42,7 +42,7 @@ function Button({
 	return (
 		<button
 			type={type}
-			className={\`gm-button gm-button-\${variant} \${className}\`}
+			className={`gm-button gm-button-${variant} ${className}`}
 			onClick={onClick}
 			disabled={disabled}
 		>
@@ -107,7 +107,7 @@ function Switch({
 function ProviderMark({ provider }: { provider: string }) {
 	const value = provider.toLowerCase();
 	const label = value === "github" ? "GH" : value === "gitlab" ? "GL" : value === "local" ? "L" : "↗";
-	return <span className={\`gm-provider-mark gm-provider-\${value}\`}>{label}</span>;
+	return <span className={`gm-provider-mark gm-provider-${value}`}>{label}</span>;
 }
 
 function RepoAvatar({ repo }: { repo: GitRepository }) {
@@ -131,11 +131,11 @@ function relativeDate(timestamp: number): string {
 	if (!timestamp) return "No commit date";
 	const elapsed = Math.max(0, Date.now() - timestamp * 1000);
 	const minutes = Math.floor(elapsed / 60000);
-	if (minutes < 60) return \`\${Math.max(1, minutes)}m ago\`;
+	if (minutes < 60) return `${Math.max(1, minutes)}m ago`;
 	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return \`\${hours}h ago\`;
+	if (hours < 24) return `${hours}h ago`;
 	const days = Math.floor(hours / 24);
-	if (days < 30) return \`\${days}d ago\`;
+	if (days < 30) return `${days}d ago`;
 	return new Date(timestamp * 1000).toLocaleDateString();
 }
 
@@ -314,7 +314,7 @@ function RepositoryCard({
 			</div>
 			<div className="gm-repo-card-footer">
 				<span className="gm-repo-provider"><ProviderMark provider={repo.primary_provider} />{repo.primary_provider || "local"}</span>
-				<span className="gm-latest-commit">{latest ? \`\${latest.short_oid} · \${relativeDate(latest.timestamp)}\` : "No commits"}</span>
+				<span className="gm-latest-commit">{latest ? `${latest.short_oid} · ${relativeDate(latest.timestamp)}` : "No commits"}</span>
 			</div>
 		</button>
 	);
@@ -366,12 +366,12 @@ function RepositoryDetail({
 
 	async function capture(kind: "local" | "remote") {
 		setBusy(true);
-		setArchiveStatus(\`Capturing \${kind} archive…\`);
+		setArchiveStatus(`Capturing ${kind} archive…`);
 		try {
 			const result = await invoke<ArchiveSnapshot>("capture_repository_archive", {
 				repoPath: repo.path, kind, archiveRoot: archiveRoot || null,
 			});
-			setArchiveStatus(\`Saved \${kind} restore point · \${result.fileCount} files\`);
+			setArchiveStatus(`Saved ${kind} restore point · ${result.fileCount} files`);
 			await refreshArchives();
 		} catch (error) {
 			setArchiveStatus(String(error));
@@ -382,7 +382,7 @@ function RepositoryDetail({
 
 	async function restore(snapshot: ArchiveSnapshot) {
 		const accepted = window.confirm(
-			\`Restore \${snapshot.kind} snapshot \${snapshot.id}? Existing destination files will be preserved first.\`,
+			`Restore ${snapshot.kind} snapshot ${snapshot.id}? Existing destination files will be preserved first.`,
 		);
 		if (!accepted) return;
 		setBusy(true);
@@ -449,7 +449,7 @@ function RepositoryDetail({
 			<div className="gm-detail-stats">
 				<div><span>Current branch</span><strong><Glyph>⑂</Glyph>{repo.current_branch}</strong></div>
 				<div><span>Commits indexed</span><strong>{repo.total_commits_loaded}</strong></div>
-				<div><span>Working tree</span><strong>{repo.dirty_files_count ? \`\${repo.dirty_files_count} changed\` : "Clean"}</strong></div>
+				<div><span>Working tree</span><strong>{repo.dirty_files_count ? `${repo.dirty_files_count} changed` : "Clean"}</strong></div>
 				<div><span>Remotes</span><strong>{repo.remotes?.length ?? 0}</strong></div>
 			</div>
 
@@ -576,7 +576,7 @@ function RepositoryPage({
 }) {
 	const dependencySet = useMemo(() => new Set(dependencies), [dependencies]);
 	const visible = useMemo(() => repositories.filter((repo) => {
-		const text = \`\${repo.name} \${repo.path} \${repo.owner_name} \${repo.current_branch}\`.toLowerCase();
+		const text = `${repo.name} ${repo.path} ${repo.owner_name} ${repo.current_branch}`.toLowerCase();
 		const queryMatch = !query.trim() || text.includes(query.toLowerCase());
 		const providerMatch = filter === "all" || (filter === "remote" ? repo.has_remote : !repo.has_remote);
 		const isDependency = dependencySet.has(repo.id);
@@ -707,7 +707,7 @@ function AccountsPage({
 		try {
 			const account = await onConnect(provider, username, token);
 			setToken("");
-			setMessage(\`Connected \${(account as ConnectedAccount).account_login}.\`);
+			setMessage(`Connected ${(account as ConnectedAccount).account_login}.`);
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
@@ -914,7 +914,7 @@ function SettingsPage({
 			if (!draft.archiveRoot) patch({ archiveRoot: root });
 			const result = await invoke<Record<string, unknown>>("get_archive_cloud_storage_info", { archiveRoot: root });
 			setCloudInfo(result);
-			setCloudStatus(result.configured ? \`Connected · \${String(result.provider || "provider")}\` : "No cloud provider configured. Local archives continue to work.");
+			setCloudStatus(result.configured ? `Connected · ${String(result.provider || "provider")}` : "No cloud provider configured. Local archives continue to work.");
 		} catch (cause) {
 			setCloudStatus(cause instanceof Error ? cause.message : String(cause));
 		} finally {
@@ -956,7 +956,7 @@ function SettingsPage({
 		setCloudBusy(true);
 		try {
 			const result = await invoke<string>("sync_archive_cloud_storage", { archiveRoot: draft.archiveRoot });
-			setCloudStatus(\`Synchronization completed · \${result}\`);
+			setCloudStatus(`Synchronization completed · ${result}`);
 		} catch (cause) {
 			setCloudStatus(cause instanceof Error ? cause.message : String(cause));
 		} finally {
@@ -1001,7 +1001,7 @@ function SettingsPage({
 						<div className="gm-panel-heading"><div><h2>Repository discovery</h2><p>Choose which directories GitManager scans for local repositories.</p></div><span className="gm-panel-icon">⌕</span></div>
 						<div className="gm-root-list">
 							{draft.scanRoots.map((root) => (
-								<div className="gm-root-row" key={root}><Glyph>▰</Glyph><span title={root}>{root}</span><button onClick={() => patch({ scanRoots: draft.scanRoots.filter((item) => item !== root) })} aria-label={\`Remove \${root}\`}>×</button></div>
+								<div className="gm-root-row" key={root}><Glyph>▰</Glyph><span title={root}>{root}</span><button onClick={() => patch({ scanRoots: draft.scanRoots.filter((item) => item !== root) })} aria-label={`Remove ${root}`}>×</button></div>
 							))}
 							{draft.scanRoots.length === 0 && <p className="gm-muted-copy">No scan folders configured. Add a directory below.</p>}
 						</div>
@@ -1173,7 +1173,7 @@ function CleanerPage({ repositories, onRefresh }: { repositories: GitRepository[
 		try {
 			const result = await invoke<Record<string, unknown>>("cleaner_apply", { ...args, confirmText: "YES" });
 			setPreview(result);
-			setStatus(result.pushed ? \`Cleanup branch pushed: \${String(result.branch)}\` : "Cleanup completed.");
+			setStatus(result.pushed ? `Cleanup branch pushed: ${String(result.branch)}` : "Cleanup completed.");
 			if (scope === "repository") onRefresh();
 		} catch (cause) {
 			setStatus(cause instanceof Error ? cause.message : String(cause));
