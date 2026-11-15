@@ -92,6 +92,12 @@ preferences periodically, while its Git-remote update checks retain their
 separate two-minute cadence. Native installers launch the bundled main
 executable in this mode; they do not rely on a separately copied service binary. Up to two archive captures run concurrently.
 
+The startup worker retries configured provider-backed archive synchronization every
+five minutes, even when no new repository event occurs. It uses the same
+`cloud-provider-sync` file lock as capture operations, so it skips a retry if
+another capture/provider sync currently owns the lock and tries again on the
+next interval.
+
 The startup worker does not need to launch a second `cloud_node.exe` for
 Supabase/S3 provider sync. `gitmanager-archive` links the vendored RBE
 Cloud Node `provider-sync` feature and uses its content-addressed storage and
