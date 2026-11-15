@@ -9,6 +9,7 @@ import io
 import json
 import os
 import platform
+import plistlib
 import re
 import secrets
 import shlex
@@ -651,6 +652,9 @@ def powershell_literal(value):
 
 
 def write_launchers(install_dir, backend_path, settings_path, cn_settings_path, key_path):
+    logs = install_dir / "logs"
+    logs.mkdir(parents=True, exist_ok=True, mode=0o700)
+    log_file = logs / "backend.log"
     if os.name == "nt":
         launcher = install_dir / "run-rbe-node.ps1"
         content = (
@@ -658,7 +662,8 @@ def write_launchers(install_dir, backend_path, settings_path, cn_settings_path, 
             f"$env:{KEY_ENV} = {powershell_literal('file:' + str(key_path))}\n"
             f"$env:{SETTINGS_ENV} = {powershell_literal(cn_settings_path)}\n"
             f"Set-Location -LiteralPath {powershell_literal(install_dir)}\n"
-            f"& {powershell_literal(backend_path)} '--settings' {powershell_literal(settings_path)}\n"
+            f"& {powershell_literal(backend_path)} '--settings' {powershell_literal(settings_path)} "
+            f"*>> {powershell_literal(log_file)}\n"
             "exit $LASTEXITCODE\n"
         )
     else:
@@ -668,12 +673,133 @@ def write_launchers(install_dir, backend_path, settings_path, cn_settings_path, 
             f"export {KEY_ENV}={shlex.quote('file:' + str(key_path))}\n"
             f"export {SETTINGS_ENV}={shlex.quote(str(cn_settings_path))}\n"
             f"cd {shlex.quote(str(install_dir))}\n"
-            f"exec {shlex.quote(str(backend_path))} --settings {shlex.quote(str(settings_path))}\n"
+            f"exec {shlex.quote(str(backend_path))} --settings {shlex.quote(str(settings_path))} "
+            f">> {shlex.quote(str(log_file))} 2>&1\n"
         )
     secure_write(launcher, content)
     if os.name != "nt":
         os.chmod(launcher, 0o700)
     return launcher
+
+
+def systemd_literal(value):
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "") + '"'
+
+
+def register_windows_backend_service(launcher):
+    schtasks = shutil.which("schtasks.exe") or shutil.which("schtasks")
+    if not schtasks:
+        return False, "Task Scheduler CLI was not found. Run the generated PowerShell launcher manually."
+    task_command = (
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden "
+        f"-ExecutionPolicy Bypass -File \"{launcher}\""
+    )
+    create = run_checked([
+        schtasks,
+        "/Create",
+        "/SC", "ONLOGON",
+        "/TN", "Kastrick GitManager RBE Backend",
+        "/TR", task_command,
+        "/RL", "LIMITED",
+        "/F",
+    ], timeout=20)
+    if create.returncode != 0:
+        detail = (create.stderr or create.stdout).strip()
+        return False, f"Could not register the current-user logon task: {detail}"
+    start = run_checked([
+        schtasks, "/Run", "/TN", "Kastrick GitManager RBE Backend"
+    ], timeout=20)
+    if start.returncode != 0:
+        detail = (start.stderr or start.stdout).strip()
+        return False, f"Task was registered but could not be started: {detail}"
+    return True, "Registered and started a per-user Task Scheduler task; it runs again at user logon."
+
+
+def register_linux_backend_service(install_dir, launcher):
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return False, "systemctl was not found. The manual launcher is ready."
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    unit = unit_dir / "gitmanager-rbe-backend.service"
+    unit_text = (
+        "[Unit]\n"
+        "Description=GitManager RBE Backend\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"WorkingDirectory={systemd_literal(install_dir)}\n"
+        f"ExecStart={systemd_literal(launcher)}\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "UMask=0077\n"
+        "NoNewPrivileges=true\n\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+    secure_write(unit, unit_text)
+    reload = run_checked([systemctl, "--user", "daemon-reload"], timeout=20)
+    if reload.returncode != 0:
+        detail = (reload.stderr or reload.stdout).strip()
+        return False, f"Created {unit}, but systemd user manager is unavailable: {detail}"
+    enable = run_checked([
+        systemctl, "--user", "enable", "--now", unit.name
+    ], timeout=30)
+    if enable.returncode != 0:
+        detail = (enable.stderr or enable.stdout).strip()
+        return False, f"Created {unit}, but could not enable/start it: {detail}"
+    return True, "Registered and started the per-user systemd unit gitmanager-rbe-backend.service."
+
+
+def register_macos_backend_service(install_dir, launcher):
+    uid = getattr(os, "getuid", lambda: None)()
+    if uid is None:
+        return False, "Could not determine the current macOS user ID."
+    label = "com.kastrick.gitmanager-rbe-backend"
+    agent_dir = Path.home() / "Library" / "LaunchAgents"
+    agent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    plist_path = agent_dir / (label + ".plist")
+    log_file = install_dir / "logs" / "backend.log"
+    plist = {
+        "Label": label,
+        "ProgramArguments": [str(launcher)],
+        "WorkingDirectory": str(install_dir),
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "StandardOutPath": str(log_file),
+        "StandardErrorPath": str(log_file),
+    }
+    temporary = plist_path.with_suffix(".plist.tmp")
+    with temporary.open("wb") as stream:
+        plistlib.dump(plist, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, plist_path)
+    domain = f"gui/{uid}"
+    run_checked(["launchctl", "bootout", domain + "/" + label], timeout=15)
+    bootstrap = run_checked(["launchctl", "bootstrap", domain, plist_path], timeout=20)
+    if bootstrap.returncode != 0:
+        detail = (bootstrap.stderr or bootstrap.stdout).strip()
+        return False, f"Created {plist_path}, but could not load the LaunchAgent: {detail}"
+    enable = run_checked(["launchctl", "enable", domain + "/" + label], timeout=15)
+    if enable.returncode != 0:
+        detail = (enable.stderr or enable.stdout).strip()
+        return False, f"Loaded the LaunchAgent but could not enable it: {detail}"
+    kickstart = run_checked(["launchctl", "kickstart", "-k", domain + "/" + label], timeout=15)
+    if kickstart.returncode != 0:
+        detail = (kickstart.stderr or kickstart.stdout).strip()
+        return False, f"LaunchAgent was enabled but could not be started: {detail}"
+    return True, "Registered and started the per-user macOS LaunchAgent."
+
+
+def register_backend_service(install_dir, launcher):
+    if os.name == "nt":
+        return register_windows_backend_service(launcher)
+    if sys.platform == "darwin":
+        return register_macos_backend_service(install_dir, launcher)
+    return register_linux_backend_service(install_dir, launcher)
 
 
 def local_addresses():
@@ -697,6 +823,7 @@ def main():
     parser.add_argument("--api-port", default="8080", help="Backend API port (default: 8080).")
     parser.add_argument("--node-id", help="Cloud Node identity for this NAS.")
     parser.add_argument("--verify-only", action="store_true", help="Download and verify the matching runtime without installing.")
+    parser.add_argument("--no-service", action="store_true", help="Do not register or start an OS background service.")
     args = parser.parse_args()
 
     try:
@@ -780,6 +907,18 @@ def main():
                 say(f"  {line}")
         say(f"Node registration: {install_dir / 'node-registration.json'}")
         say(f"Start script: {launcher}")
+        service_registered = False
+        if args.no_service:
+            say("OS service registration skipped by --no-service.")
+        elif ask_yes_no(
+            "Register and start the RBE backend in the background at user login?",
+            True,
+        ):
+            service_ok, service_message = register_backend_service(install_dir, launcher)
+            service_registered = service_ok
+            say(("[ OK ] " if service_ok else "[ WARNING ] ") + service_message)
+        else:
+            say("OS service registration skipped. Start the backend manually with the launcher.")
         say("")
         say("RBE status endpoints after the backend starts:")
         say(f"  http://127.0.0.1:{settings.get('api', {}).get('port', api_port)}/health")
@@ -794,6 +933,8 @@ def main():
         say("To initialize the RBE administrator account on this machine, run:")
         say(f"  {backend_path} --init-admin")
         say("Then start the backend with the generated launcher.")
+        if not service_registered:
+            say(f"Backend log: {install_dir / 'logs' / 'backend.log'}")
         return 0
     except (SetupError, OSError, ValueError, json.JSONDecodeError) as error:
         say(f"\n[ERROR] {error}")
