@@ -68,6 +68,7 @@ class BootstrapManifestTests(unittest.TestCase):
 
     def test_bootstrap_contains_health_route_and_starter_settings(self) -> None:
         self.assertTrue((setup.PACKAGE_ROOT / "api" / "health.route").is_file())
+        self.assertTrue((setup.PACKAGE_ROOT / "api" / "status.route").is_file())
         self.assertTrue((setup.PACKAGE_ROOT / "settings.json").is_file())
         self.assertTrue((setup.PACKAGE_ROOT / "setting.node.cn.json").is_file())
         config = json.loads((setup.PACKAGE_ROOT / "setting.node.cn.json").read_text(encoding="utf-8"))
