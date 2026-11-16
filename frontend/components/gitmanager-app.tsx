@@ -290,10 +290,7 @@ function RepositoryCard({
 	dependency,
 	archiveRoot,
 	canSnapshot,
-	updates,
 	onSelect,
-	onCheckUpdates,
-	onPullUpdate,
 	onSwitchBranch,
 }: {
 	repo: GitRepository;
@@ -301,10 +298,7 @@ function RepositoryCard({
 	dependency: boolean;
 	archiveRoot: string;
 	canSnapshot: boolean;
-	updates: UpdateAlert[];
 	onSelect: () => void;
-	onCheckUpdates: () => Promise<UpdateAlert[]>;
-	onPullUpdate: (path: string) => Promise<boolean>;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 }) {
 	const currentBranchTip = repo.branches?.find((branch) => branch.name === repo.current_branch && !branch.is_remote)?.target_oid;
@@ -325,7 +319,6 @@ function RepositoryCard({
 	const [branchSwitching, setBranchSwitching] = useState(false);
 	const [selectedBranch, setSelectedBranch] = useState(repo.current_branch || "HEAD");
 	const [branchMessage, setBranchMessage] = useState("");
-	const [isSyncing, setIsSyncing] = useState(false);
 	const [isSnapshotting, setIsSnapshotting] = useState(false);
 	const [feedback, setFeedback] = useState("");
 
@@ -403,35 +396,6 @@ function RepositoryCard({
 			setFeedback(error instanceof Error ? error.message : String(error));
 		} finally {
 			setIsSnapshotting(false);
-		}
-	}
-
-	async function handleSync() {
-		if (isSyncing || !repo.has_remote) return;
-		setIsSyncing(true);
-		setFeedback("");
-		try {
-			let update = updates.find((item) => item.repo_path === repo.path);
-			if (!update) {
-				const checked = await onCheckUpdates();
-				update = checked.find((item) => item.repo_path === repo.path);
-			}
-			if (!update) {
-				setFeedback("No fast-forward update is currently available.");
-				return;
-			}
-			if (update.working_tree_clean === false || Number(update.commits_ahead ?? 0) > 0) {
-				setFeedback("Sync blocked: local changes or outgoing commits require manual review.");
-				return;
-			}
-			const synced = await onPullUpdate(repo.path);
-			setFeedback(synced
-				? "Repository synchronized."
-				: "Sync stopped safely. Check the application status for details.");
-		} catch (error) {
-			setFeedback(error instanceof Error ? error.message : String(error));
-		} finally {
-			setIsSyncing(false);
 		}
 	}
 
@@ -535,8 +499,8 @@ function RepositoryCard({
 				</div>
 				<div className="gm-repo-card-actions">
 					{repo.has_remote && (
-						<button type="button" className="gm-card-action" onClick={() => void handleSync()} disabled={isSyncing}>
-							{isSyncing ? "Syncing…" : "⇄ Sync"}
+						<button type="button" className="gm-card-action" onClick={onSelect}>
+							⇄ Review Pull
 						</button>
 					)}
 					<button type="button" className="gm-card-action primary"
@@ -832,7 +796,6 @@ function RepositoryPage({
 	onScan,
 	onCheckUpdates,
 	updates,
-	onPullUpdate,
 	onSwitchBranch,
 	preferences,
 	onRescan,
@@ -853,7 +816,6 @@ function RepositoryPage({
 	onScan: () => void;
 	onCheckUpdates: () => Promise<UpdateAlert[]>;
 	updates: UpdateAlert[];
-	onPullUpdate: (path: string) => Promise<boolean>;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 	preferences: AppPreferences;
 	onRescan: () => void;
@@ -919,7 +881,10 @@ function RepositoryPage({
 						{updates.slice(0, 3).map((update) => (
 							<div key={update.repo_path}>
 								<span>{update.repo_name} · {update.commits_behind} behind</span>
-								<Button variant="primary" onClick={() => onPullUpdate(update.repo_path)}>Pull</Button>
+								<Button variant="primary" onClick={() => {
+									const target = repositories.find((item) => item.path === update.repo_path);
+									if (target) setSelectedRepo(target);
+								}}>Review Pull</Button>
 							</div>
 						))}
 					</div>
@@ -968,10 +933,7 @@ function RepositoryPage({
 							dependency={dependencySet.has(repo.id)}
 							archiveRoot={preferences.archiveRoot}
 							canSnapshot={preferences.archiveLocalEnabled !== false}
-							updates={updates}
 							onSelect={() => setSelectedRepo(repo)}
-							onCheckUpdates={onCheckUpdates}
-							onPullUpdate={onPullUpdate}
 							onSwitchBranch={onSwitchBranch}
 						/>
 					))}
@@ -1676,7 +1638,6 @@ export function GitManagerApp() {
 							scanTruncated={git.scanTruncated}
 							onCheckUpdates={() => git.checkUpdates()}
 							updates={git.updates}
-							onPullUpdate={(path) => git.pullUpdate(path)}
 							onSwitchBranch={git.switchBranch}
 							preferences={git.preferences}
 							onRescan={() => void git.scan()}
