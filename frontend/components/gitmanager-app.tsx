@@ -306,7 +306,10 @@ function RepositoryCard({
 	onPullUpdate: (path: string) => Promise<boolean>;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 }) {
-	const latest = repo.commits?.[0];
+	const currentBranchTip = repo.branches?.find((branch) => branch.name === repo.current_branch && !branch.is_remote)?.target_oid;
+	const latest = (currentBranchTip && repo.commits?.find((commit) => commit.oid === currentBranchTip))
+		|| repo.commits?.find((commit) => commit.is_head)
+		|| repo.commits?.[0];
 	const originRemote = repo.remotes?.find((remote) => remote.name === "origin") ?? repo.remotes?.[0];
 	const remoteFullName = originRemote?.owner && originRemote.repo_slug
 		? originRemote.owner + "/" + originRemote.repo_slug
@@ -489,6 +492,7 @@ function RepositoryCard({
 							<select value={selectedBranch}
 								onChange={(event) => void handleSwitchBranch(event.target.value)}
 								disabled={branchLoading || branchSwitching || !branchesLoaded || branches.length === 0}>
+								{!branches.some((branch) => branch.name === selectedBranch) && <option value={selectedBranch}>{selectedBranch}</option>}
 								{!branchesLoaded && <option value={selectedBranch}>Loading branches…</option>}
 								{branches.map((branch) => (
 									<option key={branch.name} value={branch.name}>
