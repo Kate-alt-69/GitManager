@@ -162,6 +162,7 @@ pub(super) fn attach_and_resume(process_id: u32) -> Result<ProcessContainment, S
             primary_thread_id = Some(entry.thread_id);
             break;
         }
+        entry.size = size_of::<ThreadEntry32>() as Dword;
         found = unsafe { Thread32Next(snapshot.0, &mut entry) } != 0;
     }
     drop(snapshot);
