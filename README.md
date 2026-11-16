@@ -1,6 +1,10 @@
-# GitManager — Native Git Workspace
+# GitManager
 
-**GitManager** is a **free, open-source** cross-platform Rust desktop application for local Git repositories, remote provider accounts, commit history and background repository updates. It is published by **Kastrick** (Copyright © 2026) under the **Apache License 2.0**. No subscription, paid tier or account is required to use the app. It uses top-and-bottom tab navigation with no permanent sidebar. The Repositories page is the local-machine homepage; GitHub/GitLab account repositories live separately under Accounts. The current Tauri 2 shell is the portable host while the Windows-specific wl_ui hosting contract is prepared for its upcoming WinUI 3 / Win32 backends.
+**By Kastrick** · Native Git Workspace
+
+![GitManager logo](frontend/static/image/git-managar-orange_default-black.png)
+
+**GitManager** is a **free, open-source** cross-platform Rust desktop application for local Git repositories, remote provider accounts, commit history and background repository updates. It is released under the **Apache License 2.0**. No subscription, paid tier or account is required to use the app. It uses top-and-bottom tab navigation with no permanent sidebar. The Repositories page is the local-machine homepage; GitHub/GitLab account repositories live separately under Accounts. The current Tauri 2 shell is the portable host while the Windows-specific wl_ui hosting contract is prepared for its upcoming WinUI 3 / Win32 backends.
 
 ---
 
@@ -45,7 +49,7 @@ Implemented in `src-tauri/src/background_service.rs` and `src-tauri/src/watcher_
   - Whenever a repository has new upstream commits, it triggers both an OS desktop notification and an in-app interactive banner asking:
     > **"Hay you have `<X-REPO_NAME>` update do you want to update it?"**
 - **Clear Animated Loading Spinner**:
-  - Displays a crisp rotating SVG loading icon (`#service-spinner-icon` and `.loading-spinner.active-spin`) while scanning remotes or when clicking **"Yes, Update Now"** to pull/fast-forward the repository.
+  - Displays the GitManager loading mark: the orange ring rotates around the stationary center PNG while scanning remotes or when clicking **"Yes, Update Now"** to pull/fast-forward the repository.
 
 ---
 
