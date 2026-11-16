@@ -191,10 +191,12 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str) -> int:
             shutil.rmtree(staging)
         staging.mkdir(parents=True, exist_ok=True)
         shutil.copy2(main_exe, staging / "git-manager.exe")
-        for name, source in sidecars.items():
-            shutil.copy2(source, staging / name)
-
         resources = staging / "resources"
+        resources.mkdir(parents=True, exist_ok=True)
+        # Tauri's shell plugin resolves externalBin sidecars from the app
+        # resource directory. crash_helper also searches this exact location.
+        for name, source in sidecars.items():
+            shutil.copy2(source, resources / name)
         (resources / "tools").mkdir(parents=True, exist_ok=True)
         cleaner = project_root / "tools" / "gitmanager_cleaner.py"
         if not cleaner.is_file():
@@ -211,8 +213,12 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str) -> int:
 
         # Fail closed before MPDEV if any packaged executable or the private
         # interpreter is missing or empty. No machine-wide Python is used.
-        required = ["git-manager.exe", *sidecars.keys(), "resources/python/python.exe",
-                    "resources/tools/gitmanager_cleaner.py"]
+        required = [
+            "git-manager.exe",
+            *(f"resources/{name}" for name in sidecars),
+            "resources/python/python.exe",
+            "resources/tools/gitmanager_cleaner.py",
+        ]
         empty = [
             relative for relative in required
             if not (staging / relative).is_file() or (staging / relative).stat().st_size == 0
