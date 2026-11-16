@@ -458,8 +458,12 @@ async function openPullPreflight(repoPath) {
   const title = document.getElementById("operation-modal-title");
   const subtitle = document.getElementById("operation-modal-subtitle");
   activePullPreview = null;
+  activeOperationKind = "pull";
+  pendingDeletePath = null;
   activePullRepoPath = repoPath;
   if (backdrop) backdrop.classList.remove("hidden");
+  const confirmButton = document.getElementById("btn-confirm-pull");
+  if (confirmButton) { confirmButton.classList.remove("btn-danger"); confirmButton.classList.add("btn-success"); }
   if (title) title.textContent = "Preparing Sync preview…";
   if (subtitle) subtitle.textContent = "Fetching the configured upstream and inspecting the working tree.";
   if (summary) summary.innerHTML = '<div class="sync-loading-state">Checking branch ancestry and local changes…</div>';
@@ -484,6 +488,8 @@ async function openPullPreflight(repoPath) {
 
 function closePullPreflight() {
   document.getElementById("operation-modal-backdrop")?.classList.add("hidden");
+  const confirm = document.getElementById("btn-confirm-pull");
+  if (confirm) { confirm.classList.remove("btn-danger"); confirm.classList.add("btn-success"); }
   activePullPreview = null;
   activePullRepoPath = null;
   activeOperationKind = "pull";
@@ -1960,11 +1966,20 @@ async function applyRepositoryStageAction(repo, stage) {
   }
 }
 
-function wireRepositoryCodeActions(repo) {
+function wireRepositoryCodeActions() {
   const actions = [
-    ["btn-stage-selected", () => void applyRepositoryStageAction(repo, true)],
-    ["btn-unstage-selected", () => void applyRepositoryStageAction(repo, false)],
-    ["btn-commit-staged", () => openCommitReview(repo)],
+    ["btn-stage-selected", () => {
+      const repo = getRepositoryById(selectedRepoId);
+      if (repo) void applyRepositoryStageAction(repo, true);
+    }],
+    ["btn-unstage-selected", () => {
+      const repo = getRepositoryById(selectedRepoId);
+      if (repo) void applyRepositoryStageAction(repo, false);
+    }],
+    ["btn-commit-staged", () => {
+      const repo = getRepositoryById(selectedRepoId);
+      if (repo) openCommitReview(repo);
+    }],
     ["btn-clean-generated", () => document.getElementById("btn-open-cleaner")?.click()]
   ];
   for (const [id, handler] of actions) {
@@ -2039,7 +2054,7 @@ function renderRepositoryCodeWorkspace(repo) {
     });
   }
   setRepositoryWorkspacePanel(activeRepositoryPanel || "code");
-  wireRepositoryCodeActions(repo);
+  wireRepositoryCodeActions();
   void loadRepositoryChanges(repo);
   if (repo.source_kind !== "local_scan") {
     list.innerHTML = '<div class="repo-code-empty"><strong>No local working copy</strong><small>Clone this remote repository to browse Local files and fetched Remote branches here.</small></div>';
