@@ -2041,3 +2041,14 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   .repo-code-changes-heading{align-items:flex-start;flex-direction:column;gap:4px}
   .repo-code-change-actions .btn{flex:1 1 44%}
 }
+
+.repo-change-row{display:flex;align-items:center;gap:9px;min-height:38px;padding:6px 2px;border-bottom:1px solid var(--border-subtle)}
+.repo-change-row:last-child{border-bottom:0}
+.repo-change-diff-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+.repo-change-diff-button{padding:4px 7px;color:var(--accent-blue);background:transparent;border:1px solid var(--border-subtle);border-radius:5px;font:inherit;font-size:9px;font-weight:650;cursor:pointer}
+.repo-change-diff-button:hover{background:var(--bg-hover);border-color:var(--accent-blue)}
+@media(max-width:760px){
+  .repo-change-row{align-items:flex-start;flex-wrap:wrap}
+  .repo-change-file{flex-basis:calc(100% - 34px)}
+  .repo-change-diff-actions{margin-left:27px}
+}
