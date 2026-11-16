@@ -679,7 +679,6 @@ function RepositoryDetail({
 			<RepositoryWorkspace
 				repo={displayRepo}
 				onRepositoryUpdated={onRepositoryLoaded}
-				onRefresh={onRescan}
 			/>
 
 			<div className="gm-detail-columns">
