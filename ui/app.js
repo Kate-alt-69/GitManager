@@ -1919,11 +1919,17 @@ function renderRepositoryChanges(repo) {
       const selected = selectedChangePaths.has(change.path);
       const label = [change.indexStatus !== "Clean" ? "Staged · " + change.indexStatus : "",
         change.worktreeStatus !== "Clean" ? change.worktreeStatus : ""].filter(Boolean).join(" · ");
-      return '<label class="repo-change-row">' +
-        '<input type="checkbox" data-repo-change-path="' + escapeHtml(change.path) + '" ' + (selected ? "checked" : "") + ' />' +
+      const stagedDiff = change.indexStatus !== "Clean";
+      const unstagedDiff = change.worktreeStatus !== "Clean" && change.worktreeStatus !== "Untracked";
+      return '<div class="repo-change-row">' +
+        '<input type="checkbox" data-repo-change-path="' + escapeHtml(change.path) + '" ' + (selected ? "checked" : "") + ' aria-label="Select ' + escapeHtml(change.path) + '" />' +
         '<span class="repo-change-file"><strong>' + escapeHtml(change.path) + '</strong><small>' + escapeHtml(label || "Changed") + '</small></span>' +
         '<span class="repo-change-badge ' + (change.staged ? "is-staged" : "is-unstaged") + '">' + (change.staged ? "Staged" : "Unstaged") + '</span>' +
-      '</label>';
+        '<span class="repo-change-diff-actions">' +
+          (stagedDiff ? '<button type="button" class="repo-change-diff-button" data-repo-change-diff="' + escapeHtml(change.path) + '" data-repo-change-staged="true">Staged diff</button>' : '') +
+          (unstagedDiff ? '<button type="button" class="repo-change-diff-button" data-repo-change-diff="' + escapeHtml(change.path) + '" data-repo-change-staged="false">Unstaged diff</button>' : '') +
+        '</span>' +
+      '</div>';
     }).join("");
     list.querySelectorAll("[data-repo-change-path]").forEach((input) => {
       input.addEventListener("change", () => {
@@ -1932,6 +1938,13 @@ function renderRepositoryChanges(repo) {
         if (input.checked) selectedChangePaths.add(path);
         else selectedChangePaths.delete(path);
         renderRepositoryChanges(repo);
+      });
+    });
+    list.querySelectorAll("[data-repo-change-diff]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const path = button.getAttribute("data-repo-change-diff");
+        if (!path) return;
+        void loadRepositoryFileDiff(repo, path, button.getAttribute("data-repo-change-staged") === "true");
       });
     });
   }
@@ -1944,6 +1957,22 @@ function renderRepositoryChanges(repo) {
   if (commitButton) {
     commitButton.disabled = stagedCount === 0;
     commitButton.textContent = stagedCount ? "Commit staged (" + stagedCount + ")" : "Commit staged";
+  }
+}
+
+async function loadRepositoryFileDiff(repo, relativePath, staged) {
+  const preview = document.getElementById("repo-code-preview");
+  const heading = document.querySelector(".repo-code-preview-heading strong");
+  if (!preview) return;
+  if (heading) heading.textContent = (staged ? "Staged diff · " : "Unstaged diff · ") + relativePath;
+  preview.textContent = "Loading diff for " + relativePath + "…";
+  try {
+    const diff = await tauriInvoke("read_repository_file_diff", {
+      repoPath: repo.path, relativePath, staged
+    });
+    preview.textContent = diff;
+  } catch (failure) {
+    preview.textContent = String((failure && failure.message) || failure);
   }
 }
 
