@@ -441,23 +441,18 @@ pub fn switch_repository_branch(workdir: &Path, branch_name: &str) -> Result<Git
         let reference_name = branch.get().name()
             .ok_or_else(|| "The selected branch has an invalid reference name.".to_string())?
             .to_string();
-        let original_reference = repo.head().ok()
+        let target_commit = branch.get().peel_to_commit()
+            .map_err(|error| format!("Local branch '{requested}' does not point to a commit: {error}"))?;
+        let current_reference = repo.head().ok()
             .and_then(|reference| reference.name().map(str::to_string));
-        let original_oid = repo.head().ok().and_then(|reference| reference.target());
 
-        if original_reference.as_deref() != Some(reference_name.as_str()) {
-            repo.set_head(&reference_name)
-                .map_err(|error| format!("Could not select branch '{requested}': {error}"))?;
+        if current_reference.as_deref() != Some(reference_name.as_str()) {
             let mut checkout = CheckoutBuilder::new();
             checkout.safe();
-            if let Err(error) = repo.checkout_head(Some(&mut checkout)) {
-                if let Some(reference) = original_reference.as_deref() {
-                    let _ = repo.set_head(reference);
-                } else if let Some(oid) = original_oid {
-                    let _ = repo.set_head_detached(oid);
-                }
-                return Err(format!("Could not safely switch to '{requested}': {error}"));
-            }
+            repo.checkout_tree(target_commit.as_object(), Some(&mut checkout))
+                .map_err(|error| format!("Could not safely check out '{requested}': {error}"))?;
+            repo.set_head(&reference_name)
+                .map_err(|error| format!("Files were checked out, but HEAD could not be moved to '{requested}': {error}"))?;
         }
 
         repo.path().to_path_buf()
