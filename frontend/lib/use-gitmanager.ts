@@ -132,22 +132,6 @@ export function useGitManager() {
 		}
 	}, [preferences.scanRoots]);
 
-	const pullUpdate = useCallback(async (repoPath: string) => {
-		setStatus("Pulling verified fast-forward update…");
-		try {
-			await invoke("pull_repository_update", { repoPath });
-			setUpdates((current) => current.filter((item) => item.repo_path !== repoPath));
-			await performScan(preferences);
-			setStatus("Repository updated");
-			return true;
-		} catch (cause) {
-			const message = cause instanceof Error ? cause.message : String(cause);
-			setError(message);
-			setStatus("Update stopped safely");
-			return false;
-		}
-	}, [performScan, preferences]);
-
 	const switchBranch = useCallback(async (repoPath: string, branchName: string) => {
 		setStatus("Switching local branch safely…");
 		try {
@@ -266,6 +250,6 @@ export function useGitManager() {
 	return {
 		available, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, updates, setupOpen, setSetupOpen,
-		status, error, setError, scan, savePreferences, checkUpdates, pullUpdate, switchBranch, updateRepository, connectAccount,
+		status, error, setError, scan, savePreferences, checkUpdates, switchBranch, updateRepository, connectAccount,
 	};
 }
