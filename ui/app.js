@@ -188,6 +188,12 @@ let selectedRepoId = null;
 let repositoryScanInProgress = false;
 let activePullPreview = null;
 let activePullRepoPath = null;
+let activeOperationKind = "pull";
+let pendingDeletePath = null;
+let pendingDeleteIsDirectory = false;
+let selectedRepositoryChanges = [];
+let selectedChangePaths = new Set();
+let activeCodeSelectedPath = null;
 let activeWorkspaceRepoId = null;
 let activeRepositoryPanel = "code";
 let activeCodeSource = "local";
@@ -340,7 +346,29 @@ function updatePullPreflightControls() {
   const note = document.getElementById("sync-preflight-note");
   const commitFields = document.getElementById("sync-commit-fields");
   const fileList = document.getElementById("sync-change-list");
-  if (!preview || !confirmButton) return;
+  if (!confirmButton) return;
+
+  if (activeOperationKind === "commit") {
+    const staged = selectedRepositoryChanges.filter((change) => change.staged);
+    const message = String(document.getElementById("sync-commit-message")?.value || "").trim();
+    if (commitFields) commitFields.classList.remove("hidden");
+    confirmButton.disabled = staged.length === 0 || !message;
+    confirmButton.textContent = "Create commit";
+    if (note) note.textContent = staged.length
+      ? "Only staged files will be committed. Unstaged changes stay in your working tree. Creating the commit does not push it to a remote."
+      : "Stage at least one file before creating a commit.";
+    return;
+  }
+
+  if (activeOperationKind === "delete") {
+    if (commitFields) commitFields.classList.add("hidden");
+    confirmButton.disabled = !pendingDeletePath;
+    confirmButton.textContent = "Delete permanently";
+    if (note) note.textContent = "This removes the selected local item immediately after confirmation. Tracked files will appear as deletions in Changes; untracked files cannot be restored by Git.";
+    return;
+  }
+
+  if (!preview) return;
   const mode = selectedPullMode();
   if (commitFields) commitFields.classList.toggle("hidden", mode !== "commit");
   if (fileList) fileList.classList.toggle("sync-commit-selection", mode === "commit");
@@ -458,6 +486,9 @@ function closePullPreflight() {
   document.getElementById("operation-modal-backdrop")?.classList.add("hidden");
   activePullPreview = null;
   activePullRepoPath = null;
+  activeOperationKind = "pull";
+  pendingDeletePath = null;
+  pendingDeleteIsDirectory = false;
 }
 
 async function acceptAndPullRepoUpdate(repoPath) {
@@ -505,6 +536,154 @@ async function acceptAndPullRepoUpdate(repoPath) {
   }
 }
 
+function openCommitReview(repo) {
+  const staged = selectedRepositoryChanges.filter((change) => change.staged);
+  if (!staged.length) return;
+  activeOperationKind = "commit";
+  activePullPreview = null;
+  activePullRepoPath = repo.path;
+  pendingDeletePath = null;
+  const backdrop = document.getElementById("operation-modal-backdrop");
+  const title = document.getElementById("operation-modal-title");
+  const subtitle = document.getElementById("operation-modal-subtitle");
+  const summary = document.getElementById("sync-preflight-summary");
+  const changes = document.getElementById("sync-change-list");
+  const modes = document.getElementById("sync-preparation-options");
+  const fields = document.getElementById("sync-commit-fields");
+  const message = document.getElementById("sync-commit-message");
+  const error = document.getElementById("sync-preflight-error");
+  if (backdrop) backdrop.classList.remove("hidden");
+  if (title) title.textContent = "Create local commit";
+  if (subtitle) subtitle.textContent = repo.name + " · " + (repo.current_branch || "current branch");
+  if (summary) summary.innerHTML =
+    '<div class="sync-summary-stat"><strong>' + staged.length + '</strong><span>Staged paths</span></div>' +
+    '<div class="sync-summary-stat"><strong>' + selectedRepositoryChanges.filter((change) => !change.staged).length + '</strong><span>Unstaged paths</span></div>' +
+    '<div class="sync-summary-stat"><strong>' + escapeHtml(repo.current_branch || "HEAD") + '</strong><span>Target branch</span></div>' +
+    '<div class="sync-summary-stat"><strong>Local</strong><span>Not pushed</span></div>';
+  if (changes) changes.innerHTML = staged.map((change) =>
+    '<div class="sync-change-row"><span class="sync-change-path"><strong>' + escapeHtml(change.path) +
+    '</strong><small>' + escapeHtml(change.indexStatus) + '</small></span><span class="sync-change-state">Staged</span></div>'
+  ).join("");
+  if (modes) modes.classList.add("hidden");
+  if (fields) fields.classList.remove("hidden");
+  if (message) { message.value = ""; message.oninput = updatePullPreflightControls; }
+  if (error) { error.textContent = ""; error.classList.add("hidden"); }
+  const note = document.getElementById("sync-preflight-note");
+  if (note) note.textContent = "Only staged files will be committed. Unstaged changes stay in your working tree. Creating the commit does not push it to a remote.";
+  const confirm = document.getElementById("btn-confirm-pull");
+  if (confirm) { confirm.classList.remove("btn-danger"); confirm.classList.add("btn-success"); }
+  updatePullPreflightControls();
+}
+
+async function acceptRepositoryCommit(repoPath) {
+  if (repoPath !== activePullRepoPath) return;
+  updatePullPreflightControls();
+  const confirm = document.getElementById("btn-confirm-pull");
+  const message = String(document.getElementById("sync-commit-message")?.value || "").trim();
+  if (!confirm || confirm.disabled || !message) return;
+  pullingRepoPaths.add(repoPath);
+  confirm.disabled = true;
+  confirm.textContent = "Committing…";
+  setServiceCheckingVisual(true, "Creating local commit…");
+  try {
+    const result = await tauriInvoke("create_repository_commit", { repoPath, message });
+    const oid = Array.isArray(result) ? result[0] : "";
+    closePullPreflight();
+    setServiceCheckingVisual(false, oid ? "Commit created · " + String(oid).slice(0, 7) : "Commit created");
+    await runMachineScan();
+    const repo = getRepositoryById(selectedRepoId);
+    if (repo) {
+      selectedRepositoryChanges = await tauriInvoke("get_repository_changes", { repoPath: repo.path });
+      selectedChangePaths.clear();
+      renderRepositoryChanges(repo);
+    }
+  } catch (failure) {
+    const error = document.getElementById("sync-preflight-error");
+    if (error) {
+      error.textContent = String((failure && failure.message) || failure || "Commit failed.");
+      error.classList.remove("hidden");
+    }
+  } finally {
+    pullingRepoPaths.delete(repoPath);
+    const button = document.getElementById("btn-confirm-pull");
+    if (button) { button.classList.remove("btn-danger"); button.classList.add("btn-success"); updatePullPreflightControls(); }
+    setServiceCheckingVisual(false, "Svc: Watching Remotes");
+  }
+}
+
+function openDeleteReview(repo, relativePath, isDirectory) {
+  activeOperationKind = "delete";
+  activePullPreview = null;
+  activePullRepoPath = repo.path;
+  pendingDeletePath = relativePath;
+  pendingDeleteIsDirectory = Boolean(isDirectory);
+  const backdrop = document.getElementById("operation-modal-backdrop");
+  const title = document.getElementById("operation-modal-title");
+  const subtitle = document.getElementById("operation-modal-subtitle");
+  const summary = document.getElementById("sync-preflight-summary");
+  const changes = document.getElementById("sync-change-list");
+  const modes = document.getElementById("sync-preparation-options");
+  const fields = document.getElementById("sync-commit-fields");
+  const message = document.getElementById("sync-commit-message");
+  const error = document.getElementById("sync-preflight-error");
+  if (backdrop) backdrop.classList.remove("hidden");
+  if (title) title.textContent = "Delete " + (isDirectory ? "folder" : "file") + "?";
+  if (subtitle) subtitle.textContent = repo.name + " · " + relativePath;
+  if (summary) summary.innerHTML =
+    '<div class="sync-summary-stat"><strong>' + (isDirectory ? "Folder" : "File") + '</strong><span>Local item</span></div>' +
+    '<div class="sync-summary-stat"><strong>Permanent</strong><span>Filesystem operation</span></div>' +
+    '<div class="sync-summary-stat"><strong>Git-aware</strong><span>Tracked deletion appears in Changes</span></div>' +
+    '<div class="sync-summary-stat"><strong>No push</strong><span>Remote unchanged</span></div>';
+  if (changes) changes.innerHTML =
+    '<div class="sync-delete-target"><strong>' + escapeHtml(relativePath) + '</strong><small>' +
+    (isDirectory ? "The folder and its contents will be removed from the local working tree." : "This file will be removed from the local working tree.") +
+    '</small></div>';
+  if (modes) modes.classList.add("hidden");
+  if (fields) fields.classList.add("hidden");
+  if (message) { message.value = ""; message.oninput = null; }
+  if (error) { error.textContent = ""; error.classList.add("hidden"); }
+  const note = document.getElementById("sync-preflight-note");
+  if (note) note.textContent = "This action cannot be undone from GitManager. Tracked files will appear as deleted in Changes and can be restored from Git before committing. Untracked files are permanently removed.";
+  const confirm = document.getElementById("btn-confirm-pull");
+  if (confirm) { confirm.classList.remove("btn-success"); confirm.classList.add("btn-danger"); }
+  updatePullPreflightControls();
+}
+
+async function acceptRepositoryDelete(repoPath) {
+  const relativePath = pendingDeletePath;
+  if (!relativePath || repoPath !== activePullRepoPath) return;
+  const confirm = document.getElementById("btn-confirm-pull");
+  if (!confirm || confirm.disabled) return;
+  pullingRepoPaths.add(repoPath);
+  confirm.disabled = true;
+  confirm.textContent = "Deleting…";
+  setServiceCheckingVisual(true, "Deleting " + relativePath + "…");
+  try {
+    const message = await tauriInvoke("delete_repository_path", { repoPath, relativePath });
+    closePullPreflight();
+    setServiceCheckingVisual(false, message || "Item deleted");
+    await runMachineScan();
+    const repo = getRepositoryById(selectedRepoId);
+    if (repo) {
+      selectedRepositoryChanges = await tauriInvoke("get_repository_changes", { repoPath: repo.path });
+      selectedChangePaths.clear();
+      renderRepositoryChanges(repo);
+      await loadRepositoryCodeDirectory(repo);
+    }
+  } catch (failure) {
+    const error = document.getElementById("sync-preflight-error");
+    if (error) {
+      error.textContent = String((failure && failure.message) || failure || "Deletion failed.");
+      error.classList.remove("hidden");
+    }
+  } finally {
+    pullingRepoPaths.delete(repoPath);
+    const button = document.getElementById("btn-confirm-pull");
+    if (button) { button.classList.remove("btn-danger"); button.classList.add("btn-success"); updatePullPreflightControls(); }
+    setServiceCheckingVisual(false, "Svc: Watching Remotes");
+  }
+}
+
 function initializePullPreflightDialog() {
   document.getElementById("btn-cancel-pull")?.addEventListener("click", closePullPreflight);
   document.getElementById("btn-close-operation-modal")?.addEventListener("click", closePullPreflight);
@@ -512,7 +691,10 @@ function initializePullPreflightDialog() {
     if (event.target === document.getElementById("operation-modal-backdrop")) closePullPreflight();
   });
   document.getElementById("btn-confirm-pull")?.addEventListener("click", () => {
-    if (activePullRepoPath) void acceptAndPullRepoUpdate(activePullRepoPath);
+    if (!activePullRepoPath) return;
+    if (activeOperationKind === "commit") void acceptRepositoryCommit(activePullRepoPath);
+    else if (activeOperationKind === "delete") void acceptRepositoryDelete(activePullRepoPath);
+    else void acceptAndPullRepoUpdate(activePullRepoPath);
   });
 }
 
@@ -1684,6 +1866,116 @@ function setRepositoryWorkspacePanel(panelName) {
   });
 }
 
+function renderRepositoryChanges(repo) {
+  const panel = document.getElementById("repo-code-changes-panel");
+  const list = document.getElementById("repo-code-changes-list");
+  const count = document.getElementById("repo-code-changes-count");
+  const stageButton = document.getElementById("btn-stage-selected");
+  const unstageButton = document.getElementById("btn-unstage-selected");
+  const commitButton = document.getElementById("btn-commit-staged");
+  const cleanButton = document.getElementById("btn-clean-generated");
+  if (!panel || !list) return;
+  const localSource = activeCodeSource === "local" && repo.source_kind === "local_scan";
+  panel.classList.toggle("hidden", !localSource);
+  if (cleanButton) cleanButton.classList.toggle("hidden", !localSource);
+  if (!localSource) return;
+
+  const changes = selectedRepositoryChanges;
+  if (count) count.textContent = String(changes.length);
+  if (!changes.length) {
+    list.innerHTML = '<div class="repo-code-changes-empty"><span class="sync-clean-icon">✓</span><strong>Working tree clean</strong><small>No staged or unstaged changes.</small></div>';
+  } else {
+    list.innerHTML = changes.map((change) => {
+      const selected = selectedChangePaths.has(change.path);
+      const label = [change.indexStatus !== "Clean" ? "Staged · " + change.indexStatus : "",
+        change.worktreeStatus !== "Clean" ? change.worktreeStatus : ""].filter(Boolean).join(" · ");
+      return '<label class="repo-change-row">' +
+        '<input type="checkbox" data-repo-change-path="' + escapeHtml(change.path) + '" ' + (selected ? "checked" : "") + ' />' +
+        '<span class="repo-change-file"><strong>' + escapeHtml(change.path) + '</strong><small>' + escapeHtml(label || "Changed") + '</small></span>' +
+        '<span class="repo-change-badge ' + (change.staged ? "is-staged" : "is-unstaged") + '">' + (change.staged ? "Staged" : "Unstaged") + '</span>' +
+      '</label>';
+    }).join("");
+    list.querySelectorAll("[data-repo-change-path]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const path = input.getAttribute("data-repo-change-path");
+        if (!path) return;
+        if (input.checked) selectedChangePaths.add(path);
+        else selectedChangePaths.delete(path);
+        renderRepositoryChanges(repo);
+      });
+    });
+  }
+  const selected = changes.filter((change) => selectedChangePaths.has(change.path));
+  const canStage = selected.some((change) => !change.staged);
+  const canUnstage = selected.some((change) => change.staged);
+  const stagedCount = changes.filter((change) => change.staged).length;
+  if (stageButton) stageButton.disabled = !canStage;
+  if (unstageButton) unstageButton.disabled = !canUnstage;
+  if (commitButton) {
+    commitButton.disabled = stagedCount === 0;
+    commitButton.textContent = stagedCount ? "Commit staged (" + stagedCount + ")" : "Commit staged";
+  }
+}
+
+async function loadRepositoryChanges(repo) {
+  const list = document.getElementById("repo-code-changes-list");
+  if (!list) return;
+  if (repo.source_kind !== "local_scan") {
+    selectedRepositoryChanges = [];
+    selectedChangePaths.clear();
+    renderRepositoryChanges(repo);
+    return;
+  }
+  list.innerHTML = '<div class="repo-code-loading">Checking local changes…</div>';
+  try {
+    selectedRepositoryChanges = await tauriInvoke("get_repository_changes", { repoPath: repo.path });
+    const valid = new Set(selectedRepositoryChanges.map((change) => change.path));
+    selectedChangePaths = new Set(Array.from(selectedChangePaths).filter((path) => valid.has(path)));
+    renderRepositoryChanges(repo);
+  } catch (failure) {
+    list.innerHTML = '<div class="repo-code-empty"><strong>Could not read working tree status</strong><small>' +
+      escapeHtml(String((failure && failure.message) || failure)) + '</small></div>';
+  }
+}
+
+async function applyRepositoryStageAction(repo, stage) {
+  const selected = selectedRepositoryChanges.filter((change) =>
+    selectedChangePaths.has(change.path) && (stage ? !change.staged : change.staged)
+  ).map((change) => change.path);
+  if (!selected.length) return;
+  const button = document.getElementById(stage ? "btn-stage-selected" : "btn-unstage-selected");
+  if (button) { button.disabled = true; button.textContent = stage ? "Staging…" : "Unstaging…"; }
+  try {
+    selectedRepositoryChanges = await tauriInvoke(stage ? "stage_repository_paths" : "unstage_repository_paths", {
+      repoPath: repo.path, paths: selected
+    });
+    selectedChangePaths.clear();
+    renderRepositoryChanges(repo);
+  } catch (failure) {
+    const list = document.getElementById("repo-code-changes-list");
+    if (list) list.insertAdjacentHTML("afterbegin", '<div class="repo-code-inline-error">' + escapeHtml(String((failure && failure.message) || failure)) + '</div>');
+  } finally {
+    if (button) button.textContent = stage ? "Stage selected" : "Unstage selected";
+    renderRepositoryChanges(repo);
+  }
+}
+
+function wireRepositoryCodeActions(repo) {
+  const actions = [
+    ["btn-stage-selected", () => void applyRepositoryStageAction(repo, true)],
+    ["btn-unstage-selected", () => void applyRepositoryStageAction(repo, false)],
+    ["btn-commit-staged", () => openCommitReview(repo)],
+    ["btn-clean-generated", () => document.getElementById("btn-open-cleaner")?.click()]
+  ];
+  for (const [id, handler] of actions) {
+    const button = document.getElementById(id);
+    if (button && button.dataset.bound !== "true") {
+      button.dataset.bound = "true";
+      button.addEventListener("click", handler);
+    }
+  }
+}
+
 function renderRepositoryCodeWorkspace(repo) {
   const panel = document.getElementById("repo-code-panel");
   const list = document.getElementById("repo-code-file-list");
@@ -1696,6 +1988,9 @@ function renderRepositoryCodeWorkspace(repo) {
     activeCodeSource = "local";
     activeCodePath = "";
     activeCodeBranch = (repo.branches || []).find((branch) => branch.is_remote)?.name || "";
+    selectedRepositoryChanges = [];
+    selectedChangePaths.clear();
+    activeCodeSelectedPath = null;
   }
   panel.querySelectorAll("[data-code-source]").forEach((button) => {
     const active = button.getAttribute("data-code-source") === activeCodeSource;
@@ -1744,6 +2039,8 @@ function renderRepositoryCodeWorkspace(repo) {
     });
   }
   setRepositoryWorkspacePanel(activeRepositoryPanel || "code");
+  wireRepositoryCodeActions(repo);
+  void loadRepositoryChanges(repo);
   if (repo.source_kind !== "local_scan") {
     list.innerHTML = '<div class="repo-code-empty"><strong>No local working copy</strong><small>Clone this remote repository to browse Local files and fetched Remote branches here.</small></div>';
     preview.textContent = "A local working copy is required for the repository file browser.";
@@ -1779,12 +2076,17 @@ async function loadRepositoryCodeDirectory(repo) {
       return;
     }
     list.innerHTML = entries.map((entry) =>
-      '<button type="button" class="repo-code-file ' + (entry.isDir ? "is-directory" : "") +
-      '" data-code-path="' + escapeHtml(entry.path) + '" data-code-directory="' + (entry.isDir ? "true" : "false") +
-      '" ' + (entry.isSymlink ? "disabled" : "") + '><span class="repo-code-file-icon">' +
-      (entry.isDir ? "▰" : entry.isSymlink ? "↗" : "▤") + '</span><span class="repo-code-file-name">' +
-      escapeHtml(entry.name) + '</span><span class="repo-code-file-size">' +
-      (entry.isDir ? "" : entry.isSymlink ? "Symlink" : formatRepositoryFileSize(entry.sizeBytes)) + '</span></button>'
+      '<div class="repo-code-file-row">' +
+        '<button type="button" class="repo-code-file ' + (entry.isDir ? "is-directory" : "") +
+          '" data-code-path="' + escapeHtml(entry.path) + '" data-code-directory="' + (entry.isDir ? "true" : "false") +
+          '" ' + (entry.isSymlink ? "disabled" : "") + '><span class="repo-code-file-icon">' +
+          (entry.isDir ? "▰" : entry.isSymlink ? "↗" : "▤") + '</span><span class="repo-code-file-name">' +
+          escapeHtml(entry.name) + '</span><span class="repo-code-file-size">' +
+          (entry.isDir ? "" : entry.isSymlink ? "Symlink" : formatRepositoryFileSize(entry.sizeBytes)) + '</span></button>' +
+        (activeCodeSource === "local" ? '<button type="button" class="repo-code-file-delete" data-code-delete-path="' +
+          escapeHtml(entry.path) + '" data-code-delete-directory="' + (entry.isDir ? "true" : "false") +
+          '" aria-label="Delete ' + escapeHtml(entry.name) + '" title="Delete locally">×</button>' : "") +
+      '</div>'
     ).join("");
     list.querySelectorAll("[data-code-path]").forEach((button) => {
       button.addEventListener("click", async () => {
@@ -1795,6 +2097,7 @@ async function loadRepositoryCodeDirectory(repo) {
           void loadRepositoryCodeDirectory(repo);
           return;
         }
+        activeCodeSelectedPath = path;
         preview.textContent = "Loading " + path + "…";
         try {
           const content = await tauriInvoke("read_repository_file", {
@@ -1802,9 +2105,18 @@ async function loadRepositoryCodeDirectory(repo) {
             branch: activeCodeSource === "remote" ? activeCodeBranch : null
           });
           preview.textContent = content;
+          const heading = document.querySelector(".repo-code-preview-heading strong");
+          if (heading) heading.textContent = path;
         } catch (failure) {
           preview.textContent = String((failure && failure.message) || failure);
         }
+      });
+    });
+    list.querySelectorAll("[data-code-delete-path]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const selectedRepo = getRepositoryById(selectedRepoId);
+        const path = button.getAttribute("data-code-delete-path");
+        if (selectedRepo && path) openDeleteReview(selectedRepo, path, button.getAttribute("data-code-delete-directory") === "true");
       });
     });
   } catch (failure) {
