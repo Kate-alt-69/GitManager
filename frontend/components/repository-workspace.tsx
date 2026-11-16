@@ -419,7 +419,6 @@ export function RepositoryWorkspace({
 	const stagedCount = changes.filter((change) => change.staged).length;
 	const unstagedCount = changes.filter((change) => !change.staged || change.worktreeStatus !== "Clean").length;
 	const pathParts = currentPath.split("/").filter(Boolean);
-	const currentRemote = (repo.remotes ?? []).find((item) => item.name === "origin") ?? repo.remotes?.[0];
 
 	return (
 		<section className="gm-workspace-panel">
