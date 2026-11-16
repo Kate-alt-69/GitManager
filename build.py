@@ -153,40 +153,79 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
     return 0
 
 
-def verify_windows_application_bundle(project_root: Path) -> Optional[Path]:
-    """Verify Tauri produced the raw Windows app bundle for MPDEV packaging."""
+def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str) -> int:
+    """Stage the raw Windows app and every runtime/sidecar for MPDEV packaging."""
     if platform.system() != "Windows":
-        return None
-    app_root = project_root / "target" / "release" / "bundle" / "app"
-    if not app_root.is_dir():
-        log_err(f"Tauri Windows app bundle is missing: {app_root}")
-        return None
-    executable_names = {"git-manager.exe", "gitmanager.exe"}
-    executables = [
-        path for path in app_root.rglob("*.exe")
-        if path.is_file() and path.name.lower() in executable_names
-    ]
-    if len(executables) != 1:
-        log_err(
-            "Expected exactly one GitManager desktop executable in the Tauri app bundle; "
-            f"found {len(executables)} under {app_root}."
-        )
-        return None
-    app_dir = executables[0].parent
-    required_sidecars = ("crash_helper.exe", "git-manager-service.exe", "gitm.exe", "gitmanager-setup.exe")
-    missing = [
-        name for name in required_sidecars
-        if not any(path.is_file() and path.name.lower() == name for path in app_dir.rglob("*.exe"))
-    ]
+        return 0
+
+    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", project_root / "target"))
+    if not target_dir.is_absolute():
+        target_dir = project_root / target_dir
+    profile_dir = target_dir / "release"
+    main_exe = profile_dir / "git-manager.exe"
+    if not main_exe.is_file():
+        log_err(f"Windows desktop executable is missing: {main_exe}")
+        return 1
+
+    try:
+        triple = resolve_rust_target_triple(toolchain_arg)
+    except RuntimeError as error:
+        log_err(str(error))
+        return 1
+
+    sidecar_dir = project_root / "src-tauri" / "binaries"
+    sidecars = {
+        "gitm.exe": sidecar_dir / f"gitm-{triple}.exe",
+        "gitmanager-setup.exe": sidecar_dir / f"gitmanager-setup-{triple}.exe",
+        "crash_helper.exe": sidecar_dir / f"crash_helper-{triple}.exe",
+        "git-manager-service.exe": sidecar_dir / f"git-manager-service-{triple}.exe",
+    }
+    missing = [name for name, source in sidecars.items() if not source.is_file()]
     if missing:
-        log_err("Tauri app bundle is missing required Windows sidecars: " + ", ".join(missing))
-        return None
-    python_runtime = app_dir / "resources" / "python" / "python.exe"
-    if not python_runtime.is_file():
-        log_err(f"Bundled Python runtime is missing from the Windows app bundle: {python_runtime}")
-        return None
-    log_ok(f"Verified raw Windows application bundle for MPDEV: {app_dir}")
-    return app_dir
+        log_err("Windows sidecar staging is incomplete; missing: " + ", ".join(missing))
+        return 1
+
+    staging = target_dir / "windows-package" / "source"
+    try:
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(main_exe, staging / "git-manager.exe")
+        for name, source in sidecars.items():
+            shutil.copy2(source, staging / name)
+
+        resources = staging / "resources"
+        (resources / "tools").mkdir(parents=True, exist_ok=True)
+        cleaner = project_root / "tools" / "gitmanager_cleaner.py"
+        if not cleaner.is_file():
+            raise FileNotFoundError(f"GitManager cleaner resource is missing: {cleaner}")
+        shutil.copy2(cleaner, resources / "tools" / cleaner.name)
+
+        python_source = project_root / "tools" / "runtime" / "python"
+        python_exe = python_source / "python.exe"
+        required_python = (python_exe, python_source / "python314.zip", python_source / "python314._pth")
+        missing_python = [path.name for path in required_python if not path.is_file()]
+        if missing_python:
+            raise FileNotFoundError("Bundled CPython runtime is incomplete: " + ", ".join(missing_python))
+        shutil.copytree(python_source, resources / "python", dirs_exist_ok=True)
+
+        # Fail closed before MPDEV if any packaged executable or the private
+        # interpreter is missing or empty. No machine-wide Python is used.
+        required = ["git-manager.exe", *sidecars.keys(), "resources/python/python.exe",
+                    "resources/tools/gitmanager_cleaner.py"]
+        empty = [
+            relative for relative in required
+            if not (staging / relative).is_file() or (staging / relative).stat().st_size == 0
+        ]
+        if empty:
+            raise FileNotFoundError("Windows package staging is incomplete: " + ", ".join(empty))
+    except OSError as error:
+        log_err(f"Could not stage the Windows application for Master Packager Dev: {error}")
+        return 1
+
+    log_ok(f"Staged complete Windows app payload for MPDEV: {staging}")
+    log_info("Included git-manager.exe, crash_helper.exe, background service, gitm, setup helper, cleaner and private CPython.")
+    return 0
 
 
 def ensure_cargo_in_path() -> None:
@@ -573,49 +612,14 @@ def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
         return None
 
     thumbprint = re.sub(r"\s", "", os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "")).upper()
-    signing_config: Dict[str, object] = {
-        "bundle": {
-            "windows": {
-                "certificateThumbprint": None,
-                "digestAlgorithm": None,
-                "signCommand": None,
-                "timestampUrl": None,
-            }
-        }
-    }
+    if thumbprint and not re.fullmatch(r"[A-F0-9]{40}", thumbprint):
+        log_err("WINDOWS_SIGNING_THUMBPRINT must be a 40-character SHA-1 thumbprint.")
+        return None
 
-    if thumbprint:
-        if not re.fullmatch(r"[A-F0-9]{40}", thumbprint):
-            log_err("WINDOWS_SIGNING_THUMBPRINT must be a 40-character SHA-1 thumbprint.")
-            return None
-        sign_script = project_root / "tools" / "sign_windows_file.ps1"
-        if not sign_script.is_file():
-            log_err(f"Windows signing script is missing: {sign_script}")
-            return None
-        signing_config["bundle"] = {
-            "windows": {
-                "certificateThumbprint": None,
-                "digestAlgorithm": None,
-                "timestampUrl": None,
-                "signCommand": {
-                    "cmd": "powershell.exe",
-                    "args": [
-                        "-NoLogo",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-File",
-                        str(sign_script.resolve()),
-                        "-FilePath",
-                        "%1",
-                    ],
-                },
-            }
-        }
-        log_ok("Enabled Tauri's custom signing command because a Windows certificate is configured.")
-    else:
-        log_info("No Windows signing certificate configured; explicitly disabling Tauri signing for this unsigned build.")
+    # Windows package formats belong to MPDEV. Tauri compiles the application
+    # and sidecars but must not invoke NSIS or WiX or produce an installer.
+    signing_config: Dict[str, object] = {"bundle": {"active": False}}
+    log_info("Windows Tauri bundling is disabled; MPDEV will package the staged raw application.")
 
     config_path = project_root / "target" / "build-config" / "tauri.windows.signing.conf.json"
     try:
@@ -1096,8 +1100,10 @@ def run_build_or_dev(
 
         # The dedicated service executable and crash_helper are bundled as
         # separate sidecars; the background service never shares the UI process tree.
-        if platform.system() == "Windows" and verify_windows_application_bundle(project_root) is None:
-            return 1
+        if platform.system() == "Windows":
+            stage_result = stage_windows_mpdev_package(project_root, toolchain_arg)
+            if stage_result != 0:
+                return stage_result
         return 0
 
     # Fallback direct Cargo execution
