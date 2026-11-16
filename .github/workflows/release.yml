@@ -90,6 +90,8 @@ jobs:
         include:
           - platform: windows-latest
           - platform: ubuntu-22.04
+          - platform: ubuntu-22.04-arm
+          - platform: macos-13
           - platform: macos-latest
 
     runs-on: ${{ matrix.platform }}
@@ -102,7 +104,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Linux WebKitGTK & libgit2 dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.platform, 'ubuntu-22.04')
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev pkg-config
@@ -168,7 +170,7 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/crash_helper.exe", "target/release/gitm.exe", "target/release/gitmanager-setup.exe")
+          $signTargets = @("target/windows-package/source/git-manager.exe", "target/windows-package/source/git-manager-service.exe", "target/windows-package/source/crash_helper.exe", "target/windows-package/source/gitm.exe", "target/windows-package/source/gitmanager-setup.exe")
           $verifyTargets = $signTargets
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
@@ -196,12 +198,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $appRoot = Resolve-Path "target/release/bundle/app"
-          $mainExecutables = @(Get-ChildItem -LiteralPath $appRoot -Filter "git-manager.exe" -File -Recurse)
-          if ($mainExecutables.Count -ne 1) {
-            throw "Expected exactly one git-manager.exe in the Tauri app bundle; found $($mainExecutables.Count)."
-          }
-          $env:GITMANAGER_APP_SOURCE = $mainExecutables[0].Directory.FullName
+          $appRoot = Resolve-Path "target/windows-package/source"
+          if (-not (Test-Path (Join-Path $appRoot "git-manager.exe"))) { throw "The staged GitManager executable is missing." }
+          $env:GITMANAGER_APP_SOURCE = $appRoot.Path
           & $env:MPDEV_EXE build "installer/master-packager/package.json" --working-dir "$PWD" --use-msbuild-message-format true
           if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev failed to build GitManager MSI/MSIX." }
           $outputs = @(Get-ChildItem "target/windows-installers" -File -ErrorAction SilentlyContinue)
