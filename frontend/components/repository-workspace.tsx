@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "../lib/tauri";
 import type {
 	GitRepository,
@@ -88,6 +88,8 @@ export function RepositoryWorkspace({
 	const [pullSelectedPaths, setPullSelectedPaths] = useState<string[]>([]);
 	const [pullCommitMessage, setPullCommitMessage] = useState("");
 	const [pullBusy, setPullBusy] = useState(false);
+	const filesRequestId = useRef(0);
+	const previewRequestId = useRef(0);
 
 	const refreshChanges = useCallback(async () => {
 		setLoadingChanges(true);
@@ -106,12 +108,15 @@ export function RepositoryWorkspace({
 	}, [repo.path]);
 
 	const refreshFiles = useCallback(async () => {
+		const requestId = ++filesRequestId.current;
 		if (source === "remote" && !remoteBranch) {
 			setEntries([]);
+			setLoadingFiles(false);
 			setError("Fetch the remote first, then choose a remote branch to browse.");
 			return;
 		}
 		setLoadingFiles(true);
+		setError("");
 		try {
 			const result = await invoke<RepositoryFileEntry[]>("list_repository_files", {
 				repoPath: repo.path,
@@ -119,12 +124,14 @@ export function RepositoryWorkspace({
 				source,
 				branch: source === "remote" ? remoteBranch : null,
 			});
-			setEntries(result ?? []);
+			if (requestId === filesRequestId.current) setEntries(result ?? []);
 		} catch (cause) {
-			setEntries([]);
-			setError(messageOf(cause));
+			if (requestId === filesRequestId.current) {
+				setEntries([]);
+				setError(messageOf(cause));
+			}
 		} finally {
-			setLoadingFiles(false);
+			if (requestId === filesRequestId.current) setLoadingFiles(false);
 		}
 	}, [repo.path, source, remoteBranch, currentPath]);
 
@@ -158,6 +165,7 @@ export function RepositoryWorkspace({
 	}
 
 	function openDirectory(path: string) {
+		previewRequestId.current += 1;
 		setCurrentPath(path);
 		setSelectedFile(null);
 		setPreviewTitle("");
@@ -179,6 +187,7 @@ export function RepositoryWorkspace({
 			setError("Symbolic links are not followed in the repository file preview.");
 			return;
 		}
+		const requestId = ++previewRequestId.current;
 		setSelectedFile(entry);
 		setPreviewTitle(entry.path);
 		setPreviewText("Loading file…");
@@ -191,14 +200,17 @@ export function RepositoryWorkspace({
 				source,
 				branch: source === "remote" ? remoteBranch : null,
 			});
-			setPreviewText(text);
+			if (requestId === previewRequestId.current) setPreviewText(text);
 		} catch (cause) {
-			setPreviewText("");
-			setError(messageOf(cause));
+			if (requestId === previewRequestId.current) {
+				setPreviewText("");
+				setError(messageOf(cause));
+			}
 		}
 	}
 
 	async function previewDiff(change: WorktreeChange) {
+		const requestId = ++previewRequestId.current;
 		setPreviewTitle(change.path + (change.staged ? " · staged diff" : " · unstaged diff"));
 		setPreviewText("Loading diff…");
 		setPreviewKind("diff");
@@ -210,10 +222,12 @@ export function RepositoryWorkspace({
 				relativePath: change.path,
 				staged: change.staged,
 			});
-			setPreviewText(text);
+			if (requestId === previewRequestId.current) setPreviewText(text);
 		} catch (cause) {
-			setPreviewText("");
-			setError(messageOf(cause));
+			if (requestId === previewRequestId.current) {
+				setPreviewText("");
+				setError(messageOf(cause));
+			}
 		}
 	}
 
@@ -444,11 +458,11 @@ export function RepositoryWorkspace({
 
 			<div className="gm-workspace-toolbar">
 				<div className="gm-workspace-source" role="group" aria-label="File source">
-					<button type="button" className={source === "local" ? "active" : ""} aria-pressed={source === "local"} onClick={() => { setSource("local"); setCurrentPath(""); setSelectedFile(null); setPreviewTitle(""); setPreviewText(""); }}>Local</button>
-					<button type="button" className={source === "remote" ? "active" : ""} aria-pressed={source === "remote"} onClick={() => { setSource("remote"); setCurrentPath(""); setSelectedFile(null); setPreviewTitle(""); setPreviewText(""); }}>Remote</button>
+					<button type="button" className={source === "local" ? "active" : ""} aria-pressed={source === "local"} onClick={() => { previewRequestId.current += 1; setSource("local"); setCurrentPath(""); setSelectedFile(null); setPreviewTitle(""); setPreviewText(""); }}>Local</button>
+					<button type="button" className={source === "remote" ? "active" : ""} aria-pressed={source === "remote"} onClick={() => { previewRequestId.current += 1; setSource("remote"); setCurrentPath(""); setSelectedFile(null); setPreviewTitle(""); setPreviewText(""); }}>Remote</button>
 				</div>
 				{source === "remote" && (
-					<select className="gm-workspace-select" value={remoteBranch} onChange={(event) => { setRemoteBranch(event.target.value); setCurrentPath(""); setSelectedFile(null); setPreviewTitle(""); setPreviewText(""); }} aria-label="Remote branch" disabled={!remoteBranches.length}>
+					<select className="gm-workspace-select" value={remoteBranch} onChange={(event) => { previewRequestId.current += 1; setRemoteBranch(event.target.value); setCurrentPath(""); setSelectedFile(null); setPreviewTitle(""); setPreviewText(""); }} aria-label="Remote branch" disabled={!remoteBranches.length}>
 						{remoteBranches.length === 0 && <option value="">No fetched remote branches</option>}
 						{remoteBranches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}
 					</select>
@@ -544,7 +558,7 @@ export function RepositoryWorkspace({
 				<aside className="gm-workspace-card gm-workspace-preview">
 					<div className="gm-workspace-card-heading">
 						<div><h3>{previewKind === "diff" ? "Diff preview" : "File preview"}</h3><span>{previewTitle || "Select a file or changed path"}</span></div>
-						<button type="button" className="gm-workspace-mini" onClick={() => { setPreviewTitle(""); setPreviewText(""); setSelectedFile(null); }}>Clear</button>
+						<button type="button" className="gm-workspace-mini" onClick={() => { previewRequestId.current += 1; setPreviewTitle(""); setPreviewText(""); setSelectedFile(null); }}>Clear</button>
 					</div>
 					{previewText ? (
 						<pre className="gm-workspace-preview-text">{previewText}</pre>
