@@ -377,6 +377,25 @@ pub fn get_repository_changes(repo_path: &str) -> Result<Vec<WorktreeChange>, St
     collect_worktree_changes(&repo)
 }
 
+pub fn read_repository_file_diff(repo_path: &str, relative_path: &str, staged: bool) -> Result<String, String> {
+    validate_git_operation_path(relative_path)?;
+    let args = if staged {
+        vec!["diff", "--cached", "--", relative_path]
+    } else {
+        vec!["diff", "--", relative_path]
+    };
+    let diff = run_git(repo_path, &args)
+        .map_err(|error| format!("Could not read the selected file diff: {error}"))?;
+    if diff.trim().is_empty() {
+        return Ok(if staged {
+            "No staged diff for this file. It may be untracked, unchanged in the index, or already fully unstaged.".to_string()
+        } else {
+            "No unstaged diff for this file. Untracked files do not have a Git diff; preview the file contents instead.".to_string()
+        });
+    }
+    Ok(diff)
+}
+
 pub fn fetch_repository_remote(repo_path: &str, remote_name: &str) -> Result<String, String> {
     if remote_name.trim().is_empty() {
         return Err("Select a configured remote before fetching.".to_string());
