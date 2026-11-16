@@ -77,10 +77,20 @@ fn validate_relative_path(value: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
+fn validate_browser_relative_path(value: &str) -> Result<PathBuf, String> {
+    let path = validate_relative_path(value)?;
+    if path.components().any(|component| {
+        matches!(component, Component::Normal(part) if part.to_string_lossy().eq_ignore_ascii_case(".git"))
+    }) {
+        return Err("Git metadata is not available in the repository file browser.".to_string());
+    }
+    Ok(path)
+}
+
 fn canonical_local_path(repo: &Repository, relative_path: &str) -> Result<(PathBuf, PathBuf), String> {
     let workdir = repo.workdir().ok_or_else(|| "This repository has no working directory.".to_string())?;
     let root = fs::canonicalize(workdir).map_err(|error| format!("Could not resolve repository directory: {error}"))?;
-    let relative = validate_relative_path(relative_path)?;
+    let relative = validate_browser_relative_path(relative_path)?;
     let mut cursor = root.clone();
     for component in relative.components() {
         if let Component::Normal(part) = component {
@@ -154,7 +164,7 @@ pub fn list_repository_files(
         for item in read_dir {
             let item = item.map_err(|error| format!("Could not read directory entry: {error}"))?;
             let name = item.file_name().to_string_lossy().to_string();
-            if name == ".git" { continue; }
+            if name.eq_ignore_ascii_case(".git") { continue; }
             let file_type = item.file_type().map_err(|error| format!("Could not inspect {name}: {error}"))?;
             let is_symlink = file_type.is_symlink();
             let is_dir = file_type.is_dir();
@@ -182,7 +192,7 @@ pub fn read_repository_file(
     branch: Option<&str>,
 ) -> Result<String, String> {
     let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
-    let path = validate_relative_path(relative_path)?;
+    let path = validate_browser_relative_path(relative_path)?;
     if path.as_os_str().is_empty() { return Err("Select a file to preview.".to_string()); }
 
     let bytes = if source.eq_ignore_ascii_case("remote") {
@@ -622,8 +632,8 @@ pub fn prepare_and_pull_repository_update(
 #[cfg(test)]
 mod tests {
     use super::{
-        hidden_command, status_token, validate_git_operation_path, validate_relative_path,
-        Repository, WorktreeChange,
+        hidden_command, status_token, validate_browser_relative_path, validate_git_operation_path,
+        validate_relative_path, Repository, WorktreeChange,
     };
     use std::fs;
 
@@ -640,6 +650,13 @@ mod tests {
         assert!(validate_git_operation_path(".git/config").is_err());
         assert!(validate_git_operation_path("src/main.rs").is_ok());
         assert!(validate_git_operation_path(".gitignore").is_ok());
+    }
+
+    #[test]
+    fn file_browser_cannot_read_git_metadata_at_any_depth() {
+        assert!(validate_browser_relative_path(".git/config").is_err());
+        assert!(validate_browser_relative_path("nested/.git/config").is_err());
+        assert!(validate_browser_relative_path("nested/src/main.rs").is_ok());
     }
 
     #[test]
