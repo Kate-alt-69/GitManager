@@ -681,6 +681,7 @@ function RepositoryDetail({
 			</div>
 
 			<RepositoryWorkspace
+				key={repo.path}
 				repo={displayRepo}
 				onRepositoryUpdated={onRepositoryLoaded}
 				onPullCompleted={onPullCompleted}
