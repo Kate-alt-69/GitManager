@@ -127,7 +127,9 @@ jobs:
           }
           if (-not $candidates) { throw "Master Packager Dev was installed by WinGet but mpdev.exe could not be located." }
           "MPDEV_EXE=$($candidates[0])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          & $candidates[0] version
+          $mpdevExe = [string]$candidates[0]
+          & "$mpdevExe" version
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev CLI failed its version check: $mpdevExe" }
 
       - name: Import optional Windows production signing certificate
         if: runner.os == 'Windows'
