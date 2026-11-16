@@ -494,6 +494,12 @@ def prepare_workspace(project_root: Path, source_root: Path) -> Path:
     if public_source.is_dir():
         shutil.copytree(public_source, workspace / "public", dirs_exist_ok=True)
 
+    # GitManager's artwork is maintained in frontend/static/image. Publish the
+    # original PNG assets unchanged through Next's static-export public directory.
+    image_source = frontend_source / "static" / "image"
+    if image_source.is_dir():
+        shutil.copytree(image_source, workspace / "public" / "image", dirs_exist_ok=True)
+
     # Keep the Engine root package.json, tsconfig, scripts, examples, docs, tests,
     # compiler and source tree; only use GitManager's Tauri-compatible app config.
     shutil.copy2(frontend_source / "next.config.js", workspace / "next.config.js")
