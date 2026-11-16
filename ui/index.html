@@ -62,6 +62,21 @@
               <button type="button" class="repo-workspace-tab" data-repo-panel="settings" role="tab" aria-selected="false">Settings</button>
             </nav>
             <section id="repo-code-panel" class="repo-workspace-panel repo-code-panel" role="tabpanel">
+              <section id="repo-code-changes-panel" class="repo-code-changes-panel">
+                <div class="repo-code-changes-heading">
+                  <div><strong>Changes</strong><span id="repo-code-changes-count">0</span></div>
+                  <span>Stage files, unstage, or commit locally</span>
+                </div>
+                <div id="repo-code-changes-list" class="repo-code-changes-list">
+                  <div class="repo-code-changes-empty">Select a repository to inspect its working tree.</div>
+                </div>
+                <div class="repo-code-change-actions">
+                  <button id="btn-stage-selected" class="btn btn-secondary" type="button" disabled>Stage selected</button>
+                  <button id="btn-unstage-selected" class="btn btn-secondary" type="button" disabled>Unstage selected</button>
+                  <button id="btn-commit-staged" class="btn btn-primary" type="button" disabled>Commit staged</button>
+                  <button id="btn-clean-generated" class="btn btn-secondary" type="button">Clean generated files</button>
+                </div>
+              </section>
               <div class="repo-code-toolbar">
                 <div class="repo-code-source-switch" role="group" aria-label="Code source">
                   <button type="button" class="active" data-code-source="local" aria-pressed="true">Local</button>
