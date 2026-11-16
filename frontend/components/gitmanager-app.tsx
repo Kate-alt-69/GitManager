@@ -7,6 +7,7 @@ import {
 } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
 import { invoke, openDialog } from "../lib/tauri";
+import { RepositoryWorkspace } from "./repository-workspace";
 import type {
 	ApplicationDirectories,
 	AppPreferences,
@@ -710,6 +711,12 @@ function RepositoryDetail({
 				<div><span>Working tree</span><strong>{displayRepo.dirty_files_count ? `${displayRepo.dirty_files_count} changed` : "Clean"}</strong></div>
 				<div><span>Remotes</span><strong>{displayRepo.remotes?.length ?? 0}</strong></div>
 			</div>
+
+			<RepositoryWorkspace
+				repo={displayRepo}
+				onRepositoryUpdated={onRepositoryLoaded}
+				onRefresh={onRescan}
+			/>
 
 			<div className="gm-detail-columns">
 				<div className="gm-panel gm-commit-panel">
