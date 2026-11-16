@@ -372,6 +372,20 @@ pub fn get_repository_changes(repo_path: &str) -> Result<Vec<WorktreeChange>, St
     collect_worktree_changes(&repo)
 }
 
+pub fn fetch_repository_remote(repo_path: &str, remote_name: &str) -> Result<String, String> {
+    if remote_name.trim().is_empty() {
+        return Err("Select a configured remote before fetching.".to_string());
+    }
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let remotes = repo.remotes().map_err(|error| format!("Could not list repository remotes: {error}"))?;
+    if !remotes.iter().flatten().any(|name| name == remote_name) {
+        return Err(format!("Remote {remote_name} is not configured in this repository."));
+    }
+    run_git(repo_path, &["fetch", "--prune", remote_name])
+        .map_err(|error| format!("Could not fetch {remote_name}: {error}"))?;
+    Ok(format!("Fetched and pruned remote-tracking references for {remote_name}."))
+}
+
 pub fn stage_repository_paths(repo_path: &str, paths: &[String]) -> Result<Vec<WorktreeChange>, String> {
     if paths.is_empty() { return Err("Select at least one file to stage.".to_string()); }
     for path in paths { validate_git_operation_path(path)?; }
