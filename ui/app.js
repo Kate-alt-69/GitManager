@@ -1690,6 +1690,7 @@ function renderRepositoryCodeWorkspace(repo) {
   if (!panel || !list || !preview || !branchSelect) return;
   if (activeWorkspaceRepoId !== repo.id) {
     activeWorkspaceRepoId = repo.id;
+    activeRepositoryPanel = "code";
     activeCodeSource = "local";
     activeCodePath = "";
     activeCodeBranch = (repo.branches || []).find((branch) => branch.is_remote)?.name || "";
@@ -1703,7 +1704,8 @@ function renderRepositoryCodeWorkspace(repo) {
       button.addEventListener("click", () => {
         activeCodeSource = button.getAttribute("data-code-source") || "local";
         activeCodePath = "";
-        renderRepositoryCodeWorkspace(repo);
+        const selectedRepo = getRepositoryById(selectedRepoId);
+        if (selectedRepo) renderRepositoryCodeWorkspace(selectedRepo);
       });
     }
   });
@@ -1718,20 +1720,25 @@ function renderRepositoryCodeWorkspace(repo) {
     branchSelect.addEventListener("change", () => {
       activeCodeBranch = branchSelect.value;
       activeCodePath = "";
-      void loadRepositoryCodeDirectory(repo);
+      const selectedRepo = getRepositoryById(selectedRepoId);
+      if (selectedRepo) void loadRepositoryCodeDirectory(selectedRepo);
     });
   }
   const refresh = document.getElementById("btn-repo-code-refresh");
   if (refresh && refresh.dataset.bound !== "true") {
     refresh.dataset.bound = "true";
-    refresh.addEventListener("click", () => void loadRepositoryCodeDirectory(repo));
+    refresh.addEventListener("click", () => {
+      const selectedRepo = getRepositoryById(selectedRepoId);
+      if (selectedRepo) void loadRepositoryCodeDirectory(selectedRepo);
+    });
   }
   const up = document.getElementById("btn-repo-code-up");
   if (up && up.dataset.bound !== "true") {
     up.dataset.bound = "true";
     up.addEventListener("click", () => {
       activeCodePath = activeCodePath.split("/").slice(0, -1).join("/");
-      void loadRepositoryCodeDirectory(repo);
+      const selectedRepo = getRepositoryById(selectedRepoId);
+      if (selectedRepo) void loadRepositoryCodeDirectory(selectedRepo);
     });
   }
   setRepositoryWorkspacePanel(activeRepositoryPanel || "code");
