@@ -391,21 +391,31 @@ pub fn prepare_and_pull_repository_update(
         "commit" if has_changes => {
             let message = commit_message.trim();
             if message.is_empty() { return Err("Enter a commit message before confirming Pull.".to_string()); }
-            let selected: std::collections::HashSet<&str> = stage_paths.iter().map(String::as_str).collect();
             let all_paths: std::collections::HashSet<&str> = preview.changes.iter().map(|change| change.path.as_str()).collect();
-            if selected != all_paths {
-                return Err("Select every changed path to commit, or choose Stash all changes before pulling. Unselected edits must never be hidden from the pull.".to_string());
+            let selected: std::collections::HashSet<&str> = stage_paths.iter().map(String::as_str).collect();
+            if selected.is_empty() || selected.iter().any(|path| !all_paths.contains(path)) {
+                return Err("Select at least one changed path to commit. Unchecked paths will be stashed and preserved.".to_string());
             }
             for path in stage_paths { validate_stage_path(path)?; }
-            if !stage_paths.is_empty() {
-                let mut args = vec!["add", "--"];
-                for path in stage_paths { args.push(path.as_str()); }
-                run_git(repo_path, &args)
-                    .map_err(|error| format!("Could not stage the selected files; pull was not started: {error}"))?;
-            }
+            let stash_paths: Vec<&str> = preview.changes.iter()
+                .filter(|change| !selected.contains(change.path.as_str()))
+                .map(|change| change.path.as_str())
+                .collect();
+            let mut add_args = vec!["add", "--"];
+            for path in stage_paths { add_args.push(path.as_str()); }
+            run_git(repo_path, &add_args)
+                .map_err(|error| format!("Could not stage the selected files; Pull was not started: {error}"))?;
             run_git(repo_path, &["commit", "-m", message])
-                .map_err(|error| format!("Could not create the requested commit; pull was not started: {error}"))?;
+                .map_err(|error| format!("Could not create the requested commit; Pull was not started: {error}"))?;
             commit_created = true;
+            if !stash_paths.is_empty() {
+                let stash_message = format!("GitManager: unselected changes before pull from {}/{}", preview.remote_name, preview.remote_branch);
+                let mut stash_args = vec!["stash", "push", "--include-untracked", "--message", stash_message.as_str(), "--"];
+                stash_args.extend(stash_paths.iter().copied());
+                run_git(repo_path, &stash_args)
+                    .map_err(|error| format!("Your selected-file commit was created, but unselected files could not be stashed; Pull was not started: {error}"))?;
+                stash_created = true;
+            }
         }
         "none" if !has_changes => {}
         "none" => return Err("The working tree has changes. Choose Commit or Stash before pulling.".to_string()),
