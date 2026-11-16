@@ -121,7 +121,7 @@ fn remote_tree_for_path<'repo>(repo: &'repo Repository, branch_name: &str, relat
     let commit = remote_commit(repo, branch_name)?;
     let root = commit.tree().map_err(|error| format!("Could not load remote repository tree: {error}"))?;
     if relative_path.trim().is_empty() { return Ok(root); }
-    let path = validate_relative_path(relative_path)?;
+    let path = validate_browser_relative_path(relative_path)?;
     let entry = root.get_path(&path).map_err(|error| format!("Could not open remote directory: {error}"))?;
     if entry.kind() != Some(ObjectType::Tree) {
         return Err("The selected remote path is not a directory.".to_string());
@@ -146,7 +146,7 @@ pub fn list_repository_files(
         let tree = remote_tree_for_path(&repo, branch_name, relative)?;
         for entry in tree.iter() {
             let name = entry.name().unwrap_or("").to_string();
-            if name.is_empty() { continue; }
+            if name.is_empty() || name.eq_ignore_ascii_case(".git") { continue; }
             let path = if relative.is_empty() { name.clone() } else { format!("{relative}/{name}") };
             let is_dir = entry.kind() == Some(ObjectType::Tree);
             let is_symlink = entry.filemode() == 0o120000;
