@@ -5,6 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 use std::time::UNIX_EPOCH;
+use std::ffi::OsStr;
+use walkdir::WalkDir;
 use crate::process_utils::hidden_command;
 
 const MAX_PREVIEW_FILE_BYTES: u64 = 1024 * 1024;
@@ -373,9 +375,11 @@ pub fn get_repository_changes(repo_path: &str) -> Result<Vec<WorktreeChange>, St
 pub fn stage_repository_paths(repo_path: &str, paths: &[String]) -> Result<Vec<WorktreeChange>, String> {
     if paths.is_empty() { return Err("Select at least one file to stage.".to_string()); }
     for path in paths { validate_git_operation_path(path)?; }
-    let mut args = vec!["add", "--"];
-    for path in paths { args.push(path.as_str()); }
-    run_git(repo_path, &args).map_err(|error| format!("Could not stage the selected files: {error}"))?;
+    for batch in paths.chunks(64) {
+        let mut args = vec!["add", "--"];
+        for path in batch { args.push(path.as_str()); }
+        run_git(repo_path, &args).map_err(|error| format!("Could not stage the selected files: {error}"))?;
+    }
     get_repository_changes(repo_path)
 }
 
@@ -406,7 +410,7 @@ pub fn create_repository_commit(repo_path: &str, message: &str) -> Result<(Strin
                 return Err("There are no staged changes to commit. Stage files first.".to_string());
             }
         }
-    } else if staged_tree == repo.treebuilder(None).map_err(|error| error.to_string())?.write().map_err(|error| error.to_string())? {
+    } else if index.is_empty() {
         return Err("There are no staged changes to commit. Stage files first.".to_string());
     }
     run_git(repo_path, &["commit", "-m", message])
@@ -424,7 +428,18 @@ pub fn delete_repository_path(repo_path: &str, relative_path: &str) -> Result<St
     let root = fs::canonicalize(workdir).map_err(|error| format!("Could not resolve repository directory: {error}"))?;
     let relative = validate_git_operation_path(relative_path)?;
     let parent_relative = relative.parent().unwrap_or_else(|| Path::new(""));
-    let parent = fs::canonicalize(root.join(parent_relative))
+    let mut parent_cursor = root.clone();
+    for component in parent_relative.components() {
+        if let Component::Normal(part) = component {
+            parent_cursor.push(part);
+            let metadata = fs::symlink_metadata(&parent_cursor)
+                .map_err(|error| format!("Could not inspect the selected item's parent: {error}"))?;
+            if metadata.file_type().is_symlink() {
+                return Err("Deletion does not follow symbolic-link directories.".to_string());
+            }
+        }
+    }
+    let parent = fs::canonicalize(&parent_cursor)
         .map_err(|error| format!("Could not resolve the selected item's parent directory: {error}"))?;
     if !parent.starts_with(&root) {
         return Err("The selected item is outside the repository.".to_string());
@@ -436,6 +451,12 @@ pub fn delete_repository_path(repo_path: &str, relative_path: &str) -> Result<St
     if metadata.file_type().is_symlink() {
         fs::remove_file(&target).map_err(|error| format!("Could not remove the symbolic link: {error}"))?;
     } else if metadata.is_dir() {
+        let contains_git_metadata = WalkDir::new(&target).follow_links(false)
+            .into_iter().filter_map(Result::ok)
+            .any(|entry| entry.file_name() == OsStr::new(".git"));
+        if contains_git_metadata {
+            return Err("This folder contains a nested Git repository or .git metadata. Remove that repository separately first.".to_string());
+        }
         fs::remove_dir_all(&target).map_err(|error| format!("Could not remove the selected directory: {error}"))?;
     } else {
         fs::remove_file(&target).map_err(|error| format!("Could not remove the selected file: {error}"))?;
