@@ -346,7 +346,7 @@ pub fn preview_repository_pull(repo_path: &str) -> Result<PullPreview, String> {
 }
 
 fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
-    let output = hidden_command("git").arg("-C").arg(repo_path).args(args)
+    let output = hidden_command("git").arg("-C").arg(repo_path).arg("--literal-pathspecs").args(args)
         .output().map_err(|error| format!("Could not start Git: {error}"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -358,9 +358,7 @@ fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
 }
 
 fn validate_stage_path(value: &str) -> Result<(), String> {
-    let path = validate_relative_path(value)?;
-    if path.as_os_str().is_empty() { return Err("A selected file path is empty.".to_string()); }
-    Ok(())
+    validate_git_operation_path(value).map(|_| ())
 }
 
 fn validate_git_operation_path(value: &str) -> Result<PathBuf, String> {
@@ -388,9 +386,11 @@ pub fn fetch_repository_remote(repo_path: &str, remote_name: &str) -> Result<Str
     if !remotes.iter().flatten().any(|name| name == remote_name) {
         return Err(format!("Remote {remote_name} is not configured in this repository."));
     }
-    run_git(repo_path, &["fetch", "--prune", remote_name])
+    let mut remote = repo.find_remote(remote_name)
+        .map_err(|error| format!("Could not open remote {remote_name}: {error}"))?;
+    remote.fetch(&[], None, None)
         .map_err(|error| format!("Could not fetch {remote_name}: {error}"))?;
-    Ok(format!("Fetched and pruned remote-tracking references for {remote_name}."))
+    Ok(format!("Fetched remote-tracking references for {remote_name}."))
 }
 
 pub fn stage_repository_paths(repo_path: &str, paths: &[String]) -> Result<Vec<WorktreeChange>, String> {
@@ -575,11 +575,12 @@ pub fn prepare_and_pull_repository_update(
 
     let remote = preview.remote_name.as_str();
     let branch = preview.remote_branch.as_str();
+    let upstream_ref = format!("refs/remotes/{remote}/{branch}");
     let output = if commit_created {
-        run_git(repo_path, &["rebase", &format!("{remote}/{branch}")])
+        run_git(repo_path, &["rebase", &upstream_ref])
             .map_err(|error| format!("The local commit was created, but rebase/pull did not complete: {error}. Resolve any conflicts, then use Git's rebase continue or abort workflow."))?
     } else {
-        run_git(repo_path, &["merge", "--ff-only", &format!("{remote}/{branch}")])
+        run_git(repo_path, &["merge", "--ff-only", &upstream_ref])
             .map_err(|error| {
                 let recovery = if stash_created { " Your stash was preserved; it has not been applied." } else { "" };
                 format!("Pull failed: {error}.{recovery}")
