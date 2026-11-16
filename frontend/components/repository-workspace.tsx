@@ -142,8 +142,10 @@ export function RepositoryWorkspace({
 	}, [refreshFiles]);
 
 	useEffect(() => {
-		setRemoteBranch(initialRemoteBranch);
-	}, [initialRemoteBranch]);
+		setRemoteBranch((current) => remoteBranches.some((branch) => branch.name === current)
+			? current
+			: initialRemoteBranch);
+	}, [initialRemoteBranch, remoteBranches]);
 
 	function toggleSelectedPath(path: string, checked: boolean) {
 		setSelectedPaths((current) => checked
@@ -433,11 +435,11 @@ export function RepositoryWorkspace({
 
 			<div className="gm-workspace-toolbar">
 				<div className="gm-workspace-source" role="group" aria-label="File source">
-					<button type="button" className={source === "local" ? "active" : ""} aria-pressed={source === "local"} onClick={() => { setSource("local"); setCurrentPath(""); setSelectedFile(null); }}>Local</button>
-					<button type="button" className={source === "remote" ? "active" : ""} aria-pressed={source === "remote"} onClick={() => { setSource("remote"); setCurrentPath(""); setSelectedFile(null); }}>Remote</button>
+					<button type="button" className={source === "local" ? "active" : ""} aria-pressed={source === "local"} onClick={() => { setSource("local"); setCurrentPath(""); setSelectedFile(null); setPreviewTitle(""); setPreviewText(""); }}>Local</button>
+					<button type="button" className={source === "remote" ? "active" : ""} aria-pressed={source === "remote"} onClick={() => { setSource("remote"); setCurrentPath(""); setSelectedFile(null); setPreviewTitle(""); setPreviewText(""); }}>Remote</button>
 				</div>
 				{source === "remote" && (
-					<select className="gm-workspace-select" value={remoteBranch} onChange={(event) => { setRemoteBranch(event.target.value); setCurrentPath(""); setSelectedFile(null); }} aria-label="Remote branch" disabled={!remoteBranches.length}>
+					<select className="gm-workspace-select" value={remoteBranch} onChange={(event) => { setRemoteBranch(event.target.value); setCurrentPath(""); setSelectedFile(null); setPreviewTitle(""); setPreviewText(""); }} aria-label="Remote branch" disabled={!remoteBranches.length}>
 						{remoteBranches.length === 0 && <option value="">No fetched remote branches</option>}
 						{remoteBranches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}
 					</select>
