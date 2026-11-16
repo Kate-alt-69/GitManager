@@ -47,13 +47,10 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 }
 .gm-brand { display: flex; align-items: center; gap: 11px; padding: 0 9px 27px; }
 .gm-brand-mark {
-	width: 36px; height: 36px; display: grid; place-items: center;
-	border: 1px solid #3a4654; border-radius: 10px;
-	background: linear-gradient(145deg, #202a36, #101820);
-	color: #8cc8ff;
-	font-weight: 800; font-size: 12px; letter-spacing: -.06em;
+	display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center;
+	overflow: hidden; border-radius: 9px; background: transparent;
 }
-.gm-brand-mark svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.gm-brand-mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .gm-brand-mark.small { width: 42px; height: 42px; }
 .gm-brand-name { display: flex; flex-direction: column; gap: 1px; }
 .gm-brand-name strong { font-size: 15px; font-weight: 750; letter-spacing: -.035em; color: #f0f6fc; }
@@ -471,7 +468,14 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 
 .gm-boot-screen { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; min-height: 100vh; background: #0d1117; color: #e6edf3; }
 .gm-boot-card { display: flex; flex-direction: column; align-items: center; gap: 8px; width: min(320px, calc(100vw - 40px)); padding: 30px 26px; }
-.gm-boot-mark { display: grid; place-items: center; width: 54px; height: 54px; margin-bottom: 8px; border: 1px solid #3a526c; border-radius: 15px; background: #17283a; color: #9bd1ff; font-size: 17px; font-weight: 800; letter-spacing: -.05em; }
+.gm-loading-logo { position: relative; display: inline-block; flex: 0 0 auto; margin-bottom: 8px; }
+.gm-loading-logo-ring, .gm-loading-logo-center { position: absolute; display: block; width: 100%; height: 100%; inset: 0; object-fit: contain; }
+.gm-loading-logo-ring { animation: gm-logo-spin 1.8s linear infinite; }
+.gm-loading-logo-center { z-index: 1; }
+@keyframes gm-logo-spin { to { transform: rotate(360deg); } }
+.gm-boot-brand { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.gm-boot-brand strong { font-size: 18px; letter-spacing: -.025em; }
+.gm-boot-brand span { color: #8b949e; font-size: 10px; letter-spacing: .04em; }
 .gm-boot-card strong { font-size: 17px; letter-spacing: -.02em; }
 .gm-boot-card > span { color: #8b949e; font-size: 11px; }
 .gm-boot-progress { width: 174px; height: 3px; margin-top: 14px; overflow: hidden; border-radius: 5px; background: #26313d; }
@@ -494,7 +498,7 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 	.gm-brand { min-height: 34px; }
 	.gm-brand-mark { width: 30px; height: 30px; }
 	.gm-brand-name strong { font-size: 13px; }
-	.gm-brand-name span { display: none; }
+	.gm-brand-name span { display: block; }
 	.gm-nav { flex: 1 0 100%; order: 2; }
 	.gm-nav-item { flex: 1 0 auto; padding: 0 7px; font-size: 10px; }
 	.gm-skeleton-grid { grid-template-columns: 1fr; }
