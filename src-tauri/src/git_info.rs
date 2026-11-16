@@ -467,6 +467,106 @@ pub fn switch_repository_branch(workdir: &Path, branch_name: &str) -> Result<Git
         .map_err(|error| format!("Branch switched, but repository details could not be refreshed: {error}"))
 }
 
+#[cfg(test)]
+mod branch_switch_tests {
+    use super::*;
+    use git2::Signature;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn repository_fixture() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gitmanager-branch-switch-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).unwrap();
+
+        let repo = Repository::init(&path).unwrap();
+        let signature = Signature::now("GitManager Test", "gitmanager-test@invalid.local").unwrap();
+
+        fs::write(path.join("tracked.txt"), "main\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("tracked.txt")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let main_oid = repo.commit(
+            Some("refs/heads/main"),
+            &signature,
+            &signature,
+            "initial commit",
+            &tree,
+            &[],
+        ).unwrap();
+        drop(tree);
+
+        repo.set_head("refs/heads/main").unwrap();
+        let main_commit = repo.find_commit(main_oid).unwrap();
+        repo.branch("feature", &main_commit, false).unwrap();
+
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.checkout_head(None).unwrap();
+        fs::write(path.join("tracked.txt"), "feature\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("tracked.txt")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "feature commit",
+            &tree,
+            &[&parent],
+        ).unwrap();
+        drop(tree);
+        drop(parent);
+
+        repo.set_head("refs/heads/main").unwrap();
+        let mut checkout = CheckoutBuilder::new();
+        checkout.force();
+        repo.checkout_head(Some(&mut checkout)).unwrap();
+        drop(repo);
+        path
+    }
+
+    #[test]
+    fn branch_list_places_the_current_local_branch_first() {
+        let path = repository_fixture();
+        let branches = list_local_repository_branches(&path).unwrap();
+        assert_eq!(branches.first().map(|branch| branch.name.as_str()), Some("main"));
+        assert!(branches.iter().any(|branch| branch.name == "feature" && !branch.is_remote));
+        assert!(branches.first().map(|branch| branch.is_head).unwrap_or(false));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn clean_worktree_can_switch_to_another_local_branch() {
+        let path = repository_fixture();
+        let updated = switch_repository_branch(&path, "feature").unwrap();
+        assert_eq!(updated.current_branch, "feature");
+        assert_eq!(fs::read_to_string(path.join("tracked.txt")).unwrap(), "feature\n");
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn dirty_worktree_is_preserved_and_branch_switch_is_rejected() {
+        let path = repository_fixture();
+        fs::write(path.join("untracked.txt"), "keep this file\n").unwrap();
+        let error = switch_repository_branch(&path, "feature").unwrap_err();
+        assert!(error.contains("uncommitted or untracked changes"));
+        let repo = Repository::open(&path).unwrap();
+        assert_eq!(repo.head().unwrap().shorthand(), Some("main"));
+        assert_eq!(fs::read_to_string(path.join("untracked.txt")).unwrap(), "keep this file\n");
+        drop(repo);
+        fs::remove_dir_all(path).unwrap();
+    }
+}
+
 /// Assigns a visual swimlane index (0..N) for each commit node in the Git graph tree
 fn assign_commit_lane(
     oid: &str,
