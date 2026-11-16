@@ -91,6 +91,10 @@ export function useGitManager() {
 		setRepositories((current) => current.map((repo) => repo.id === updated.id ? updated : repo));
 	}, []);
 
+	const clearUpdate = useCallback((repoPath: string) => {
+		setUpdates((current) => current.filter((item) => item.repo_path !== repoPath));
+	}, []);
+
 
 	// Report only after the desktop hook is ready. The independent crash_helper
 	// treats a missing heartbeat as an unresponsive UI.
@@ -250,6 +254,6 @@ export function useGitManager() {
 	return {
 		available, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, updates, setupOpen, setSetupOpen,
-		status, error, setError, scan, savePreferences, checkUpdates, switchBranch, updateRepository, connectAccount,
+		status, error, setError, scan, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
 	};
 }
