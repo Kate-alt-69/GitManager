@@ -11,8 +11,10 @@ import type {
 	ApplicationDirectories,
 	AppPreferences,
 	ArchiveSnapshot,
+	BranchInfo,
 	ConnectedAccount,
 	GitRepository,
+	UpdateAlert,
 } from "../lib/types";
 
 type PageKey = "repositories" | "accounts" | "settings" | "cleaner";
@@ -285,44 +287,265 @@ function RepositoryCard({
 	repo,
 	selected,
 	dependency,
+	archiveRoot,
+	canSnapshot,
+	updates,
 	onSelect,
+	onCheckUpdates,
+	onPullUpdate,
+	onSwitchBranch,
 }: {
 	repo: GitRepository;
 	selected: boolean;
 	dependency: boolean;
+	archiveRoot: string;
+	canSnapshot: boolean;
+	updates: UpdateAlert[];
 	onSelect: () => void;
+	onCheckUpdates: () => Promise<UpdateAlert[]>;
+	onPullUpdate: (path: string) => Promise<boolean>;
+	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 }) {
 	const latest = repo.commits?.[0];
+	const originRemote = repo.remotes?.find((remote) => remote.name === "origin") ?? repo.remotes?.[0];
+	const remoteFullName = originRemote?.owner && originRemote.repo_slug
+		? originRemote.owner + "/" + originRemote.repo_slug
+		: repo.name;
+	const remotePageUrl = originRemote?.web_url || repo.web_url || "";
+	const [branches, setBranches] = useState<BranchInfo[]>(repo.details_loaded
+		? (repo.branches ?? []).filter((branch) => !branch.is_remote)
+		: []);
+	const [branchesLoaded, setBranchesLoaded] = useState(Boolean(repo.details_loaded));
+	const [branchPickerOpen, setBranchPickerOpen] = useState(false);
+	const [branchLoading, setBranchLoading] = useState(false);
+	const [branchSwitching, setBranchSwitching] = useState(false);
+	const [selectedBranch, setSelectedBranch] = useState(repo.current_branch || "HEAD");
+	const [branchMessage, setBranchMessage] = useState("");
+	const [isSyncing, setIsSyncing] = useState(false);
+	const [isSnapshotting, setIsSnapshotting] = useState(false);
+	const [feedback, setFeedback] = useState("");
+
+	useEffect(() => {
+		setSelectedBranch(repo.current_branch || "HEAD");
+		setBranches(repo.details_loaded
+			? (repo.branches ?? []).filter((branch) => !branch.is_remote)
+			: []);
+		setBranchesLoaded(Boolean(repo.details_loaded));
+		setBranchPickerOpen(false);
+		setBranchMessage("");
+	}, [repo.id, repo.current_branch, repo.details_loaded, repo.branches]);
+
+	async function loadBranches() {
+		if (branchesLoaded || branchLoading) return;
+		setBranchLoading(true);
+		setBranchMessage("");
+		try {
+			const result = await invoke<BranchInfo[]>("list_local_repository_branches", { repoPath: repo.path });
+			setBranches(result ?? []);
+			setBranchesLoaded(true);
+		} catch (error) {
+			setBranchMessage(error instanceof Error ? error.message : String(error));
+		} finally {
+			setBranchLoading(false);
+		}
+	}
+
+	async function toggleBranchPicker() {
+		const nextOpen = !branchPickerOpen;
+		setBranchPickerOpen(nextOpen);
+		if (nextOpen) await loadBranches();
+	}
+
+	async function handleSwitchBranch(branchName: string) {
+		if (!branchName || branchName === selectedBranch || branchSwitching) return;
+		setBranchSwitching(true);
+		setBranchMessage("");
+		try {
+			const updated = await onSwitchBranch(repo.path, branchName);
+			setBranches((updated.branches ?? []).filter((branch) => !branch.is_remote));
+			setSelectedBranch(updated.current_branch);
+			setBranchesLoaded(true);
+			setBranchPickerOpen(false);
+			setFeedback("Switched to " + updated.current_branch + ".");
+		} catch (error) {
+			setBranchMessage(error instanceof Error ? error.message : String(error));
+		} finally {
+			setBranchSwitching(false);
+		}
+	}
+
+	async function handleCopy(value: string, label: string) {
+		try {
+			if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is not available in this window.");
+			await navigator.clipboard.writeText(value);
+			setFeedback(label + " copied.");
+		} catch (error) {
+			setFeedback(error instanceof Error ? error.message : "Could not copy " + label.toLowerCase() + ".");
+		}
+	}
+
+	async function handleSnapshot() {
+		if (isSnapshotting || !canSnapshot) return;
+		setIsSnapshotting(true);
+		setFeedback("");
+		try {
+			const snapshot = await invoke<ArchiveSnapshot>("capture_repository_archive", {
+				repoPath: repo.path,
+				kind: "local",
+				archiveRoot: archiveRoot.trim() || null,
+			});
+			setFeedback("Local snapshot saved · " + snapshot.fileCount + " files.");
+		} catch (error) {
+			setFeedback(error instanceof Error ? error.message : String(error));
+		} finally {
+			setIsSnapshotting(false);
+		}
+	}
+
+	async function handleSync() {
+		if (isSyncing || !repo.has_remote) return;
+		setIsSyncing(true);
+		setFeedback("");
+		try {
+			let update = updates.find((item) => item.repo_path === repo.path);
+			if (!update) {
+				const checked = await onCheckUpdates();
+				update = checked.find((item) => item.repo_path === repo.path);
+			}
+			if (!update) {
+				setFeedback("No fast-forward update is currently available.");
+				return;
+			}
+			if (update.working_tree_clean === false || Number(update.commits_ahead ?? 0) > 0) {
+				setFeedback("Sync blocked: local changes or outgoing commits require manual review.");
+				return;
+			}
+			const synced = await onPullUpdate(repo.path);
+			setFeedback(synced
+				? "Repository synchronized."
+				: "Sync stopped safely. Check the application status for details.");
+		} catch (error) {
+			setFeedback(error instanceof Error ? error.message : String(error));
+		} finally {
+			setIsSyncing(false);
+		}
+	}
+
 	return (
-		<button className={selected ? "gm-repo-card selected" : "gm-repo-card"} onClick={onSelect} type="button">
-			<div className="gm-repo-card-top">
-				<RepoAvatar repo={repo} />
-				<div className="gm-repo-title-copy">
-					<strong>{repo.name}</strong>
-					<span>{repo.owner_name || "Local repository"}</span>
-				</div>
-				<span className={repo.has_remote ? "gm-remote-indicator remote" : "gm-remote-indicator local"}>
-					{repo.has_remote ? "Remote" : "Local"}
+		<article className={selected ? "gm-repo-card selected" : "gm-repo-card"}>
+			<header className="gm-repo-card-header">
+				<button className="gm-repo-open" onClick={onSelect} type="button">
+					<RepoAvatar repo={repo} />
+					<span className="gm-repo-title-copy">
+						<strong>{remoteFullName}</strong>
+						<small>{repo.has_remote
+							? (repo.primary_provider || "Remote") + " repository"
+							: (repo.owner_name || "Local repository")}</small>
+					</span>
+					<span className="gm-repo-open-hint">Open →</span>
+				</button>
+				<span className={repo.has_remote ? "gm-origin-badge dual" : "gm-origin-badge local"}>
+					{repo.has_remote ? "Local / Remote" : "Local"}
 				</span>
-			</div>
-			<p className="gm-repo-path" title={repo.path}>{repo.path}</p>
-			<div className="gm-repo-card-meta">
-				<span className="gm-branch-meta"><Glyph>⑂</Glyph>{repo.current_branch || "HEAD"}</span>
-				{!repo.details_loaded
-					? <span className="gm-status-pending"><i />Open to check</span>
-					: repo.dirty_files_count > 0
-						? <span className="gm-dirty-meta"><i />{repo.dirty_files_count} changed</span>
-						: <span className="gm-clean-meta"><i />Clean</span>}
-				{dependency && <span className="gm-dependency-chip">Dependency</span>}
-			</div>
-			<div className="gm-repo-card-footer">
-				<span className="gm-repo-provider"><ProviderMark provider={repo.primary_provider} />{repo.primary_provider || "local"}</span>
-				<span className="gm-latest-commit">{latest ? `${latest.short_oid} · ${relativeDate(latest.timestamp)}` : "No commits"}</span>
-			</div>
-		</button>
+			</header>
+
+			<p className="gm-repo-description">
+				{repo.has_remote
+					? "Local working copy connected to an upstream remote."
+					: "Local Git repository with no remote configured."}
+			</p>
+
+			<section className="gm-commit-box" aria-label="Repository branch and latest commit">
+				<div className="gm-commit-top">
+					<div className="gm-commit-left">
+						<button type="button" className="gm-branch-pill"
+							onClick={() => void toggleBranchPicker()}
+							aria-expanded={branchPickerOpen} title="Choose a local branch">
+							<Glyph>⑂</Glyph>{selectedBranch}<span aria-hidden="true">⌄</span>
+						</button>
+						{latest && (
+							<button type="button" className="gm-sha-btn"
+								onClick={() => void handleCopy(latest.oid, "Commit SHA")}
+								title={"Copy full commit " + latest.oid}>
+								{latest.short_oid || latest.oid.slice(0, 7)}
+							</button>
+						)}
+						<span className="gm-commit-msg" title={latest?.message || "No commit message"}>
+							{latest?.summary || latest?.message.split("\n")[0] || "No commits yet"}
+						</span>
+					</div>
+					<div className="gm-commit-right">
+						<time>{latest ? relativeDate(latest.timestamp) : "No commit date"}</time>
+						<span className="gm-ci-indicator" title="CI check results are not part of the local repository index yet">
+							<i />CI not checked
+						</span>
+					</div>
+				</div>
+
+				{branchPickerOpen && (
+					<div className="gm-branch-picker-panel">
+						<label>
+							<span>Switch local branch</span>
+							<select value={selectedBranch}
+								onChange={(event) => void handleSwitchBranch(event.target.value)}
+								disabled={branchLoading || branchSwitching || !branchesLoaded || branches.length === 0}>
+								{!branchesLoaded && <option value={selectedBranch}>Loading branches…</option>}
+								{branches.map((branch) => (
+									<option key={branch.name} value={branch.name}>
+										{branch.name}{branch.is_default ? " · default" : ""}
+									</option>
+								))}
+								{branchesLoaded && branches.length === 0 && <option value={selectedBranch}>No local branches</option>}
+							</select>
+						</label>
+						<span>{branchLoading ? "Loading local branches…" : branchSwitching ? "Switching safely…" : branchMessage || "Uncommitted or untracked changes block branch switching."}</span>
+					</div>
+				)}
+
+				<div className="gm-location-list">
+					<div className="gm-location-row">
+						<span className="gm-location-tag disk">DISK</span>
+						<code className="gm-location-path" title={repo.path}>{repo.path}</code>
+						<button type="button" className="gm-copy-btn" onClick={() => void handleCopy(repo.path, "Disk path")}>Copy</button>
+					</div>
+					{remotePageUrl && (
+						<div className="gm-location-row">
+							<span className="gm-location-tag remote">REMOTE</span>
+							<code className="gm-location-path remote-path" title={remotePageUrl}>{remotePageUrl}</code>
+							<button type="button" className="gm-copy-btn" onClick={() => void handleCopy(remotePageUrl, "Remote URL")}>Copy</button>
+						</div>
+					)}
+				</div>
+			</section>
+
+			<footer className="gm-repo-card-footer">
+				<div className="gm-repo-card-meta">
+					<span className="gm-repo-provider"><ProviderMark provider={repo.primary_provider} />{repo.primary_provider || "local"}</span>
+					{!repo.details_loaded
+						? <span className="gm-status-pending"><i />Working tree checked on open</span>
+						: repo.dirty_files_count > 0
+							? <span className="gm-dirty-meta"><i />{repo.dirty_files_count} modified</span>
+							: <span className="gm-clean-meta"><i />Clean</span>}
+					{dependency && <span className="gm-dependency-chip">Dependency</span>}
+				</div>
+				<div className="gm-repo-card-actions">
+					{repo.has_remote && (
+						<button type="button" className="gm-card-action" onClick={() => void handleSync()} disabled={isSyncing}>
+							{isSyncing ? "Syncing…" : "⇄ Sync"}
+						</button>
+					)}
+					<button type="button" className="gm-card-action primary"
+						onClick={() => void handleSnapshot()}
+						disabled={isSnapshotting || !canSnapshot}
+						title={canSnapshot ? "Save a local restore point" : "Local archives are disabled in Settings"}>
+						{isSnapshotting ? "Saving…" : "Snapshot"}
+					</button>
+				</div>
+			</footer>
+			{feedback && <p className="gm-card-feedback" role="status" aria-live="polite">{feedback}</p>}
+		</article>
 	);
 }
-
 function RepositoryDetail({
 	repo,
 	preferences,
@@ -593,6 +816,7 @@ function RepositoryPage({
 	onCheckUpdates,
 	updates,
 	onPullUpdate,
+	onSwitchBranch,
 	preferences,
 	onRescan,
 	scanTruncated,
@@ -609,9 +833,10 @@ function RepositoryPage({
 	setKind: (value: RepoKind) => void;
 	scanning: boolean;
 	onScan: () => void;
-	onCheckUpdates: () => void;
-	updates: { repo_path: string; repo_name: string; branch: string; commits_behind: number; failure_message?: string }[];
-	onPullUpdate: (path: string) => void;
+	onCheckUpdates: () => Promise<UpdateAlert[]>;
+	updates: UpdateAlert[];
+	onPullUpdate: (path: string) => Promise<boolean>;
+	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 	preferences: AppPreferences;
 	onRescan: () => void;
 	scanTruncated: boolean;
@@ -721,7 +946,13 @@ function RepositoryPage({
 							repo={repo}
 							selected={false}
 							dependency={dependencySet.has(repo.id)}
+							archiveRoot={preferences.archiveRoot}
+							canSnapshot={preferences.archiveLocalEnabled !== false}
+							updates={updates}
 							onSelect={() => setSelectedRepo(repo)}
+							onCheckUpdates={onCheckUpdates}
+							onPullUpdate={onPullUpdate}
+							onSwitchBranch={onSwitchBranch}
 						/>
 					))}
 				</EngineGrid>
@@ -1423,9 +1654,10 @@ export function GitManagerApp() {
 							scanning={git.scanning}
 							onScan={() => void git.scan()}
 							scanTruncated={git.scanTruncated}
-							onCheckUpdates={() => void git.checkUpdates()}
+							onCheckUpdates={() => git.checkUpdates()}
 							updates={git.updates}
-							onPullUpdate={(path) => void git.pullUpdate(path)}
+							onPullUpdate={(path) => git.pullUpdate(path)}
+							onSwitchBranch={git.switchBranch}
 							preferences={git.preferences}
 							onRescan={() => void git.scan()}
 						/>

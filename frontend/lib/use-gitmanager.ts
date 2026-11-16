@@ -134,12 +134,32 @@ export function useGitManager() {
 			setUpdates((current) => current.filter((item) => item.repo_path !== repoPath));
 			await performScan(preferences);
 			setStatus("Repository updated");
+			return true;
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			setError(message);
 			setStatus("Update stopped safely");
+			return false;
 		}
 	}, [performScan, preferences]);
+
+	const switchBranch = useCallback(async (repoPath: string, branchName: string) => {
+		setStatus("Switching local branch safely…");
+		try {
+			const updated = await invoke<GitRepository>("switch_repository_branch", {
+				repoPath,
+				branchName,
+			});
+			setRepositories((current) => current.map((repo) => repo.id === updated.id ? updated : repo));
+			setStatus("Switched to " + updated.current_branch);
+			return updated;
+		} catch (cause) {
+			const message = cause instanceof Error ? cause.message : String(cause);
+			setError(message);
+			setStatus("Branch switch stopped safely");
+			throw cause;
+		}
+	}, []);
 
 	const connectAccount = useCallback(async (
 		provider: string,
@@ -241,6 +261,6 @@ export function useGitManager() {
 	return {
 		available, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, updates, setupOpen, setSetupOpen,
-		status, error, setError, scan, savePreferences, checkUpdates, pullUpdate, connectAccount,
+		status, error, setError, scan, savePreferences, checkUpdates, pullUpdate, switchBranch, connectAccount,
 	};
 }

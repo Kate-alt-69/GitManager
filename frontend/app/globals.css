@@ -169,33 +169,66 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 .gm-list-heading span { color: #6e7681; font-size: 10px; }
 .gm-repo-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .gm-repo-card {
-	display: flex; flex-direction: column; gap: 10px; min-width: 0; width: 100%; padding: 15px 16px;
+	display: flex; flex-direction: column; gap: 10px; min-width: 0; width: 100%; padding: 14px;
 	border: 1px solid var(--border); border-radius: 8px; background: #151b23; text-align: left;
-	cursor: pointer; transition: border-color .12s ease, background .12s ease;
+	transition: border-color .12s ease, background .12s ease;
 }
 .gm-repo-card:hover, .gm-repo-card.selected { border-color: #3d7fcb; background: #192432; }
-.gm-repo-card-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.gm-repo-card-header { display: flex; align-items: flex-start; gap: 9px; min-width: 0; }
+.gm-repo-open { display: flex; align-items: center; flex: 1; gap: 10px; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.gm-repo-open:focus-visible, .gm-card-action:focus-visible, .gm-copy-btn:focus-visible, .gm-sha-btn:focus-visible, .gm-branch-pill:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
 .gm-repo-avatar { width: 34px; height: 34px; flex: 0 0 34px; overflow: hidden; display: grid; place-items: center; border: 1px solid #394655; border-radius: 8px; background: #1d2c3a; color: #a5d2ff; font-size: 13px; font-weight: 750; }
 .gm-repo-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.gm-repo-title-copy { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.gm-repo-title-copy { display: flex; flex-direction: column; min-width: 0; gap: 3px; }
 .gm-repo-title-copy strong { overflow: hidden; color: #dce6f0; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.gm-repo-title-copy span { overflow: hidden; color: #7b8794; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.gm-remote-indicator { margin-left: auto; padding: 2px 7px; border: 1px solid var(--border); border-radius: 20px; color: #8b949e; font-size: 9px; }
-.gm-remote-indicator.remote { border-color: rgba(63,185,80,.35); background: rgba(63,185,80,.08); color: #78d68a; }
-.gm-repo-path { overflow: hidden; margin: 0; color: #6e7681; font: 10px "JetBrains Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
-.gm-repo-card-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 11px; color: #8b949e; font-size: 10px; }
-.gm-branch-meta { display: inline-flex; align-items: center; gap: 5px; }
-.gm-dirty-meta, .gm-clean-meta { display: inline-flex; align-items: center; gap: 5px; }
-.gm-dirty-meta i { width: 6px; height: 6px; border-radius: 50%; background: #d29922; }
-.gm-clean-meta i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
-.gm-dependency-chip { padding: 1px 6px; border-radius: 4px; background: rgba(188,140,255,.12); color: #c9a6ff; font-size: 9px; }
-.gm-repo-card-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding-top: 9px; border-top: 1px solid #242c36; }
-.gm-repo-provider { display: inline-flex; align-items: center; gap: 6px; color: #7f8b98; font-size: 10px; text-transform: capitalize; }
-.gm-provider-mark { width: 20px; height: 20px; display: inline-grid; place-items: center; border-radius: 6px; background: #202b37; color: #d5e8ff; font-size: 8px; font-weight: 800; }
+.gm-repo-title-copy small { overflow: hidden; color: #7b8794; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; text-transform: capitalize; }
+.gm-repo-open-hint { flex: 0 0 auto; margin-left: auto; color: #6f8fb4; font-size: 9px; opacity: 0; transition: opacity .12s ease; }
+.gm-repo-card:hover .gm-repo-open-hint, .gm-repo-open:focus-visible .gm-repo-open-hint { opacity: 1; }
+.gm-origin-badge { flex: 0 0 auto; padding: 3px 7px; border: 1px solid #35404c; border-radius: 20px; color: #9aa6b2; font-size: 9px; white-space: nowrap; }
+.gm-origin-badge.dual { border-color: rgba(63,185,80,.35); background: rgba(63,185,80,.08); color: #78d68a; }
+.gm-origin-badge.local { border-color: rgba(88,166,255,.3); background: rgba(88,166,255,.07); color: #8cc8ff; }
+.gm-repo-description { margin: -2px 0 0; color: #8b949e; font-size: 10px; line-height: 1.45; }
+.gm-commit-box { display: grid; gap: 8px; min-width: 0; padding: 9px 10px; border: 1px solid #2a3541; border-radius: 7px; background: #101720; }
+.gm-commit-top { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.gm-commit-left { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 7px; min-width: 0; }
+.gm-branch-pill { display: inline-flex; align-items: center; gap: 5px; max-width: 150px; min-height: 25px; padding: 0 7px; overflow: hidden; border: 1px solid #344353; border-radius: 5px; background: #172331; color: #b7d8f7; cursor: pointer; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.gm-branch-pill span:last-child { color: #7f95aa; }
+.gm-sha-btn { min-height: 24px; padding: 0 7px; border: 1px solid #303d4b; border-radius: 5px; background: #19232e; color: #9fc6ec; cursor: pointer; font: 9px "JetBrains Mono", monospace; }
+.gm-commit-msg { min-width: 0; overflow: hidden; color: #c9d1d9; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.gm-commit-right { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; color: #778390; font-size: 9px; }
+.gm-commit-right time { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-ci-indicator { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; color: #778390; font-size: 9px; }
+.gm-ci-indicator i { width: 6px; height: 6px; border-radius: 50%; background: #697785; }
+.gm-branch-picker-panel { display: grid; gap: 6px; padding: 8px; border: 1px solid #303d4b; border-radius: 6px; background: #151f2b; }
+.gm-branch-picker-panel label { display: grid; grid-template-columns: 110px minmax(0,1fr); align-items: center; gap: 8px; color: #9aa8b6; font-size: 9px; }
+.gm-branch-picker-panel select { min-width: 0; height: 27px; padding: 0 7px; border: 1px solid #344353; border-radius: 5px; background: #0d141c; color: #dce6f0; font-size: 9px; }
+.gm-branch-picker-panel > span { color: #728091; font-size: 9px; line-height: 1.4; }
+.gm-location-list { display: grid; gap: 6px; padding-top: 7px; border-top: 1px solid #293442; }
+.gm-location-row { display: grid; grid-template-columns: 47px minmax(0,1fr) auto; align-items: center; gap: 7px; min-width: 0; }
+.gm-location-tag { justify-self: start; padding: 2px 5px; border: 1px solid #33404c; border-radius: 4px; color: #91a0ae; font-size: 8px; letter-spacing: .04em; }
+.gm-location-tag.remote { border-color: rgba(88,166,255,.26); color: #8cc8ff; }
+.gm-location-path { min-width: 0; overflow: hidden; color: #9aa9b7; font: 9px "JetBrains Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.gm-location-path.remote-path { color: #8fb8df; }
+.gm-copy-btn { min-height: 22px; padding: 0 6px; border: 1px solid #33404c; border-radius: 4px; background: #18222d; color: #98a6b4; cursor: pointer; font-size: 8px; }
+.gm-repo-card-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 9px; padding-top: 8px; border-top: 1px solid #242c36; }
+.gm-repo-card-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; min-width: 0; color: #8b949e; font-size: 9px; }
+.gm-repo-provider { display: inline-flex; align-items: center; gap: 5px; color: #7f8b98; font-size: 9px; text-transform: capitalize; }
+.gm-provider-mark { width: 18px; height: 18px; display: inline-grid; place-items: center; border-radius: 5px; background: #202b37; color: #d5e8ff; font-size: 8px; font-weight: 800; }
 .gm-provider-github { background: #252c35; color: #e6edf3; }
 .gm-provider-gitlab { background: rgba(252,109,38,.14); color: #ff9c6b; }
 .gm-provider-local { background: #1b354a; color: #85caff; }
-.gm-latest-commit { overflow: hidden; color: #6e7681; font: 9px "JetBrains Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.gm-dirty-meta, .gm-clean-meta { display: inline-flex; align-items: center; gap: 5px; }
+.gm-dirty-meta i { width: 6px; height: 6px; border-radius: 50%; background: #d29922; }
+.gm-clean-meta i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.gm-dependency-chip { padding: 2px 6px; border-radius: 4px; background: rgba(188,140,255,.12); color: #c9a6ff; font-size: 8px; }
+.gm-status-pending { display: inline-flex; align-items: center; gap: 5px; color: #778390; font-size: 9px; }
+.gm-status-pending i { width: 6px; height: 6px; border-radius: 50%; background: #697785; }
+.gm-repo-card-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.gm-card-action { min-height: 26px; padding: 0 9px; border: 1px solid #354353; border-radius: 5px; background: #1a2633; color: #b7c7d6; cursor: pointer; font-size: 9px; font-weight: 550; }
+.gm-card-action.primary { border-color: #315a82; background: #1b3550; color: #a9d2f7; }
+.gm-card-action:hover:not(:disabled), .gm-copy-btn:hover, .gm-sha-btn:hover { border-color: #4778a8; color: #e0efff; }
+.gm-card-action:disabled { opacity: .5; cursor: not-allowed; }
+.gm-card-feedback { margin: -3px 0 0; color: #91a0ae; font-size: 9px; line-height: 1.4; overflow-wrap: anywhere; }
 
 .gm-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 220px; padding: 30px; border: 1px dashed #343e49; border-radius: 8px; background: rgba(22,27,34,.45); text-align: center; }
 .gm-empty-icon { width: 43px; height: 43px; display: grid; place-items: center; border: 1px solid #344252; border-radius: 12px; background: #172433; color: #8cc8ff; font-size: 20px; }
@@ -374,6 +407,11 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 	.gm-detail-stats > div:nth-child(-n+2) { border-bottom: 1px solid #29313b; }
 }
 @media (max-width: 560px) {
+	.gm-repo-card-footer { align-items: flex-start; flex-direction: column; }
+	.gm-repo-card-actions { width: 100%; margin-left: 0; }
+	.gm-card-action { flex: 1; }
+	.gm-branch-picker-panel label { grid-template-columns: 1fr; }
+
 	.gm-topbar { min-height: 56px; }
 	.gm-global-search { width: 36px; padding: 0 8px; }
 	.gm-global-search input, .gm-global-search kbd, .gm-version-pill { display: none; }
