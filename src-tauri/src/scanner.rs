@@ -6,11 +6,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::Duration;
 use fs2::FileExt;
 
 use crate::git_info::{extract_git_repository_summary, GitRepositoryInfo};
 
 const SCAN_WORKERS: usize = 2;
+const SCAN_ENTRY_PACING_INTERVAL: usize = 128;
+const SCAN_ENTRY_PACING_DELAY: Duration = Duration::from_millis(1);
 const MAX_SCAN_DIRECTORIES: usize = 40_000;
 const MAX_SCAN_ENTRIES: usize = 250_000;
 const MAX_PENDING_DIRECTORIES: usize = 8_192;
@@ -190,7 +193,10 @@ fn acquire_process_scan_lease() -> Result<File, String> {
 }
 
 fn scan_worker_count_for(available: usize) -> usize {
-    if available >= 2 { SCAN_WORKERS } else { 1 }
+    // Keep discovery single-threaded on ordinary/low-end machines. Only
+    // larger CPUs get the second worker; the entry pacing below still yields
+    // to foreground work during very large directory enumerations.
+    if available >= 8 { SCAN_WORKERS } else { 1 }
 }
 
 fn scan_worker_count() -> usize {
@@ -245,14 +251,16 @@ fn scan_one_directory(task: &ScanTask, shared: &ScanShared) -> Vec<ScanTask> {
 
     for entry_result in entries {
         if shared.truncated.load(Ordering::Relaxed) { break; }
-        if shared.entries_seen.fetch_add(1, Ordering::Relaxed) + 1 > MAX_SCAN_ENTRIES {
+        let entry_number = shared.entries_seen.fetch_add(1, Ordering::Relaxed) + 1;
+        if entry_number > MAX_SCAN_ENTRIES {
             truncate_scan(shared);
             break;
         }
-        // Yield occasionally so large directory enumerations share CPU time
-        // with the foreground UI and the operating system.
-        if shared.entries_seen.load(Ordering::Relaxed) % 128 == 0 {
-            thread::yield_now();
+        // Large directory enumerations should not monopolize storage or CPU.
+        // The small pause also gives the foreground UI and Windows shell time
+        // to service work on slower machines.
+        if entry_number % SCAN_ENTRY_PACING_INTERVAL == 0 {
+            thread::sleep(SCAN_ENTRY_PACING_DELAY);
         }
         let Ok(entry) = entry_result else { continue };
         let path = entry.path();
@@ -469,9 +477,12 @@ mod tests {
     }
 
     #[test]
-    fn uses_two_workers_when_at_least_two_processors_exist() {
+    fn keeps_small_machines_single_threaded_and_scales_up_on_large_cpus() {
         assert_eq!(scan_worker_count_for(1), 1);
-        assert_eq!(scan_worker_count_for(2), 2);
+        assert_eq!(scan_worker_count_for(2), 1);
+        assert_eq!(scan_worker_count_for(4), 1);
+        assert_eq!(scan_worker_count_for(7), 1);
+        assert_eq!(scan_worker_count_for(8), 2);
         assert_eq!(scan_worker_count_for(16), 2);
     }
 }
