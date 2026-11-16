@@ -87,6 +87,11 @@ export function useGitManager() {
 
 	const scan = useCallback((customRoot?: string) => performScan(preferences, customRoot), [performScan, preferences]);
 
+	const updateRepository = useCallback((updated: GitRepository) => {
+		setRepositories((current) => current.map((repo) => repo.id === updated.id ? updated : repo));
+	}, []);
+
+
 	// Report only after the desktop hook is ready. The independent crash_helper
 	// treats a missing heartbeat as an unresponsive UI.
 	useEffect(() => {
@@ -261,6 +266,6 @@ export function useGitManager() {
 	return {
 		available, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, updates, setupOpen, setSetupOpen,
-		status, error, setError, scan, savePreferences, checkUpdates, pullUpdate, switchBranch, connectAccount,
+		status, error, setError, scan, savePreferences, checkUpdates, pullUpdate, switchBranch, updateRepository, connectAccount,
 	};
 }

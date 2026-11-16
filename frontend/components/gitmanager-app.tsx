@@ -526,7 +526,7 @@ function RepositoryCard({
 				<div className="gm-repo-card-meta">
 					<span className="gm-repo-provider"><ProviderMark provider={repo.primary_provider} />{repo.primary_provider || "local"}</span>
 					{!repo.details_loaded
-						? <span className="gm-status-pending"><i />Working tree checked on open</span>
+						? <span className="gm-status-pending"><i />Open to inspect working tree</span>
 						: repo.dirty_files_count > 0
 							? <span className="gm-dirty-meta"><i />{repo.dirty_files_count} modified</span>
 							: <span className="gm-clean-meta"><i />Clean</span>}
@@ -556,12 +556,14 @@ function RepositoryDetail({
 	onClose,
 	onOpenWebsite,
 	onRescan,
+	onRepositoryLoaded,
 }: {
 	repo: GitRepository;
 	preferences: AppPreferences;
 	onClose: () => void;
 	onOpenWebsite: (url: string) => void;
 	onRescan: () => void;
+	onRepositoryLoaded: (repo: GitRepository) => void;
 }) {
 	const [archives, setArchives] = useState<ArchiveSnapshot[]>([]);
 	const [repositoryDetails, setRepositoryDetails] = useState<GitRepository | null>(repo.details_loaded ? repo : null);
@@ -660,19 +662,23 @@ function RepositoryDetail({
 		if (repo.details_loaded) {
 			setRepositoryDetails(repo);
 			setDetailsLoading(false);
+			onRepositoryLoaded(repo);
 			return () => { active = false; };
 		}
 		setRepositoryDetails(null);
 		setDetailsLoading(true);
 		void invoke<GitRepository>("inspect_repository", { repoPath: repo.path }).then((loaded) => {
-			if (active) setRepositoryDetails(loaded);
+			if (active) {
+				setRepositoryDetails(loaded);
+				onRepositoryLoaded(loaded);
+			}
 		}).catch((error) => {
 			if (active) setArchiveStatus(`Could not load Git Tree details: ${String(error)}`);
 		}).finally(() => {
 			if (active) setDetailsLoading(false);
 		});
 		return () => { active = false; };
-	}, [repo.path, repo.details_loaded]);
+	}, [repo.path, repo.details_loaded, onRepositoryLoaded]);
 
 	const displayRepo = repositoryDetails ?? repo;
 	const branches = (displayRepo.branches ?? []).filter((branch) => !branch.is_remote);
@@ -823,6 +829,7 @@ function RepositoryPage({
 	onSwitchBranch,
 	preferences,
 	onRescan,
+	onRepositoryLoaded,
 	scanTruncated,
 }: {
 	repositories: GitRepository[];
@@ -843,6 +850,7 @@ function RepositoryPage({
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 	preferences: AppPreferences;
 	onRescan: () => void;
+	onRepositoryLoaded: (repo: GitRepository) => void;
 	scanTruncated: boolean;
 }) {
 	const dependencySet = useMemo(() => new Set(dependencies), [dependencies]);
@@ -864,6 +872,7 @@ function RepositoryPage({
 				onClose={() => setSelectedRepo(null)}
 				onOpenWebsite={(url) => { void invoke("open_external_url", { url }).catch((error) => window.alert(String(error))); }}
 				onRescan={onRescan}
+				onRepositoryLoaded={onRepositoryLoaded}
 			/>
 		);
 	}
@@ -1664,6 +1673,7 @@ export function GitManagerApp() {
 							onSwitchBranch={git.switchBranch}
 							preferences={git.preferences}
 							onRescan={() => void git.scan()}
+							onRepositoryLoaded={git.updateRepository}
 						/>
 					)}
 					{page === "accounts" && <AccountsPage accounts={git.accounts} onConnect={git.connectAccount} />}
