@@ -153,37 +153,40 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
     return 0
 
 
-def name_windows_setup_installer(project_root: Path) -> Optional[Path]:
-    """Expose a stable, predictable setup.exe name after Tauri has bundled NSIS."""
+def verify_windows_application_bundle(project_root: Path) -> Optional[Path]:
+    """Verify Tauri produced the raw Windows app bundle for MPDEV packaging."""
     if platform.system() != "Windows":
         return None
-    # Tauri inherits the Cargo workspace target directory at the repository root.
-    output_dir = project_root / "target" / "release" / "bundle" / "nsis"
-    if not output_dir.is_dir():
-        log_err(f"NSIS installer output directory does not exist: {output_dir}")
+    app_root = project_root / "target" / "release" / "bundle" / "app"
+    if not app_root.is_dir():
+        log_err(f"Tauri Windows app bundle is missing: {app_root}")
         return None
-    candidates = sorted(
-        path for path in output_dir.glob("*-setup.exe")
-        if path.name.lower() != "gitmanager-setup.exe"
-    )
-    if not candidates:
-        existing = output_dir / "GitManager-Setup.exe"
-        if existing.is_file() and existing.stat().st_size > 0:
-            return existing
-        log_err("Tauri did not create an NSIS *-setup.exe. The Windows installer is missing.")
+    executable_names = {"git-manager.exe", "gitmanager.exe"}
+    executables = [
+        path for path in app_root.rglob("*.exe")
+        if path.is_file() and path.name.lower() in executable_names
+    ]
+    if len(executables) != 1:
+        log_err(
+            "Expected exactly one GitManager desktop executable in the Tauri app bundle; "
+            f"found {len(executables)} under {app_root}."
+        )
         return None
-    source = candidates[0]
-    destination = output_dir / "GitManager-Setup.exe"
-    try:
-        shutil.copy2(source, destination)
-    except OSError as exc:
-        log_err(f"Could not create GitManager-Setup.exe: {exc}")
+    app_dir = executables[0].parent
+    required_sidecars = ("crash_helper.exe", "git-manager-service.exe", "gitm.exe", "gitmanager-setup.exe")
+    missing = [
+        name for name in required_sidecars
+        if not any(path.is_file() and path.name.lower() == name for path in app_dir.rglob("*.exe"))
+    ]
+    if missing:
+        log_err("Tauri app bundle is missing required Windows sidecars: " + ", ".join(missing))
         return None
-    if not destination.is_file() or destination.stat().st_size < 1024 * 1024:
-        log_err("GitManager-Setup.exe is missing or unexpectedly small after bundling.")
+    python_runtime = app_dir / "resources" / "python" / "python.exe"
+    if not python_runtime.is_file():
+        log_err(f"Bundled Python runtime is missing from the Windows app bundle: {python_runtime}")
         return None
-    log_ok(f"Created Windows installer: {destination} ({destination.stat().st_size:,} bytes)")
-    return destination
+    log_ok(f"Verified raw Windows application bundle for MPDEV: {app_dir}")
+    return app_dir
 
 
 def ensure_cargo_in_path() -> None:
@@ -1062,7 +1065,7 @@ def run_build_or_dev(
             return runtime_result
 
     if mode == "build" and not has_cargo_tauri:
-        log_err("The Tauri CLI is required to create GitManager-Setup.exe. Install failed or pass --install-tauri-cli.")
+        log_err("The Tauri CLI is required to create the Windows application bundle for Master Packager Dev. Install failed or pass --install-tauri-cli.")
         return 1
 
     if mode in ("build", "dev"):
@@ -1093,7 +1096,7 @@ def run_build_or_dev(
 
         # The dedicated service executable and crash_helper are bundled as
         # separate sidecars; the background service never shares the UI process tree.
-        if platform.system() == "Windows" and name_windows_setup_installer(project_root) is None:
+        if platform.system() == "Windows" and verify_windows_application_bundle(project_root) is None:
             return 1
         return 0
 
