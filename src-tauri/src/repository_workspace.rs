@@ -401,7 +401,7 @@ pub fn create_repository_commit(repo_path: &str, message: &str) -> Result<(Strin
     if message.is_empty() { return Err("Enter a commit message before creating a commit.".to_string()); }
     if message.len() > 200 { return Err("Commit messages must be 200 characters or fewer.".to_string()); }
     let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
-    let index = repo.index().map_err(|error| format!("Could not open repository index: {error}"))?;
+    let mut index = repo.index().map_err(|error| format!("Could not open repository index: {error}"))?;
     let staged_tree = index.write_tree().map_err(|error| format!("Could not write staged tree: {error}"))?;
     if let Ok(head) = repo.head() {
         if let Ok(commit) = head.peel_to_commit() {
