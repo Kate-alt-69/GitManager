@@ -346,12 +346,12 @@ function updatePullPreflightControls() {
   if (fileList) fileList.classList.toggle("sync-commit-selection", mode === "commit");
   const selectedPaths = Array.from(document.querySelectorAll("[data-sync-stage-path]:checked"))
     .map((input) => input.getAttribute("data-sync-stage-path"));
-  const allPathsSelected = selectedPaths.length === preview.changes.length;
+  const selectedAny = selectedPaths.length > 0;
   const message = String(document.getElementById("sync-commit-message")?.value || "").trim();
   const ready = Boolean(preview.canPull) && (
     mode === "none" ? preview.changes.length === 0 :
     mode === "stash" ? preview.changes.length > 0 :
-    mode === "commit" ? preview.changes.length > 0 && allPathsSelected && message.length > 0 : false
+    mode === "commit" ? preview.changes.length > 0 && selectedAny && message.length > 0 : false
   );
   confirmButton.disabled = !ready || pullingRepoPaths.has(activePullRepoPath || "");
   if (note) {
@@ -359,14 +359,16 @@ function updatePullPreflightControls() {
       note.textContent = preview.commitsAhead > 0
         ? "Fast-forward Pull is blocked because this branch has local-only commits. Review the divergence before choosing a rebase or merge workflow."
         : "There are no remote commits to pull. Refresh the repository state before trying again.";
-    } else if (mode === "commit" && !allPathsSelected) {
-      note.textContent = "Select every changed path to commit. Unselected edits must remain untouched; choose Stash all changes to preserve a partial selection.";
+    } else if (mode === "commit" && !selectedAny) {
+      note.textContent = "Select at least one changed path to commit, or choose Stash all local changes.";
     } else if (mode === "commit" && !message) {
-      note.textContent = "Enter a commit message. GitManager will stage the selected paths and create this commit only after you confirm Pull.";
+      note.textContent = "Enter a commit message. Checked files will be staged and committed; unchecked files will be stashed after confirmation.";
     } else if (mode === "stash") {
       note.textContent = "GitManager will save all staged, modified and untracked changes in a stash, pull the remote branch, and leave the stash available. It will not apply the stash automatically.";
     } else if (mode === "commit") {
-      note.textContent = "GitManager will stage the selected paths, create your commit, then rebase that new commit onto the remote branch. A conflict will stop the operation and require review.";
+      note.textContent = selectedPaths.length < preview.changes.length
+        ? "GitManager will stage and commit the checked files, stash every unchecked change, then rebase the new commit onto the remote branch. The stash will be kept; it will not be applied automatically."
+        : "GitManager will stage and commit the checked files, then rebase that commit onto the remote branch. A conflict will stop the operation and require review.";
     } else {
       note.textContent = "The working tree is clean. GitManager will fast-forward the current branch from its configured upstream.";
     }
@@ -395,7 +397,7 @@ function renderPullPreflight(preview) {
     modes.classList.toggle("hidden", preview.changes.length === 0);
     modes.innerHTML = preview.changes.length
       ? '<label class="sync-mode-option"><input type="radio" name="sync-preparation-mode" value="stash" checked /><span><strong>Stash all local changes</strong><small>Includes staged, modified and untracked files. The stash is kept after Pull and is not automatically applied.</small></span></label>' +
-        '<label class="sync-mode-option"><input type="radio" name="sync-preparation-mode" value="commit" /><span><strong>Stage and commit selected files</strong><small>Choose every changed path below, enter a commit message, then GitManager rebases that commit onto the remote branch.</small></span></label>'
+        '<label class="sync-mode-option"><input type="radio" name="sync-preparation-mode" value="commit" /><span><strong>Stage and commit selected files</strong><small>Check the files to commit. Unchecked changes are stashed and kept safe while the new commit is rebased onto the remote branch.</small></span></label>'
       : "";
     modes.querySelectorAll("input[name='sync-preparation-mode']").forEach((input) =>
       input.addEventListener("change", updatePullPreflightControls));
