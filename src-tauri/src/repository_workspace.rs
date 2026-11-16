@@ -451,10 +451,15 @@ pub fn unstage_repository_paths(repo_path: &str, paths: &[String]) -> Result<Vec
     if paths.is_empty() { return Err("Select at least one staged file to unstage.".to_string()); }
     let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
     for value in paths { validate_git_operation_path(value)?; }
-    // Reset only the selected index entries to HEAD. This preserves working-tree
-    // edits and turns staged additions back into ordinary untracked files.
+    let has_head = repo.head().ok().and_then(|head| head.target()).is_some();
+    // Reset selected index entries to HEAD when one exists. In an unborn
+    // repository, remove only the index entries so first-commit files stay on disk.
     for batch in paths.chunks(64) {
-        let mut args = vec!["reset", "--"];
+        let mut args = if has_head {
+            vec!["reset", "--"]
+        } else {
+            vec!["rm", "--cached", "--ignore-unmatch", "--"]
+        };
         for path in batch { args.push(path.as_str()); }
         run_git(repo_path, &args)
             .map_err(|error| format!("Could not unstage the selected files: {error}"))?;
@@ -739,6 +744,33 @@ mod tests {
         assert_eq!(added.worktree_status, "Untracked");
         assert!(!added.staged);
         assert_eq!(fs::read_to_string(path.join("new.txt")).unwrap(), "new local file\n");
+        drop(repo);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn unstage_works_before_the_first_commit_exists() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gitmanager-unborn-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+        let repo = Repository::init(&path).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "GitManager Tests").unwrap();
+        config.set_str("user.email", "gitmanager-tests@example.invalid").unwrap();
+        fs::write(path.join("first.txt"), "first commit candidate\n").unwrap();
+        let add = hidden_command("git").arg("-C").arg(&path).args(["add", "--", "first.txt"]).output().unwrap();
+        assert!(add.status.success());
+        assert!(repo.head().is_err());
+        let changes = super::unstage_repository_paths(
+            path.to_str().unwrap(),
+            &["first.txt".to_string()],
+        ).unwrap();
+        let added = changes.iter().find(|change| change.path == "first.txt").unwrap();
+        assert_eq!(added.index_status, "Clean");
+        assert_eq!(added.worktree_status, "Untracked");
+        assert!(!added.staged);
+        assert_eq!(fs::read_to_string(path.join("first.txt")).unwrap(), "first commit candidate\n");
         drop(repo);
         fs::remove_dir_all(path).unwrap();
     }
