@@ -566,21 +566,23 @@ pub fn prepare_and_pull_repository_update(
                 .filter(|change| !selected.contains(change.path.as_str()))
                 .map(|change| change.path.as_str())
                 .collect();
-            let mut add_args = vec!["add", "--"];
-            for path in stage_paths { add_args.push(path.as_str()); }
-            run_git(repo_path, &add_args)
-                .map_err(|error| format!("Could not stage the selected files; Pull was not started: {error}"))?;
-            run_git(repo_path, &["commit", "-m", message])
-                .map_err(|error| format!("Could not create the requested commit; Pull was not started: {error}"))?;
-            commit_created = true;
+            // Remove every unchecked path from the index/worktree before creating the commit.
+            // Otherwise an already-staged, unchecked file could be included by the commit.
             if !stash_paths.is_empty() {
                 let stash_message = format!("GitManager: unselected changes before pull from {}/{}", preview.remote_name, preview.remote_branch);
                 let mut stash_args = vec!["stash", "push", "--include-untracked", "--message", stash_message.as_str(), "--"];
                 stash_args.extend(stash_paths.iter().copied());
                 run_git(repo_path, &stash_args)
-                    .map_err(|error| format!("Your selected-file commit was created, but unselected files could not be stashed; Pull was not started: {error}"))?;
+                    .map_err(|error| format!("Could not stash the unchecked paths; no commit or Pull was created: {error}"))?;
                 stash_created = true;
             }
+            let mut add_args = vec!["add", "--"];
+            for path in stage_paths { add_args.push(path.as_str()); }
+            run_git(repo_path, &add_args)
+                .map_err(|error| format!("Could not stage the selected files; Pull was not started. Any created stash was preserved: {error}"))?;
+            run_git(repo_path, &["commit", "-m", message])
+                .map_err(|error| format!("Could not create the requested commit; Pull was not started. Any created stash was preserved: {error}"))?;
+            commit_created = true;
         }
         "none" if !has_changes => {}
         "none" => return Err("The working tree has changes. Choose Commit or Stash before pulling.".to_string()),
