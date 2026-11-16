@@ -186,6 +186,14 @@ let pendingUpdateAlerts = [];
 let pullingRepoPaths = new Set();
 let selectedRepoId = null;
 let repositoryScanInProgress = false;
+let activePullPreview = null;
+let activePullRepoPath = null;
+let activeWorkspaceRepoId = null;
+let activeRepositoryPanel = "code";
+let activeCodeSource = "local";
+let activeCodePath = "";
+let activeCodeBranch = "";
+let codeDirectoryRequestId = 0;
 let selectedCommitOid = null;
 let requestedFilter = "grouped";
 let indexGroupingMode = "folder";
@@ -277,8 +285,8 @@ function renderUpdateNotificationsTray() {
               <strong>${escapeHtml(promptText)}</strong>
               <span>Branch <code>${escapeHtml(upd.branch)}</code> is ${upd.commits_behind} commit(s) behind remote (${escapeHtml((upd.remote_oid || "").slice(0, 7))})</span>
               ${upd.failure_message ? `<span class="update-alert-error">${escapeHtml(upd.automatic_attempt ? "Auto Update stopped safely: " : "Update failed: ")}${escapeHtml(upd.failure_message)}</span>` : ""}
-              ${upd.working_tree_clean === false ? '<span class="update-alert-note">Working tree has local changes; automatic update is disabled for this repository.</span>' : ""}
-              ${Number(upd.commits_ahead) > 0 ? '<span class="update-alert-note">Local branch has commits not on origin; update requires manual review.</span>' : ""}
+              ${upd.working_tree_clean === false ? '<span class="update-alert-note">Local changes detected. Review them before pulling.</span>' : ""}
+              ${Number(upd.commits_ahead) > 0 ? '<span class="update-alert-note">This branch also has local-only commits; fast-forward Pull is unavailable.</span>' : ""}
             </div>
           </div>
           <div class="update-alert-actions">
@@ -292,7 +300,7 @@ function renderUpdateNotificationsTray() {
                        </svg>
                        Updating ${escapeHtml(upd.repo_name)}...
                      </span>`
-                  : "Yes, Update Now"
+                  : "Review & Pull"
               }
             </button>
             <button class="btn btn-secondary btn-dismiss-update" data-repo-path="${escapeHtml(upd.repo_path)}" ${isPulling ? "disabled" : ""}>
@@ -308,7 +316,7 @@ function renderUpdateNotificationsTray() {
     btn.addEventListener("click", async () => {
       const repoPath = btn.getAttribute("data-repo-path");
       if (!repoPath) return;
-      await acceptAndPullRepoUpdate(repoPath);
+      await openPullPreflight(repoPath);
     });
   });
 
@@ -321,26 +329,189 @@ function renderUpdateNotificationsTray() {
   });
 }
 
-async function acceptAndPullRepoUpdate(repoPath, automatic = false) {
-  pullingRepoPaths.add(repoPath);
-  setServiceCheckingVisual(true, automatic ? `Auto-updating ${repoPath}...` : `Updating ${repoPath}...`);
-  renderUpdateNotificationsTray();
+function selectedPullMode() {
+  const selected = document.querySelector('input[name="sync-preparation-mode"]:checked');
+  return selected ? selected.value : "none";
+}
 
+function updatePullPreflightControls() {
+  const preview = activePullPreview;
+  const confirmButton = document.getElementById("btn-confirm-pull");
+  const note = document.getElementById("sync-preflight-note");
+  const commitFields = document.getElementById("sync-commit-fields");
+  const fileList = document.getElementById("sync-change-list");
+  if (!preview || !confirmButton) return;
+  const mode = selectedPullMode();
+  if (commitFields) commitFields.classList.toggle("hidden", mode !== "commit");
+  if (fileList) fileList.classList.toggle("sync-commit-selection", mode === "commit");
+  const selectedPaths = Array.from(document.querySelectorAll("[data-sync-stage-path]:checked"))
+    .map((input) => input.getAttribute("data-sync-stage-path"));
+  const allPathsSelected = selectedPaths.length === preview.changes.length;
+  const message = String(document.getElementById("sync-commit-message")?.value || "").trim();
+  const ready = Boolean(preview.canPull) && (
+    mode === "none" ? preview.changes.length === 0 :
+    mode === "stash" ? preview.changes.length > 0 :
+    mode === "commit" ? preview.changes.length > 0 && allPathsSelected && message.length > 0 : false
+  );
+  confirmButton.disabled = !ready || pullingRepoPaths.has(activePullRepoPath || "");
+  if (note) {
+    if (!preview.canPull) {
+      note.textContent = preview.commitsAhead > 0
+        ? "Fast-forward Pull is blocked because this branch has local-only commits. Review the divergence before choosing a rebase or merge workflow."
+        : "There are no remote commits to pull. Refresh the repository state before trying again.";
+    } else if (mode === "commit" && !allPathsSelected) {
+      note.textContent = "Select every changed path to commit. Unselected edits must remain untouched; choose Stash all changes to preserve a partial selection.";
+    } else if (mode === "commit" && !message) {
+      note.textContent = "Enter a commit message. GitManager will stage the selected paths and create this commit only after you confirm Pull.";
+    } else if (mode === "stash") {
+      note.textContent = "GitManager will save all staged, modified and untracked changes in a stash, pull the remote branch, and leave the stash available. It will not apply the stash automatically.";
+    } else if (mode === "commit") {
+      note.textContent = "GitManager will stage the selected paths, create your commit, then rebase that new commit onto the remote branch. A conflict will stop the operation and require review.";
+    } else {
+      note.textContent = "The working tree is clean. GitManager will fast-forward the current branch from its configured upstream.";
+    }
+  }
+  confirmButton.textContent = pullingRepoPaths.has(activePullRepoPath || "") ? "Pulling…" : "Yes, Pull";
+}
+
+function renderPullPreflight(preview) {
+  activePullPreview = preview;
+  const title = document.getElementById("operation-modal-title");
+  const subtitle = document.getElementById("operation-modal-subtitle");
+  const summary = document.getElementById("sync-preflight-summary");
+  const changes = document.getElementById("sync-change-list");
+  const modes = document.getElementById("sync-preparation-options");
+  const error = document.getElementById("sync-preflight-error");
+  const commitMessage = document.getElementById("sync-commit-message");
+  if (error) { error.textContent = ""; error.classList.add("hidden"); }
+  if (title) title.textContent = "Pull from " + preview.remoteName + "/" + preview.remoteBranch;
+  if (subtitle) subtitle.textContent = preview.repoName + " · current branch " + preview.branch;
+  if (summary) summary.innerHTML =
+    '<div class="sync-summary-stat"><strong>' + preview.commitsBehind + '</strong><span>Commits to pull</span></div>' +
+    '<div class="sync-summary-stat"><strong>' + preview.commitsAhead + '</strong><span>Local-only commits</span></div>' +
+    '<div class="sync-summary-stat"><strong>' + preview.changes.length + '</strong><span>Changed paths</span></div>' +
+    '<div class="sync-summary-stat"><strong>' + escapeHtml(preview.localOid.slice(0, 7)) + '</strong><span>Local HEAD</span></div>';
+  if (modes) {
+    modes.classList.toggle("hidden", preview.changes.length === 0);
+    modes.innerHTML = preview.changes.length
+      ? '<label class="sync-mode-option"><input type="radio" name="sync-preparation-mode" value="stash" checked /><span><strong>Stash all local changes</strong><small>Includes staged, modified and untracked files. The stash is kept after Pull and is not automatically applied.</small></span></label>' +
+        '<label class="sync-mode-option"><input type="radio" name="sync-preparation-mode" value="commit" /><span><strong>Stage and commit selected files</strong><small>Choose every changed path below, enter a commit message, then GitManager rebases that commit onto the remote branch.</small></span></label>'
+      : "";
+    modes.querySelectorAll("input[name='sync-preparation-mode']").forEach((input) =>
+      input.addEventListener("change", updatePullPreflightControls));
+  }
+  if (commitMessage) { commitMessage.value = ""; commitMessage.oninput = updatePullPreflightControls; }
+  if (changes) {
+    if (!preview.changes.length) {
+      changes.innerHTML = '<div class="sync-empty-state"><span class="sync-clean-icon">✓</span><strong>Working tree clean</strong><small>No files need to be staged, committed or stashed.</small></div>';
+    } else {
+      changes.innerHTML = preview.changes.map((change) => {
+        const label = [change.indexStatus !== "Clean" ? "Staged " + change.indexStatus : "",
+          change.worktreeStatus !== "Clean" ? change.worktreeStatus : ""].filter(Boolean).join(" · ");
+        return '<label class="sync-change-row"><input type="checkbox" data-sync-stage-path="' + escapeHtml(change.path) + '" checked />' +
+          '<span class="sync-change-path"><strong>' + escapeHtml(change.path) + '</strong><small>' + escapeHtml(label || "Changed") + '</small></span>' +
+          '<span class="sync-change-state">' + (change.staged ? "In index" : "Working tree") + '</span></label>';
+      }).join("");
+      changes.querySelectorAll("[data-sync-stage-path]").forEach((input) =>
+        input.addEventListener("change", updatePullPreflightControls));
+    }
+  }
+  updatePullPreflightControls();
+}
+
+async function openPullPreflight(repoPath) {
+  const backdrop = document.getElementById("operation-modal-backdrop");
+  const error = document.getElementById("sync-preflight-error");
+  const summary = document.getElementById("sync-preflight-summary");
+  const changes = document.getElementById("sync-change-list");
+  const modes = document.getElementById("sync-preparation-options");
+  const title = document.getElementById("operation-modal-title");
+  const subtitle = document.getElementById("operation-modal-subtitle");
+  activePullPreview = null;
+  activePullRepoPath = repoPath;
+  if (backdrop) backdrop.classList.remove("hidden");
+  if (title) title.textContent = "Preparing Sync preview…";
+  if (subtitle) subtitle.textContent = "Fetching the configured upstream and inspecting the working tree.";
+  if (summary) summary.innerHTML = '<div class="sync-loading-state">Checking branch ancestry and local changes…</div>';
+  if (changes) changes.innerHTML = "";
+  if (modes) modes.classList.add("hidden");
+  if (error) { error.textContent = ""; error.classList.add("hidden"); }
+  const confirm = document.getElementById("btn-confirm-pull");
+  if (confirm) confirm.disabled = true;
   try {
-    await tauriInvoke("pull_repository_update", { repoPath });
-    pendingUpdateAlerts = pendingUpdateAlerts.filter((u) => u.repo_path !== repoPath);
+    const preview = await tauriInvoke("preview_repository_pull", { repoPath });
+    if (activePullRepoPath !== repoPath) return;
+    renderPullPreflight(preview);
+  } catch (failure) {
+    if (error) {
+      error.textContent = String((failure && failure.message) || failure || "Could not prepare the Sync preview.");
+      error.classList.remove("hidden");
+    }
+    if (summary) summary.innerHTML = '<div class="sync-empty-state"><strong>Sync preview unavailable</strong><small>Nothing was staged, committed, stashed or pulled.</small></div>';
+    if (changes) changes.innerHTML = "";
+  }
+}
+
+function closePullPreflight() {
+  document.getElementById("operation-modal-backdrop")?.classList.add("hidden");
+  activePullPreview = null;
+  activePullRepoPath = null;
+}
+
+async function acceptAndPullRepoUpdate(repoPath) {
+  const preview = activePullPreview;
+  if (!preview || repoPath !== activePullRepoPath) return;
+  const mode = preview.changes.length ? selectedPullMode() : "none";
+  const stagePaths = mode === "commit"
+    ? Array.from(document.querySelectorAll("[data-sync-stage-path]:checked")).map((input) => input.getAttribute("data-sync-stage-path"))
+    : [];
+  const commitMessage = document.getElementById("sync-commit-message")?.value || "";
+  updatePullPreflightControls();
+  const confirm = document.getElementById("btn-confirm-pull");
+  if (!confirm || confirm.disabled) return;
+  pullingRepoPaths.add(repoPath);
+  confirm.disabled = true;
+  confirm.textContent = "Pulling…";
+  setServiceCheckingVisual(true, "Pulling " + preview.remoteName + "/" + preview.remoteBranch + "…");
+  renderUpdateNotificationsTray();
+  try {
+    const result = await tauriInvoke("prepare_and_pull_repository_update", {
+      repoPath,
+      expectedBranch: preview.branch,
+      expectedLocalOid: preview.localOid,
+      expectedRemoteOid: preview.remoteOid,
+      expectedStatusToken: preview.statusToken,
+      mode, stagePaths, commitMessage
+    });
+    pendingUpdateAlerts = pendingUpdateAlerts.filter((item) => item.repo_path !== repoPath);
+    closePullPreflight();
+    setServiceCheckingVisual(false, result.message || "Repository synchronized");
     await runMachineScan();
-  } catch (err) {
-    const alert = pendingUpdateAlerts.find((item) => item.repo_path === repoPath);
-    if (alert) {
-      alert.failure_message = String((err && err.message) || err || "Update failed");
-      alert.automatic_attempt = automatic;
+    if (selectedRepoId) renderSelectedRepositoryDetails();
+  } catch (failure) {
+    const error = document.getElementById("sync-preflight-error");
+    if (error) {
+      error.textContent = String((failure && failure.message) || failure || "Pull failed.");
+      error.classList.remove("hidden");
     }
   } finally {
     pullingRepoPaths.delete(repoPath);
+    const button = document.getElementById("btn-confirm-pull");
+    if (button) { button.textContent = "Yes, Pull"; updatePullPreflightControls(); }
     setServiceCheckingVisual(false, "Svc: Watching Remotes");
     renderUpdateNotificationsTray();
   }
+}
+
+function initializePullPreflightDialog() {
+  document.getElementById("btn-cancel-pull")?.addEventListener("click", closePullPreflight);
+  document.getElementById("btn-close-operation-modal")?.addEventListener("click", closePullPreflight);
+  document.getElementById("operation-modal-backdrop")?.addEventListener("click", (event) => {
+    if (event.target === document.getElementById("operation-modal-backdrop")) closePullPreflight();
+  });
+  document.getElementById("btn-confirm-pull")?.addEventListener("click", () => {
+    if (activePullRepoPath) void acceptAndPullRepoUpdate(activePullRepoPath);
+  });
 }
 
 function setServiceCheckingVisual(isChecking, text) {
@@ -357,28 +528,10 @@ function setServiceCheckingVisual(isChecking, text) {
 
 function pushRepoUpdateAlert(upd) {
   if (!upd || !upd.repo_path || pullingRepoPaths.has(upd.repo_path)) return;
-  const repo = allRepositories.find((item) => item.id === upd.repo_id);
-  const settings = repo ? repositoryAutomationSettings(repo) : null;
-  const safeForAutoUpdate =
-    repo &&
-    repo.source_kind === "local_scan" &&
-    settings &&
-    settings.autoUpdate === true &&
-    upd.working_tree_clean === true &&
-    Number(upd.commits_ahead) === 0;
-
   const existing = pendingUpdateAlerts.find((item) => item.repo_path === upd.repo_path);
-  if (existing) {
-    Object.assign(existing, upd);
-  } else {
-    pendingUpdateAlerts.push(upd);
-  }
-
-  if (safeForAutoUpdate) {
-    void acceptAndPullRepoUpdate(upd.repo_path, true);
-    return;
-  }
-
+  if (existing) Object.assign(existing, upd);
+  else pendingUpdateAlerts.push(upd);
+  // Background checks may fetch and notify, but all working-tree/history changes require explicit review.
   renderUpdateNotificationsTray();
 }
 
@@ -1517,6 +1670,150 @@ async function saveRepositoryCleanerSettings(repo) {
   try { await persistRepositoryLocalSettings(repo, status); }
   finally { if (button) button.disabled = false; }
 }
+function setRepositoryWorkspacePanel(panelName) {
+  activeRepositoryPanel = panelName;
+  document.querySelectorAll("[data-repo-panel]").forEach((button) => {
+    const active = button.getAttribute("data-repo-panel") === panelName;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  ["code", "history", "settings"].forEach((name) => {
+    document.getElementById("repo-" + name + "-panel")?.classList.toggle("hidden", name !== panelName);
+  });
+}
+
+function renderRepositoryCodeWorkspace(repo) {
+  const panel = document.getElementById("repo-code-panel");
+  const list = document.getElementById("repo-code-file-list");
+  const preview = document.getElementById("repo-code-preview");
+  const branchSelect = document.getElementById("repo-code-remote-branch");
+  if (!panel || !list || !preview || !branchSelect) return;
+  if (activeWorkspaceRepoId !== repo.id) {
+    activeWorkspaceRepoId = repo.id;
+    activeCodeSource = "local";
+    activeCodePath = "";
+    activeCodeBranch = (repo.branches || []).find((branch) => branch.is_remote)?.name || "";
+  }
+  panel.querySelectorAll("[data-code-source]").forEach((button) => {
+    const active = button.getAttribute("data-code-source") === activeCodeSource;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    if (button.dataset.bound !== "true") {
+      button.dataset.bound = "true";
+      button.addEventListener("click", () => {
+        activeCodeSource = button.getAttribute("data-code-source") || "local";
+        activeCodePath = "";
+        renderRepositoryCodeWorkspace(repo);
+      });
+    }
+  });
+  const remoteBranches = (repo.branches || []).filter((branch) => branch.is_remote);
+  branchSelect.innerHTML = remoteBranches.map((branch) =>
+    '<option value="' + escapeHtml(branch.name) + '">' + escapeHtml(branch.name) + '</option>'
+  ).join("");
+  branchSelect.value = activeCodeBranch;
+  branchSelect.disabled = activeCodeSource !== "remote" || !remoteBranches.length;
+  if (branchSelect.dataset.bound !== "true") {
+    branchSelect.dataset.bound = "true";
+    branchSelect.addEventListener("change", () => {
+      activeCodeBranch = branchSelect.value;
+      activeCodePath = "";
+      void loadRepositoryCodeDirectory(repo);
+    });
+  }
+  const refresh = document.getElementById("btn-repo-code-refresh");
+  if (refresh && refresh.dataset.bound !== "true") {
+    refresh.dataset.bound = "true";
+    refresh.addEventListener("click", () => void loadRepositoryCodeDirectory(repo));
+  }
+  const up = document.getElementById("btn-repo-code-up");
+  if (up && up.dataset.bound !== "true") {
+    up.dataset.bound = "true";
+    up.addEventListener("click", () => {
+      activeCodePath = activeCodePath.split("/").slice(0, -1).join("/");
+      void loadRepositoryCodeDirectory(repo);
+    });
+  }
+  setRepositoryWorkspacePanel(activeRepositoryPanel || "code");
+  if (repo.source_kind !== "local_scan") {
+    list.innerHTML = '<div class="repo-code-empty"><strong>No local working copy</strong><small>Clone this remote repository to browse Local files and fetched Remote branches here.</small></div>';
+    preview.textContent = "A local working copy is required for the repository file browser.";
+    return;
+  }
+  void loadRepositoryCodeDirectory(repo);
+}
+
+async function loadRepositoryCodeDirectory(repo) {
+  const list = document.getElementById("repo-code-file-list");
+  const preview = document.getElementById("repo-code-preview");
+  const pathLabel = document.getElementById("repo-code-current-path");
+  const up = document.getElementById("btn-repo-code-up");
+  if (!list || !preview) return;
+  if (activeCodeSource === "remote" && !activeCodeBranch) {
+    list.innerHTML = '<div class="repo-code-empty"><strong>No fetched remote branches</strong><small>Fetch the repository before browsing remote files.</small></div>';
+    preview.textContent = "Select a fetched remote branch to preview its files.";
+    return;
+  }
+  const requestId = ++codeDirectoryRequestId;
+  list.innerHTML = '<div class="repo-code-loading">Loading ' + escapeHtml(activeCodeSource) + ' files…</div>';
+  preview.textContent = "Choose a file to preview its contents.";
+  if (pathLabel) pathLabel.textContent = activeCodePath ? "/" + activeCodePath : "/";
+  if (up) up.disabled = !activeCodePath;
+  try {
+    const entries = await tauriInvoke("list_repository_files", {
+      repoPath: repo.path, relativePath: activeCodePath || null,
+      source: activeCodeSource, branch: activeCodeSource === "remote" ? activeCodeBranch : null
+    });
+    if (requestId !== codeDirectoryRequestId) return;
+    if (!entries.length) {
+      list.innerHTML = '<div class="repo-code-empty"><strong>This directory is empty</strong><small>No files or folders were found here.</small></div>';
+      return;
+    }
+    list.innerHTML = entries.map((entry) =>
+      '<button type="button" class="repo-code-file ' + (entry.isDir ? "is-directory" : "") +
+      '" data-code-path="' + escapeHtml(entry.path) + '" data-code-directory="' + (entry.isDir ? "true" : "false") +
+      '" ' + (entry.isSymlink ? "disabled" : "") + '><span class="repo-code-file-icon">' +
+      (entry.isDir ? "▰" : entry.isSymlink ? "↗" : "▤") + '</span><span class="repo-code-file-name">' +
+      escapeHtml(entry.name) + '</span><span class="repo-code-file-size">' +
+      (entry.isDir ? "" : entry.isSymlink ? "Symlink" : formatRepositoryFileSize(entry.sizeBytes)) + '</span></button>'
+    ).join("");
+    list.querySelectorAll("[data-code-path]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const path = button.getAttribute("data-code-path");
+        if (!path) return;
+        if (button.getAttribute("data-code-directory") === "true") {
+          activeCodePath = path;
+          void loadRepositoryCodeDirectory(repo);
+          return;
+        }
+        preview.textContent = "Loading " + path + "…";
+        try {
+          const content = await tauriInvoke("read_repository_file", {
+            repoPath: repo.path, relativePath: path, source: activeCodeSource,
+            branch: activeCodeSource === "remote" ? activeCodeBranch : null
+          });
+          preview.textContent = content;
+        } catch (failure) {
+          preview.textContent = String((failure && failure.message) || failure);
+        }
+      });
+    });
+  } catch (failure) {
+    if (requestId !== codeDirectoryRequestId) return;
+    list.innerHTML = '<div class="repo-code-empty"><strong>Could not load this directory</strong><small>' +
+      escapeHtml(String((failure && failure.message) || failure)) + '</small></div>';
+  }
+}
+
+function formatRepositoryFileSize(value) {
+  let size = Math.max(0, Number(value) || 0);
+  if (size < 1024) return size + " B";
+  const units = ["KiB", "MiB", "GiB"];
+  let index = -1;
+  do { size /= 1024; index += 1; } while (size >= 1024 && index < units.length - 1);
+  return size.toFixed(1) + " " + units[index];
+}
+
 function renderSelectedRepositoryDetails() {
   const headerEl = document.getElementById("repo-detail-header");
   const treeContainer = document.getElementById("git-tree-container");
@@ -1584,6 +1881,9 @@ function renderSelectedRepositoryDetails() {
       </div>
       <div class="selected-repo-actions">
         <button id="btn-back-to-dashboard" class="btn btn-secondary" type="button">← Workspace</button>
+        ${repo.source_kind === "local_scan" && repo.has_remote
+          ? '<button id="btn-sync-selected-repo" class="btn btn-primary" type="button"><span aria-hidden="true">↻</span> Sync</button>'
+          : ""}
         ${
           repo.web_url
             ? `<button id="btn-open-remote-url" class="btn btn-secondary" data-url="${escapeHtml(repo.web_url)}">
@@ -1594,6 +1894,19 @@ function renderSelectedRepositoryDetails() {
       </div>
     </div>
   `;
+
+  renderRepositoryCodeWorkspace(repo);
+  document.querySelectorAll("[data-repo-panel]").forEach((button) => {
+    if (button.dataset.bound !== "true") {
+      button.dataset.bound = "true";
+      button.addEventListener("click", () => setRepositoryWorkspacePanel(button.getAttribute("data-repo-panel") || "code"));
+    }
+  });
+  const syncButton = document.getElementById("btn-sync-selected-repo");
+  if (syncButton && syncButton.dataset.bound !== "true") {
+    syncButton.dataset.bound = "true";
+    syncButton.addEventListener("click", () => void openPullPreflight(repo.path));
+  }
 
   const autoUpdateCheckbox = document.getElementById("repo-auto-update");
   if (autoUpdateCheckbox) {
@@ -1723,8 +2036,11 @@ function renderSelectedRepositoryDetails() {
 
     <div class="inspector-card-block automation-settings-card">
       <h4 class="inspector-section-title">Repository Local Settings</h4>
-      <label class="repository-setting-option"><input id="repo-auto-update" type="checkbox" ${repositoryAutomationSettings(repo).autoUpdate ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} /><span><strong>Auto Update</strong><small>Fast-forward only when this repository is clean and has no local-only commits.</small></span></label>
-      <div id="repo-auto-update-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).autoUpdate ? "Auto Update enabled · clean fast-forwards only" : "Auto Update is off") : "Available for locally indexed repositories only"}</div>
+      <div class="repository-setting-option">
+        <span><strong>Pull confirmation</strong><small>Every Pull requires review. Background checks never stage, commit, stash or pull automatically.</small></span>
+        <span class="status-pill pill-clean">Always on</span>
+      </div>
+      <div class="repository-setting-status" role="status">Local changes and branch divergence are checked again immediately before a confirmed Pull.</div>
       <label class="repository-setting-option"><input id="repo-commit-clean" type="checkbox" ${repositoryAutomationSettings(repo).commitClean ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} /><span><strong>Commit Clean</strong><small>Use a pre-commit hook to omit generated files from commits without deleting them.</small></span></label>
       <div id="repo-commit-clean-status" class="repository-setting-status" role="status">${repo.source_kind === "local_scan" ? (repositoryAutomationSettings(repo).commitClean ? "Commit Clean hook enabled" : "Commit Clean hook is not installed") : "Available for locally indexed repositories only"}</div>
       <label class="repository-setting-option"><input id="repo-cleaner-dependencies" type="checkbox" ${repositoryAutomationSettings(repo).cleanerIncludeDependencies ? "checked" : ""} ${repo.source_kind !== "local_scan" ? "disabled" : ""} /><span><strong>Include dependencies in Cleaner</strong><small>Allow preview to include dependency folders such as node_modules.</small></span></label>
@@ -2281,6 +2597,7 @@ async function initializeGitManager() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  initializePullPreflightDialog();
   wireEventListeners();
   wireTauriBackgroundServiceEvents();
   void initializeGitManager();
