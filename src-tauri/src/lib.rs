@@ -402,8 +402,16 @@ async fn unstage_repository_paths(repo_path: String, paths: Vec<String>) -> Resu
 }
 
 #[tauri::command]
-async fn create_repository_commit(repo_path: String, message: String) -> Result<(String, Vec<repository_workspace::WorktreeChange>), String> {
-    tokio::task::spawn_blocking(move || repository_workspace::create_repository_commit(&repo_path, &message))
+async fn preview_repository_commit(repo_path: String) -> Result<repository_workspace::RepositoryCommitPreview, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::preview_repository_commit(&repo_path))
+        .await.map_err(|error| format!("Repository commit preview task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn create_repository_commit(
+    repo_path: String, message: String, expected_index_tree: String,
+) -> Result<(String, Vec<repository_workspace::WorktreeChange>), String> {
+    tokio::task::spawn_blocking(move || repository_workspace::create_repository_commit(&repo_path, &message, &expected_index_tree))
         .await.map_err(|error| format!("Repository commit task failed: {error}"))?
 }
 
@@ -1008,6 +1016,7 @@ pub fn run() {
             fetch_repository_remote,
             stage_repository_paths,
             unstage_repository_paths,
+            preview_repository_commit,
             create_repository_commit,
             delete_repository_path,
             detect_github_identity,
