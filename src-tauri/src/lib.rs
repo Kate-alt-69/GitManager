@@ -382,6 +382,11 @@ async fn get_repository_changes(repo_path: String) -> Result<Vec<repository_work
     tokio::task::spawn_blocking(move || repository_workspace::get_repository_changes(&repo_path))
         .await.map_err(|error| format!("Repository status task failed: {error}"))?
 }
+#[tauri::command]
+async fn read_repository_file_diff(repo_path: String, relative_path: String, staged: bool) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::read_repository_file_diff(&repo_path, &relative_path, staged))
+        .await.map_err(|error| format!("Repository diff task failed: {error}"))?
+}
 
 #[tauri::command]
 async fn fetch_repository_remote(repo_path: String, remote_name: String) -> Result<String, String> {
@@ -1013,6 +1018,7 @@ pub fn run() {
             preview_repository_pull,
             prepare_and_pull_repository_update,
             get_repository_changes,
+            read_repository_file_diff,
             fetch_repository_remote,
             stage_repository_paths,
             unstage_repository_paths,
