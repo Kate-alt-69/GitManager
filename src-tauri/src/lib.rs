@@ -384,6 +384,12 @@ async fn get_repository_changes(repo_path: String) -> Result<Vec<repository_work
 }
 
 #[tauri::command]
+async fn fetch_repository_remote(repo_path: String, remote_name: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::fetch_repository_remote(&repo_path, &remote_name))
+        .await.map_err(|error| format!("Remote fetch task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn stage_repository_paths(repo_path: String, paths: Vec<String>) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
     tokio::task::spawn_blocking(move || repository_workspace::stage_repository_paths(&repo_path, &paths))
         .await.map_err(|error| format!("Repository stage task failed: {error}"))?
@@ -999,6 +1005,7 @@ pub fn run() {
             preview_repository_pull,
             prepare_and_pull_repository_update,
             get_repository_changes,
+            fetch_repository_remote,
             stage_repository_paths,
             unstage_repository_paths,
             create_repository_commit,
