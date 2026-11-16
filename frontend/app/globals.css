@@ -629,3 +629,10 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 	.gm-workspace-file-open { grid-template-columns: 16px minmax(0, 1fr); }
 	.gm-workspace-file-open small { display: none; }
 }
+
+.gm-workspace-commit-paths { display: flex; flex-direction: column; max-height: 145px; overflow: auto; border: 1px solid #2b3947; border-radius: 5px; background: #101821; }
+.gm-workspace-commit-paths > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #25313d; }
+.gm-workspace-commit-paths > div:last-of-type { border-bottom: 0; }
+.gm-workspace-commit-paths strong { overflow: hidden; color: #cbd7e2; font: 8px "JetBrains Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.gm-workspace-commit-paths small { color: #88bd97; font-size: 8px; }
+.gm-workspace-commit-paths > p { margin: 0; padding: 6px 8px; color: #788898; font-size: 8px; }
