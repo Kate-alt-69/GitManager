@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-GitManager Pure-Rust Tauri v2 Dependency Checker & Build Script
-Supports: Windows 10 & 11, Linux, and macOS (Zero Node.js / npm required).
+GitManager Tauri v2 Dependency Checker & Build Script
+Supports Windows 10 & 11, Linux, and macOS. The frontend is compiled with Node.js before Tauri packages the static export.
 
 Features:
 1. Checks if Rust (`rustc` and `cargo`) is installed across PATH and `~/.cargo/bin`.
-2. Compares the installed Rust version against the target baseline (`1.77.2` for Tauri v2):
+2. Compares the installed Rust version against the workspace baseline (`1.88.0` required by the current filesystem watcher):
    - If a different version is already installed (whether newer, custom/nightly, or older),
      it automatically adapts and uses the ALREADY INSTALLED Rust toolchain on the machine
      instead of failing or forcing a toolchain re-download.
@@ -33,12 +33,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
+import stat
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List
 
-RECOMMENDED_RUST_VERSION = (1, 77, 2)
+RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
 
 
@@ -217,11 +221,414 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
         return 127, "", f"Command not found: {cmd[0]}"
 
 
+def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
+    """Count the actual build graphs for the app and its packaged sidecars.
+
+    Cargo's progress bar reports compilation units (including build scripts and
+    proc-macro targets), not unique crates. This report uses package-scoped
+    normal/build dependency graphs, never the entire workspace.
+    """
+    try:
+        target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+        if not target_triple:
+            target_triple = resolve_rust_target_triple(toolchain_arg)
+    except RuntimeError as error:
+        log_warn(f"Could not determine target for the Cargo dependency audit: {error}")
+        return None
+
+    command_prefix = ["cargo"]
+    if toolchain_arg:
+        command_prefix.append(toolchain_arg)
+
+    package_graphs: Dict[str, set] = {}
+    for package in ("git-manager", "gitm-cli", "gitmanager-setup", "crash-helper", "git-manager-service"):
+        command = command_prefix + [
+            "tree",
+            "--package", package,
+            "--edges", "normal,build",
+            "--target", target_triple,
+            "--prefix", "none",
+            "--format", "{p}",
+        ]
+        code, output, error = run_capture(command, cwd=project_root)
+        if code != 0:
+            log_warn(f"Could not measure the {package} dependency graph: {error or code}")
+            continue
+
+        packages = {
+            line.strip()
+            for line in output.splitlines()
+            if re.match(r"^.+ v[0-9]", line.strip())
+        }
+        package_graphs[package] = packages
+        log_info(f"{package}: {len(packages)} unique normal/build packages for {target_triple}.")
+
+    app_count = len(package_graphs.get("git-manager", set()))
+    sidecar_packages = (
+        package_graphs.get("gitm-cli", set())
+        | package_graphs.get("gitmanager-setup", set())
+        | package_graphs.get("crash-helper", set())
+        | package_graphs.get("git-manager-service", set())
+    ) - package_graphs.get("git-manager", set())
+    complete_build_packages = set().union(*package_graphs.values()) if package_graphs else set()
+
+    if app_count:
+        if app_count < 500:
+            log_ok(f"GitManager app graph: {app_count} unique packages (target: under 500).")
+        else:
+            log_warn(
+                f"GitManager app graph: {app_count} unique packages; "
+                "the under-500 target is not met yet."
+            )
+    if sidecar_packages:
+        log_info(f"Packaged sidecar graphs: {len(sidecar_packages)} unique packages.")
+    if complete_build_packages:
+        log_info(
+            f"All requested build targets together: {len(complete_build_packages)} "
+            "unique packages (not Cargo compilation units)."
+        )
+    return app_count or None
+
+
+
+RBE_CLOUD_NODE_RELEASE_TAG = "rbe-bin-v0.1.0"
+RBE_CLOUD_NODE_TARGETS = {
+    "windows-x64": ("windows-x64", "zip", "cloud_node.exe", "Windows x64 (MSVC)"),
+    "linux-x64": ("linux-x64", "tar.gz", "cloud_node", "Linux x64 (glibc 2.35+)"),
+    "linux-arm64": ("linux-arm64", "tar.gz", "cloud_node", "Linux ARM64 (glibc 2.39+)"),
+    "macos-intel": ("macos-intel", "tar.gz", "cloud_node", "macOS Intel"),
+    "macos-arm64": ("macos-arm64", "tar.gz", "cloud_node", "macOS Apple Silicon"),
+}
+
+
+def read_bounded_url(url: str, limit: int, *, headers: Optional[Dict[str, str]] = None) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "GitManager-Cloud-Node-Builder",
+            "Accept": "application/vnd.github+json",
+            **(headers or {}),
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            parsed = urllib.parse.urlsplit(response.geturl())
+            allowed_hosts = {
+                "api.github.com",
+                "github.com",
+                "release-assets.githubusercontent.com",
+                "objects.githubusercontent.com",
+                "github-cloud.s3.amazonaws.com",
+            }
+            if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
+                raise ValueError(f"Refusing download redirect to untrusted host: {response.geturl()}")
+            declared_size = response.headers.get("Content-Length")
+            if declared_size and int(declared_size) > limit:
+                raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
+            data = response.read(limit + 1)
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise RuntimeError(f"Could not download {url}: {error}") from error
+    if len(data) > limit:
+        raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
+    return data
+
+
+def parse_sha256_digest(value: str, label: str) -> str:
+    match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", str(value or ""))
+    if not match:
+        raise ValueError(f"{label} has no valid GitHub SHA-256 digest.")
+    return match.group(1).lower()
+
+
+def fetch_rbe_cloud_node_release(tag: str) -> Dict[str, object]:
+    if not re.fullmatch(r"rbe-bin-v[0-9]+\.[0-9]+\.[0-9]+", tag):
+        raise ValueError("RBE_CLOUD_NODE_RELEASE_TAG must be a version tag such as rbe-bin-v0.1.0.")
+    api_url = f"https://api.github.com/repos/Kastrick8/RBE/releases/tags/{tag}"
+    try:
+        release = json.loads(read_bounded_url(api_url, 2 * 1024 * 1024).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"RBE GitHub Release metadata was invalid: {error}") from error
+    if release.get("tag_name") != tag or release.get("draft") or release.get("prerelease"):
+        raise ValueError(f"RBE tag {tag} is not a published stable release.")
+    if not isinstance(release.get("assets"), list):
+        raise ValueError(f"RBE release {tag} has no asset list.")
+    return release
+
+
+def download_verified_rbe_asset(
+    asset: Dict[str, object],
+    cache_dir: Path,
+    *,
+    max_bytes: int = 128 * 1024 * 1024,
+) -> Tuple[Path, str]:
+    name = str(asset.get("name") or "")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise ValueError(f"RBE release contains an unsafe asset name: {name!r}")
+    expected_size = asset.get("size")
+    if not isinstance(expected_size, int) or expected_size <= 0 or expected_size > max_bytes:
+        raise ValueError(f"RBE asset {name} has an invalid or oversized declared size.")
+    expected_hash = parse_sha256_digest(str(asset.get("digest") or ""), f"RBE asset {name}")
+    download_url = str(asset.get("browser_download_url") or "")
+    if not download_url.startswith("https://github.com/Kastrick8/RBE/releases/download/"):
+        raise ValueError(f"RBE asset {name} points to an unexpected download URL.")
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    destination = cache_dir / name
+    if destination.is_file() and not destination.is_symlink():
+        if destination.stat().st_size == expected_size and hashlib.sha256(destination.read_bytes()).hexdigest() == expected_hash:
+            log_ok(f"Using cached and verified RBE asset: {name}")
+            return destination, expected_hash
+        destination.unlink()
+
+    log_info(f"Downloading official RBE asset: {name} ({expected_size:,} bytes)")
+    payload = read_bounded_url(download_url, max_bytes)
+    if len(payload) != expected_size:
+        raise ValueError(f"RBE asset {name} size mismatch: expected {expected_size}, received {len(payload)}.")
+    actual_hash = hashlib.sha256(payload).hexdigest()
+    if actual_hash != expected_hash:
+        raise ValueError(f"RBE asset {name} failed GitHub Release SHA-256 verification.")
+    temporary = destination.with_name(destination.name + ".part")
+    try:
+        with temporary.open("wb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    log_ok(f"Downloaded and SHA-256 verified: {name}")
+    return destination, actual_hash
+
+
+def extract_rbe_cloud_node_archive(
+    archive_path: Path,
+    archive_kind: str,
+    binary_name: str,
+    destination: Path,
+) -> Tuple[int, str]:
+    max_binary_bytes = 256 * 1024 * 1024
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".part")
+    count = 0
+    digest = hashlib.sha256()
+    try:
+        if archive_kind == "zip":
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                matches = [item for item in archive.infolist() if item.filename == binary_name]
+                if len(matches) != 1:
+                    raise ValueError(f"{archive_path.name} must contain exactly one root-level {binary_name}.")
+                item = matches[0]
+                mode = (item.external_attr >> 16) & 0xFFFF
+                if item.is_dir() or stat.S_ISLNK(mode) or (mode and not stat.S_ISREG(mode)):
+                    raise ValueError(f"RBE asset contains a non-regular {binary_name}.")
+                if item.file_size <= 0 or item.file_size > max_binary_bytes:
+                    raise ValueError(f"RBE asset {binary_name} has an invalid size.")
+                with archive.open(item, "r") as source, temporary.open("wb") as output:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        count += len(chunk)
+                        if count > max_binary_bytes:
+                            raise ValueError(f"RBE asset {binary_name} exceeded the extraction size limit.")
+                        digest.update(chunk)
+                        output.write(chunk)
+        elif archive_kind == "tar.gz":
+            with tarfile.open(archive_path, "r:gz") as archive:
+                matches = [item for item in archive.getmembers() if item.name == binary_name]
+                if len(matches) != 1:
+                    raise ValueError(f"{archive_path.name} must contain exactly one root-level {binary_name}.")
+                item = matches[0]
+                if not item.isfile() or item.issym() or item.islnk() or item.size <= 0 or item.size > max_binary_bytes:
+                    raise ValueError(f"RBE asset contains an invalid {binary_name} entry.")
+                source = archive.extractfile(item)
+                if source is None:
+                    raise ValueError(f"Could not read {binary_name} from {archive_path.name}.")
+                with source, temporary.open("wb") as output:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        count += len(chunk)
+                        if count > max_binary_bytes:
+                            raise ValueError(f"RBE asset {binary_name} exceeded the extraction size limit.")
+                        digest.update(chunk)
+                        output.write(chunk)
+        else:
+            raise ValueError(f"Unsupported RBE archive format: {archive_kind}")
+
+        if count <= 0:
+            raise ValueError(f"RBE asset contained an empty {binary_name}.")
+        os.replace(temporary, destination)
+        return count, digest.hexdigest()
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def prepare_cloud_node_deployment(project_root: Path) -> int:
+    """Build a small bootstrap ZIP; setup.py downloads only the host's RBE runtime."""
+    try:
+        template_dir = project_root / "tools" / "cloud-node-deployment"
+        required = (
+            "README.md",
+            "setup.py",
+            "manifest.json",
+            "settings.json",
+            "setting.node.cn.json",
+            "LICENSE-GITMANAGER.txt",
+            "LICENSE-RBE.txt",
+            "NOTICE-RBE.txt",
+        )
+        for name in required:
+            source = template_dir / name
+            if not source.is_file() or source.is_symlink():
+                raise ValueError(f"RBE node bootstrap template is missing or unsafe: {source}")
+
+        manifest = json.loads((template_dir / "manifest.json").read_text(encoding="utf-8"))
+        if (
+            manifest.get("formatVersion") != 2
+            or manifest.get("kind") != "gitmanager-rbe-runtime-bootstrap"
+            or manifest.get("rbeRepository") != "Kastrick8/RBE"
+        ):
+            raise ValueError("RBE node bootstrap manifest has an unsupported format.")
+
+        route_root = template_dir / "api"
+        if not route_root.is_dir() or route_root.is_symlink():
+            raise ValueError("RBE node bootstrap package is missing its api/ route folder.")
+        route_files = sorted(
+            path for path in route_root.rglob("*.route")
+            if path.is_file() and not path.is_symlink()
+        )
+        if (
+            not route_files
+            or not (route_root / "health.route").is_file()
+            or not (route_root / "status.route").is_file()
+        ):
+            raise ValueError("RBE node bootstrap package must include api/health.route and api/status.route.")
+        for route in route_files:
+            if not route.resolve().is_relative_to(route_root.resolve()):
+                raise ValueError(f"RBE API route escapes its template directory: {route}")
+
+        target_dir = project_root / "target"
+        output_dir = target_dir / "deployment"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        archive_name = "GitManager-Cloud-Node-Setup.zip"
+        final_archive = output_dir / archive_name
+        temporary_archive = output_dir / (archive_name + ".part")
+        if temporary_archive.exists():
+            temporary_archive.unlink()
+
+        package_files = [template_dir / name for name in required] + route_files
+        with zipfile.ZipFile(
+            temporary_archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
+        ) as bundle:
+            for file_path in sorted(package_files, key=lambda path: path.relative_to(template_dir).as_posix()):
+                relative = file_path.relative_to(template_dir).as_posix()
+                bundle.write(file_path, relative)
+
+        with zipfile.ZipFile(temporary_archive, "r") as packaged:
+            corrupt_entry = packaged.testzip()
+            if corrupt_entry:
+                raise ValueError(f"Generated RBE node bootstrap ZIP failed CRC verification at {corrupt_entry}.")
+            names = set(packaged.namelist())
+            if not {"api/health.route", "api/status.route"}.issubset(names):
+                raise ValueError("Generated RBE node bootstrap ZIP is missing its health/status routes.")
+            binary_names = {
+                "backend", "backend.exe", "cloud_node", "cloud_node.exe",
+                "container", "container.exe", "service", "service.exe",
+            }
+            if any(
+                name.startswith("binaries/") or name.rsplit("/", 1)[-1].lower() in binary_names
+                for name in names
+            ):
+                raise ValueError("Bootstrap ZIP must not pre-bundle RBE executables.")
+            compile(packaged.read("setup.py"), "tools/cloud-node-deployment/setup.py", "exec")
+            packaged_manifest = json.loads(packaged.read("manifest.json").decode("utf-8"))
+            if packaged_manifest != manifest:
+                raise ValueError("Generated RBE node bootstrap ZIP changed manifest.json.")
+
+        os.replace(temporary_archive, final_archive)
+        size = final_archive.stat().st_size
+        log_ok(f"Created verified RBE node bootstrap ZIP: {final_archive} ({size:,} bytes)")
+        log_info("Included: setup.py, RBE settings templates, /api routes and licenses.")
+        log_info("RBE binaries are downloaded and checksum-verified for the target machine when setup.py runs.")
+        return 0
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+        log_err(f"RBE node bootstrap packaging failed: {error}")
+        return 1
+
+def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
+    """Write an explicit Windows signing override for every release build.
+
+    Nulls in Tauri's merged config remove stale or externally inherited
+    certificate/signCommand values. Unsigned builds must never invoke a signer
+    and then fail SignTool verification because it produced no signature.
+    """
+    if platform.system() != "Windows":
+        return None
+
+    thumbprint = re.sub(r"\s", "", os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "")).upper()
+    signing_config: Dict[str, object] = {
+        "bundle": {
+            "windows": {
+                "certificateThumbprint": None,
+                "digestAlgorithm": None,
+                "signCommand": None,
+                "timestampUrl": None,
+            }
+        }
+    }
+
+    if thumbprint:
+        if not re.fullmatch(r"[A-F0-9]{40}", thumbprint):
+            log_err("WINDOWS_SIGNING_THUMBPRINT must be a 40-character SHA-1 thumbprint.")
+            return None
+        sign_script = project_root / "tools" / "sign_windows_file.ps1"
+        if not sign_script.is_file():
+            log_err(f"Windows signing script is missing: {sign_script}")
+            return None
+        signing_config["bundle"] = {
+            "windows": {
+                "certificateThumbprint": None,
+                "digestAlgorithm": None,
+                "timestampUrl": None,
+                "signCommand": {
+                    "cmd": "powershell.exe",
+                    "args": [
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(sign_script.resolve()),
+                        "-FilePath",
+                        "%1",
+                    ],
+                },
+            }
+        }
+        log_ok("Enabled Tauri's custom signing command because a Windows certificate is configured.")
+    else:
+        log_info("No Windows signing certificate configured; explicitly disabling Tauri signing for this unsigned build.")
+
+    config_path = project_root / "target" / "build-config" / "tauri.windows.signing.conf.json"
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(signing_config, indent=2) + "\n", encoding="utf-8")
+    except OSError as error:
+        log_err(f"Could not write the Windows signing override {config_path}: {error}")
+        return None
+    return config_path
+
+
 def sanitize_tauri_v2_config(project_root: Path) -> None:
     """
     Validates and auto-fixes `src-tauri/tauri.conf.json` against the Tauri v2 schema:
     - Removes Tauri v1 legacy keys from `build` (such as `build.withGlobalTauri` or `build.distDir`).
-    - Ensures `app.withGlobalTauri = true` and `build.frontendDist = "../ui"`.
+    - Ensures the Engine-backed static export and Tauri build/dev hooks are configured.
     """
     conf_path = project_root / "src-tauri" / "tauri.conf.json"
     if not conf_path.is_file():
@@ -241,9 +648,20 @@ def sanitize_tauri_v2_config(project_root: Path) -> None:
             build_cfg["frontendDist"] = build_cfg.pop("distDir")
             changed = True
 
-        if build_cfg.get("frontendDist") != "../ui":
-            build_cfg["frontendDist"] = "../ui"
+        expected_frontend_dist = "../.cache/nextjs-engine/workspace/out"
+        if build_cfg.get("frontendDist") != expected_frontend_dist:
+            build_cfg["frontendDist"] = expected_frontend_dist
             changed = True
+
+        expected_hooks = {
+            "beforeBuildCommand": "python tools/nextjs_engine_source.py build --project-root .",
+            "beforeDevCommand": "python tools/nextjs_engine_source.py dev --project-root .",
+            "devUrl": "http://localhost:3000",
+        }
+        for key, expected in expected_hooks.items():
+            if build_cfg.get(key) != expected:
+                build_cfg[key] = expected
+                changed = True
 
         app_cfg = data.setdefault("app", {})
         if app_cfg.get("withGlobalTauri") is not True:
@@ -436,6 +854,186 @@ def check_os_system_dependencies() -> None:
             log_warn("`pkg-config` not found; skipping Linux `.pc` library version checks.")
 
 
+def resolve_rust_target_triple(toolchain_arg: str) -> str:
+    """Return the exact Rust target triple used for the GitManager sidecar."""
+    commands: List[List[str]] = []
+    if toolchain_arg.startswith("+") and shutil.which("rustup"):
+        toolchain = toolchain_arg[1:]
+        commands.append(["rustup", "run", toolchain, "rustc", "--print", "host-tuple"])
+        commands.append(["rustup", "run", toolchain, "rustc", "-vV"])
+    commands.append(["rustc", "--print", "host-tuple"])
+    commands.append(["rustc", "-vV"])
+    for command in commands:
+        code, stdout, _ = run_capture(command)
+        if code != 0 or not stdout:
+            continue
+        if "host-tuple" in command:
+            value = stdout.strip()
+            if value:
+                return value
+        match = re.search(r"(?m)^host:\s*(\S+)\s*$", stdout)
+        if match:
+            return match.group(1)
+    raise RuntimeError("Could not determine the Rust target triple for the gitm sidecar.")
+
+
+def build_gitm_sidecar(
+    project_root: Path,
+    toolchain_arg: str,
+    release: bool,
+) -> int:
+    """Build and stage gitm, first-run setup, crash_helper and the independent service."""
+    profile = "release" if release else "debug"
+    common_prefix = ["cargo"]
+    if toolchain_arg:
+        common_prefix.append(toolchain_arg)
+
+    commands = [
+        (
+            "native gitm CLI",
+            common_prefix + ["build", "--package", "gitm-cli", "--bin", "gitm"],
+        ),
+        (
+            "GitManager first-run setup companion",
+            common_prefix + ["build", "--package", "gitmanager-setup", "--bin", "gitmanager-setup"],
+        ),
+        (
+            "crash_helper UI supervisor",
+            common_prefix + ["build", "--package", "crash-helper", "--bin", "crash_helper"],
+        ),
+    ]
+    if release:
+        for _, command in commands:
+            command.append("--release")
+
+    for description, command in commands:
+        log_info(f"Building {description}: {' '.join(command)}")
+        result = subprocess.call(command, cwd=str(project_root))
+        if result != 0:
+            log_err(f"The {description} failed to build.")
+            return result
+
+    try:
+        host_triple = resolve_rust_target_triple(toolchain_arg)
+    except RuntimeError as error:
+        log_err(str(error))
+        return 1
+
+    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", project_root / "target"))
+    if not target_dir.is_absolute():
+        target_dir = project_root / target_dir
+    target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+    binary_triple = target_triple or host_triple
+    binary_dir = target_dir / target_triple / profile if target_triple else target_dir / profile
+
+    executable_suffix = ".exe" if "windows" in binary_triple else ""
+    sidecar_dir = project_root / "src-tauri" / "binaries"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+
+    artifacts = [
+        (binary_dir / f"gitm{executable_suffix}", f"gitm-{binary_triple}{executable_suffix}"),
+        (binary_dir / f"gitmanager-setup{executable_suffix}", f"gitmanager-setup-{binary_triple}{executable_suffix}"),
+        (binary_dir / f"crash_helper{executable_suffix}", f"crash_helper-{binary_triple}{executable_suffix}"),
+    ]
+    staged: List[Path] = []
+
+    # Tauri's build script validates every externalBin entry when the
+    # standalone service crate builds its dependency on the Tauri library.
+    # Stage the other tools first, then provide a placeholder for the service
+    # sidecar while compiling the separate service package.
+    for source_path, filename in artifacts:
+        if not source_path.is_file():
+            log_err(f"Cargo completed but the expected sidecar binary is missing: {source_path}")
+            return 1
+        destination = sidecar_dir / filename
+        try:
+            shutil.copy2(source_path, destination)
+        except OSError as error:
+            log_err(f"Could not stage sidecar at {destination}: {error}")
+            return 1
+        staged.append(destination)
+        log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
+
+    service_filename = f"git-manager-service-{binary_triple}{executable_suffix}"
+    service_sidecar = sidecar_dir / service_filename
+    service_source = binary_dir / f"git-manager-service{executable_suffix}"
+
+    # The service is a binary in the Tauri package, whose build script itself
+    # requires every declared externalBin file to exist. Keep any previous
+    # working sidecar as a backup, then supply a temporary placeholder so the
+    # first service build can run. The real Cargo output replaces it immediately.
+    service_backup: Optional[Path] = None
+    try:
+        if service_sidecar.is_file():
+            service_backup = service_sidecar.with_name(service_sidecar.name + ".previous-build")
+            if service_backup.exists():
+                service_backup.unlink()
+            shutil.copy2(service_sidecar, service_backup)
+        service_sidecar.write_bytes(b"")
+    except OSError as error:
+        log_err(f"Could not prepare the service sidecar build placeholder: {error}")
+        return 1
+
+    service_cmd = common_prefix + ["build", "--package", "git-manager-service", "--bin", "git-manager-service"]
+    if release:
+        service_cmd.append("--release")
+    log_info(f"Building independent GitManager background service: {' '.join(service_cmd)}")
+    service_result = subprocess.call(service_cmd, cwd=str(project_root))
+    if service_result != 0 or not service_source.is_file():
+        try:
+            if service_sidecar.exists():
+                service_sidecar.unlink()
+            if service_backup and service_backup.is_file():
+                shutil.copy2(service_backup, service_sidecar)
+                service_backup.unlink()
+        except OSError as error:
+            log_warn(f"Could not restore the previous service sidecar after a failed build: {error}")
+        if service_result != 0:
+            log_err("The standalone GitManager background service failed to build.")
+            return service_result
+        log_err(f"Cargo completed but the expected service binary is missing: {service_source}")
+        return 1
+
+    try:
+        shutil.copy2(service_source, service_sidecar)
+        if service_backup and service_backup.is_file():
+            service_backup.unlink()
+    except OSError as error:
+        log_err(f"Could not stage the built background service at {service_sidecar}: {error}")
+        return 1
+
+    staged.append(service_sidecar)
+    log_ok(f"Prepared Tauri sidecar: {service_sidecar} ({service_sidecar.stat().st_size:,} bytes)")
+
+    # Publish a predictable standalone setup helper beside the Cargo outputs:
+    # GitManager-Setup.exe on Windows and GitManager-Setup on Linux/macOS.
+    setup_artifact_name = "GitManager-Setup.exe" if executable_suffix else "GitManager-Setup"
+    setup_artifact = binary_dir / setup_artifact_name
+    try:
+        shutil.copy2(staged[1], setup_artifact)
+    except OSError as error:
+        log_err(f"Could not stage the standalone setup helper at {setup_artifact}: {error}")
+        return 1
+
+    # When CI has imported a production signing certificate, sign every sidecar
+    # and the predictable setup-helper output before Tauri bundles the sidecars.
+    if platform.system() == "Windows" and os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
+        sign_script = project_root / "tools" / "sign_windows_file.ps1"
+        if sign_script.is_file():
+            for target in [*staged, setup_artifact]:
+                sign_cmd = [
+                    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass", "-File", str(sign_script),
+                    "-FilePath", str(target),
+                ]
+                sign_rc = subprocess.call(sign_cmd, cwd=str(project_root))
+                if sign_rc != 0:
+                    log_err(f"Could not sign GitManager build output: {target}")
+                    return sign_rc
+
+    log_ok(f"Created standalone setup helper: {setup_artifact} ({setup_artifact.stat().st_size:,} bytes)")
+    return 0
+
 def run_build_or_dev(
     project_root: Path,
     mode: str,
@@ -453,6 +1051,11 @@ def run_build_or_dev(
         cmd.extend(["check", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
         return subprocess.call(cmd)
 
+    if mode == "build" and os.environ.get("GITMANAGER_SKIP_CLOUD_NODE_BUNDLE") != "1":
+        cloud_node_result = prepare_cloud_node_deployment(project_root)
+        if cloud_node_result != 0:
+            return cloud_node_result
+
     if mode == "build" and platform.system() == "Windows":
         runtime_result = prepare_windows_python_runtime(project_root)
         if runtime_result != 0:
@@ -461,6 +1064,11 @@ def run_build_or_dev(
     if mode == "build" and not has_cargo_tauri:
         log_err("The Tauri CLI is required to create GitManager-Setup.exe. Install failed or pass --install-tauri-cli.")
         return 1
+
+    if mode in ("build", "dev"):
+        sidecar_result = build_gitm_sidecar(project_root, toolchain_arg, release)
+        if sidecar_result != 0:
+            return sidecar_result
 
     if has_cargo_tauri:
         cmd = ["cargo"]
@@ -472,24 +1080,19 @@ def run_build_or_dev(
             cmd.extend(["tauri", "build"])
             if not release:
                 cmd.append("--debug")
+            elif platform.system() == "Windows":
+                signing_config = prepare_windows_tauri_signing_config(project_root)
+                if signing_config is None:
+                    log_err("Could not prepare an explicit Windows signing override; refusing to build with an ambiguous signing configuration.")
+                    return 1
+                cmd.extend(["--config", str(signing_config.resolve())])
         log_info(f"Running Pure-Rust Tauri CLI: {' '.join(cmd)}")
         rc = subprocess.call(cmd, cwd=str(src_tauri_dir))
         if rc != 0 or mode != "build":
             return rc
 
-        # Also build the standalone background update service executable.
-        svc_cmd = ["cargo"]
-        if toolchain_arg:
-            svc_cmd.append(toolchain_arg)
-        svc_cmd.extend(["build", "--bin", "git-manager-service"])
-        if release:
-            svc_cmd.append("--release")
-        log_info(f"Building background service binary: {' '.join(svc_cmd)}")
-        service_rc = subprocess.call(svc_cmd, cwd=str(src_tauri_dir))
-        if service_rc != 0:
-            log_err("The background service binary failed to build.")
-            return service_rc
-
+        # The dedicated service executable and crash_helper are bundled as
+        # separate sidecars; the background service never shares the UI process tree.
         if platform.system() == "Windows" and name_windows_setup_installer(project_root) is None:
             return 1
         return 0
@@ -518,8 +1121,8 @@ def main() -> int:
         "mode",
         nargs="?",
         default="build",
-        choices=["deps", "check", "dev", "build", "prepare-runtime"],
-        help="Action: deps, check, dev, build (including the Windows setup installer), or prepare-runtime.",
+        choices=["deps", "check", "dev", "build", "frontend-build", "frontend-dev", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node"],
+        help="Action: deps, check, dev, build, frontend-build, frontend-dev, prepare-runtime, prepare-sidecar, or prepare-cloud-node.",
     )
     parser.add_argument(
         "--release",
@@ -547,6 +1150,18 @@ def main() -> int:
 
     if args.mode == "prepare-runtime":
         return prepare_windows_python_runtime(project_root)
+    if args.mode == "prepare-cloud-node":
+        return prepare_cloud_node_deployment(project_root)
+    if args.mode in ("frontend-build", "frontend-dev"):
+        frontend_tool = project_root / "tools" / "nextjs_engine_source.py"
+        frontend_mode = "build" if args.mode == "frontend-build" else "dev"
+        return subprocess.call([
+            sys.executable,
+            str(frontend_tool),
+            frontend_mode,
+            "--project-root",
+            str(project_root),
+        ])
 
     check_os_system_dependencies()
     sanitize_tauri_v2_config(project_root)
@@ -554,6 +1169,12 @@ def main() -> int:
     toolchain_arg = check_and_resolve_rust(project_root)
     if toolchain_arg is None:
         return 1
+
+    report_dependency_count(project_root, toolchain_arg)
+    log_info(
+        "Cargo's later n/N progress meter counts compilation units (including build scripts and "
+        "host/target variants), not unique crates; use the package-scoped dependency graph counts above."
+    )
 
     has_cargo_tauri = check_tauri_rust_cli(
         toolchain_arg,
@@ -565,6 +1186,9 @@ def main() -> int:
         return 0
 
     is_release = not args.debug
+    if args.mode == "prepare-sidecar":
+        return build_gitm_sidecar(project_root, toolchain_arg, is_release)
+
     return run_build_or_dev(
         project_root=project_root,
         mode=args.mode,

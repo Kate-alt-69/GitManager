@@ -1,0 +1,39 @@
+{
+  "formatVersion": 2,
+  "kind": "gitmanager-rbe-runtime-bootstrap",
+  "product": "GitManager RBE Node",
+  "rbeRepository": "Kastrick8/RBE",
+  "releaseApi": "https://api.github.com/repos/Kastrick8/RBE/releases/latest",
+  "targets": {
+    "windows-x64": {
+      "slug": "windows-x64",
+      "archive": "zip",
+      "extension": "zip",
+      "compatibility": "Windows x64 (MSVC)"
+    },
+    "linux-x64": {
+      "slug": "linux-x64",
+      "archive": "tar.gz",
+      "extension": "tar.gz",
+      "compatibility": "Linux x64 (glibc 2.35+)"
+    },
+    "linux-arm64": {
+      "slug": "linux-arm64",
+      "archive": "tar.gz",
+      "extension": "tar.gz",
+      "compatibility": "Linux ARM64 (glibc 2.39+)"
+    },
+    "macos-intel": {
+      "slug": "macos-intel",
+      "archive": "tar.gz",
+      "extension": "tar.gz",
+      "compatibility": "macOS Intel"
+    },
+    "macos-arm64": {
+      "slug": "macos-arm64",
+      "archive": "tar.gz",
+      "extension": "tar.gz",
+      "compatibility": "macOS Apple Silicon"
+    }
+  }
+}

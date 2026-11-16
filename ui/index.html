@@ -9,15 +9,26 @@
   <body>
     <div id="app" class="app-shell">
       <header class="topbar">
-        <div class="brand">
+        <div class="brand" aria-label="GitManager">
           <div class="brand-logo" aria-hidden="true">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1">
+            <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle>
               <path d="M6 9v6"></path><path d="M18 9a9 9 0 0 1-9 9"></path>
             </svg>
           </div>
-          <div><h1 class="brand-title">GitManager</h1><span class="brand-subtitle">Your local repositories, accounts and Git workspace</span></div>
+          <div class="brand-copy"><div class="brand-title-row"><h1 class="brand-title">GitManager</h1><span id="app-version-badge" class="app-version-badge">v—</span></div><span class="brand-subtitle">Your Git workspace</span></div>
         </div>
+        <nav class="top-tab-row" aria-label="Main navigation" role="tablist">
+          <button class="app-tab active" type="button" role="tab" aria-selected="true" aria-controls="page-repositories" data-page="repositories">
+            <svg class="tab-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.25 3.25h4.1l1.15 1.3h6.25v8.2H2.25z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.25 5.15h11.5" stroke="currentColor" stroke-width="1.25"/></svg><span>Repositories</span>
+          </button>
+          <button class="app-tab" type="button" role="tab" aria-selected="false" aria-controls="page-accounts" data-page="accounts">
+            <svg class="tab-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="6" cy="5" r="2.25" stroke="currentColor" stroke-width="1.25"/><path d="M1.8 13c.35-2.15 1.8-3.3 4.2-3.3s3.85 1.15 4.2 3.3M11 4.1a2.1 2.1 0 0 1 0 4.05M11.8 10c1.35.45 2.1 1.4 2.35 3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg><span>Accounts</span>
+          </button>
+          <button class="app-tab" type="button" role="tab" aria-selected="false" aria-controls="page-settings" data-page="settings">
+            <svg class="tab-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.6 1.75h2.8l.4 1.55c.38.13.73.33 1.05.58l1.55-.28 1.4 2.42-1.12 1.12c.05.4.05.8 0 1.2l1.12 1.12-1.4 2.42-1.55-.28c-.32.25-.67.45-1.05.58l-.4 1.55H6.6l-.4-1.55a4.7 4.7 0 0 1-1.05-.58l-1.55.28-1.4-2.42L3.32 8.3a5.2 5.2 0 0 1 0-1.2L2.2 5.98l1.4-2.42 1.55.28c.32-.25.67-.45 1.05-.58z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><circle cx="8" cy="7.7" r="2" stroke="currentColor" stroke-width="1.1"/></svg><span>Settings</span>
+          </button>
+        </nav>
         <div id="service-status-pill" class="service-status-pill" title="Background repository update service">
           <svg id="service-spinner-icon" class="loading-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity="0.25" stroke-width="3"></circle>
@@ -25,32 +36,29 @@
           </svg><span id="service-status-text">Svc: Starting…</span>
         </div>
       </header>
-      <nav class="top-tab-row" aria-label="Main navigation" role="tablist">
-        <button class="app-tab active" type="button" role="tab" aria-selected="true" data-page="repositories"><span class="tab-glyph" aria-hidden="true">⌂</span><span>Repositories</span></button>
-        <button class="app-tab" type="button" role="tab" aria-selected="false" data-page="accounts"><span class="tab-glyph" aria-hidden="true">◎</span><span>Accounts</span></button>
-        <button class="app-tab" type="button" role="tab" aria-selected="false" data-page="settings"><span class="tab-glyph" aria-hidden="true">⚙</span><span>Settings</span></button>
-      </nav>
       <div id="update-notifications-tray" class="update-notifications-tray"></div>
       <main class="app-main">
         <section id="page-repositories" class="app-page active" role="tabpanel" aria-label="Repositories">
           <div class="repo-page-controls">
-            <div class="repo-search-wrap"><label class="sr-only" for="repo-search-input">Search local repositories</label><input id="repo-search-input" type="search" class="search-input" placeholder="Search repositories, owners or local paths…" /></div>
-            <div class="repo-filter-row">
-              <div class="segmented-control kind-filter-bar" aria-label="Repository category">
-                <button class="seg-btn active" type="button" data-repo-kind="projects">Projects <span data-repo-kind-count>0</span></button>
-                <button class="seg-btn" type="button" data-repo-kind="dependencies">Dependencies <span data-repo-kind-count>0</span></button>
-                <button class="seg-btn" type="button" data-repo-kind="all">All <span data-repo-kind-count>0</span></button>
+            <div class="repo-toolbar-main">
+              <div class="repo-search-wrap"><label class="sr-only" for="repo-search-input">Search repositories</label><span class="repo-search-icon" aria-hidden="true">⌕</span><input id="repo-search-input" type="search" class="search-input" placeholder="Find a repository…" /></div>
+              <div class="repo-toolbar-filters">
+                <div class="segmented-control kind-filter-bar" aria-label="Repository category">
+                  <button class="seg-btn active" type="button" data-repo-kind="projects">Projects <span data-repo-kind-count>0</span></button>
+                  <button class="seg-btn" type="button" data-repo-kind="dependencies">Dependencies <span data-repo-kind-count>0</span></button>
+                  <button class="seg-btn" type="button" data-repo-kind="all">All <span data-repo-kind-count>0</span></button>
+                </div>
+                <div class="segmented-control availability-filter" role="group" aria-label="Remote availability">
+                  <button id="filter-btn-grouped" class="seg-btn active" type="button" data-filter="grouped">All <span id="count-all">0</span></button>
+                  <button id="filter-btn-remote" class="seg-btn" type="button" data-filter="remote">Remote <span id="count-remote">0</span></button>
+                  <button id="filter-btn-local" class="seg-btn" type="button" data-filter="local">Local <span id="count-local">0</span></button>
+                </div>
+                <span id="filter-fallback-badge" class="fallback-pill hidden">Unified view</span>
               </div>
-              <div class="segmented-control availability-filter" role="group" aria-label="Remote availability">
-                <button id="filter-btn-grouped" class="seg-btn active" type="button" data-filter="grouped">All <span id="count-all">0</span></button>
-                <button id="filter-btn-remote" class="seg-btn" type="button" data-filter="remote">Remote <span id="count-remote">0</span></button>
-                <button id="filter-btn-local" class="seg-btn" type="button" data-filter="local">Local <span id="count-local">0</span></button>
-              </div>
-              <span id="filter-fallback-badge" class="fallback-pill hidden">Unified view</span>
             </div>
             <div class="repo-filter-footer">
-              <p id="filter-status-note" class="filter-note">Showing repositories discovered on this machine.</p>
-              <label class="index-mode-row" for="index-group-select"><span>Group by</span><select id="index-group-select" class="select-control"><option value="folder">Parent folder</option><option value="git_dir">.git location</option><option value="provider">Remote provider</option></select></label>
+              <p id="filter-status-note" class="filter-note">Repositories discovered on this machine.</p>
+              <label class="index-mode-row" for="index-group-select"><span>Group by</span><select id="index-group-select" class="select-control"><option value="none">None</option><option value="folder">Parent folder</option><option value="git_dir">.git location</option><option value="provider">Remote provider</option></select></label>
             </div>
           </div>
           <div id="repo-home-content" class="repo-home-content"></div>
@@ -70,9 +78,15 @@
         </section>
         <section id="page-settings" class="app-page hidden" role="tabpanel" aria-label="Settings">
           <div class="page-heading"><div><div class="dashboard-eyebrow">GITMANAGER</div><h2>Settings</h2><p>Manage discovery, background updates, maintenance tools and where GitManager stores its files.</p></div></div>
-          <div class="settings-grid">
+
+          <div class="settings-subnav" role="tablist" aria-label="Settings sections">
+            <button class="settings-subtab active" type="button" role="tab" aria-selected="true" aria-controls="settings-general-panel" data-settings-section="general">General</button>
+            <button class="settings-subtab" type="button" role="tab" aria-selected="false" aria-controls="settings-cloud-panel" data-settings-section="cloud">Cloud</button>
+          </div>
+          <section id="settings-general-panel" class="settings-panel" role="tabpanel" aria-label="General settings">
+            <div class="settings-grid">
             <section class="settings-card settings-card-wide"><div class="settings-card-heading"><div><h3>Repository discovery</h3><p>Choose which folders GitManager scans for local Git repositories.</p></div><span class="settings-icon">⌕</span></div><div id="settings-scan-root-summary" class="settings-value">Loading scan folders…</div><div class="settings-actions"><button id="btn-open-scan-settings" class="btn btn-secondary" type="button">Configure folders</button><button id="btn-scan-repos" class="btn btn-primary" type="button">Scan now</button></div><div class="quick-scan-row"><input id="scan-path-input" type="text" class="scan-input" placeholder="Optional one-time scan folder…" /><button id="btn-browse-folder" class="btn btn-secondary" type="button">Browse</button></div></section>
-            <section class="settings-card"><div class="settings-card-heading"><div><h3>Background updates</h3><p>Check remotes and register the user-level background service.</p></div><span class="settings-icon">↻</span></div><p class="settings-value" id="settings-service-description">The service checks configured local repositories for safe fast-forward updates.</p><div class="settings-actions"><button id="btn-check-updates-now" class="btn btn-secondary" type="button">Check updates</button><button id="btn-register-os-service" class="btn btn-secondary" type="button">Enable background service</button></div></section>
+            <section class="settings-card"><div class="settings-card-heading"><div><h3>Background updates</h3><p>Check remotes and register the user-level background service.</p></div><span class="settings-icon">↻</span></div><p class="settings-value" id="settings-service-description">The user-level service checks for safe fast-forward updates and takes over automatic Local/Remote Archive watching when GitManager is closed.</p><div class="settings-actions"><button id="btn-check-updates-now" class="btn btn-secondary" type="button">Check updates</button><button id="btn-register-os-service" class="btn btn-secondary" type="button">Enable background service</button></div></section>
             <section class="settings-card"><div class="settings-card-heading"><div><h3>Developer cleaner</h3><p>Preview generated files and developer caches before cleaning them.</p></div><span class="settings-icon">⌁</span></div><p class="settings-value">Nothing is removed until you inspect a preview and explicitly confirm the action.</p><div class="settings-actions"><button id="btn-open-cleaner" class="btn btn-secondary" type="button">Open Developer Cleaner</button></div></section>
             <section class="settings-card settings-card-wide">
               <div class="settings-card-heading"><div><h3>Production signing</h3><p>Sign a Windows installer with a Code Signing certificate already installed for your Windows user.</p></div><span class="settings-icon">✓</span></div>
@@ -82,7 +96,159 @@
               <p class="settings-footnote">Requires the Windows SDK SignTool and a valid Authenticode Code Signing certificate. Self-signed certificates are not publicly trusted; a trusted certificate chain is required for public distribution.</p>
             </section>
             <section class="settings-card settings-card-wide"><div class="settings-card-heading"><div><h3>Storage locations</h3><p>Per-user application files. Configuration and data stay outside the install directory.</p></div><span class="settings-icon">▤</span></div><div class="path-row"><span>Configuration</span><code id="settings-config-path">Resolving…</code></div><div class="path-row"><span>Application data</span><code id="settings-data-path">Resolving…</code></div><div class="path-row"><span>Software root</span><code id="settings-software-root">Resolving…</code></div></section>
-          </div>
+            <section class="settings-card about-version-card">
+              <div class="settings-card-heading"><div><h3>About GitManager</h3><p>Application build information.</p></div><span class="settings-icon">ⓘ</span></div>
+              <div class="path-row"><span>Version</span><code id="settings-app-version">Loading…</code></div>
+              <div class="about-version-note">GitManager · Pure-Rust local and remote Git workspace</div>
+            </section>
+
+            </div>
+          </section>
+          <section id="settings-cloud-panel" class="settings-panel hidden" role="tabpanel" aria-label="Cloud settings">
+            <div class="page-heading cloud-settings-heading">
+              <div>
+                <div class="dashboard-eyebrow">CLOUD STORAGE</div>
+                <h3>Cloud sync and local NAS</h3>
+                <p>Choose an archive destination or provision a separate RBE node. Provider sign-in and peer pairing are shown only where the current implementation supports them.</p>
+              </div>
+              <div class="settings-actions">
+                <button id="btn-cloud-refresh-status" class="btn btn-secondary" type="button">Refresh storage status</button>
+              </div>
+            </div>
+            <div class="cloud-provider-layout">
+              <nav class="cloud-provider-tabs" role="tablist" aria-label="Cloud providers">
+                <button class="cloud-provider-tab active" type="button" role="tab" aria-selected="true" aria-controls="cloud-provider-google-drive" data-cloud-provider="google-drive">Google Drive</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-onedrive" data-cloud-provider="onedrive">Microsoft OneDrive</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-supabase" data-cloud-provider="supabase">Supabase</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-azure-blob" data-cloud-provider="azure-blob">Azure Blob</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-google-cloud-storage" data-cloud-provider="google-cloud-storage">Google Cloud Storage</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-amazon-s3" data-cloud-provider="amazon-s3">Amazon S3</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-s3-compatible" data-cloud-provider="s3-compatible">S3-compatible</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-http" data-cloud-provider="http">Custom HTTPS</button>
+                <button class="cloud-provider-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-provider-node" data-cloud-provider="node">Cloud Node setup</button>
+              </nav>
+              <div class="cloud-provider-panels">
+                <section id="cloud-provider-google-drive" class="cloud-provider-panel active" role="tabpanel" aria-label="Google Drive" data-cloud-panel="google-drive">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Google Drive</h3><p>Use a Google Drive for desktop synced folder as a local archive destination.</p></div>
+                      <span class="settings-icon" aria-hidden="true">G</span>
+                    </div>
+                    <p class="settings-value">Direct Google Account OAuth and Drive API upload are not wired into GitManager yet. For now, install Google's desktop sync client, choose its local mirrored folder in Scan Setup, and store local archive copies there.</p>
+                    <div class="settings-actions"><button id="btn-cloud-google-drive-folder" class="btn btn-primary" type="button">Choose Drive sync folder</button></div>
+                    <p class="settings-footnote">This is local-folder storage through the Google sync client, not a direct Drive API connection.</p>
+                  </div>
+                </section>
+                <section id="cloud-provider-onedrive" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Microsoft OneDrive" data-cloud-panel="onedrive">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Microsoft OneDrive</h3><p>Use a OneDrive synced folder as a local archive destination.</p></div>
+                      <span class="settings-icon" aria-hidden="true">☁</span>
+                    </div>
+                    <p class="settings-value">Direct Microsoft Account OAuth and Graph API upload are not wired into GitManager yet. For now, use the OneDrive desktop client's local folder as an archive destination in Scan Setup.</p>
+                    <div class="settings-actions"><button id="btn-cloud-onedrive-folder" class="btn btn-primary" type="button">Choose OneDrive folder</button></div>
+                    <p class="settings-footnote">This is local-folder storage through the OneDrive sync client, not a direct Microsoft Graph connection.</p>
+                  </div>
+                </section>
+                <section id="cloud-provider-supabase" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Supabase" data-cloud-panel="supabase">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Supabase Storage</h3><p>Connect an object bucket using the existing RBE provider-backed archive engine.</p></div>
+                      <span class="settings-icon" aria-hidden="true">S</span>
+                    </div>
+                    <p class="settings-value">Supabase Storage is supported through provider configuration. The API key stays in the GitManager process environment as RBE_CN_PROV_SUPABASE_API_KEY; it is not stored in the provider JSON.</p>
+                    <div class="settings-actions"><button id="btn-cloud-supabase-configure" class="btn btn-primary" type="button">Configure Supabase</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-azure-blob" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Azure Blob Storage" data-cloud-panel="azure-blob">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Azure Blob Storage</h3><p>Use an Azure Storage container with a SAS token from your operating system environment.</p></div>
+                      <span class="settings-icon" aria-hidden="true">AZ</span>
+                    </div>
+                    <p class="settings-value">The provider uses the account name and container (bucket) below. Store the SAS token in RBE_CN_PROV_AZURE_SAS_TOKEN; the token is never saved in GitManager's JSON settings.</p>
+                    <div class="settings-actions"><button id="btn-cloud-azure-blob-configure" class="btn btn-primary" type="button">Configure Azure Blob</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-google-cloud-storage" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Google Cloud Storage" data-cloud-panel="google-cloud-storage">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Google Cloud Storage</h3><p>Connect a GCS bucket using an OAuth bearer token from your environment.</p></div>
+                      <span class="settings-icon" aria-hidden="true">GCS</span>
+                    </div>
+                    <p class="settings-value">This is Google Cloud Storage, not Google Drive. Supply a valid access token through RBE_CN_PROV_GOOGLE_OAUTH_TOKEN. Direct Google Drive API upload remains separate and is not implemented here.</p>
+                    <div class="settings-actions"><button id="btn-cloud-google-cloud-storage-configure" class="btn btn-primary" type="button">Configure GCS</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-amazon-s3" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Amazon S3" data-cloud-panel="amazon-s3">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Amazon S3</h3><p>Use a bucket with the native S3 SigV4 provider.</p></div>
+                      <span class="settings-icon" aria-hidden="true">S3</span>
+                    </div>
+                    <p class="settings-value">The provider reads credentials from RBE_CN_PROV_AMAZON_ACCESS_KEY and RBE_CN_PROV_AMAZON_SECRET_KEY, with an optional session token. Credentials are not written into GitManager settings.</p>
+                    <div class="settings-actions"><button id="btn-cloud-amazon-s3-configure" class="btn btn-primary" type="button">Configure Amazon S3</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-s3-compatible" class="cloud-provider-panel hidden" role="tabpanel" aria-label="S3-compatible storage" data-cloud-panel="s3-compatible">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>S3-compatible storage</h3><p>Use a custom endpoint with AWS SigV4 request signing.</p></div>
+                      <span class="settings-icon" aria-hidden="true">⇄</span>
+                    </div>
+                    <p class="settings-value">The Amazon S3 adapter accepts a custom endpoint and uses path-style bucket URLs with SigV4 signing. This works with S3-compatible services that implement that request format. Set RBE_CN_PROV_AMAZON_ACCESS_KEY and RBE_CN_PROV_AMAZON_SECRET_KEY in the operating system environment; use the endpoint and region value supplied by your storage vendor.</p>
+                    <div class="settings-actions"><button id="btn-cloud-s3-compatible-configure" class="btn btn-primary" type="button">Configure S3 endpoint</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-http" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Custom HTTPS object storage" data-cloud-panel="http">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Custom HTTPS object storage</h3><p>Use the existing generic HTTP object adapter for a compatible object API.</p></div>
+                      <span class="settings-icon" aria-hidden="true">HTTPS</span>
+                    </div>
+                    <p class="settings-value">Configure the HTTPS endpoint and use RBE_CN_PROV_HTTP_BEARER_TOKEN by default. The generic adapter is not guaranteed to support every vendor's proprietary API or authentication scheme.</p>
+                    <div class="settings-actions"><button id="btn-cloud-http-configure" class="btn btn-primary" type="button">Configure HTTPS storage</button></div>
+                  </div>
+                </section>
+                <section id="cloud-provider-node" class="cloud-provider-panel hidden" role="tabpanel" aria-label="Cloud Node setup" data-cloud-panel="node">
+                  <div class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                      <div><h3>Local copy / Cloud Node NAS</h3><p>Install an RBE backend and Cloud Node runtime on another computer or NAS.</p></div>
+                      <span class="settings-icon" aria-hidden="true">▤</span>
+                    </div>
+                    <p class="settings-value">The ZIP contains setup.py, the ready-to-copy /api route files, settings.json and setting.node.cn.json. On the target machine, setup.py downloads only that machine's complete RBE runtime (backend, cloud_node, Container and Service), verifies the release checksums, and installs the binaries beside /api.</p>
+                    <div class="settings-actions">
+                      <button id="btn-download-cloud-node-setup" class="btn btn-primary" type="button" disabled>Checking package…</button>
+                      <button id="btn-refresh-cloud-node-release" class="btn btn-secondary" type="button">Check availability</button>
+                      <button id="btn-open-cloud-node-artifacts" class="btn btn-secondary" type="button">View build artifacts</button>
+                      <button id="btn-open-cloud-node-guide" class="btn btn-secondary" type="button">Deployment guide</button>
+                    </div>
+                    <div id="cloud-node-release-status" class="repository-setting-status" role="status">Checking the RBE node bootstrap release…</div>
+                    <div class="cloud-node-address-box">
+                      <label for="cloud-node-address-input">NAS / RBE backend LAN address</label>
+                      <div class="cloud-node-address-row">
+                        <input id="cloud-node-address-input" class="scan-input" type="text" inputmode="url" autocomplete="off" placeholder="192.168.1.50:8080" />
+                        <button id="btn-check-cloud-node-address" class="btn btn-secondary" type="button">Check backend</button>
+                      </div>
+                      <div id="cloud-node-address-status" class="repository-setting-status" role="status">Enter the NAS IP and port to check /health and /api/health.</div>
+                    </div>
+                    <div class="cloud-node-install-commands">
+                      <div class="path-row"><span>Windows</span><code>py setup.py</code></div>
+                      <div class="path-row"><span>Linux / macOS</span><code>python3 setup.py</code></div>
+                    </div>
+                    <p class="settings-footnote">The target requires Python 3.9+ and network access during setup. The current RBE release's CN peer receiver is still a temporary boot-recovery listener, not yet a permanent LAN pairing service. Normal backend status endpoints are installed separately.</p>
+                  </div>
+                </section>
+              </div>
+            </div>
+            <div id="cloud-provider-status" class="repository-setting-status" role="status">Cloud storage status has not been checked yet.</div>
+            <div class="settings-actions">
+              <button id="btn-cloud-open-provider-setup" class="btn btn-secondary" type="button">Open provider configuration</button>
+              <button id="btn-cloud-sync-now" class="btn btn-primary" type="button">Sync archives now</button>
+            </div>
+            <p class="settings-footnote">Provider credentials are read from environment variables. GitManager keeps local archive restore points even when a remote provider is unavailable.</p>
+          </section>
+
         </section>
       </main>
 
@@ -92,13 +258,13 @@
           <header class="modal-header setup-modal-header">
             <div>
               <h3 id="setup-modal-title">Set up your workspace</h3>
-              <p id="setup-modal-subtitle" class="setup-modal-subtitle">Choose the folders GitManager should index.</p>
+              <p id="setup-modal-subtitle" class="setup-modal-subtitle">Choose your main repository folder, then add any other locations where you keep projects.</p>
             </div>
             <button id="btn-close-scan-setup" class="icon-close-btn" aria-label="Close setup">&times;</button>
           </header>
           <div class="modal-body setup-modal-body">
             <div class="setup-roots-heading">
-              <div><strong>Scan folders</strong><span>GitManager scans inside each folder for Git repositories.</span></div>
+              <div><strong>Main repository folder</strong><span>Choose the folder containing most of your projects. Additional scan locations can be added below.</span></div>
               <button id="btn-setup-smart-roots" class="btn btn-secondary" type="button">Use recommended folders</button>
             </div>
             <div id="setup-scan-root-list" class="setup-root-list">
@@ -109,7 +275,7 @@
               <input id="setup-manual-root" class="scan-input" type="text" placeholder="Or enter a path, e.g. D:/Project_Customs or D:/" />
               <button id="btn-setup-add-root" class="btn btn-secondary" type="button">Add path</button>
             </div>
-            <p class="setup-hint">Choose one or more project folders. A drive root such as D:/ is supported; scanning an entire drive can take longer. GitManager does not automatically scan every system drive.</p>
+            <p class="setup-hint">The first folder is your main workspace. You can mark any other folder as the main location. A drive root such as D:/ is supported, but scanning an entire drive can take longer. GitManager does not automatically scan every system drive.</p>
             <div class="setup-options">
               <label class="setup-option"><input id="setup-index-dependencies" type="checkbox" checked /> Index Git repositories found inside dependency folders too</label>
               <label class="setup-option"><input id="setup-show-dependencies" type="checkbox" checked /> Include dependency repositories in the default repository view</label>
@@ -126,6 +292,72 @@
                 </select>
               </div>
             </div>
+
+            <section class="setup-archive-section">
+              <div class="setup-roots-heading">
+                <div>
+                  <strong>Repository archives</strong>
+                  <span>Keep up to five complete restore points for each archive type.</span>
+                </div>
+              </div>
+              <div class="setup-archive-path-row">
+                <label for="setup-archive-root">Archive storage folder</label>
+                <div class="setup-add-root">
+                  <input id="setup-archive-root" class="scan-input" type="text" placeholder="Choose a folder on another drive or a cloud-synced drive…" />
+                  <button id="btn-setup-browse-archive-root" class="btn btn-secondary" type="button">Browse…</button>
+                </div>
+                <small>Choose a Google Drive for desktop, OneDrive, Dropbox, or external-drive folder to have that local archive synchronized by the provider's own client.</small>
+              </div>
+              <div class="setup-options setup-archive-options">
+                <label class="setup-option"><input id="setup-archive-local" type="checkbox" checked /> Local Archive — working files, including uncommitted and untracked changes</label>
+                <label class="setup-option"><input id="setup-archive-remote" type="checkbox" checked /> Remote Archive — working files plus Git history and refs, without credential config</label>
+                <div class="form-group setup-depth">
+                  <label for="setup-archive-trigger">Automatic capture</label>
+                  <select id="setup-archive-trigger" class="select-control">
+                    <option value="manual">Manual only</option>
+                    <option value="commit">After Git commits</option>
+                    <option value="change">After file changes settle</option>
+                  </select>
+                </div>
+                <div class="form-group setup-depth">
+                  <label for="setup-archive-quiet">Quiet period for change capture</label>
+                  <select id="setup-archive-quiet" class="select-control">
+                    <option value="500">500 ms — frequent snapshots</option>
+                    <option value="1500" selected>1.5 seconds — recommended</option>
+                    <option value="3000">3 seconds — fewer snapshots</option>
+                    <option value="5000">5 seconds — large projects</option>
+                  </select>
+                </div>
+              </div>
+              <p class="setup-hint">Environment secrets such as .env files, private keys, and credential folders are excluded by default. Cloud provider credentials are never stored in these archives.</p>
+              <div class="setup-cloud-provider">
+                <div class="setup-roots-heading">
+                  <div>
+                    <strong>Cloud object storage</strong>
+                    <span>Optional Cloud Node provider sync, independent of a Drive-synced folder.</span>
+                  </div>
+                </div>
+                <label for="setup-cloud-provider-json">Provider configuration (JSON)</label>
+                <textarea id="setup-cloud-provider-json" class="setup-cloud-provider-json" rows="7" spellcheck="false" placeholder='{
+  "kind": "http",
+  "namespace": "gitmanager",
+  "bucket": "repository-archives",
+  "endpoint": "https://storage.example.com",
+  "auth": {
+    "mode": "bearer",
+    "bearerTokenEnv": "GITMANAGER_ARCHIVE_TOKEN"
+  }
+}'></textarea>
+                <small>Paste one Cloud Node provider object. Use environment-variable names such as <code>bearerTokenEnv</code>, never paste a token or password. Supported providers include S3, Supabase, Azure Blob, Google Cloud Storage and generic HTTPS.</small>
+                <div class="setup-cloud-actions">
+                  <button id="btn-configure-archive-cloud" class="btn btn-secondary" type="button">Configure provider</button>
+                  <button id="btn-check-archive-cloud" class="btn btn-secondary" type="button">Check status</button>
+                  <button id="btn-sync-archive-cloud" class="btn btn-secondary" type="button">Sync now</button>
+                  <button id="btn-disable-archive-cloud" class="btn btn-secondary" type="button">Disable</button>
+                </div>
+                <div id="setup-cloud-status" class="setup-cloud-status" role="status">Cloud object storage is optional. Configure a provider to enable remote synchronization.</div>
+              </div>
+            </section>
             <div id="setup-modal-error" class="modal-error hidden"></div>
           </div>
           <footer class="modal-footer">
@@ -240,11 +472,6 @@
         </div>
       </div>
       <div id="commit-hover-card" class="commit-hover-card hidden" role="tooltip" aria-live="polite"></div>
-      <nav class="bottom-tab-bar" aria-label="Main navigation" role="tablist">
-        <button class="bottom-tab active" type="button" role="tab" aria-selected="true" data-page="repositories"><span aria-hidden="true">⌂</span><small>Repositories</small></button>
-        <button class="bottom-tab" type="button" role="tab" aria-selected="false" data-page="accounts"><span aria-hidden="true">◎</span><small>Accounts</small></button>
-        <button class="bottom-tab" type="button" role="tab" aria-selected="false" data-page="settings"><span aria-hidden="true">⚙</span><small>Settings</small></button>
-      </nav>
     </div>
 
     <script src="app.js"></script>

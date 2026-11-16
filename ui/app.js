@@ -188,12 +188,15 @@ let selectedRepoId = null;
 let repositoryScanInProgress = false;
 let selectedCommitOid = null;
 let requestedFilter = "grouped";
-let indexGroupingMode = "folder";
+let indexGroupingMode = "none";
 let searchQuery = "";
 let appPreferences = null;
 let dependencyRepoIds = new Set();
 let repositoryKindFilter = "all";
 let activePage = "repositories";
+let activeSettingsSection = "general";
+let activeCloudProvider = "google-drive";
+let cloudNodeReleaseLookupPromise = null;
 let applicationDirectories = null;
 let selectedBranchName = null;
 let branchFilterMode = "all";
@@ -225,7 +228,9 @@ function escapeHtml(raw) {
 }
 
 function fallbackRepoIconDataUri(provider, repoName) {
-  const initial = ((repoName || "G").trim()[0] || "G").toUpperCase();
+  const candidate = ((repoName || "G").trim()[0] || "G").toUpperCase();
+  // Repository names are untrusted data; only a single XML-safe glyph enters the SVG.
+  const initial = /^[A-Z0-9]$/.test(candidate) ? candidate : "G";
   const bg =
     provider === "github"
       ? "#238636"
@@ -239,11 +244,39 @@ function fallbackRepoIconDataUri(provider, repoName) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
-function resolveRepoIconUrl(repo) {
-  if (repo.icon_url && repo.icon_url.startsWith("https://")) {
-    return repo.icon_url;
+function safeExternalWebUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:" || !url.hostname) return null;
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href;
+  } catch (_) {
+    return null;
   }
-  return fallbackRepoIconDataUri(repo.primary_provider, repo.name);
+}
+
+function trustedProviderImageUrl(rawUrl) {
+  if (typeof rawUrl !== "string" || !rawUrl.trim()) return "";
+  try {
+    const url = new URL(rawUrl);
+    const allowedHosts = new Set([
+      "github.com",
+      "gitlab.com",
+      "avatars.githubusercontent.com"
+    ]);
+    if (url.protocol !== "https:" || !allowedHosts.has(url.hostname.toLowerCase())) return "";
+    return url.href;
+  } catch (_) {
+    return "";
+  }
+}
+
+function resolveRepoIconUrl(repo) {
+  return trustedProviderImageUrl(repo.icon_url) ||
+    fallbackRepoIconDataUri(repo.primary_provider, repo.name);
 }
 
 /**
@@ -534,8 +567,9 @@ function updateRepositoryCiPanel(repo, details) {
   const summary = panel.querySelector(".repo-ci-summary");
   const list = panel.querySelector(".repo-ci-check-list");
   if (summary) {
-    summary.innerHTML = '<span class="ci-state-dot ci-' + details.state + '"></span><strong class="ci-' +
-      details.state + '">' + escapeHtml(details.label) + '</strong><span>' +
+    const state = normalizeCiState(details.state);
+    summary.innerHTML = '<span class="ci-state-dot ci-' + state + '"></span><strong class="ci-' +
+      state + '">' + escapeHtml(details.label) + '</strong><span>' +
       details.checks.length + ' individual check(s)</span>' +
       (details.checkedAt ? '<time>Updated ' + escapeHtml(formatCiTimestamp(details.checkedAt)) + '</time>' : '');
   }
@@ -811,8 +845,9 @@ function renderConnectedAccountsBar() {
     return;
   }
   container.innerHTML = connectedAccounts.map((account) => {
-    const avatar = account.avatar_url || fallbackRepoIconDataUri(account.provider, account.account_login);
-    return '<article class="connected-account-card"><img src="' + escapeHtml(avatar) + '" alt="" class="account-chip-avatar" />' +
+    const fallback = fallbackRepoIconDataUri(account.provider, account.account_login);
+    const avatar = trustedProviderImageUrl(account.avatar_url) || fallback;
+    return '<article class="connected-account-card"><img src="' + escapeHtml(avatar) + '" data-fallback="' + escapeHtml(fallback) + '" alt="" class="account-chip-avatar" />' +
       '<div class="account-chip-text"><strong>' + escapeHtml(account.display_name || account.account_login) + '</strong><span>' +
       escapeHtml(String(account.provider || "").toUpperCase()) + ' · @' + escapeHtml(account.account_login) + '</span></div>' +
       '<span class="account-repo-count">' + (account.repositories || []).length + ' repos</span></article>';
@@ -834,6 +869,55 @@ function setActivePage(page) {
   });
 }
 
+function setActiveSettingsSection(section) {
+  if (!["general", "cloud"].includes(section)) return;
+  activeSettingsSection = section;
+  document.querySelectorAll("[data-settings-section]").forEach((tab) => {
+    const active = tab.getAttribute("data-settings-section") === section;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  const general = document.getElementById("settings-general-panel");
+  const cloud = document.getElementById("settings-cloud-panel");
+  if (general) general.classList.toggle("hidden", section !== "general");
+  if (cloud) cloud.classList.toggle("hidden", section !== "cloud");
+  if (section === "cloud") {
+    const addressInput = document.getElementById("cloud-node-address-input");
+    if (addressInput && appPreferences && addressInput.dataset.preferenceLoaded !== "true") {
+      addressInput.value = String(appPreferences.cloudNodeAddress || "");
+      addressInput.dataset.preferenceLoaded = "true";
+    }
+    void refreshArchiveCloudStatus();
+  }
+}
+
+function setActiveCloudProvider(provider) {
+  const supported = [
+    "google-drive",
+    "onedrive",
+    "supabase",
+    "azure-blob",
+    "google-cloud-storage",
+    "amazon-s3",
+    "s3-compatible",
+    "http",
+    "node"
+  ];
+  if (!supported.includes(provider)) return;
+  activeCloudProvider = provider;
+  document.querySelectorAll("[data-cloud-provider]").forEach((tab) => {
+    const active = tab.getAttribute("data-cloud-provider") === provider;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-cloud-panel]").forEach((panel) => {
+    const active = panel.getAttribute("data-cloud-panel") === provider;
+    panel.classList.toggle("hidden", !active);
+    panel.classList.toggle("active", active);
+  });
+  if (provider === "node") void refreshCloudNodeBundleAvailability();
+}
+
 function getRepositoryById(id) {
   return allRepositories.find((repo) => repo.id === id) ||
     connectedAccounts.flatMap((account) => account.repositories || []).find((repo) => repo.id === id) ||
@@ -853,7 +937,7 @@ function renderAccountsPage() {
   container.innerHTML = repositories.map((repo) => {
     const latest = latestCommitFor(repo);
     return '<button type="button" class="dashboard-repo-card account-repo-card" data-account-repo-id="' + escapeHtml(repo.id) + '">' +
-      '<div class="dashboard-card-top"><img class="dashboard-card-icon" src="' + escapeHtml(resolveRepoIconUrl(repo)) + '" alt="" />' +
+      '<div class="dashboard-card-top"><img class="dashboard-card-icon" src="' + escapeHtml(resolveRepoIconUrl(repo)) + '" data-fallback="' + escapeHtml(fallbackRepoIconDataUri(repo.primary_provider, repo.name)) + '" alt="" />' +
       '<div class="dashboard-card-heading"><strong>' + escapeHtml(repositoryFullName(repo)) + '</strong><span>' + escapeHtml(repo.name || "") + '</span></div>' +
       '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(String(repo.primary_provider || "REMOTE").toUpperCase()) + '</span></div>' +
       '<div class="dashboard-card-commit"><span class="dashboard-label">REMOTE REPOSITORY</span><strong>' + escapeHtml(repo.description || (latest ? latest.summary : "Repository discovered through account")) + '</strong>' +
@@ -959,7 +1043,7 @@ function renderRepositoryList() {
               src="${escapeHtml(iconSrc)}"
               alt="${escapeHtml(repo.name)} icon"
               class="repo-card-icon"
-              onerror="this.onerror=null;this.src='${fallbackSrc}';"
+              data-fallback="${escapeHtml(fallbackSrc)}"
             />
             <div class="repo-card-body">
               <div class="repo-card-top">
@@ -1009,9 +1093,12 @@ function renderRepositoryList() {
 }
 
 function repositoryFullName(repo) {
-  const remote = (repo.remotes || []).find((item) => item.name === "origin") || (repo.remotes || [])[0];
-  if (remote && remote.owner && remote.repo_slug) return remote.owner + "/" + remote.repo_slug;
-  return (repo.owner_name || "Local") + "/" + repo.name;
+  const remotes = Array.isArray(repo.remotes) ? repo.remotes : [];
+  const remote = remotes.find((item) => item.name === "origin") || remotes[0];
+  if (repo.has_remote && remote && remote.owner && remote.repo_slug) {
+    return remote.owner + "/" + remote.repo_slug;
+  }
+  return repo.name || "Unnamed repository";
 }
 
 function latestCommitFor(repo) {
@@ -1217,12 +1304,21 @@ function formatCiTimestamp(value) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
+function normalizeCiState(value) {
+  const state = String(value || "neutral").trim().toLowerCase();
+  return state === "success" || state === "failure" || state === "pending" || state === "neutral"
+    ? state
+    : "neutral";
+}
+
 function renderCiCheckRows(details) {
   if (!details.checks.length) {
     return '<div class="ci-empty-state">' + escapeHtml(details.message || "No individual checks were reported for this commit.") + '</div>';
   }
   const priority = { failure: 0, pending: 1, success: 2, neutral: 3 };
-  const ordered = details.checks.slice().sort((a, b) => (priority[a.state] - priority[b.state]) || a.name.localeCompare(b.name));
+  const ordered = details.checks
+    .map((check) => ({ ...check, state: normalizeCiState(check.state) }))
+    .sort((a, b) => (priority[a.state] - priority[b.state]) || a.name.localeCompare(b.name));
   return ordered.map((check) => {
     const contents = '<span class="ci-state-dot ci-' + escapeHtml(check.state) + '" aria-hidden="true"></span>' +
       '<span class="ci-check-copy"><strong>' + escapeHtml(check.name) + '</strong><small>' +
@@ -1240,12 +1336,12 @@ function updateCiCard(repo, details) {
   document.querySelectorAll("[data-ci-repo-id]").forEach((element) => {
     if (element.getAttribute("data-ci-repo-id") !== repo.id) return;
     element.textContent = details.label;
-    element.className = "dashboard-ci ci-" + details.state;
+    element.className = "dashboard-ci ci-" + normalizeCiState(details.state);
     element.setAttribute("aria-label", "CI status: " + details.label);
   });
   document.querySelectorAll("[data-ci-dot-repo-id]").forEach((element) => {
     if (element.getAttribute("data-ci-dot-repo-id") === repo.id) {
-      element.className = "ci-state-dot ci-" + details.state;
+      element.className = "ci-state-dot ci-" + normalizeCiState(details.state);
     }
   });
   document.querySelectorAll("[data-ci-count-repo-id]").forEach((element) => {
@@ -1299,22 +1395,38 @@ function renderRepositoryDashboard(container) {
   const roots = appPreferences && Array.isArray(appPreferences.scanRoots) ? appPreferences.scanRoots : [];
 
   if (allRepositories.length === 0) {
-    container.innerHTML =
-      '<section class="dashboard-view">' +
-        '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2><p>Your local Git projects will appear here.</p></div>' +
-        '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
-        '<div class="dashboard-empty ' + (repositoryScanInProgress ? 'dashboard-scan-empty' : '') + '">' +
-          '<strong>' + (repositoryScanInProgress ? 'Scanning your folders…' : 'No repositories indexed yet') + '</strong>' +
-          '<span>' + (repositoryScanInProgress ? 'GitManager is indexing Git folders in the background. You can keep using the app while this runs.' : 'Add a project folder or choose the recommended development folders to begin.') + '</span>' +
-          (repositoryScanInProgress ? '<span class="dashboard-scan-progress" aria-hidden="true"><i></i><i></i><i></i></span>' : '') +
-        '</div>' +
-      '</section>';
+    if (repositoryScanInProgress) {
+      const skeletonCards = Array.from({ length: 6 }, (_, index) =>
+        '<article class="repo-card repo-card-skeleton" aria-hidden="true" style="--card-index:' + index + '">' +
+          '<div class="repo-skeleton-top"><span class="repo-skeleton-avatar"></span><span class="repo-skeleton-lines"><i></i><i></i></span><span class="repo-skeleton-pill"></span></div>' +
+          '<div class="repo-skeleton-divider"></div>' +
+          '<div class="repo-skeleton-line repo-skeleton-line-wide"></div>' +
+          '<div class="repo-skeleton-line repo-skeleton-line-short"></div>' +
+          '<div class="repo-skeleton-bottom"><i></i><i></i></div>' +
+        '</article>'
+      ).join("");
+      container.innerHTML =
+        '<section class="dashboard-view">' +
+          '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">YOUR WORKSPACE</div><h2>Repositories</h2><p>Finding local Git repositories and preparing their details…</p></div>' +
+          '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
+          '<div class="dashboard-stats dashboard-stats-loading"><div><strong>—</strong><span>Projects</span></div><div><strong>—</strong><span>Dependencies</span></div><div><strong>—</strong><span>Remote-linked</span></div></div>' +
+          '<div class="repo-card-grid repo-skeleton-grid">' + skeletonCards + '</div>' +
+          '<p class="dashboard-scan-caption"><span class="dashboard-scan-progress" aria-hidden="true"><i></i><i></i><i></i></span> Scanning configured folders in the background. GitManager remains usable while indexing runs.</p>' +
+        '</section>';
+    } else {
+      container.innerHTML =
+        '<section class="dashboard-view">' +
+          '<div class="dashboard-heading"><div><div class="dashboard-eyebrow">YOUR WORKSPACE</div><h2>Repositories</h2><p>Your local Git projects, in one place.</p></div>' +
+          '<div class="dashboard-actions"><button id="btn-dashboard-setup" class="btn btn-secondary">Configure folders</button></div></div>' +
+          '<div class="dashboard-empty"><strong>No repositories indexed yet</strong><span>Add a project folder or choose the recommended development folders to begin.</span></div>' +
+        '</section>';
+    }
     const setup = document.getElementById("btn-dashboard-setup");
     if (setup) setup.addEventListener("click", () => openScanSetup(false));
     return;
   }
 
-  const cards = repositories.map((repo) => {
+  const cards = repositories.map((repo, index) => {
     const icon = resolveRepoIconUrl(repo);
     const fallback = fallbackRepoIconDataUri(repo.primary_provider, repo.name);
     const commit = latestCommitFor(repo);
@@ -1322,25 +1434,41 @@ function renderRepositoryDashboard(container) {
     const commitSha = commit ? commit.short_oid : "";
     const commitDate = commit ? commit.date_iso : "";
     const branchCount = (repo.branches || []).length;
+    const tagCount = (repo.commits || []).reduce((total, item) => total + (Array.isArray(item.tags) ? item.tags.length : 0), 0);
+    const commitCount = Number(repo.total_commits_loaded || (repo.commits || []).length);
     const isDependency = dependencyRepoIds.has(repo.id);
     const provider = repo.has_remote ? String(repo.primary_provider || "remote").toUpperCase() : "LOCAL";
     const dirty = Number(repo.dirty_files_count || 0);
-    return '<article class="repo-card">' +
-      '<button type="button" class="repo-card-open" data-dashboard-repo-id="' + escapeHtml(repo.id) + '">' +
+    const fullName = repositoryFullName(repo);
+    const displayName = repo.name || fullName;
+    const repositorySubline = repo.has_remote
+      ? fullName
+      : (repo.parent_folder ? "Local repository · " + String(repo.parent_folder).split(/[\\/]/).filter(Boolean).pop() : "Local repository");
+    const lastAuthor = commit && commit.author_name ? commit.author_name : "No commits yet";
+    const remoteWebUrl = (repo.remotes || []).find((item) => item.name === "origin")?.web_url ||
+      (repo.remotes || [])[0]?.web_url || "";
+    const locationLabel = repo.path || repo.git_dir || "Repository path unavailable";
+    return '<article class="repo-card" style="--card-index:' + Math.min(index, 10) + '">' +
+      '<button type="button" class="repo-card-open" data-dashboard-repo-id="' + escapeHtml(repo.id) + '" aria-label="Open ' + escapeHtml(displayName) + '">' +
         '<span class="repo-card-top">' +
           '<img class="repo-card-icon" src="' + escapeHtml(icon) + '" alt="" data-fallback="' + escapeHtml(fallback) + '" />' +
-          '<span class="repo-card-heading"><strong>' + escapeHtml(repo.name || repositoryFullName(repo)) + '</strong><small>' +
-            escapeHtml(repositoryFullName(repo)) + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
+          '<span class="repo-card-heading"><strong>' + escapeHtml(displayName) + '</strong><small>' +
+            escapeHtml(repositorySubline) + (isDependency ? ' <span class="repo-kind-label">Dependency</span>' : '') + '</small></span>' +
           '<span class="provider-badge provider-' + escapeHtml(repo.primary_provider || "local") + '">' + escapeHtml(provider) + '</span>' +
         '</span>' +
-        '<span class="repo-card-commit"><strong>' + escapeHtml(repo.owner_name || "Local repository") + '</strong>' +
+        '<span class="repo-card-commit"><strong>' + escapeHtml(lastAuthor === "No commits yet" ? lastAuthor : "Last commit by " + lastAuthor) + '</strong>' +
           '<small title="' + escapeHtml(commitTitle) + '">' + escapeHtml(commitTitle) + '</small>' +
           '<small class="repo-card-commit-meta">' + escapeHtml(commitSha + (commitDate ? " · " + commitDate : "")) + '</small></span>' +
         '<span class="repo-card-status-row"><span class="repo-card-branch">⑂ ' + escapeHtml(repo.current_branch || "Detached HEAD") + '</span>' +
           '<span class="repo-card-ci"><span class="ci-state-dot ci-neutral" data-ci-dot-repo-id="' + escapeHtml(repo.id) + '" aria-hidden="true"></span>' +
           '<span class="dashboard-ci ci-neutral" data-ci-repo-id="' + escapeHtml(repo.id) + '" aria-label="CI status">Checking CI…</span></span></span>' +
-        '<span class="repo-card-meta"><span>' + branchCount + ' branches</span>' +
+        '<span class="repo-card-meta"><span>' + branchCount + ' branches</span><span>' + tagCount + ' tags</span>' +
           '<span class="' + (dirty ? 'repo-dirty' : 'repo-clean') + '">' + (dirty ? dirty + ' changed' : 'Working tree clean') + '</span></span>' +
+        '<span class="repo-card-hover-details">' +
+          '<span class="repo-card-hover-row"><span>Location</span><code title="' + escapeHtml(locationLabel) + '">' + escapeHtml(locationLabel) + '</code></span>' +
+          '<span class="repo-card-hover-row"><span>History</span><strong>' + escapeHtml(String(commitCount)) + ' commits loaded</strong></span>' +
+          '<span class="repo-card-hover-row"><span>Remote</span><strong>' + escapeHtml(remoteWebUrl || (repo.has_remote ? "Remote configured" : "No remote configured")) + '</strong></span>' +
+        '</span>' +
       '</button>' +
       '<details class="repo-ci-details" data-ci-expand data-repo-id="' + escapeHtml(repo.id) + '">' +
         '<summary><span class="ci-detail-count" data-ci-count-repo-id="' + escapeHtml(repo.id) + '">View individual checks</span></summary>' +
@@ -1356,11 +1484,13 @@ function renderRepositoryDashboard(container) {
 
   const groups = new Map();
   repositories.forEach((repo, index) => {
-    let groupKey = repo.parent_folder || "Repositories";
-    if (indexGroupingMode === "git_dir") {
-      groupKey = repo.git_dir || groupKey;
+    let groupKey = "All repositories";
+    if (indexGroupingMode === "folder") {
+      groupKey = repo.parent_folder || "Unknown folder";
+    } else if (indexGroupingMode === "git_dir") {
+      groupKey = repo.git_dir || repo.path || "Unknown Git directory";
     } else if (indexGroupingMode === "provider") {
-      groupKey = repo.has_remote ? "Remote (" + String(repo.primary_provider || "remote").toUpperCase() + ")" : "Local Only (No Remote)";
+      groupKey = repo.has_remote ? String(repo.primary_provider || "remote").toUpperCase() + " repositories" : "Local only";
     }
     if (!groups.has(groupKey)) groups.set(groupKey, []);
     groups.get(groupKey).push(cards[index]);
@@ -1374,7 +1504,7 @@ function renderRepositoryDashboard(container) {
   container.innerHTML =
     '<section class="dashboard-view">' +
       '<div class="dashboard-heading">' +
-        '<div><div class="dashboard-eyebrow">LOCAL WORKSPACE</div><h2>Repositories</h2>' +
+        '<div><div class="dashboard-eyebrow">YOUR WORKSPACE</div><h2>Repositories</h2>' +
           '<p>' + escapeHtml(roots.length + " scan folder(s) · " + projectCount + " project(s) · " + dependencyCount + " dependency repo(s)") + '</p></div>' +
         '<div class="dashboard-actions"><button id="btn-dashboard-scan" class="btn btn-secondary" ' + (repositoryScanInProgress ? 'disabled' : '') + '>' +
           (repositoryScanInProgress ? 'Scanning…' : 'Scan now') + '</button>' +
@@ -1388,11 +1518,6 @@ function renderRepositoryDashboard(container) {
       cardSections +
     '</section>';
 
-  container.querySelectorAll(".repo-card-icon").forEach((image) => {
-    image.addEventListener("error", () => {
-      if (image.dataset.fallback) image.src = image.dataset.fallback;
-    }, { once: true });
-  });
   container.querySelectorAll("[data-dashboard-repo-id]").forEach((button) => {
     button.addEventListener("click", () => {
       selectedRepoId = button.getAttribute("data-dashboard-repo-id");
@@ -1554,7 +1679,7 @@ function renderSelectedRepositoryDetails() {
           src="${escapeHtml(iconSrc)}"
           alt="${escapeHtml(repo.name)} icon"
           class="selected-repo-avatar"
-          onerror="this.onerror=null;this.src='${fallbackSrc}';"
+          data-fallback="${escapeHtml(fallbackSrc)}"
         />
         <div>
           <div class="selected-repo-title-row">
@@ -1625,10 +1750,17 @@ function renderSelectedRepositoryDetails() {
   const openRemoteBtn = document.getElementById("btn-open-remote-url");
   if (openRemoteBtn) {
     openRemoteBtn.addEventListener("click", async () => {
-      const url = openRemoteBtn.getAttribute("data-url");
-      if (!url) return;
-      if (window.__TAURI__ && window.__TAURI__.shell && window.__TAURI__.shell.open) {
-        await window.__TAURI__.shell.open(url);
+      const url = safeExternalWebUrl(openRemoteBtn.getAttribute("data-url"));
+      if (!url) {
+        setStatus("This repository remote does not provide a safe HTTPS web URL.");
+        return;
+      }
+      if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+        try {
+          await tauriInvoke("open_external_url", { url });
+        } catch (error) {
+          setStatus("Could not open repository website: " + ((error && error.message) || error));
+        }
       } else {
         window.open(url, "_blank", "noopener");
       }
@@ -1687,7 +1819,7 @@ function renderSelectedRepositoryDetails() {
           src="${escapeHtml(iconSrc)}"
           alt="Repository Owner Icon"
           class="inspector-repo-icon"
-          onerror="this.onerror=null;this.src='${fallbackSrc}';"
+          data-fallback="${escapeHtml(fallbackSrc)}"
         />
         <div>
           <div class="inspector-repo-title">${escapeHtml(repo.name)}</div>
@@ -1719,6 +1851,30 @@ function renderSelectedRepositoryDetails() {
           <span class="kv-value"><code>${escapeHtml(repo.git_dir)}</code></span>
         </div>
       </div>
+    </div>
+
+
+    <div class="inspector-card-block gitmanager-archive-panel">
+      <h4 class="inspector-section-title">Repository Archives</h4>
+      <p class="archive-panel-note">Five restore points maximum per type · common secrets excluded by default.</p>
+      <div class="archive-action-row">
+        <button id="btn-capture-local-archive" class="btn btn-secondary" type="button">Save Local Archive</button>
+        <button id="btn-capture-remote-archive" class="btn btn-secondary" type="button">Save Remote Archive</button>
+        <button id="btn-refresh-repo-archives" class="btn btn-secondary" type="button">Refresh</button>
+      </div>
+      <div class="archive-cloud-panel">
+        <div class="archive-cloud-heading">
+          <strong>Cloud Object Storage</strong>
+          <div class="archive-action-row">
+            <button id="btn-refresh-cloud-archive" class="btn btn-secondary" type="button">Check status</button>
+            <button id="btn-sync-cloud-archive" class="btn btn-secondary" type="button">Sync now</button>
+          </div>
+        </div>
+        <div id="repo-cloud-archive-status" class="repository-setting-status" role="status">Checking cloud storage…</div>
+        <small>Credentials are read from your operating-system environment. Only environment-variable names are stored. Configure providers with <code>gitm cloud configure</code>.</small>
+      </div>
+      <div id="repo-archive-status" class="repository-setting-status" role="status">Loading saved restore points…</div>
+      <div id="repo-archive-list" class="repo-archive-list"></div>
     </div>
 
     <div class="inspector-card-block automation-settings-card">
@@ -1776,6 +1932,190 @@ function renderSelectedRepositoryDetails() {
         : ""
     }
   `;
+  void wireRepositoryArchivePanel(repo);
+}
+
+async function wireRepositoryArchivePanel(repo) {
+  const localButton = document.getElementById("btn-capture-local-archive");
+  const remoteButton = document.getElementById("btn-capture-remote-archive");
+  const refreshButton = document.getElementById("btn-refresh-repo-archives");
+  const status = document.getElementById("repo-archive-status");
+  const list = document.getElementById("repo-archive-list");
+  if (!list) return;
+
+  const archiveRoot = (appPreferences && appPreferences.archiveRoot) || null;
+  const cloudRefreshButton = document.getElementById("btn-refresh-cloud-archive");
+  const cloudSyncButton = document.getElementById("btn-sync-cloud-archive");
+  const cloudStatus = document.getElementById("repo-cloud-archive-status");
+  const setCloudStatus = (value) => { if (cloudStatus) cloudStatus.textContent = value; };
+  let effectiveArchiveRoot = archiveRoot;
+  async function refreshCloudStatus() {
+    if (cloudRefreshButton) cloudRefreshButton.disabled = true;
+    try {
+      if (!effectiveArchiveRoot) {
+        effectiveArchiveRoot = await tauriInvoke("get_default_archive_directory");
+      }
+      const info = await tauriInvoke("get_archive_cloud_storage_info", {
+        archiveRoot: effectiveArchiveRoot
+      });
+      if (!info.configured) {
+        setCloudStatus("Not configured · local archives remain available. Select a cloud-synced folder or configure an object-storage provider with gitm cloud.");
+        if (cloudSyncButton) cloudSyncButton.disabled = true;
+      } else {
+        const authNames = Array.isArray(info.authEnvironmentVariables)
+          ? info.authEnvironmentVariables.join(", ")
+          : "";
+        setCloudStatus(
+          "Connected · " + (info.provider || "provider") + " · " +
+          (info.target || info.namespace || "configured") +
+          (authNames ? " · credentials: " + authNames : "") +
+          " · " + (info.note || "")
+        );
+        if (cloudSyncButton) cloudSyncButton.disabled = false;
+      }
+    } catch (error) {
+      setCloudStatus("Cloud status unavailable: " + String((error && error.message) || error));
+      if (cloudSyncButton) cloudSyncButton.disabled = true;
+    } finally {
+      if (cloudRefreshButton) cloudRefreshButton.disabled = false;
+    }
+  }
+  async function syncCloudArchives() {
+    if (cloudSyncButton) {
+      cloudSyncButton.disabled = true;
+      cloudSyncButton.textContent = "Syncing…";
+    }
+    setCloudStatus("Synchronizing content-addressed archive objects…");
+    try {
+      if (!effectiveArchiveRoot) {
+        effectiveArchiveRoot = await tauriInvoke("get_default_archive_directory");
+      }
+      const result = await tauriInvoke("sync_archive_cloud_storage", {
+        archiveRoot: effectiveArchiveRoot
+      });
+      setCloudStatus("Cloud synchronization completed · " + String(result));
+      await refreshCloudStatus();
+    } catch (error) {
+      setCloudStatus("Cloud synchronization failed: " + String((error && error.message) || error));
+    } finally {
+      if (cloudSyncButton) {
+        cloudSyncButton.disabled = false;
+        cloudSyncButton.textContent = "Sync now";
+      }
+    }
+  }
+  if (cloudRefreshButton) cloudRefreshButton.onclick = () => void refreshCloudStatus();
+  if (cloudSyncButton) cloudSyncButton.onclick = () => void syncCloudArchives();
+  void refreshCloudStatus();
+  const localArchiveEnabled = !appPreferences || appPreferences.archiveLocalEnabled !== false;
+  const remoteArchiveEnabled = !appPreferences || appPreferences.archiveRemoteEnabled !== false;
+  if (localButton) localButton.disabled = !localArchiveEnabled;
+  if (remoteButton) remoteButton.disabled = !remoteArchiveEnabled;
+  const setStatus = (value) => { if (status) status.textContent = value; };
+  if (repo.source_kind !== "local_scan") {
+    if (localButton) localButton.disabled = true;
+    if (remoteButton) remoteButton.disabled = true;
+    if (refreshButton) refreshButton.disabled = true;
+    setStatus("Archives are available for repositories indexed from local folders.");
+    list.innerHTML = '<div class="kv-empty">This entry is a remote account repository, not a local working directory.</div>';
+    return;
+  }
+
+  async function refresh() {
+    if (refreshButton) refreshButton.disabled = true;
+    try {
+      const snapshots = await tauriInvoke("list_repository_archives", {
+        repoPath: repo.path,
+        kind: null,
+        archiveRoot
+      });
+      if (!Array.isArray(snapshots) || snapshots.length === 0) {
+        list.innerHTML = '<div class="kv-empty">No restore points yet. Save a Local or Remote Archive to start.</div>';
+        return;
+      }
+      list.innerHTML = snapshots.map((snapshot) => {
+        const date = snapshot.capturedAt ? new Date(snapshot.capturedAt).toLocaleString() : snapshot.id;
+        const type = snapshot.kind === "remote" ? "Remote" : "Local";
+        const excluded = Array.isArray(snapshot.excludedPaths) ? snapshot.excludedPaths.length : 0;
+        return '<div class="repo-archive-item">' +
+          '<div class="repo-archive-item-main">' +
+            '<strong>' + escapeHtml(type + ' · ' + date) + '</strong>' +
+            '<code>' + escapeHtml(snapshot.id) + '</code>' +
+            '<small>' + Number(snapshot.fileCount || 0).toLocaleString() + ' files · ' +
+              Number(snapshot.directoryCount || 0).toLocaleString() + ' folders · ' +
+              Number(snapshot.sourceBytes || 0).toLocaleString() + ' source bytes · ' +
+              excluded + ' excluded path(s)</small>' +
+          '</div>' +
+          '<button class="btn btn-secondary" type="button" data-archive-restore="' +
+            escapeHtml(snapshot.id) + '" data-archive-kind="' + escapeHtml(snapshot.kind) + '">Restore</button>' +
+        '</div>';
+      }).join("");
+    } catch (error) {
+      list.innerHTML = '<div class="kv-empty">Could not load restore points: ' +
+        escapeHtml((error && error.message) || error) + '</div>';
+    } finally {
+      if (refreshButton) refreshButton.disabled = false;
+    }
+  }
+
+  async function capture(kind, button) {
+    if (button) { button.disabled = true; button.textContent = "Saving…"; }
+    setStatus("Capturing " + kind + " repository archive…");
+    try {
+      const snapshot = await tauriInvoke("capture_repository_archive", {
+        repoPath: repo.path,
+        kind,
+        archiveRoot
+      });
+      setStatus("Saved " + kind + " restore point · " + snapshot.fileCount +
+        " files · " + Number(snapshot.storedBytes || 0).toLocaleString() + " new bytes stored.");
+      await refresh();
+    } catch (error) {
+      setStatus("Archive capture: " + String((error && error.message) || error));
+      await refresh();
+    } finally {
+      if (button) {
+        button.disabled = kind === "local" ? !localArchiveEnabled : !remoteArchiveEnabled;
+        button.textContent = kind === "local" ? "Save Local Archive" : "Save Remote Archive";
+      }
+    }
+  }
+
+  if (localButton) localButton.onclick = () => void capture("local", localButton);
+  if (remoteButton) remoteButton.onclick = () => void capture("remote", remoteButton);
+  if (refreshButton) refreshButton.onclick = () => void refresh();
+  list.onclick = async (event) => {
+    const button = event.target.closest("[data-archive-restore]");
+    if (!button) return;
+    const snapshotId = button.getAttribute("data-archive-restore");
+    const kind = button.getAttribute("data-archive-kind");
+    if (!snapshotId || !kind) return;
+    const accepted = window.confirm(
+      "Restore this " + kind + " archive? GitManager will verify the contents and move the current repository folder aside before replacement."
+    );
+    if (!accepted) return;
+    button.disabled = true;
+    setStatus("Verifying and restoring " + snapshotId + "…");
+    try {
+      const result = await tauriInvoke("restore_repository_archive", {
+        repoPath: repo.path,
+        destinationPath: repo.path,
+        snapshotId,
+        kind,
+        archiveRoot,
+        confirmReplace: true
+      });
+      setStatus("Restored " + result.snapshot.id + ". Previous repository: " +
+        (result.preservedPreviousPath || "not needed") + ".");
+      await runMachineScan();
+    } catch (error) {
+      setStatus("Restore failed: " + String((error && error.message) || error));
+    } finally {
+      button.disabled = false;
+      await refresh();
+    }
+  };
+  await refresh();
 }
 
 function renderAll() {
@@ -1911,6 +2251,23 @@ function wireEventListeners() {
       if (page) setActivePage(page);
     });
   });
+  wireCloudSettingsControls();
+  setActiveSettingsSection(activeSettingsSection);
+  setActiveCloudProvider(activeCloudProvider);
+  const cloudNodeDownload = document.getElementById("btn-download-cloud-node-setup");
+  const cloudNodeRefresh = document.getElementById("btn-refresh-cloud-node-release");
+  const cloudNodeArtifacts = document.getElementById("btn-open-cloud-node-artifacts");
+  const cloudNodeGuide = document.getElementById("btn-open-cloud-node-guide");
+  if (cloudNodeDownload) cloudNodeDownload.addEventListener("click", () => void downloadCloudNodeSetup());
+  if (cloudNodeRefresh) cloudNodeRefresh.addEventListener("click", () => void refreshCloudNodeBundleAvailability(true));
+  if (cloudNodeArtifacts) cloudNodeArtifacts.addEventListener("click", () => void openCloudNodeExternalPage(
+    "https://github.com/Kate-alt-69/GitManager/actions/workflows/release.yml",
+    "Opened GitManager's build workflow. Download the gitmanager-cloud-node-deployment artifact from a successful run."
+  ));
+  if (cloudNodeGuide) cloudNodeGuide.addEventListener("click", () => void openCloudNodeExternalPage(
+    "https://github.com/Kate-alt-69/GitManager/blob/main/tools/cloud-node-deployment/README.md",
+    "Opened the Cloud Node deployment guide."
+  ));
   const scanInput = document.getElementById("scan-path-input");
   const browseBtn = document.getElementById("btn-browse-folder");
   const scanBtn = document.getElementById("btn-scan-repos");
@@ -1922,6 +2279,11 @@ function wireEventListeners() {
   const setupClose = document.getElementById("btn-close-scan-setup");
   const setupModal = document.getElementById("setup-modal-backdrop");
   const setupBrowse = document.getElementById("btn-setup-browse-root");
+  const archiveBrowse = document.getElementById("btn-setup-browse-archive-root");
+  const cloudConfigure = document.getElementById("btn-configure-archive-cloud");
+  const cloudCheck = document.getElementById("btn-check-archive-cloud");
+  const cloudSync = document.getElementById("btn-sync-archive-cloud");
+  const cloudDisable = document.getElementById("btn-disable-archive-cloud");
   const setupAdd = document.getElementById("btn-setup-add-root");
   const setupSmart = document.getElementById("btn-setup-smart-roots");
   const setupManual = document.getElementById("setup-manual-root");
@@ -1954,6 +2316,11 @@ function wireEventListeners() {
     setupModal.classList.add("hidden");
   });
   if (setupBrowse) setupBrowse.addEventListener("click", () => void browseForScanRoot());
+  if (archiveBrowse) archiveBrowse.addEventListener("click", () => void browseForArchiveRoot());
+  if (cloudConfigure) cloudConfigure.addEventListener("click", () => void configureArchiveCloudProvider());
+  if (cloudCheck) cloudCheck.addEventListener("click", () => void refreshArchiveCloudStatus());
+  if (cloudSync) cloudSync.addEventListener("click", () => void syncArchiveCloudProvider());
+  if (cloudDisable) cloudDisable.addEventListener("click", () => void disableArchiveCloudProvider());
   if (setupAdd && setupManual) setupAdd.addEventListener("click", () => addScanRoot(setupManual.value));
   if (setupManual) setupManual.addEventListener("keydown", (event) => {
     if (event.key === "Enter") addScanRoot(setupManual.value);
@@ -1967,9 +2334,19 @@ function wireEventListeners() {
   });
   const setupRootList = document.getElementById("setup-scan-root-list");
   if (setupRootList) setupRootList.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-remove-root]");
-    if (!button) return;
-    const index = Number(button.getAttribute("data-remove-root"));
+    const primaryButton = event.target.closest("[data-main-root]");
+    if (primaryButton) {
+      const index = Number(primaryButton.getAttribute("data-main-root"));
+      if (Number.isInteger(index) && index > 0 && index < appPreferences.scanRoots.length) {
+        const [root] = appPreferences.scanRoots.splice(index, 1);
+        appPreferences.scanRoots.unshift(root);
+        renderScanRootList();
+      }
+      return;
+    }
+    const removeButton = event.target.closest("[data-remove-root]");
+    if (!removeButton) return;
+    const index = Number(removeButton.getAttribute("data-remove-root"));
     if (Number.isInteger(index)) {
       appPreferences.scanRoots.splice(index, 1);
       renderScanRootList();
@@ -1997,7 +2374,14 @@ function wireEventListeners() {
         });
         setServiceCheckingVisual(false, `Svc Active (${info.os_service_kind})`);
       } catch (e) {
-        setServiceCheckingVisual(false, "Svc: Active (Background Worker)");
+        setServiceCheckingVisual(false, "Svc: Registration failed");
+        const description = document.getElementById("settings-service-description");
+        if (description) {
+          description.textContent =
+            "The OS background service could not be registered: " +
+            String((e && e.message) || e) +
+            ". Automatic archive watching will continue only while GitManager is open.";
+        }
       }
     });
   }
@@ -2127,8 +2511,12 @@ function renderScanRootList() {
     return;
   }
   list.innerHTML = roots.map((root, index) =>
-    '<div class="setup-root-item"><span class="setup-root-index">' + (index + 1) + '</span>' +
+    '<div class="setup-root-item' + (index === 0 ? ' setup-root-main' : '') + '">' +
+    '<span class="setup-root-index">' + (index + 1) + '</span>' +
+    '<span class="setup-root-role">' + (index === 0 ? 'MAIN' : 'ADDITIONAL') + '</span>' +
     '<code title="' + escapeHtml(root) + '">' + escapeHtml(root) + '</code>' +
+    (index === 0 ? '<span class="setup-root-primary-label">Primary</span>' :
+      '<button type="button" class="setup-root-make-primary" data-main-root="' + index + '">Make main</button>') +
     '<button type="button" class="setup-root-remove" data-remove-root="' + index + '" aria-label="Remove scan folder">Remove</button></div>'
   ).join("");
 }
@@ -2147,18 +2535,31 @@ function openScanSetup(isFirstRun) {
   const subtitle = document.getElementById("setup-modal-subtitle");
   const save = document.getElementById("btn-save-scan-setup");
   if (heading) heading.textContent = isFirstRun ? "Set up your workspace" : "Scan settings";
-  if (subtitle) subtitle.textContent = "Choose the folders GitManager should index. A drive root such as D:/ is allowed, but scanning a whole drive can take longer.";
+  if (subtitle) subtitle.textContent = isFirstRun
+    ? "Choose your main repository folder, then add any other locations where you keep projects."
+    : "Choose the folders GitManager should index. A drive root such as D:/ is allowed, but scanning a whole drive can take longer.";
   if (save) save.textContent = isFirstRun ? "Save & Start Indexing" : "Save Settings & Rescan";
   const depth = document.getElementById("setup-scan-depth");
   const hidden = document.getElementById("setup-include-hidden");
   const dependencies = document.getElementById("setup-index-dependencies");
   const showDependencies = document.getElementById("setup-show-dependencies");
+  const archiveRoot = document.getElementById("setup-archive-root");
+  const archiveLocal = document.getElementById("setup-archive-local");
+  const archiveRemote = document.getElementById("setup-archive-remote");
+  const archiveTrigger = document.getElementById("setup-archive-trigger");
+  const archiveQuiet = document.getElementById("setup-archive-quiet");
   if (depth) depth.value = String(appPreferences.maxScanDepth || 8);
   if (hidden) hidden.checked = Boolean(appPreferences.includeHiddenDirs);
   if (dependencies) dependencies.checked = appPreferences.indexDependencyRepositories !== false;
   if (showDependencies) showDependencies.checked = appPreferences.showDependencyRepositories !== false;
+  if (archiveRoot) archiveRoot.value = appPreferences.archiveRoot || "";
+  if (archiveLocal) archiveLocal.checked = appPreferences.archiveLocalEnabled !== false;
+  if (archiveRemote) archiveRemote.checked = appPreferences.archiveRemoteEnabled !== false;
+  if (archiveTrigger) archiveTrigger.value = appPreferences.archiveTrigger || "manual";
+  if (archiveQuiet) archiveQuiet.value = String(appPreferences.archiveQuietMs || 1500);
   renderScanRootList();
   modal.classList.remove("hidden");
+  void refreshArchiveCloudStatus();
 }
 
 function addScanRoot(value) {
@@ -2186,6 +2587,21 @@ async function browseForScanRoot() {
   }
 }
 
+async function browseForArchiveRoot() {
+  const input = document.getElementById("setup-archive-root");
+  const dialog = window.__TAURI__ && window.__TAURI__.dialog;
+  if (!dialog || !dialog.open) {
+    if (input) input.focus();
+    return;
+  }
+  const selected = await dialog.open({
+    multiple: false,
+    directory: true,
+    title: "Choose GitManager archive storage folder"
+  });
+  if (typeof selected === "string" && input) input.value = selected;
+}
+
 async function loadRecommendedScanRoots() {
   try {
     const roots = await tauriInvoke("get_default_scan_directories");
@@ -2198,16 +2614,491 @@ async function loadRecommendedScanRoots() {
   }
 }
 
+function currentArchiveRootForCloud() {
+  const input = document.getElementById("setup-archive-root");
+  return String(input && input.value || (appPreferences && appPreferences.archiveRoot) || "").trim();
+}
+
+function setArchiveCloudStatus(message, isError = false) {
+  for (const id of ["cloud-provider-status", "setup-cloud-status"]) {
+    const status = document.getElementById(id);
+    if (!status) continue;
+    status.textContent = message;
+    status.classList.toggle("is-error", Boolean(isError));
+  }
+}
+
+function setArchiveCloudBusy(busy) {
+  for (const id of [
+    "btn-configure-archive-cloud",
+    "btn-check-archive-cloud",
+    "btn-sync-archive-cloud",
+    "btn-disable-archive-cloud",
+    "btn-cloud-refresh-status",
+    "btn-cloud-open-provider-setup",
+    "btn-cloud-sync-now",
+    "btn-cloud-google-drive-folder",
+    "btn-cloud-onedrive-folder",
+    "btn-cloud-supabase-configure",
+    "btn-cloud-azure-blob-configure",
+    "btn-cloud-google-cloud-storage-configure",
+    "btn-cloud-amazon-s3-configure",
+    "btn-cloud-s3-compatible-configure",
+    "btn-cloud-http-configure"
+  ]) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = busy;
+  }
+}
+
+function formatArchiveCloudInfo(info) {
+  if (!info || !info.configured) {
+    return "Cloud object storage is not configured. " +
+      String((info && info.note) || "Local archives remain available.");
+  }
+  const variables = Array.isArray(info.authEnvironmentVariables)
+    ? info.authEnvironmentVariables.join(", ")
+    : "";
+  return "Configured: " + String(info.provider || "provider") +
+    " · " + String(info.target || info.bucket || "remote target") +
+    "\nCredential environment variables: " + (variables || "none") +
+    "\n" + String(info.note || "");
+}
+
+async function refreshArchiveCloudStatus() {
+  setArchiveCloudBusy(true);
+  setArchiveCloudStatus("Checking Cloud Node provider configuration…");
+  try {
+    const info = await tauriInvoke("get_archive_cloud_storage_info", {
+      archiveRoot: currentArchiveRootForCloud()
+    });
+    setArchiveCloudStatus(formatArchiveCloudInfo(info));
+  } catch (error) {
+    setArchiveCloudStatus("Could not read cloud configuration: " +
+      String((error && error.message) || error), true);
+  } finally {
+    setArchiveCloudBusy(false);
+  }
+}
+
+async function configureArchiveCloudProvider() {
+  const editor = document.getElementById("setup-cloud-provider-json");
+  const raw = String(editor && editor.value || "").trim();
+  if (!raw) {
+    setArchiveCloudStatus("Paste a provider JSON object before configuring cloud storage.", true);
+    if (editor) editor.focus();
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    setArchiveCloudStatus("Provider JSON is invalid: " + error.message, true);
+    return;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    setArchiveCloudStatus("Provider configuration must be one JSON object.", true);
+    return;
+  }
+
+  setArchiveCloudBusy(true);
+  setArchiveCloudStatus("Validating and saving Cloud Node provider settings…");
+  try {
+    const info = await tauriInvoke("configure_archive_cloud_storage", {
+      archiveRoot: currentArchiveRootForCloud(),
+      providerJson: raw
+    });
+    setArchiveCloudStatus("Provider configuration saved. " + formatArchiveCloudInfo(info));
+  } catch (error) {
+    setArchiveCloudStatus("Could not configure cloud storage: " +
+      String((error && error.message) || error), true);
+  } finally {
+    setArchiveCloudBusy(false);
+  }
+}
+
+async function syncArchiveCloudProvider() {
+  setArchiveCloudBusy(true);
+  setArchiveCloudStatus("Synchronizing content-addressed archive objects with the configured provider…");
+  try {
+    const result = await tauriInvoke("sync_archive_cloud_storage", {
+      archiveRoot: currentArchiveRootForCloud()
+    });
+    setArchiveCloudStatus("Cloud archive synchronization: " + String(result) +
+      ". Local restore points remain available if the provider is offline.");
+  } catch (error) {
+    setArchiveCloudStatus("Cloud synchronization failed. Local archives are unchanged: " +
+      String((error && error.message) || error), true);
+  } finally {
+    setArchiveCloudBusy(false);
+  }
+}
+
+async function disableArchiveCloudProvider() {
+  const accepted = window.confirm(
+    "Disable Cloud Node synchronization for this archive folder? Existing local and remote provider objects will not be deleted."
+  );
+  if (!accepted) return;
+  setArchiveCloudBusy(true);
+  setArchiveCloudStatus("Disabling cloud synchronization…");
+  try {
+    const info = await tauriInvoke("disable_archive_cloud_storage", {
+      archiveRoot: currentArchiveRootForCloud()
+    });
+    setArchiveCloudStatus("Cloud synchronization disabled. Existing provider objects were not deleted. " +
+      formatArchiveCloudInfo(info));
+  } catch (error) {
+    setArchiveCloudStatus("Could not disable cloud synchronization: " +
+      String((error && error.message) || error), true);
+  } finally {
+    setArchiveCloudBusy(false);
+  }
+}
+
+
+
+async function checkCloudNodeAddress() {
+  const input = document.getElementById("cloud-node-address-input");
+  const button = document.getElementById("btn-check-cloud-node-address");
+  const status = document.getElementById("cloud-node-address-status");
+  const address = String(input && input.value || "").trim();
+  if (!address) {
+    if (status) {
+      status.textContent = "Enter the NAS IP address and port first.";
+      status.classList.add("is-error");
+    }
+    if (input) input.focus();
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Checking…";
+  }
+  if (status) {
+    status.textContent = "Checking the NAS backend health endpoints…";
+    status.classList.remove("is-error");
+  }
+  try {
+    const result = await tauriInvoke("check_rbe_node_status", { address });
+    const normalizedAddress = String(result.address || address);
+    let persistenceNote = "";
+    try {
+      const savedAddress = await tauriInvoke("save_cloud_node_address", { address: normalizedAddress });
+      if (appPreferences) appPreferences.cloudNodeAddress = savedAddress;
+      if (input) input.value = savedAddress;
+      if (input) input.dataset.preferenceLoaded = "true";
+      persistenceNote = " · Address saved for next launch.";
+    } catch (saveError) {
+      persistenceNote = " · Address could not be saved: " +
+        String((saveError && saveError.message) || saveError);
+    }
+    const backendCode = result.backendHttpStatus == null ? "unavailable" : "HTTP " + result.backendHttpStatus;
+    const apiCode = result.apiRouteHttpStatus == null ? "unavailable" : "HTTP " + result.apiRouteHttpStatus;
+    const statusCode = result.apiStatusHttpStatus == null ? "unavailable" : "HTTP " + result.apiStatusHttpStatus;
+    const backendState = result.reachable ? "Backend reachable" : "Backend not confirmed reachable";
+    const healthPayload = result.apiStatusHealth || result.apiRouteHealth || result.backendHealth;
+    const healthDetails = [];
+    if (healthPayload && typeof healthPayload === "object") {
+      if (typeof healthPayload.status === "string" && healthPayload.status) {
+        healthDetails.push("state " + healthPayload.status);
+      }
+      if (typeof healthPayload.uptime === "number" && Number.isFinite(healthPayload.uptime)) {
+        healthDetails.push("uptime " + Math.floor(healthPayload.uptime) + "s");
+      }
+      if (typeof healthPayload.vault === "boolean") {
+        healthDetails.push("Vault " + (healthPayload.vault ? "ready" : "not ready"));
+      }
+    }
+    const detail = result.backendError || result.apiRouteError || result.apiStatusError || result.message || "";
+    if (status) {
+      status.textContent = backendState + " at " + normalizedAddress +
+        " · /health: " + backendCode + " · /api/health: " + apiCode + " · /api/status: " + statusCode +
+        (healthDetails.length ? " · " + healthDetails.join(", ") : "") +
+        (detail ? " · " + detail : "") +
+        (result.reachable ? " · Status check only; this does not pair or authenticate a peer." : "") +
+        persistenceNote;
+      const customRoutesHealthy = [result.apiRouteHttpStatus, result.apiStatusHttpStatus]
+        .every((code) => code != null && code >= 200 && code < 300);
+      status.classList.toggle("is-error", !result.reachable || !customRoutesHealthy);
+    }
+  } catch (error) {
+    if (status) {
+      status.textContent = "Could not check this NAS address: " +
+        String((error && error.message) || error);
+      status.classList.add("is-error");
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Check backend";
+    }
+  }
+}
+
+function cloudProviderTemplate(provider) {
+  const templates = {
+    supabase: {
+      kind: "supabase",
+      namespace: "gitm",
+      bucket: "gitmanager-archives",
+      endpoint: "https://YOUR_PROJECT.supabase.co",
+      auth: { mode: "api-key", apiKeyEnv: "RBE_CN_PROV_SUPABASE_API_KEY" }
+    },
+    "azure-blob": {
+      kind: "azure-blob",
+      namespace: "gitm",
+      bucket: "gitmanager-archives",
+      account: "YOUR_AZURE_STORAGE_ACCOUNT",
+      auth: { mode: "azure-sas", sasTokenEnv: "RBE_CN_PROV_AZURE_SAS_TOKEN" }
+    },
+    "google-cloud-storage": {
+      kind: "google-cloud-storage",
+      namespace: "gitm",
+      bucket: "gitmanager-archives",
+      auth: { mode: "oauth-bearer", oauthTokenEnv: "RBE_CN_PROV_GOOGLE_OAUTH_TOKEN" }
+    },
+    "amazon-s3": {
+      kind: "amazon-s3",
+      namespace: "gitm",
+      bucket: "gitmanager-archives",
+      region: "ap-south-1",
+      auth: { mode: "aws-sig-v4" }
+    },
+    "s3-compatible": {
+      kind: "amazon-s3",
+      namespace: "gitm",
+      bucket: "gitmanager-archives",
+      region: "auto",
+      endpoint: "https://YOUR-S3-ENDPOINT",
+      auth: { mode: "aws-sig-v4" }
+    },
+    http: {
+      kind: "http",
+      namespace: "gitm",
+      bucket: "gitmanager-archives",
+      endpoint: "https://objects.example.com",
+      auth: { mode: "bearer", bearerTokenEnv: "RBE_CN_PROV_HTTP_BEARER_TOKEN" }
+    }
+  };
+  return templates[provider] || null;
+}
+
+function openCloudProviderConfiguration(provider) {
+  const template = cloudProviderTemplate(provider);
+  if (!template) return;
+  openScanSetup(false);
+  const editor = document.getElementById("setup-cloud-provider-json");
+  if (editor) {
+    editor.value = JSON.stringify(template, null, 2);
+    editor.focus();
+  }
+  setArchiveCloudStatus(
+    "Loaded a " + provider + " provider template into Scan Setup. Replace placeholders and set the named credential environment variables before configuring."
+  );
+}
+
+async function chooseCloudSyncedFolder(provider) {
+  openScanSetup(false);
+  setArchiveCloudStatus(
+    provider + " direct OAuth/API upload is not enabled here. Choose the provider's desktop-synced local folder as the archive destination; its own sync client will upload those files."
+  );
+  await browseForArchiveRoot();
+}
+
+function wireCloudSettingsControls() {
+  document.querySelectorAll("[data-settings-section]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      setActiveSettingsSection(tab.getAttribute("data-settings-section"));
+    });
+  });
+  document.querySelectorAll("[data-cloud-provider]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      setActiveCloudProvider(tab.getAttribute("data-cloud-provider"));
+    });
+  });
+
+  const refresh = document.getElementById("btn-cloud-refresh-status");
+  const openProvider = document.getElementById("btn-cloud-open-provider-setup");
+  const sync = document.getElementById("btn-cloud-sync-now");
+  const googleDrive = document.getElementById("btn-cloud-google-drive-folder");
+  const oneDrive = document.getElementById("btn-cloud-onedrive-folder");
+  const supabase = document.getElementById("btn-cloud-supabase-configure");
+  const azureBlob = document.getElementById("btn-cloud-azure-blob-configure");
+  const googleCloudStorage = document.getElementById("btn-cloud-google-cloud-storage-configure");
+  const amazonS3 = document.getElementById("btn-cloud-amazon-s3-configure");
+  const s3Compatible = document.getElementById("btn-cloud-s3-compatible-configure");
+  const httpStorage = document.getElementById("btn-cloud-http-configure");
+  const nodeAddressCheck = document.getElementById("btn-check-cloud-node-address");
+
+  if (refresh) refresh.addEventListener("click", () => void refreshArchiveCloudStatus());
+  if (nodeAddressCheck) nodeAddressCheck.addEventListener("click", () => void checkCloudNodeAddress());
+  if (openProvider) openProvider.addEventListener("click", () => {
+    setActiveCloudProvider("s3-compatible");
+    openCloudProviderConfiguration("s3-compatible");
+  });
+  if (sync) sync.addEventListener("click", () => void syncArchiveCloudProvider());
+  if (googleDrive) googleDrive.addEventListener("click", () => void chooseCloudSyncedFolder("Google Drive"));
+  if (oneDrive) oneDrive.addEventListener("click", () => void chooseCloudSyncedFolder("Microsoft OneDrive"));
+  if (supabase) supabase.addEventListener("click", () => openCloudProviderConfiguration("supabase"));
+  if (azureBlob) azureBlob.addEventListener("click", () => openCloudProviderConfiguration("azure-blob"));
+  if (googleCloudStorage) googleCloudStorage.addEventListener("click", () => openCloudProviderConfiguration("google-cloud-storage"));
+  if (amazonS3) amazonS3.addEventListener("click", () => openCloudProviderConfiguration("amazon-s3"));
+  if (s3Compatible) s3Compatible.addEventListener("click", () => openCloudProviderConfiguration("s3-compatible"));
+  if (httpStorage) httpStorage.addEventListener("click", () => openCloudProviderConfiguration("http"));
+}
+
+const CLOUD_NODE_RELEASE_API =
+  "https://api.github.com/repos/Kate-alt-69/GitManager/releases/tags/cloud-node-setup-latest";
+const CLOUD_NODE_RELEASE_ASSET_NAME = "GitManager-Cloud-Node-Setup.zip";
+
+async function getCloudNodeReleaseInfo(forceRefresh = false) {
+  if (forceRefresh) cloudNodeReleaseLookupPromise = null;
+  if (!cloudNodeReleaseLookupPromise) {
+    cloudNodeReleaseLookupPromise = (async () => {
+      const response = await fetch(CLOUD_NODE_RELEASE_API, {
+        headers: { Accept: "application/vnd.github+json" },
+        cache: "no-store"
+      });
+      if (response.status === 404) {
+        return {
+          available: false,
+          message: "The standalone Cloud Node release has not been published yet. Use View build artifacts for the current CI build."
+        };
+      }
+      if (!response.ok) {
+        throw new Error("GitHub release lookup returned HTTP " + response.status + ".");
+      }
+      const release = await response.json();
+      const assets = Array.isArray(release.assets) ? release.assets : [];
+      const asset = assets.find((item) =>
+        item && item.name === CLOUD_NODE_RELEASE_ASSET_NAME &&
+        item.state === "uploaded" && typeof item.browser_download_url === "string"
+      );
+      if (!asset) {
+        return {
+          available: false,
+          release,
+          message: "The latest Cloud Node release does not contain its expected ZIP asset yet. Use View build artifacts."
+        };
+      }
+
+      const download = new URL(asset.browser_download_url);
+      const expectedPrefix =
+        "/kate-alt-69/gitmanager/releases/download/cloud-node-setup-latest/";
+      if (
+        download.protocol !== "https:" ||
+        download.hostname.toLowerCase() !== "github.com" ||
+        !download.pathname.toLowerCase().startsWith(expectedPrefix) ||
+        download.username ||
+        download.password ||
+        download.search ||
+        download.hash
+      ) {
+        throw new Error("GitHub returned an unexpected Cloud Node download URL.");
+      }
+      return { available: true, release, asset, downloadUrl: download.href };
+    })();
+  }
+  return cloudNodeReleaseLookupPromise;
+}
+
+async function refreshCloudNodeBundleAvailability(forceRefresh = false) {
+  const button = document.getElementById("btn-download-cloud-node-setup");
+  const status = document.getElementById("cloud-node-release-status");
+  if (!button || !status) return;
+
+  button.disabled = true;
+  button.textContent = "Checking package…";
+  status.textContent = "Checking the verified standalone Cloud Node release…";
+  try {
+    const info = await getCloudNodeReleaseInfo(forceRefresh);
+    if (!info.available) {
+      button.textContent = "Not published yet";
+      status.textContent = info.message;
+      return;
+    }
+    const sizeMiB = Number(info.asset.size || 0) / (1024 * 1024);
+    button.disabled = false;
+    button.textContent = "Download Cloud Node ZIP";
+    status.textContent =
+      "Available from " + String(info.release.tag_name || "the Cloud Node release") +
+      " · " + sizeMiB.toFixed(1) + " MiB · separate from the GitManager installer.";
+  } catch (error) {
+    button.textContent = "Download unavailable";
+    status.textContent = "Could not check the Cloud Node release: " +
+      String((error && error.message) || error) +
+      " Use View build artifacts to inspect CI output.";
+  }
+}
+
+async function downloadCloudNodeSetup() {
+  const button = document.getElementById("btn-download-cloud-node-setup");
+  const status = document.getElementById("cloud-node-release-status");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Opening download…";
+  }
+  try {
+    const info = await getCloudNodeReleaseInfo();
+    if (!info.available) throw new Error(info.message);
+    const safeUrl = safeExternalWebUrl(info.downloadUrl);
+    if (!safeUrl) throw new Error("The Cloud Node download URL did not pass HTTPS validation.");
+    await tauriInvoke("open_external_url", { url: safeUrl });
+    if (status) status.textContent = "Opened the standalone Cloud Node ZIP in your default browser. The download does not install anything on this computer.";
+  } catch (error) {
+    if (status) status.textContent = "Could not open the Cloud Node download: " +
+      String((error && error.message) || error);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Download Cloud Node ZIP";
+    }
+    void refreshCloudNodeBundleAvailability();
+  }
+}
+
+async function openCloudNodeExternalPage(rawUrl, message) {
+  const safeUrl = safeExternalWebUrl(rawUrl);
+  if (!safeUrl) {
+    const status = document.getElementById("cloud-node-release-status");
+    if (status) status.textContent = "The requested GitHub page did not pass HTTPS validation.";
+    return;
+  }
+  try {
+    await tauriInvoke("open_external_url", { url: safeUrl });
+  } catch (error) {
+    const status = document.getElementById("cloud-node-release-status");
+    if (status) status.textContent = "Could not open the page: " +
+      String((error && error.message) || error);
+    return;
+  }
+  const status = document.getElementById("cloud-node-release-status");
+  if (status && message) status.textContent = message;
+}
+
 async function saveScanSetup() {
   const save = document.getElementById("btn-save-scan-setup");
   const depth = document.getElementById("setup-scan-depth");
   const hidden = document.getElementById("setup-include-hidden");
   const dependencies = document.getElementById("setup-index-dependencies");
   const showDependencies = document.getElementById("setup-show-dependencies");
+  const archiveRoot = document.getElementById("setup-archive-root");
+  const archiveLocal = document.getElementById("setup-archive-local");
+  const archiveRemote = document.getElementById("setup-archive-remote");
+  const archiveTrigger = document.getElementById("setup-archive-trigger");
+  const archiveQuiet = document.getElementById("setup-archive-quiet");
   const error = document.getElementById("setup-modal-error");
   if (error) {
     error.classList.add("hidden");
     error.textContent = "";
+  }
+  const isFirstRun = !appPreferences.firstRunComplete;
+  if (isFirstRun && (!Array.isArray(appPreferences.scanRoots) || appPreferences.scanRoots.length === 0)) {
+    if (error) {
+      error.textContent = "Choose your main repository folder before continuing.";
+      error.classList.remove("hidden");
+    }
+    return;
   }
   if (save) {
     save.disabled = true;
@@ -2217,6 +3108,11 @@ async function saveScanSetup() {
   appPreferences.includeHiddenDirs = Boolean(hidden && hidden.checked);
   appPreferences.indexDependencyRepositories = Boolean(dependencies && dependencies.checked);
   appPreferences.showDependencyRepositories = Boolean(showDependencies && showDependencies.checked);
+  appPreferences.archiveRoot = String(archiveRoot && archiveRoot.value || appPreferences.archiveRoot || "").trim();
+  appPreferences.archiveLocalEnabled = Boolean(archiveLocal && archiveLocal.checked);
+  appPreferences.archiveRemoteEnabled = Boolean(archiveRemote && archiveRemote.checked);
+  appPreferences.archiveTrigger = String(archiveTrigger && archiveTrigger.value || "manual");
+  appPreferences.archiveQuietMs = Number(archiveQuiet && archiveQuiet.value) || 1500;
   appPreferences.firstRunComplete = true;
 
   try {
@@ -2233,7 +3129,7 @@ async function saveScanSetup() {
   } finally {
     if (save) {
       save.disabled = false;
-      save.textContent = "Save & Start Indexing";
+      save.textContent = isFirstRun ? "Save & Start Indexing" : "Save Settings & Rescan";
     }
   }
 }
@@ -2251,7 +3147,23 @@ async function autoConnectGitHubIdentity() {
   }
 }
 
+async function refreshAppVersion() {
+  const headerBadge = document.getElementById("app-version-badge");
+  const settingsVersion = document.getElementById("settings-app-version");
+  try {
+    const version = await tauriInvoke("get_app_version");
+    const label = version ? "v" + String(version) : "Unavailable";
+    if (headerBadge) headerBadge.textContent = label;
+    if (settingsVersion) settingsVersion.textContent = label;
+  } catch (error) {
+    if (headerBadge) headerBadge.textContent = "v—";
+    if (settingsVersion) settingsVersion.textContent = "Unavailable";
+    console.warn("Could not resolve GitManager application version:", error);
+  }
+}
+
 async function initializeGitManager() {
+  void refreshAppVersion();
   try {
     applicationDirectories = await tauriInvoke("get_application_directories");
   } catch (error) {
@@ -2272,13 +3184,41 @@ async function initializeGitManager() {
   }
   repositoryKindFilter = appPreferences.showDependencyRepositories ? "all" : "projects";
   updateScanRootSummary();
-  if (!appPreferences.firstRunComplete) {
+
+  let setupMode = false;
+  try {
+    setupMode = Boolean(await tauriInvoke("is_setup_mode"));
+  } catch (_) {
+    // Older development builds may not expose the setup-helper command yet.
+  }
+
+  if (setupMode) {
     openScanSetup(true);
+  } else if (!appPreferences.firstRunComplete) {
+    try {
+      // The regular app hands first launch to the packaged setup companion.
+      // If a developer build has no staged sidecar, keep onboarding in-process.
+      await tauriInvoke("launch_first_run_setup");
+      return;
+    } catch (error) {
+      console.warn("GitManager Setup helper could not be started; opening the built-in wizard:", error);
+      openScanSetup(true);
+    }
   } else {
     void runMachineScan();
   }
   void autoConnectGitHubIdentity();
 }
+
+// Use one delegated error handler instead of inline HTML onerror attributes.
+document.addEventListener("error", (event) => {
+  const image = event.target;
+  if (!image || image.tagName !== "IMG" || !image.dataset) return;
+  const fallback = image.dataset.fallback;
+  if (!fallback || image.dataset.fallbackApplied === "true") return;
+  image.dataset.fallbackApplied = "true";
+  image.src = fallback;
+}, true);
 
 window.addEventListener("DOMContentLoaded", () => {
   wireEventListeners();

@@ -1,0 +1,16 @@
+{
+  "formatVersion": 1,
+  "node": {
+    "id": "gitmanager-nas",
+    "mode": "primary",
+    "storageRoot": "./data/cloud-node",
+    "backupVersions": 5,
+    "preserveOriginal": true,
+    "videoChunkBytes": 4194304
+  },
+  "replication": {
+    "requireBootRecovery": false,
+    "bootRecoveryTimeoutMs": 60000,
+    "targets": []
+  }
+}

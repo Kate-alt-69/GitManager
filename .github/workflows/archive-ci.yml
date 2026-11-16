@@ -1,0 +1,137 @@
+name: Archive Engine & gitm CLI CI
+
+on:
+  push:
+    branches: [main, master, "feature/**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nextjs-engine-frontend:
+    name: Next.js Engine static frontend
+    runs-on: ubuntu-22.04
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve the newest CI-green Engine source and build the Tauri frontend
+        run: python tools/nextjs_engine_source.py build --project-root .
+
+      - name: Verify the static export and source provenance
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+
+          root = pathlib.Path(".cache/nextjs-engine/workspace/out")
+          index = root / "index.html"
+          metadata = root / "engine-source.json"
+          if not index.is_file() or index.stat().st_size < 1024:
+              raise SystemExit("Next.js static export is missing or unexpectedly small.")
+          if not metadata.is_file():
+              raise SystemExit("Engine source provenance manifest is missing.")
+
+          source_root = pathlib.Path(".cache/nextjs-engine/source")
+          workspace = pathlib.Path(".cache/nextjs-engine/workspace")
+          required_source = [
+              source_root / "app" / "page.tsx",
+              source_root / "src" / "engine" / "index.ts",
+              source_root / "scripts",
+              source_root / "tests",
+              source_root / "examples",
+              source_root / "docs",
+          ]
+          required_workspace = [
+              workspace / "src" / "engine" / "index.ts",
+              workspace / "scripts",
+              workspace / "tests",
+              workspace / "examples",
+              workspace / "docs",
+              workspace / "app" / "page.tsx",
+          ]
+          missing = [str(path) for path in required_source + required_workspace if not path.exists()]
+          if missing:
+              raise SystemExit("Full Engine repository workspace is incomplete: " + ", ".join(missing))
+          source = json.loads(metadata.read_text(encoding="utf-8"))
+          if not source.get("commit") or source.get("branch") != "main-3":
+              raise SystemExit("Engine source provenance does not identify a resolved main-3 commit.")
+          if source.get("workspace_mode") != "full-engine-repository-with-gitmanager-app-overlay" or not source.get("source_app_preserved"):
+              raise SystemExit("The build did not preserve the full Engine root and original app-router source.")
+          assets = root / "_next" / "static"
+          if not assets.is_dir():
+              raise SystemExit("Next.js static assets were not exported.")
+          print("Built GitManager frontend with Engine commit", source["commit"])
+          PY
+
+  archive-and-desktop:
+    name: Archive, gitm & Tauri backend (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve workspace lockfile
+        run: cargo generate-lockfile
+
+      - name: Build and stage target-specific gitm sidecar
+        run: python build.py prepare-sidecar
+
+      - name: Test the complete Rust workspace on all platforms
+        run: cargo test --locked --workspace --all-targets
+
+      - name: Check the desktop backend and all sidecar dependencies
+        run: cargo check --locked --workspace --all-targets
+
+      - name: Check GitManager's provider-sync-only Cloud Node feature set
+        run: cargo check --locked -p cloud-node --no-default-features --features provider-sync
+
+      - name: Test every optional Cloud Node capability
+        run: cargo test --locked -p cloud-node --all-features --all-targets
+
+      - name: Check frontend JavaScript syntax
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate frontend and build-script syntax
+        shell: bash
+        run: |
+          node --check ui/app.js
+          python -m py_compile build.py
+          python -m py_compile tools/cloud-node-deployment/setup.py
+          python -m py_compile tools/cloud-node-deployment/test_setup.py
+          python tools/cloud-node-deployment/test_setup.py
+          python tools/test_nextjs_engine_source.py

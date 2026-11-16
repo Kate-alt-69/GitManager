@@ -1,4 +1,7 @@
 mod process_utils;
+pub mod archive;
+pub mod archive_watcher;
+pub mod background_service;
 pub mod git_info;
 pub mod remote_providers;
 pub mod scanner;
@@ -7,6 +10,7 @@ pub mod watcher_service;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use serde::{Deserialize, Serialize};
 use git2::{Oid, Repository};
 use crate::process_utils::hidden_command;
@@ -15,13 +19,14 @@ use tauri::path::BaseDirectory;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_shell::ShellExt;
 
 use git_info::{extract_git_repository_info, GitRepositoryInfo};
 use remote_providers::{
     fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
 };
 use scanner::{
-    build_indexed_summary, default_scan_roots, scan_repositories, IndexedRepoSummary, ScanOptions,
+    build_indexed_summary_with_scan_status, default_scan_roots, scan_repositories_with_report, IndexedRepoSummary, ScanOptions,
 };
 use watcher_service::{
     apply_repository_update, check_all_repos_for_updates, register_os_background_service,
@@ -58,6 +63,12 @@ pub struct AppPreferences {
     pub show_dependency_repositories: bool,
     pub repository_settings: HashMap<String, RepositoryPreferences>,
     pub first_run_complete: bool,
+    pub archive_root: String,
+    pub archive_local_enabled: bool,
+    pub archive_remote_enabled: bool,
+    pub archive_trigger: String,
+    pub archive_quiet_ms: u64,
+    pub cloud_node_address: String,
 }
 
 impl Default for AppPreferences {
@@ -73,6 +84,14 @@ impl Default for AppPreferences {
             show_dependency_repositories: true,
             repository_settings: HashMap::new(),
             first_run_complete: false,
+            archive_root: archive::default_archive_root()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            archive_local_enabled: true,
+            archive_remote_enabled: true,
+            archive_trigger: "manual".to_string(),
+            archive_quiet_ms: 1500,
+            cloud_node_address: String::new(),
         }
     }
 }
@@ -81,27 +100,37 @@ impl Default for AppPreferences {
 #[serde(rename_all = "camelCase")]
 struct ApplicationDirectories {
     software_root: String,
+    install_dir: String,
     config_dir: String,
     data_dir: String,
 }
 
-fn application_directories() -> Result<ApplicationDirectories, String> {
-    let local_data = dirs::data_local_dir()
-        .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
+fn application_directory_layout(local_data: &Path) -> ApplicationDirectories {
     let software_root = local_data.join("kastrick's_software");
+    let install_dir = software_root.join("GitManager");
     let config_dir = software_root.join("config").join("GitManager");
     let data_dir = software_root.join("data").join("GitManager");
-
-    fs::create_dir_all(&config_dir)
-        .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
-    fs::create_dir_all(&data_dir)
-        .map_err(|error| format!("Could not create GitManager data directory: {error}"))?;
-
-    Ok(ApplicationDirectories {
+    ApplicationDirectories {
         software_root: software_root.to_string_lossy().to_string(),
+        install_dir: install_dir.to_string_lossy().to_string(),
         config_dir: config_dir.to_string_lossy().to_string(),
         data_dir: data_dir.to_string_lossy().to_string(),
-    })
+    }
+}
+
+fn application_directories() -> Result<ApplicationDirectories, String> {
+    // On Windows dirs::data_local_dir resolves to %LOCALAPPDATA%; on macOS/Linux
+    // it selects the corresponding per-user local application-data location.
+    let local_data = dirs::data_local_dir()
+        .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
+    let directories = application_directory_layout(&local_data);
+
+    fs::create_dir_all(&directories.config_dir)
+        .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
+    fs::create_dir_all(&directories.data_dir)
+        .map_err(|error| format!("Could not create GitManager data directory: {error}"))?;
+
+    Ok(directories)
 }
 
 #[tauri::command]
@@ -127,14 +156,12 @@ fn preferences_file(app_handle: &AppHandle) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-#[tauri::command]
-fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String> {
-    let path = preferences_file(&app_handle)?;
+fn read_app_preferences_file(path: &Path) -> Result<AppPreferences, String> {
     if !path.is_file() {
         return Ok(AppPreferences::default());
     }
 
-    let content = fs::read_to_string(&path)
+    let content = fs::read_to_string(path)
         .map_err(|error| format!("Could not read GitManager preferences: {error}"))?;
     if content.len() > 256 * 1024 {
         return Err("GitManager preferences file is unexpectedly large.".to_string());
@@ -159,7 +186,39 @@ fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String>
     }
     preferences.scan_roots = retained_roots;
     preferences.max_scan_depth = preferences.max_scan_depth.clamp(2, 16);
+    if preferences.archive_root.trim().is_empty() {
+        preferences.archive_root = archive::default_archive_root()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default();
+    }
+    preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
+    if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
+        preferences.archive_trigger = "manual".to_string();
+    }
+    preferences.archive_quiet_ms = preferences.archive_quiet_ms.clamp(250, 60_000);
+    let saved_node_address = preferences.cloud_node_address.trim();
+    preferences.cloud_node_address = if saved_node_address.is_empty() {
+        String::new()
+    } else {
+        validate_rbe_node_base_url(saved_node_address)
+            .map(|address| address.to_string())
+            .unwrap_or_default()
+    };
     Ok(preferences)
+}
+
+/// Loads the same validated preferences file from the standalone background
+/// service without requiring a Tauri AppHandle.
+pub fn load_background_preferences() -> Result<AppPreferences, String> {
+    let directories = application_directories()?;
+    let path = PathBuf::from(directories.config_dir).join("preferences.json");
+    read_app_preferences_file(&path)
+}
+
+#[tauri::command]
+fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String> {
+    let path = preferences_file(&app_handle)?;
+    read_app_preferences_file(&path)
 }
 
 
@@ -280,20 +339,10 @@ fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     Ok(normalized)
 }
 
-#[tauri::command]
-fn save_app_preferences(
-    app_handle: AppHandle,
-    mut preferences: AppPreferences,
-) -> Result<AppPreferences, String> {
-    preferences.scan_roots = normalize_scan_roots(preferences.scan_roots)?;
-    if !(2..=16).contains(&preferences.max_scan_depth) {
-        return Err("Scan depth must be between 2 and 16.".to_string());
-    }
-
-    let path = preferences_file(&app_handle)?;
+fn write_app_preferences_file(path: &Path, preferences: &AppPreferences) -> Result<(), String> {
     let temporary = path.with_extension("json.tmp");
     let backup = path.with_extension("json.bak");
-    let content = serde_json::to_vec_pretty(&preferences)
+    let content = serde_json::to_vec_pretty(preferences)
         .map_err(|error| format!("Could not serialize GitManager preferences: {error}"))?;
     fs::write(&temporary, content)
         .map_err(|error| format!("Could not write GitManager preferences: {error}"))?;
@@ -305,19 +354,324 @@ fn save_app_preferences(
             fs::remove_file(&backup)
                 .map_err(|error| format!("Could not clear the old preferences backup: {error}"))?;
         }
-        fs::rename(&path, &backup)
+        fs::rename(path, &backup)
             .map_err(|error| format!("Could not stage the previous preferences file: {error}"))?;
     }
-    if let Err(error) = fs::rename(&temporary, &path) {
+    if let Err(error) = fs::rename(&temporary, path) {
         if had_previous {
-            let _ = fs::rename(&backup, &path);
+            let _ = fs::rename(&backup, path);
         }
         return Err(format!("Could not save GitManager preferences: {error}"));
     }
     if backup.exists() {
         let _ = fs::remove_file(&backup);
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_cloud_node_address(app_handle: AppHandle, address: String) -> Result<String, String> {
+    let address = address.trim();
+    let normalized = if address.is_empty() {
+        String::new()
+    } else {
+        validate_rbe_node_base_url(address)?.to_string()
+    };
+    let path = preferences_file(&app_handle)?;
+    let mut preferences = read_app_preferences_file(&path)?;
+    preferences.cloud_node_address = normalized.clone();
+    write_app_preferences_file(&path, &preferences)?;
+    Ok(normalized)
+}
+
+#[tauri::command]
+fn save_app_preferences(
+    app_handle: AppHandle,
+    mut preferences: AppPreferences,
+) -> Result<AppPreferences, String> {
+    preferences.scan_roots = normalize_scan_roots(preferences.scan_roots)?;
+    if !(2..=16).contains(&preferences.max_scan_depth) {
+        return Err("Scan depth must be between 2 and 16.".to_string());
+    }
+    preferences.archive_root = normalize_archive_root(&preferences.archive_root)?;
+    preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
+    if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
+        return Err("Archive trigger must be manual, commit, or change.".to_string());
+    }
+    if !(250..=60_000).contains(&preferences.archive_quiet_ms) {
+        return Err("Archive quiet period must be between 250 and 60000 milliseconds.".to_string());
+    }
+    let saved_node_address = preferences.cloud_node_address.trim();
+    preferences.cloud_node_address = if saved_node_address.is_empty() {
+        String::new()
+    } else {
+        validate_rbe_node_base_url(saved_node_address)?.to_string()
+    };
+
+    let path = preferences_file(&app_handle)?;
+    write_app_preferences_file(&path, &preferences)?;
+    // The next UI scan supplies discovered repositories to the archive watcher.
     Ok(preferences)
+}
+
+fn normalize_archive_root(raw: &str) -> Result<String, String> {
+    let candidate = if raw.trim().is_empty() {
+        archive::default_archive_root()?
+    } else {
+        let value = PathBuf::from(raw.trim());
+        if value.is_absolute() {
+            value
+        } else {
+            std::env::current_dir()
+                .map_err(|error| format!("Could not resolve current directory: {error}"))?
+                .join(value)
+        }
+    };
+    fs::create_dir_all(&candidate)
+        .map_err(|error| format!("Could not create archive storage directory: {error}"))?;
+    if !candidate.is_dir() {
+        return Err("Archive storage path must be a directory.".to_string());
+    }
+    candidate.canonicalize()
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|error| format!("Could not resolve archive storage directory: {error}"))
+}
+
+#[tauri::command]
+fn get_default_archive_directory() -> Result<String, String> {
+    archive::default_archive_root().map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn get_archive_cloud_storage_info(archive_root: String) -> Result<archive::ArchiveCloudStorageInfo, String> {
+    archive::archive_cloud_storage_info(&PathBuf::from(archive_root))
+}
+
+#[tauri::command]
+async fn configure_archive_cloud_storage(
+    archive_root: String,
+    provider_json: String,
+) -> Result<archive::ArchiveCloudStorageInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        archive::configure_archive_cloud_storage(Some(&archive_root), &provider_json)
+    })
+    .await
+    .map_err(|error| format!("Cloud archive configuration task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn disable_archive_cloud_storage(archive_root: String) -> Result<archive::ArchiveCloudStorageInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        archive::disable_archive_cloud_storage(Some(&archive_root))
+    })
+    .await
+    .map_err(|error| format!("Cloud archive configuration task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn sync_archive_cloud_storage(archive_root: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || archive::sync_archive_cloud_storage(Some(&archive_root)))
+        .await
+        .map_err(|error| format!("Cloud archive sync task failed: {error}"))?
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RbeNodeStatusInfo {
+    address: String,
+    reachable: bool,
+    backend_http_status: Option<u16>,
+    api_route_http_status: Option<u16>,
+    api_status_http_status: Option<u16>,
+    backend_health: Option<Value>,
+    api_route_health: Option<Value>,
+    api_status_health: Option<Value>,
+    backend_error: Option<String>,
+    api_route_error: Option<String>,
+    api_status_error: Option<String>,
+    message: String,
+}
+
+fn validate_rbe_node_base_url(address: &str) -> Result<url::Url, String> {
+    let input = address.trim();
+    if input.is_empty() {
+        return Err("Enter the NAS IP address and optional port.".to_string());
+    }
+    let candidate = if input.contains("://") {
+        input.to_string()
+    } else {
+        format!("http://{input}")
+    };
+    let mut parsed = url::Url::parse(&candidate)
+        .map_err(|error| format!("NAS address is not a valid URL or IP: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !matches!(parsed.path(), "" | "/")
+    {
+        return Err(
+            "Use an HTTP or HTTPS LAN IP with an optional port only; paths and embedded credentials are not accepted."
+                .to_string(),
+        );
+    }
+
+    let host = parsed
+        .host()
+        .ok_or_else(|| "NAS address must contain an IP address.".to_string())?;
+    let is_lan_ip = match host {
+        url::Host::Ipv4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || (ip.octets()[0] == 169 && ip.octets()[1] == 254)
+        }
+        url::Host::Ipv6(ip) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+        }
+        url::Host::Domain(_) => false,
+    };
+    if !is_lan_ip {
+        return Err(
+            "For this LAN status check, enter a private, link-local, or loopback IP address—not a public host."
+                .to_string(),
+        );
+    }
+
+    if parsed.port() == Some(0) {
+        return Err("NAS backend port must be between 1 and 65535.".to_string());
+    }
+    if parsed.port().is_none() {
+        let port = if parsed.scheme() == "https" { 443 } else { 8080 };
+        parsed
+            .set_port(Some(port))
+            .map_err(|_| "Could not apply the default RBE backend port.".to_string())?;
+    }
+    Ok(parsed)
+}
+
+async fn fetch_rbe_health(
+    client: &reqwest::Client,
+    endpoint: url::Url,
+) -> (Option<u16>, Option<Value>, Option<String>) {
+    let response = match client
+        .get(endpoint)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return (None, None, Some(error.to_string())),
+    };
+    let status = response.status().as_u16();
+    let mut response = response;
+    let mut body = Vec::new();
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => return (Some(status), None, Some(error.to_string())),
+        };
+        if body.len().saturating_add(chunk.len()) > 64 * 1024 {
+            return (
+                Some(status),
+                None,
+                Some("RBE health response exceeded the 64 KiB limit.".to_string()),
+            );
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let value = if body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<Value>(&body).ok()
+    };
+    (Some(status), value, None)
+}
+
+#[tauri::command]
+async fn check_rbe_node_status(address: String) -> Result<RbeNodeStatusInfo, String> {
+    let base = validate_rbe_node_base_url(&address)?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(6))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Could not create the RBE status client: {error}"))?;
+
+    let mut backend_endpoint = base.clone();
+    backend_endpoint.set_path("/health");
+    let mut api_endpoint = base.clone();
+    api_endpoint.set_path("/api/health");
+    let mut api_status_endpoint = base.clone();
+    api_status_endpoint.set_path("/api/status");
+
+    let (backend_http_status, backend_health, backend_error) =
+        fetch_rbe_health(&client, backend_endpoint).await;
+    let (api_route_http_status, api_route_health, api_route_error) =
+        fetch_rbe_health(&client, api_endpoint).await;
+    let (api_status_http_status, api_status_health, api_status_error) =
+        fetch_rbe_health(&client, api_status_endpoint).await;
+    let reachable = backend_http_status.is_some_and(|status| (200..300).contains(&status));
+    let message = if reachable {
+        "RBE backend is reachable on the LAN. Custom health and status route responses are reported separately.".to_string()
+    } else {
+        "Could not confirm the RBE backend health endpoint. Check the IP, port, host firewall and whether backend is running.".to_string()
+    };
+
+    Ok(RbeNodeStatusInfo {
+        address: base.to_string(),
+        reachable,
+        backend_http_status,
+        api_route_http_status,
+        api_status_http_status,
+        backend_health,
+        api_route_health,
+        api_status_health,
+        backend_error,
+        api_route_error,
+        api_status_error,
+        message,
+    })
+}
+
+#[tauri::command]
+async fn capture_repository_archive(
+    repo_path: String,
+    kind: String,
+    archive_root: Option<String>,
+) -> Result<archive::ArchiveSnapshot, String> {
+    tokio::task::spawn_blocking(move || archive::capture_repository(&repo_path, archive_root.as_deref(), &kind))
+        .await.map_err(|error| format!("Archive capture task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_repository_archives(
+    repo_path: String,
+    kind: Option<String>,
+    archive_root: Option<String>,
+) -> Result<Vec<archive::ArchiveSnapshot>, String> {
+    tokio::task::spawn_blocking(move || archive::list_repository_archives(&repo_path, archive_root.as_deref(), kind.as_deref()))
+        .await.map_err(|error| format!("Archive listing task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn restore_repository_archive(
+    repo_path: String,
+    destination_path: String,
+    snapshot_id: String,
+    kind: String,
+    archive_root: Option<String>,
+    confirm_replace: bool,
+) -> Result<archive::ArchiveRestoreResult, String> {
+    tokio::task::spawn_blocking(move || archive::restore_repository_archive(
+        &repo_path, &destination_path, archive_root.as_deref(), &kind, &snapshot_id, confirm_replace
+    ))
+    .await.map_err(|error| format!("Archive restore task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -333,14 +687,35 @@ async fn scan_machine_repositories(
     root_paths: Vec<String>, max_depth: Option<usize>, include_hidden_dirs: Option<bool>,
     filter_mode: Option<String>, index_dependency_repositories: Option<bool>, state: State<'_, AppState>,
 ) -> Result<IndexedRepoSummary, String> {
-    let options = ScanOptions { root_paths, max_depth, include_hidden_dirs, index_dependency_repositories };
+    let options = ScanOptions {
+        root_paths: root_paths.clone(),
+        max_depth,
+        include_hidden_dirs,
+        index_dependency_repositories,
+    };
     // Directory walking and libgit2 inspection can be slow on large workspaces.
     // Keep this work off the webview command thread so the desktop UI remains responsive.
-    let local_repos = tokio::task::spawn_blocking(move || scan_repositories(options))
+    let report = tokio::task::spawn_blocking(move || scan_repositories_with_report(options))
         .await.map_err(|error| format!("Repository scan task failed: {error}"))??;
-    if let Ok(mut cache) = state.cached_repos.lock() { *cache = local_repos.clone(); }
+    if let Ok(mut cache) = state.cached_repos.lock() { *cache = report.repositories.clone(); }
+
+    // Reuse discovery for archive watcher setup only when it exactly matches the
+    // saved preferences. Custom one-off scans do not replace configured watch roots.
+    if let Ok(preferences) = load_background_preferences() {
+        let scan_matches_preferences = root_paths == preferences.scan_roots
+            && max_depth.unwrap_or(8) == preferences.max_scan_depth
+            && include_hidden_dirs.unwrap_or(false) == preferences.include_hidden_dirs
+            && index_dependency_repositories.unwrap_or(true) == preferences.index_dependency_repositories;
+        if scan_matches_preferences {
+            archive_watcher::restart_archive_watchers_with_repositories(
+                &preferences,
+                report.repositories.clone(),
+            );
+        }
+    }
+
     let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
-    Ok(build_indexed_summary(local_repos, &requested))
+    Ok(build_indexed_summary_with_scan_status(report.repositories, &requested, report.truncated))
 }
 #[tauri::command]
 async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {
@@ -353,9 +728,125 @@ async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, Stri
 
 
 #[tauri::command]
+async fn list_local_repository_branches(repo_path: String) -> Result<Vec<git_info::BranchInfo>, String> {
+    tokio::task::spawn_blocking(move || git_info::list_local_repository_branches(Path::new(&repo_path)))
+        .await
+        .map_err(|error| format!("Branch listing task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn switch_repository_branch(repo_path: String, branch_name: String) -> Result<GitRepositoryInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        git_info::switch_repository_branch(Path::new(&repo_path), &branch_name)
+    })
+    .await
+    .map_err(|error| format!("Branch switch task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, String> {
     tokio::task::spawn_blocking(remote_providers::detect_github_identity).await
         .map_err(|error| format!("GitHub identity detection task failed: {error}"))?
+}
+
+/// Return the application version from the compiled Cargo package metadata.
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+/// Validate a repository web URL before opening it in the system browser.
+/// The WebView never receives the shell-open permission.
+fn normalize_external_url(raw_url: &str) -> Result<String, String> {
+    let mut url = url::Url::parse(raw_url.trim())
+        .map_err(|_| "The repository web URL is invalid.".to_string())?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err("Only HTTPS repository web URLs can be opened.".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Repository URLs containing embedded credentials cannot be opened.".to_string());
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let url = normalize_external_url(&url)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| "Windows SystemRoot is unavailable.".to_string())?;
+        let executable = PathBuf::from(system_root).join("System32").join("rundll32.exe");
+        hidden_command(executable)
+            .arg("url.dll,FileProtocolHandler")
+            .arg(&url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Could not open repository website: {error}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        hidden_command("/usr/bin/open")
+            .arg(&url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Could not open repository website: {error}"))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        hidden_command("xdg-open")
+            .arg(&url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Could not open repository website: {error}"))?;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = url;
+        return Err("Opening external URLs is not supported on this platform.".to_string());
+    }
+
+    Ok(())
+}
+
+/// Report whether this process is the first-run setup companion.
+#[tauri::command]
+fn is_setup_mode() -> bool {
+    std::env::var_os("GITMANAGER_SETUP_MODE").is_some()
+}
+
+/// Start the packaged setup companion and close the bootstrap window.
+/// If the sidecar is unavailable, the frontend falls back to its in-process
+/// first-run wizard rather than leaving the user without onboarding.
+#[tauri::command]
+fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
+    // Tauri places sidecars beside the main executable. The helper resolves
+    // that sibling itself, so the WebView cannot supply an arbitrary program path.
+    let command = app_handle
+        .shell()
+        .sidecar("gitmanager-setup")
+        .map_err(|error| format!("GitManager Setup helper is unavailable: {error}"))?;
+
+    let (_events, child) = command.spawn()
+        .map_err(|error| format!("Could not start GitManager Setup: {error}"))?;
+
+    // Keep the child handle alive until this bootstrap process exits; dropping
+    // it here can terminate the just-launched setup process on some platforms.
+    std::mem::forget(child);
+
+    app_handle.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -451,9 +942,20 @@ async fn pull_repository_update(
 }
 
 #[tauri::command]
+fn report_ui_heartbeat() -> Result<(), String> {
+    crash_helper::report_ui_heartbeat_from_env()
+}
+
+#[tauri::command]
+fn resume_background_service() -> Result<crash_helper::ServiceStatus, String> {
+    crash_helper::request_service_resume()
+}
+
+#[tauri::command]
 async fn control_background_service(
     enable_in_app: Option<bool>,
     install_os_service: Option<bool>,
+    app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ServiceStatusInfo, String> {
     if let Some(en) = enable_in_app {
@@ -461,7 +963,7 @@ async fn control_background_service(
     }
 
     if install_os_service == Some(true) {
-        tokio::task::spawn_blocking(register_os_background_service)
+        tokio::task::spawn_blocking(move || register_os_background_service(app_handle))
             .await
             .map_err(|error| format!("Background service registration task failed: {error}"))??;
         state
@@ -471,7 +973,7 @@ async fn control_background_service(
     }
 
     let os_kind = if cfg!(target_os = "windows") {
-        "Windows Service (svchost / sc.exe)"
+        "Windows Task Scheduler (user logon)"
     } else if cfg!(target_os = "macos") {
         "macOS LaunchAgent (launchd)"
     } else {
@@ -903,6 +1405,7 @@ pub fn run() {
             let state = app.state::<AppState>();
             let preferences = load_app_preferences(app.handle().clone())
                 .unwrap_or_else(|_| AppPreferences::default());
+            // The next UI scan supplies discovered repositories to the archive watcher.
             spawn_background_update_watcher(
                 app.handle().clone(),
                 state.watcher.enabled.clone(),
@@ -913,9 +1416,18 @@ pub fn run() {
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             get_default_scan_directories,
+            get_default_archive_directory,
+            get_archive_cloud_storage_info,
+            configure_archive_cloud_storage,
+            disable_archive_cloud_storage,
+            sync_archive_cloud_storage,
+            check_rbe_node_status,
+            save_cloud_node_address,
+            capture_repository_archive,
+            list_repository_archives,
+            restore_repository_archive,
             get_application_directories,
             load_app_preferences,
             save_app_preferences,
@@ -926,15 +1438,110 @@ pub fn run() {
             sign_windows_installer,
             scan_machine_repositories,
             inspect_repository,
+            list_local_repository_branches,
+            switch_repository_branch,
             detect_github_identity,
+            get_app_version,
+            open_external_url,
+            is_setup_mode,
+            launch_first_run_setup,
             connect_git_account,
             check_repo_updates_now,
             pull_repository_update,
             control_background_service,
+            report_ui_heartbeat,
+            resume_background_service,
             cleaner_preview,
             cleaner_apply,
             set_repository_commit_clean
         ])
         .run(tauri::generate_context!())
         .expect("error while running GitManager Tauri v2 application");
+}
+
+#[cfg(test)]
+mod rbe_node_address_tests {
+    use super::{validate_rbe_node_base_url, AppPreferences};
+
+    #[test]
+    fn older_preferences_without_a_saved_node_address_remain_compatible() {
+        let preferences: AppPreferences = serde_json::from_str("{}").unwrap();
+        assert!(preferences.cloud_node_address.is_empty());
+    }
+
+    #[test]
+    fn a_saved_node_address_round_trips_with_preferences() {
+        let mut preferences = AppPreferences::default();
+        preferences.cloud_node_address = "http://192.168.1.50:8080/".to_string();
+        let encoded = serde_json::to_string(&preferences).unwrap();
+        let decoded: AppPreferences = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.cloud_node_address, preferences.cloud_node_address);
+    }
+
+    #[test]
+    fn accepts_private_lan_ipv4_and_defaults_to_backend_port() {
+        let address = validate_rbe_node_base_url("192.168.1.50").unwrap();
+        assert_eq!(address.as_str(), "http://192.168.1.50:8080/");
+    }
+
+    #[test]
+    fn accepts_explicit_lan_port_and_ipv6_unique_local_addresses() {
+        let address = validate_rbe_node_base_url("http://10.0.0.12:8090").unwrap();
+        assert_eq!(address.port(), Some(8090));
+        assert!(validate_rbe_node_base_url("http://[fd12::20]:8080").is_ok());
+    }
+
+    #[test]
+    fn rejects_public_hosts_non_ip_names_and_port_zero() {
+        assert!(validate_rbe_node_base_url("https://8.8.8.8").is_err());
+        assert!(validate_rbe_node_base_url("nas.example.com:8080").is_err());
+        assert!(validate_rbe_node_base_url("192.168.1.50:0").is_err());
+    }
+
+    #[test]
+    fn rejects_credentials_paths_queries_and_fragments() {
+        assert!(validate_rbe_node_base_url("http://user:pass@192.168.1.50").is_err());
+        assert!(validate_rbe_node_base_url("http://192.168.1.50/api").is_err());
+        assert!(validate_rbe_node_base_url("http://192.168.1.50?token=secret").is_err());
+        assert!(validate_rbe_node_base_url("http://192.168.1.50/#health").is_err());
+    }
+}
+
+#[cfg(test)]
+mod external_url_tests {
+    use super::normalize_external_url;
+
+    #[test]
+    fn external_urls_require_https_without_credentials() {
+        assert!(normalize_external_url("http://github.com/org/repo").is_err());
+        assert!(normalize_external_url("javascript:alert(1)").is_err());
+        assert!(normalize_external_url("https://user:token@github.com/org/repo").is_err());
+    }
+
+    #[test]
+    fn external_urls_drop_query_and_fragment_data() {
+        assert_eq!(
+            normalize_external_url("https://github.com/org/repo?token=secret#settings").unwrap(),
+            "https://github.com/org/repo"
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod application_path_tests {
+    use super::application_directory_layout;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn install_config_and_data_share_the_kastrick_product_root() {
+        let local_data = Path::new("local-app-data");
+        let paths = application_directory_layout(local_data);
+        let product_root = local_data.join("kastrick's_software");
+
+        assert_eq!(PathBuf::from(paths.software_root), product_root);
+        assert_eq!(PathBuf::from(paths.install_dir), product_root.join("GitManager"));
+        assert_eq!(PathBuf::from(paths.config_dir), product_root.join("config").join("GitManager"));
+        assert_eq!(PathBuf::from(paths.data_dir), product_root.join("data").join("GitManager"));
+    }
 }
