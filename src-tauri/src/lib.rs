@@ -378,6 +378,36 @@ async fn preview_repository_pull(repo_path: String) -> Result<repository_workspa
 }
 
 #[tauri::command]
+async fn get_repository_changes(repo_path: String) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::get_repository_changes(&repo_path))
+        .await.map_err(|error| format!("Repository status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn stage_repository_paths(repo_path: String, paths: Vec<String>) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::stage_repository_paths(&repo_path, &paths))
+        .await.map_err(|error| format!("Repository stage task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn unstage_repository_paths(repo_path: String, paths: Vec<String>) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::unstage_repository_paths(&repo_path, &paths))
+        .await.map_err(|error| format!("Repository unstage task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn create_repository_commit(repo_path: String, message: String) -> Result<(String, Vec<repository_workspace::WorktreeChange>), String> {
+    tokio::task::spawn_blocking(move || repository_workspace::create_repository_commit(&repo_path, &message))
+        .await.map_err(|error| format!("Repository commit task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn delete_repository_path(repo_path: String, relative_path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::delete_repository_path(&repo_path, &relative_path))
+        .await.map_err(|error| format!("Repository delete task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn prepare_and_pull_repository_update(
     repo_path: String, expected_branch: String, expected_local_oid: String,
     expected_remote_oid: String, expected_status_token: String, mode: String,
@@ -968,6 +998,11 @@ pub fn run() {
             read_repository_file,
             preview_repository_pull,
             prepare_and_pull_repository_update,
+            get_repository_changes,
+            stage_repository_paths,
+            unstage_repository_paths,
+            create_repository_commit,
+            delete_repository_path,
             detect_github_identity,
             connect_git_account,
             check_repo_updates_now,
