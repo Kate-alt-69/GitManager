@@ -2025,6 +2025,18 @@ function renderRepositoryCodeWorkspace(repo) {
   ).join("");
   branchSelect.value = activeCodeBranch;
   branchSelect.disabled = activeCodeSource !== "remote" || !remoteBranches.length;
+  const fetchButton = document.getElementById("btn-repo-code-fetch");
+  if (fetchButton) {
+    fetchButton.disabled = activeCodeSource !== "remote" || !repo.has_remote;
+    fetchButton.hidden = !repo.has_remote;
+    if (fetchButton.dataset.bound !== "true") {
+      fetchButton.dataset.bound = "true";
+      fetchButton.addEventListener("click", () => {
+        const selectedRepo = getRepositoryById(selectedRepoId);
+        if (selectedRepo) void fetchRepositoryRemote(selectedRepo);
+      });
+    }
+  }
   if (branchSelect.dataset.bound !== "true") {
     branchSelect.dataset.bound = "true";
     branchSelect.addEventListener("change", () => {
@@ -2137,6 +2149,33 @@ async function loadRepositoryCodeDirectory(repo) {
     if (requestId !== codeDirectoryRequestId) return;
     list.innerHTML = '<div class="repo-code-empty"><strong>Could not load this directory</strong><small>' +
       escapeHtml(String((failure && failure.message) || failure)) + '</small></div>';
+  }
+}
+
+async function fetchRepositoryRemote(repo) {
+  const button = document.getElementById("btn-repo-code-fetch");
+  const remote = (repo.remotes || []).find((item) => item.name === "origin") || (repo.remotes || [])[0];
+  if (!remote) return;
+  if (button) { button.disabled = true; button.textContent = "Fetching…"; }
+  setServiceCheckingVisual(true, "Fetching " + remote.name + "…");
+  try {
+    const message = await tauriInvoke("fetch_repository_remote", { repoPath: repo.path, remoteName: remote.name });
+    const updated = await tauriInvoke("inspect_repository", { repoPath: repo.path });
+    Object.assign(repo, updated);
+    const branches = (repo.branches || []).filter((branch) => branch.is_remote);
+    if (!branches.some((branch) => branch.name === activeCodeBranch)) {
+      activeCodeBranch = branches[0]?.name || "";
+    }
+    setServiceCheckingVisual(false, message || "Remote references updated");
+    renderRepositoryCodeWorkspace(repo);
+  } catch (failure) {
+    setServiceCheckingVisual(false, "Remote fetch failed");
+    const list = document.getElementById("repo-code-file-list");
+    if (list) list.insertAdjacentHTML("afterbegin", '<div class="repo-code-inline-error">' +
+      escapeHtml(String((failure && failure.message) || failure)) + '</div>');
+  } finally {
+    const current = document.getElementById("btn-repo-code-fetch");
+    if (current) { current.disabled = activeCodeSource !== "remote" || !repo.has_remote; current.textContent = "Fetch remote"; }
   }
 }
 
