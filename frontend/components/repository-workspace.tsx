@@ -38,9 +38,11 @@ function statusLabel(change: WorktreeChange): string {
 export function RepositoryWorkspace({
 	repo,
 	onRepositoryUpdated,
+	onPullCompleted,
 }: {
 	repo: GitRepository;
 	onRepositoryUpdated: (repo: GitRepository) => void;
+	onPullCompleted: (repoPath: string) => void;
 }) {
 	const remoteBranches = useMemo(
 		() => (repo.branches ?? []).filter((branch) => branch.is_remote),
@@ -395,6 +397,7 @@ export function RepositoryWorkspace({
 			});
 			setPullPreview(null);
 			setPullMode("");
+			onPullCompleted(repo.path);
 			setNotice(
 				result.message
 				+ (result.commitCreated ? " Local changes were committed and rebased." : "")
