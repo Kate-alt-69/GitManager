@@ -64,57 +64,11 @@
           <div id="repo-home-content" class="repo-home-content"></div>
           <section id="repository-detail-view" class="repository-detail-view hidden" aria-label="Repository details">
             <div id="repo-detail-header" class="repo-detail-header"></div>
-            <nav class="repo-workspace-tabs" role="tablist" aria-label="Repository workspace">
-              <button type="button" class="repo-workspace-tab active" data-repo-panel="code" role="tab" aria-selected="true">Code</button>
-              <button type="button" class="repo-workspace-tab" data-repo-panel="history" role="tab" aria-selected="false">Commits &amp; Git Tree</button>
-              <button type="button" class="repo-workspace-tab" data-repo-panel="settings" role="tab" aria-selected="false">Settings</button>
-            </nav>
-            <section id="repo-code-panel" class="repo-workspace-panel repo-code-panel" role="tabpanel">
-              <section id="repo-code-changes-panel" class="repo-code-changes-panel">
-                <div class="repo-code-changes-heading">
-                  <div><strong>Changes</strong><span id="repo-code-changes-count">0</span></div>
-                  <span>Stage files, unstage, or commit locally</span>
-                </div>
-                <div id="repo-code-changes-list" class="repo-code-changes-list">
-                  <div class="repo-code-changes-empty">Select a repository to inspect its working tree.</div>
-                </div>
-                <div class="repo-code-change-actions">
-                  <button id="btn-stage-selected" class="btn btn-secondary" type="button" disabled>Stage selected</button>
-                  <button id="btn-unstage-selected" class="btn btn-secondary" type="button" disabled>Unstage selected</button>
-                  <button id="btn-commit-staged" class="btn btn-primary" type="button" disabled>Commit staged</button>
-                  <button id="btn-clean-generated" class="btn btn-secondary" type="button">Clean generated files</button>
-                </div>
-              </section>
-              <div class="repo-code-toolbar">
-                <div class="repo-code-source-switch" role="group" aria-label="Code source">
-                  <button type="button" class="active" data-code-source="local" aria-pressed="true">Local</button>
-                  <button type="button" data-code-source="remote" aria-pressed="false">Remote</button>
-                </div>
-                <select id="repo-code-remote-branch" class="select-control" aria-label="Remote branch" disabled></select>
-                <button id="btn-repo-code-fetch" class="btn btn-secondary" type="button" disabled>Fetch remote</button>
-                <button id="btn-repo-code-up" class="btn btn-secondary" type="button" disabled>↑ Up</button>
-                <button id="btn-repo-code-refresh" class="btn btn-secondary" type="button">Refresh</button>
-                <code id="repo-code-current-path">/</code>
-              </div>
-              <div class="repo-code-browser">
-                <aside id="repo-code-file-list" class="repo-code-file-list" aria-label="Repository files">
-                  <div class="repo-code-loading">Select a repository to browse files.</div>
-                </aside>
-                <section class="repo-code-preview-panel" aria-label="File preview">
-                  <div class="repo-code-preview-heading"><strong>File preview</strong><span>UTF-8 text · 1 MiB limit</span></div>
-                  <pre id="repo-code-preview" tabindex="0">Choose a file to preview its contents.</pre>
-                </section>
-              </div>
-            </section>
-            <section id="repo-history-panel" class="repo-workspace-panel hidden" role="tabpanel">
-              <section id="repo-ci-detail-panel" class="repo-ci-detail-panel" aria-label="Continuous integration checks"></section>
-              <div class="content-split">
-                <section class="git-tree-section"><div class="panel-Subheader"><h2>Commit history</h2><span id="tree-stats-badge" class="badge-pill">0 commits</span></div><div id="git-branch-toolbar" class="git-branch-toolbar"></div><div id="git-tree-container" class="git-tree-container"></div></section>
-              </div>
-            </section>
-            <section id="repo-settings-panel" class="repo-workspace-panel hidden" role="tabpanel">
-              <section class="inspector-section"><div class="panel-Subheader"><h2>Repository settings &amp; information</h2></div><div id="repo-inspector-card" class="inspector-body"></div></section>
-            </section>
+            <section id="repo-ci-detail-panel" class="repo-ci-detail-panel" aria-label="Continuous integration checks"></section>
+            <div class="content-split">
+              <section class="git-tree-section"><div class="panel-Subheader"><h2>Commit history</h2><span id="tree-stats-badge" class="badge-pill">0 commits</span></div><div id="git-branch-toolbar" class="git-branch-toolbar"></div><div id="git-tree-container" class="git-tree-container"></div></section>
+              <aside class="inspector-section"><div class="panel-Subheader"><h2>Repository details</h2></div><div id="repo-inspector-card" class="inspector-body"></div></aside>
+            </div>
           </section>
         </section>
         <section id="page-accounts" class="app-page hidden" role="tabpanel" aria-label="Accounts">
@@ -471,37 +425,6 @@
             <p class="cleaner-footnote">Remote cleanup uses a temporary clone and pushes a new <code>gitmanager/clean/…</code> branch. It never pushes to the default branch. System cleanup only targets known cache paths in your current user profile; Windows system junk is separately opt-in.</p>
           </div>
         </div>
-      </div>
-
-      <!-- Reusable repository operation dialog: review, prepare, confirm, execute. -->
-      <div id="operation-modal-backdrop" class="modal-backdrop hidden">
-        <section class="modal-card operation-modal-card" role="dialog" aria-modal="true" aria-labelledby="operation-modal-title">
-          <header class="modal-header operation-modal-header">
-            <div>
-              <h3 id="operation-modal-title">Pull from remote</h3>
-              <p id="operation-modal-subtitle" class="operation-modal-subtitle">Review repository state before running Git operations.</p>
-            </div>
-            <button id="btn-close-operation-modal" class="icon-close-btn" type="button" aria-label="Close">&times;</button>
-          </header>
-          <div class="modal-body operation-modal-body">
-            <div id="sync-preflight-summary" class="sync-preflight-summary"></div>
-            <section class="sync-preparation-section">
-              <div class="sync-section-heading"><strong>Local changes</strong><span>Preview fetches remote refs; local files and the checked-out branch stay untouched until confirmation.</span></div>
-              <div id="sync-change-list" class="sync-change-list"></div>
-              <div id="sync-preparation-options" class="sync-preparation-options hidden"></div>
-              <div id="sync-commit-fields" class="form-group hidden">
-                <label for="sync-commit-message">Commit message</label>
-                <input id="sync-commit-message" class="scan-input" type="text" maxlength="200" placeholder="Describe the local changes…" />
-              </div>
-            </section>
-            <div id="sync-preflight-note" class="sync-preflight-note" role="status"></div>
-            <div id="sync-preflight-error" class="modal-error hidden" role="alert"></div>
-          </div>
-          <footer class="modal-footer operation-modal-footer">
-            <button id="btn-cancel-pull" class="btn btn-secondary" type="button">Cancel</button>
-            <button id="btn-confirm-pull" class="btn btn-success" type="button" disabled>Yes, Pull</button>
-          </footer>
-        </section>
       </div>
 
       <!-- Connect GitHub / GitLab Account Modal -->
