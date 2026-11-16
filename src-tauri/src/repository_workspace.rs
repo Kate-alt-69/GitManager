@@ -519,9 +519,16 @@ pub fn delete_repository_path(repo_path: &str, relative_path: &str) -> Result<St
     if metadata.file_type().is_symlink() {
         fs::remove_file(&target).map_err(|error| format!("Could not remove the symbolic link: {error}"))?;
     } else if metadata.is_dir() {
-        let contains_git_metadata = WalkDir::new(&target).follow_links(false)
-            .into_iter().filter_map(Result::ok)
-            .any(|entry| entry.file_name() == OsStr::new(".git"));
+        let mut contains_git_metadata = false;
+        for item in WalkDir::new(&target).follow_links(false) {
+            let entry = item.map_err(|error| format!(
+                "Could not safely inspect this folder before deletion: {error}"
+            ))?;
+            if entry.file_name().to_string_lossy().eq_ignore_ascii_case(".git") {
+                contains_git_metadata = true;
+                break;
+            }
+        }
         if contains_git_metadata {
             return Err("This folder contains a nested Git repository or .git metadata. Remove that repository separately first.".to_string());
         }
