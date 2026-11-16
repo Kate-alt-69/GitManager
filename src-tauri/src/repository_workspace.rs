@@ -220,7 +220,6 @@ fn worktree_status_label(status: Status) -> String {
     else if status.contains(Status::WT_DELETED) { "Deleted".to_string() }
     else if status.contains(Status::WT_RENAMED) { "Renamed".to_string() }
     else if status.contains(Status::WT_TYPECHANGE) { "Type changed".to_string() }
-    else if status.contains(Status::WT_UNREADABLE) { "Unreadable".to_string() }
     else if status.contains(Status::CONFLICTED) { "Conflict".to_string() }
     else { "Clean".to_string() }
 }
