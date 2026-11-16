@@ -887,7 +887,7 @@ function RepositoryPage({
 					<div className="gm-update-banner-icon">↑</div>
 					<div className="gm-update-banner-copy">
 						<strong>{updates.length} remote update{updates.length === 1 ? "" : "s"} available</strong>
-						<span>Updates are fast-forward only. Repositories with local changes are not pulled automatically.</span>
+						<span>Review each repository, choose how to protect local changes, and confirm every Pull.</span>
 					</div>
 					<div className="gm-update-list">
 						{updates.slice(0, 3).map((update) => (
