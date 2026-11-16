@@ -429,13 +429,15 @@ pub fn stage_repository_paths(repo_path: &str, paths: &[String]) -> Result<Vec<W
 pub fn unstage_repository_paths(repo_path: &str, paths: &[String]) -> Result<Vec<WorktreeChange>, String> {
     if paths.is_empty() { return Err("Select at least one staged file to unstage.".to_string()); }
     let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
-    let mut index = repo.index().map_err(|error| format!("Could not open repository index: {error}"))?;
-    for value in paths {
-        let path = validate_git_operation_path(value)?;
-        index.remove_path(&path)
-            .map_err(|error| format!("Could not unstage {}: {error}", value))?;
+    for value in paths { validate_git_operation_path(value)?; }
+    // Reset only the selected index entries to HEAD. This preserves working-tree
+    // edits and turns staged additions back into ordinary untracked files.
+    for batch in paths.chunks(64) {
+        let mut args = vec!["reset", "--"];
+        for path in batch { args.push(path.as_str()); }
+        run_git(repo_path, &args)
+            .map_err(|error| format!("Could not unstage the selected files: {error}"))?;
     }
-    index.write().map_err(|error| format!("Could not save the updated index: {error}"))?;
     collect_worktree_changes(&repo)
 }
 
