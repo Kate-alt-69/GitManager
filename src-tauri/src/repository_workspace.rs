@@ -648,4 +648,59 @@ mod tests {
         after[0].worktree_status = "Deleted".to_string();
         assert_ne!(status_token(&before), status_token(&after));
     }
+
+    fn create_test_repository() -> (std::path::PathBuf, Repository) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("gitmanager-unstage-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+        let repo = Repository::init(&path).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "GitManager Tests").unwrap();
+        config.set_str("user.email", "gitmanager-tests@example.invalid").unwrap();
+        fs::write(path.join("tracked.txt"), "original\n").unwrap();
+        let add = hidden_command("git").arg("-C").arg(&path).args(["add", "--", "tracked.txt"]).output().unwrap();
+        assert!(add.status.success(), "git add failed: {}", String::from_utf8_lossy(&add.stderr));
+        let commit = hidden_command("git").arg("-C").arg(&path).args(["commit", "-m", "initial"]).output().unwrap();
+        assert!(commit.status.success(), "git commit failed: {}", String::from_utf8_lossy(&commit.stderr));
+        (path, repo)
+    }
+
+    #[test]
+    fn unstage_preserves_tracked_worktree_edits() {
+        let (path, repo) = create_test_repository();
+        fs::write(path.join("tracked.txt"), "edited locally\n").unwrap();
+        let add = hidden_command("git").arg("-C").arg(&path).args(["add", "--", "tracked.txt"]).output().unwrap();
+        assert!(add.status.success());
+        let changes = super::unstage_repository_paths(
+            path.to_str().unwrap(),
+            &["tracked.txt".to_string()],
+        ).unwrap();
+        let tracked = changes.iter().find(|change| change.path == "tracked.txt").unwrap();
+        assert_eq!(tracked.index_status, "Clean");
+        assert_eq!(tracked.worktree_status, "Modified");
+        assert!(!tracked.staged);
+        assert_eq!(fs::read_to_string(path.join("tracked.txt")).unwrap(), "edited locally\n");
+        drop(repo);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn unstage_turns_a_staged_addition_back_into_an_untracked_file() {
+        let (path, repo) = create_test_repository();
+        fs::write(path.join("new.txt"), "new local file\n").unwrap();
+        let add = hidden_command("git").arg("-C").arg(&path).args(["add", "--", "new.txt"]).output().unwrap();
+        assert!(add.status.success());
+        let changes = super::unstage_repository_paths(
+            path.to_str().unwrap(),
+            &["new.txt".to_string()],
+        ).unwrap();
+        let added = changes.iter().find(|change| change.path == "new.txt").unwrap();
+        assert_eq!(added.index_status, "Clean");
+        assert_eq!(added.worktree_status, "Untracked");
+        assert!(!added.staged);
+        assert_eq!(fs::read_to_string(path.join("new.txt")).unwrap(), "new local file\n");
+        drop(repo);
+        fs::remove_dir_all(path).unwrap();
+    }
 }
