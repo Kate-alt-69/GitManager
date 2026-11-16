@@ -621,7 +621,11 @@ pub fn prepare_and_pull_repository_update(
 
 #[cfg(test)]
 mod tests {
-    use super::{status_token, validate_git_operation_path, validate_relative_path, WorktreeChange};
+    use super::{
+        hidden_command, status_token, validate_git_operation_path, validate_relative_path,
+        Repository, WorktreeChange,
+    };
+    use std::fs;
 
     #[test]
     fn repository_paths_reject_parent_traversal() {
