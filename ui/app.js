@@ -1949,7 +1949,7 @@ function renderRepositoryChanges(repo) {
     });
   }
   const selected = changes.filter((change) => selectedChangePaths.has(change.path));
-  const canStage = selected.some((change) => !change.staged);
+  const canStage = selected.some((change) => change.worktreeStatus !== "Clean");
   const canUnstage = selected.some((change) => change.staged);
   const stagedCount = changes.filter((change) => change.staged).length;
   if (stageButton) stageButton.disabled = !canStage;
@@ -1997,7 +1997,7 @@ async function loadRepositoryChanges(repo) {
 
 async function applyRepositoryStageAction(repo, stage) {
   const selected = selectedRepositoryChanges.filter((change) =>
-    selectedChangePaths.has(change.path) && (stage ? !change.staged : change.staged)
+    selectedChangePaths.has(change.path) && (stage ? change.worktreeStatus !== "Clean" : change.staged)
   ).map((change) => change.path);
   if (!selected.length) return;
   const button = document.getElementById(stage ? "btn-stage-selected" : "btn-unstage-selected");
