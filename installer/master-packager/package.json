@@ -12,7 +12,7 @@
   "version": "1.0.0.0",
   "platform": "x64",
   "installDir": "%ProgramFiles%\\Kastrick's Software\\GitManager",
-  "icon": "src-tauri/icons/icon.ico",
+  "icon": "frontend/static/image/git-managar-orange_default-black.png",
   "fileSystemEntries": [
     {
       "sourcePath": "%GITMANAGER_APP_SOURCE%",
@@ -24,7 +24,7 @@
       "name": "GitManager",
       "description": "Git workspace manager by Kastrick",
       "target": "$.installDir\\git-manager.exe",
-      "icon": "src-tauri/icons/icon.ico"
+      "icon": "frontend/static/image/git-managar-orange_default-black.png"
     }
   ],
   "msi": {
