@@ -191,6 +191,7 @@ let activePullRepoPath = null;
 let activeOperationKind = "pull";
 let pendingDeletePath = null;
 let pendingDeleteIsDirectory = false;
+let activeCommitIndexTree = null;
 let selectedRepositoryChanges = [];
 let selectedChangePaths = new Set();
 let activeCodeSelectedPath = null;
@@ -493,6 +494,7 @@ function closePullPreflight() {
   activePullPreview = null;
   activePullRepoPath = null;
   activeOperationKind = "pull";
+  activeCommitIndexTree = null;
   pendingDeletePath = null;
   pendingDeleteIsDirectory = false;
 }
@@ -542,9 +544,25 @@ async function acceptAndPullRepoUpdate(repoPath) {
   }
 }
 
-function openCommitReview(repo) {
+async function openCommitReview(repo) {
+  const trigger = document.getElementById("btn-commit-staged");
+  if (trigger) { trigger.disabled = true; trigger.textContent = "Reviewing…"; }
+  try {
+    const preview = await tauriInvoke("preview_repository_commit", { repoPath: repo.path });
+    selectedRepositoryChanges = preview.changes || [];
+    activeCommitIndexTree = preview.indexTree;
+    selectedChangePaths.clear();
+    renderRepositoryChanges(repo);
+  } catch (failure) {
+    const list = document.getElementById("repo-code-changes-list");
+    if (list) list.insertAdjacentHTML("afterbegin", '<div class="repo-code-inline-error">' +
+      escapeHtml(String((failure && failure.message) || failure)) + '</div>');
+    return;
+  } finally {
+    if (trigger) { trigger.textContent = "Commit staged"; renderRepositoryChanges(repo); }
+  }
   const staged = selectedRepositoryChanges.filter((change) => change.staged);
-  if (!staged.length) return;
+  if (!staged.length || !activeCommitIndexTree) return;
   activeOperationKind = "commit";
   activePullPreview = null;
   activePullRepoPath = repo.path;
@@ -592,7 +610,9 @@ async function acceptRepositoryCommit(repoPath) {
   confirm.textContent = "Committing…";
   setServiceCheckingVisual(true, "Creating local commit…");
   try {
-    const result = await tauriInvoke("create_repository_commit", { repoPath, message });
+    const result = await tauriInvoke("create_repository_commit", {
+      repoPath, message, expectedIndexTree: activeCommitIndexTree
+    });
     const oid = Array.isArray(result) ? result[0] : "";
     closePullPreflight();
     setServiceCheckingVisual(false, oid ? "Commit created · " + String(oid).slice(0, 7) : "Commit created");
