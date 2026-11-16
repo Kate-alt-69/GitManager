@@ -185,3 +185,19 @@ pub(super) fn attach_and_resume(process_id: u32) -> Result<ProcessContainment, S
 
     Ok(ProcessContainment { _job: job })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        size_of, IoCounters, JobBasicLimitInformation, JobExtendedLimitInformation,
+        ThreadEntry32,
+    };
+
+    #[test]
+    fn win32_process_structures_match_the_x64_abi() {
+        assert_eq!(size_of::<IoCounters>(), 48);
+        assert_eq!(size_of::<JobBasicLimitInformation>(), 64);
+        assert_eq!(size_of::<JobExtendedLimitInformation>(), 144);
+        assert_eq!(size_of::<ThreadEntry32>(), 28);
+    }
+}

@@ -610,6 +610,13 @@ fn configure_supervised_ui_command(command: &mut Command) {
     }
 }
 
+fn take_disable_webview_gpu_flag(arguments: &mut Vec<std::ffi::OsString>) -> bool {
+    let flag = std::ffi::OsStr::new("--disable-webview-gpu");
+    let disabled = arguments.iter().any(|argument| argument == flag);
+    arguments.retain(|argument| argument != flag);
+    disabled
+}
+
 fn configure_webview_gpu_mode(command: &mut Command, disabled: bool) {
     #[cfg(windows)]
     if disabled {
@@ -782,12 +789,7 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     let mut app_args = separator
         .map(|index| arguments.iter().skip(index + 1).cloned().collect::<Vec<_>>())
         .unwrap_or_default();
-    let disable_webview_gpu = app_args.iter().any(|argument| {
-        argument.as_os_str() == std::ffi::OsStr::new("--disable-webview-gpu")
-    });
-    app_args.retain(|argument| {
-        argument.as_os_str() != std::ffi::OsStr::new("--disable-webview-gpu")
-    });
+    let disable_webview_gpu = take_disable_webview_gpu_flag(&mut app_args);
 
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(listener) => listener,
@@ -959,6 +961,27 @@ mod tests {
     use super::Uuid;
     use std::fs;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn gpu_compatibility_switch_is_consumed_without_losing_other_arguments() {
+        let mut arguments = vec![
+            std::ffi::OsString::from("--setup"),
+            std::ffi::OsString::from("--disable-webview-gpu"),
+            std::ffi::OsString::from("--profile"),
+            std::ffi::OsString::from("test"),
+        ];
+
+        assert!(super::take_disable_webview_gpu_flag(&mut arguments));
+        assert_eq!(
+            arguments,
+            vec![
+                std::ffi::OsString::from("--setup"),
+                std::ffi::OsString::from("--profile"),
+                std::ffi::OsString::from("test"),
+            ]
+        );
+        assert!(!super::take_disable_webview_gpu_flag(&mut arguments));
+    }
 
     #[test]
     fn suspension_window_is_bounded() {
