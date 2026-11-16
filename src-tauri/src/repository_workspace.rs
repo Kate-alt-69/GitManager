@@ -380,12 +380,15 @@ pub fn get_repository_changes(repo_path: &str) -> Result<Vec<WorktreeChange>, St
 pub fn read_repository_file_diff(repo_path: &str, relative_path: &str, staged: bool) -> Result<String, String> {
     validate_git_operation_path(relative_path)?;
     let args = if staged {
-        vec!["diff", "--cached", "--", relative_path]
+        vec!["diff", "--cached", "--no-ext-diff", "--no-color", "--", relative_path]
     } else {
-        vec!["diff", "--", relative_path]
+        vec!["diff", "--no-ext-diff", "--no-color", "--", relative_path]
     };
     let diff = run_git(repo_path, &args)
         .map_err(|error| format!("Could not read the selected file diff: {error}"))?;
+    if diff.len() > 512 * 1024 {
+        return Err("Diff preview is limited to 512 KiB. Use the file preview or open the diff in an external Git tool.".to_string());
+    }
     if diff.trim().is_empty() {
         return Ok(if staged {
             "No staged diff for this file. It may be untracked, unchanged in the index, or already fully unstaged.".to_string()
