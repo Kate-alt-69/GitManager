@@ -108,7 +108,7 @@ fn remote_tree_for_path<'repo>(repo: &'repo Repository, branch_name: &str, relat
         return Err("The selected remote path is not a directory.".to_string());
     }
     entry.to_object(repo).map_err(|error| error.to_string())?
-        .into_tree().map_err(|error| format!("Could not open remote directory tree: {error}"))
+        .into_tree().map_err(|_| "Could not open remote directory tree.".to_string())
 }
 
 pub fn list_repository_files(
@@ -423,10 +423,10 @@ pub fn prepare_and_pull_repository_update(
     let remote = preview.remote_name.as_str();
     let branch = preview.remote_branch.as_str();
     let output = if commit_created {
-        run_git(repo_path, &["pull", "--rebase", "--no-autostash", remote, branch])
+        run_git(repo_path, &["rebase", &format!("{remote}/{branch}")])
             .map_err(|error| format!("The local commit was created, but rebase/pull did not complete: {error}. Resolve any conflicts, then use Git's rebase continue or abort workflow."))?
     } else {
-        run_git(repo_path, &["pull", "--ff-only", remote, branch])
+        run_git(repo_path, &["merge", "--ff-only", &format!("{remote}/{branch}")])
             .map_err(|error| {
                 let recovery = if stash_created { " Your stash was preserved; it has not been applied." } else { "" };
                 format!("Pull failed: {error}.{recovery}")
