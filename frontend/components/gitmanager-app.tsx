@@ -523,6 +523,7 @@ function RepositoryDetail({
 	onRescan,
 	onRepositoryLoaded,
 	onPullCompleted,
+	onOpenCleaner,
 }: {
 	repo: GitRepository;
 	preferences: AppPreferences;
@@ -531,6 +532,7 @@ function RepositoryDetail({
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
 	onPullCompleted: (repoPath: string) => void;
+	onOpenCleaner: () => void;
 }) {
 	const [archives, setArchives] = useState<ArchiveSnapshot[]>([]);
 	const [repositoryDetails, setRepositoryDetails] = useState<GitRepository | null>(repo.details_loaded ? repo : null);
@@ -682,6 +684,7 @@ function RepositoryDetail({
 				repo={displayRepo}
 				onRepositoryUpdated={onRepositoryLoaded}
 				onPullCompleted={onPullCompleted}
+				onOpenCleaner={onOpenCleaner}
 			/>
 
 			<div className="gm-detail-columns">
@@ -803,6 +806,7 @@ function RepositoryPage({
 	onRescan,
 	onRepositoryLoaded,
 	onPullCompleted,
+	onOpenCleaner,
 	scanTruncated,
 }: {
 	repositories: GitRepository[];
@@ -824,6 +828,7 @@ function RepositoryPage({
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
 	onPullCompleted: (repoPath: string) => void;
+	onOpenCleaner: () => void;
 	scanTruncated: boolean;
 }) {
 	const dependencySet = useMemo(() => new Set(dependencies), [dependencies]);
@@ -847,6 +852,7 @@ function RepositoryPage({
 				onRescan={onRescan}
 				onRepositoryLoaded={onRepositoryLoaded}
 				onPullCompleted={onPullCompleted}
+				onOpenCleaner={onOpenCleaner}
 			/>
 		);
 	}
@@ -1389,9 +1395,10 @@ function SettingsPage({
 	);
 }
 
-function CleanerPage({ repositories, onRefresh }: { repositories: GitRepository[]; onRefresh: () => void }) {
+function CleanerPage({ repositories, onRefresh, initialRepoPath }: { repositories: GitRepository[]; onRefresh: () => void; initialRepoPath?: string }) {
 	const [scope, setScope] = useState<CleanerScope>("repository");
-	const [repoPath, setRepoPath] = useState(repositories[0]?.path ?? "");
+	const [repoPath, setRepoPath] = useState(initialRepoPath || repositories[0]?.path || "");
+	useEffect(() => { if (initialRepoPath) setRepoPath(initialRepoPath); }, [initialRepoPath]);
 	const [remoteUrl, setRemoteUrl] = useState("");
 	const [branch, setBranch] = useState("");
 	const [includeDependencies, setIncludeDependencies] = useState(false);
@@ -1648,6 +1655,7 @@ export function GitManagerApp() {
 							onRescan={() => void git.scan()}
 							onRepositoryLoaded={git.updateRepository}
 							onPullCompleted={git.clearUpdate}
+							onOpenCleaner={() => setPage("cleaner")}
 						/>
 					)}
 					{page === "accounts" && <AccountsPage accounts={git.accounts} onConnect={git.connectAccount} />}
@@ -1660,7 +1668,7 @@ export function GitManagerApp() {
 							onOpenCleaner={() => setPage("cleaner")}
 						/>
 					)}
-					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={() => void git.scan()} />}
+					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={() => void git.scan()} initialRepoPath={selectedRepo?.path} />}
 				</main>
 				<footer className="gm-footer">
 					<span><i /> {git.available ? "Tauri runtime connected" : "Browser preview mode"}</span>
