@@ -38,11 +38,9 @@ function statusLabel(change: WorktreeChange): string {
 export function RepositoryWorkspace({
 	repo,
 	onRepositoryUpdated,
-	onRefresh,
 }: {
 	repo: GitRepository;
 	onRepositoryUpdated: (repo: GitRepository) => void;
-	onRefresh: () => void;
 }) {
 	const remoteBranches = useMemo(
 		() => (repo.branches ?? []).filter((branch) => branch.is_remote),
@@ -401,7 +399,6 @@ export function RepositoryWorkspace({
 				+ (result.stashCreated ? " Unselected/local changes were saved in Git stash." : ""),
 			);
 			await Promise.all([refreshChanges(), refreshFiles(), refreshRepositoryDetails()]);
-			onRefresh();
 		} catch (cause) {
 			setError(messageOf(cause));
 			setNotice("");
