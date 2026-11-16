@@ -612,8 +612,8 @@ fn configure_supervised_ui_command(command: &mut Command) {
 
 fn take_disable_webview_gpu_flag(arguments: &mut Vec<std::ffi::OsString>) -> bool {
     let flag = std::ffi::OsStr::new("--disable-webview-gpu");
-    let disabled = arguments.iter().any(|argument| argument == flag);
-    arguments.retain(|argument| argument != flag);
+    let disabled = arguments.iter().any(|argument| argument.as_os_str() == flag);
+    arguments.retain(|argument| argument.as_os_str() != flag);
     disabled
 }
 

@@ -222,7 +222,7 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
 
 
 def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
-    """Count the actual build graphs for the app and its two packaged sidecars.
+    """Count the actual build graphs for the app and its packaged sidecars.
 
     Cargo's progress bar reports compilation units (including build scripts and
     proc-macro targets), not unique crates. This report uses package-scoped
