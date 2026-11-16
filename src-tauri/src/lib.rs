@@ -1,4 +1,5 @@
 mod process_utils;
+mod repository_workspace;
 pub mod git_info;
 pub mod remote_providers;
 pub mod scanner;
@@ -349,6 +350,43 @@ async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, Stri
         let git_dir = workdir.join(".git");
         extract_git_repository_info(&workdir, &git_dir)
     }).await.map_err(|error| format!("Repository inspection task failed: {error}"))?
+}
+
+
+#[tauri::command]
+async fn list_repository_files(
+    repo_path: String, relative_path: Option<String>, source: Option<String>, branch: Option<String>,
+) -> Result<Vec<repository_workspace::RepositoryFileEntry>, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::list_repository_files(
+        &repo_path, relative_path.as_deref(), source.as_deref().unwrap_or("local"), branch.as_deref()
+    )).await.map_err(|error| format!("Repository file listing task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_repository_file(
+    repo_path: String, relative_path: String, source: Option<String>, branch: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::read_repository_file(
+        &repo_path, &relative_path, source.as_deref().unwrap_or("local"), branch.as_deref()
+    )).await.map_err(|error| format!("Repository file read task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn preview_repository_pull(repo_path: String) -> Result<repository_workspace::PullPreview, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::preview_repository_pull(&repo_path))
+        .await.map_err(|error| format!("Pull preview task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn prepare_and_pull_repository_update(
+    repo_path: String, expected_branch: String, expected_local_oid: String,
+    expected_remote_oid: String, expected_status_token: String, mode: String,
+    stage_paths: Vec<String>, commit_message: Option<String>,
+) -> Result<repository_workspace::PullExecutionResult, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::prepare_and_pull_repository_update(
+        &repo_path, &expected_branch, &expected_local_oid, &expected_remote_oid,
+        &expected_status_token, &mode, &stage_paths, commit_message.as_deref().unwrap_or("")
+    )).await.map_err(|error| format!("Confirmed Pull task failed: {error}"))?
 }
 
 
@@ -926,6 +964,10 @@ pub fn run() {
             sign_windows_installer,
             scan_machine_repositories,
             inspect_repository,
+            list_repository_files,
+            read_repository_file,
+            preview_repository_pull,
+            prepare_and_pull_repository_update,
             detect_github_identity,
             connect_git_account,
             check_repo_updates_now,
