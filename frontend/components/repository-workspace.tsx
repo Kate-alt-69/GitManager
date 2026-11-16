@@ -563,6 +563,14 @@ export function RepositoryWorkspace({
 							<button type="button" onClick={() => setCommitOpen(false)} disabled={busy}>×</button>
 						</div>
 						<p>{commitPreview?.changes.filter((change) => change.staged).length ?? 0} staged paths will be included. Unstaged changes remain in your working tree.</p>
+						<div className="gm-workspace-commit-paths" aria-label="Staged paths included in this commit">
+							{commitPreview?.changes.filter((change) => change.staged).slice(0, 30).map((change) => (
+								<div key={change.path}><strong>{change.path}</strong><small>{change.indexStatus}</small></div>
+							))}
+							{(commitPreview?.changes.filter((change) => change.staged).length ?? 0) > 30 && (
+								<p>And {(commitPreview?.changes.filter((change) => change.staged).length ?? 0) - 30} more staged paths…</p>
+							)}
+						</div>
 						<label className="gm-workspace-message">
 							<span>Commit message</span>
 							<textarea rows={3} maxLength={200} value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Describe this change…" />
