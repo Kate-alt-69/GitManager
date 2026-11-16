@@ -54,6 +54,7 @@ and should be kept in sync with the native serializable structs.
 
 - Stage and unstage accept explicit paths only; Git pathspecs are treated literally.
 - Unstage resets only selected index entries to HEAD. It does not overwrite local file contents; a staged addition becomes an ordinary untracked file.
+- Before the first commit exists, Unstage removes only the selected index entries with `git rm --cached`, leaving the files on disk.
 - Commit review records the staged tree ID. If the index changes before confirmation, commit creation is rejected.
 - Commit messages are required and limited to 200 characters.
 
