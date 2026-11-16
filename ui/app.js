@@ -490,7 +490,11 @@ async function openPullPreflight(repoPath) {
 function closePullPreflight() {
   document.getElementById("operation-modal-backdrop")?.classList.add("hidden");
   const confirm = document.getElementById("btn-confirm-pull");
-  if (confirm) { confirm.classList.remove("btn-danger"); confirm.classList.add("btn-success"); }
+  if (confirm) {
+    confirm.classList.remove("btn-danger");
+    confirm.classList.add("btn-success");
+    confirm.textContent = "Yes, Pull";
+  }
   activePullPreview = null;
   activePullRepoPath = null;
   activeOperationKind = "pull";
@@ -2217,6 +2221,7 @@ function renderSelectedRepositoryDetails() {
   if (!headerEl || !treeContainer || !inspectorEl) return;
 
   const repo = getRepositoryById(selectedRepoId);
+  if (activePullRepoPath && (!repo || repo.path !== activePullRepoPath)) closePullPreflight();
   const detailView = document.getElementById("repository-detail-view");
   const homeView = document.getElementById("repo-home-content");
   if (!repo) {
