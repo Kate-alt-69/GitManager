@@ -560,13 +560,21 @@ pub fn prepare_and_pull_repository_update(
 
 #[cfg(test)]
 mod tests {
-    use super::{status_token, validate_relative_path, WorktreeChange};
+    use super::{status_token, validate_git_operation_path, validate_relative_path, WorktreeChange};
 
     #[test]
     fn repository_paths_reject_parent_traversal() {
         assert!(validate_relative_path("../outside").is_err());
         assert!(validate_relative_path("src/../../outside").is_err());
         assert!(validate_relative_path("src/main.rs").is_ok());
+    }
+
+    #[test]
+    fn git_operations_cannot_target_git_metadata() {
+        assert!(validate_git_operation_path(".git").is_err());
+        assert!(validate_git_operation_path(".git/config").is_err());
+        assert!(validate_git_operation_path("src/main.rs").is_ok());
+        assert!(validate_git_operation_path(".gitignore").is_ok());
     }
 
     #[test]
