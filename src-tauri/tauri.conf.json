@@ -30,7 +30,6 @@
   "bundle": {
     "active": true,
     "targets": [
-      "nsis",
       "deb",
       "rpm",
       "appimage",
@@ -44,18 +43,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "windows": {
-      "webviewInstallMode": {
-        "type": "downloadBootstrapper"
-      },
-      "nsis": {
-        "installMode": "currentUser",
-        "installerHooks": "./windows/hooks.nsh",
-        "compression": "lzma",
-        "startMenuFolder": "Kastrick's Software",
-        "installerIcon": "icons/icon.ico"
-      }
-    },
     "linux": {
       "deb": {
         "depends": []
