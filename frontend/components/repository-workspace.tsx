@@ -367,9 +367,13 @@ export function RepositoryWorkspace({
 			: current.filter((item) => item !== path));
 	}
 
+	const hasPullConflicts = Boolean(pullPreview?.changes.some(
+		(change) => change.indexStatus === "Conflict" || change.worktreeStatus === "Conflict",
+	));
 	const canConfirmPull = Boolean(
 		pullPreview
 		&& pullPreview.canPull
+		&& !hasPullConflicts
 		&& !pullBusy
 		&& (
 			pullPreview.changes.length === 0
@@ -583,6 +587,11 @@ export function RepositoryWorkspace({
 							<div><span>Local-only commits</span><strong>{pullPreview.commitsAhead}</strong></div>
 							<div><span>Local changes</span><strong>{pullPreview.changes.length}</strong></div>
 						</div>
+						{hasPullConflicts && (
+							<div className="gm-workspace-pull-blocked" role="alert">
+								Resolve existing merge conflicts before preparing this Pull. No local changes will be staged or stashed.
+							</div>
+						)}
 						{!pullPreview.canPull && (
 							<div className="gm-workspace-pull-blocked" role="alert">
 								{pullPreview.commitsAhead > 0
