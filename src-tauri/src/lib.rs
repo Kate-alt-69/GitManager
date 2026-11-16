@@ -729,7 +729,6 @@ async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, Stri
 
 
 #[tauri::command]
-#[tauri::command]
 async fn list_repository_files(
     repo_path: String, relative_path: Option<String>, source: Option<String>, branch: Option<String>,
 ) -> Result<Vec<repository_workspace::RepositoryFileEntry>, String> {
@@ -815,6 +814,7 @@ async fn prepare_and_pull_repository_update(
 }
 
 
+#[tauri::command]
 async fn list_local_repository_branches(repo_path: String) -> Result<Vec<git_info::BranchInfo>, String> {
     tokio::task::spawn_blocking(move || git_info::list_local_repository_branches(Path::new(&repo_path)))
         .await
