@@ -91,7 +91,6 @@ jobs:
           - platform: windows-latest
           - platform: ubuntu-22.04
           - platform: ubuntu-22.04-arm
-          - platform: macos-13
           - platform: macos-latest
 
     runs-on: ${{ matrix.platform }}
@@ -107,7 +106,7 @@ jobs:
         if: startsWith(matrix.platform, 'ubuntu-22.04')
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev pkg-config
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev pkg-config rpm
 
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
@@ -236,6 +235,7 @@ jobs:
             target/release/gitmanager-setup*.exe
             target/windows-installers/*.msi
             target/windows-installers/*.msix
+            target/windows-installers/*.pfx
           if-no-files-found: error
           compression-level: 9
 
