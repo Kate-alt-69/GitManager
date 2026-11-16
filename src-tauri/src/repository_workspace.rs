@@ -354,6 +354,95 @@ fn validate_stage_path(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_git_operation_path(value: &str) -> Result<PathBuf, String> {
+    let path = validate_relative_path(value)?;
+    if path.as_os_str().is_empty() {
+        return Err("A selected repository path is empty.".to_string());
+    }
+    if path.components().any(|component| matches!(component, Component::Normal(part) if part.to_string_lossy().eq_ignore_ascii_case(".git"))) {
+        return Err("GitManager does not allow file operations inside the .git directory.".to_string());
+    }
+    Ok(path)
+}
+
+pub fn get_repository_changes(repo_path: &str) -> Result<Vec<WorktreeChange>, String> {
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    collect_worktree_changes(&repo)
+}
+
+pub fn stage_repository_paths(repo_path: &str, paths: &[String]) -> Result<Vec<WorktreeChange>, String> {
+    if paths.is_empty() { return Err("Select at least one file to stage.".to_string()); }
+    for path in paths { validate_git_operation_path(path)?; }
+    let mut args = vec!["add", "--"];
+    for path in paths { args.push(path.as_str()); }
+    run_git(repo_path, &args).map_err(|error| format!("Could not stage the selected files: {error}"))?;
+    get_repository_changes(repo_path)
+}
+
+pub fn unstage_repository_paths(repo_path: &str, paths: &[String]) -> Result<Vec<WorktreeChange>, String> {
+    if paths.is_empty() { return Err("Select at least one staged file to unstage.".to_string()); }
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let mut index = repo.index().map_err(|error| format!("Could not open repository index: {error}"))?;
+    for value in paths {
+        let path = validate_git_operation_path(value)?;
+        index.remove_path(&path)
+            .map_err(|error| format!("Could not unstage {}: {error}", value))?;
+    }
+    index.write().map_err(|error| format!("Could not save the updated index: {error}"))?;
+    collect_worktree_changes(&repo)
+}
+
+pub fn create_repository_commit(repo_path: &str, message: &str) -> Result<(String, Vec<WorktreeChange>), String> {
+    let message = message.trim();
+    if message.is_empty() { return Err("Enter a commit message before creating a commit.".to_string()); }
+    if message.len() > 200 { return Err("Commit messages must be 200 characters or fewer.".to_string()); }
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let index = repo.index().map_err(|error| format!("Could not open repository index: {error}"))?;
+    let staged_tree = index.write_tree().map_err(|error| format!("Could not write staged tree: {error}"))?;
+    if let Ok(head) = repo.head() {
+        if let Ok(commit) = head.peel_to_commit() {
+            let current_tree = commit.tree().map_err(|error| format!("Could not read HEAD tree: {error}"))?;
+            if current_tree.id() == staged_tree {
+                return Err("There are no staged changes to commit. Stage files first.".to_string());
+            }
+        }
+    } else if staged_tree == repo.treebuilder(None).map_err(|error| error.to_string())?.write().map_err(|error| error.to_string())? {
+        return Err("There are no staged changes to commit. Stage files first.".to_string());
+    }
+    run_git(repo_path, &["commit", "-m", message])
+        .map_err(|error| format!("Git could not create the commit: {error}"))?;
+    let updated = Repository::open(repo_path).map_err(|error| error.to_string())?;
+    let oid = updated.head().map_err(|error| error.to_string())?
+        .target().ok_or_else(|| "Git created a commit but HEAD has no target.".to_string())?;
+    let changes = collect_worktree_changes(&updated)?;
+    Ok((oid.to_string(), changes))
+}
+
+pub fn delete_repository_path(repo_path: &str, relative_path: &str) -> Result<String, String> {
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let workdir = repo.workdir().ok_or_else(|| "This repository has no working directory.".to_string())?;
+    let root = fs::canonicalize(workdir).map_err(|error| format!("Could not resolve repository directory: {error}"))?;
+    let relative = validate_git_operation_path(relative_path)?;
+    let parent_relative = relative.parent().unwrap_or_else(|| Path::new(""));
+    let parent = fs::canonicalize(root.join(parent_relative))
+        .map_err(|error| format!("Could not resolve the selected item's parent directory: {error}"))?;
+    if !parent.starts_with(&root) {
+        return Err("The selected item is outside the repository.".to_string());
+    }
+    let name = relative.file_name().ok_or_else(|| "Select a file or folder inside the repository.".to_string())?;
+    let target = parent.join(name);
+    let metadata = fs::symlink_metadata(&target)
+        .map_err(|error| format!("Could not inspect the selected item: {error}"))?;
+    if metadata.file_type().is_symlink() {
+        fs::remove_file(&target).map_err(|error| format!("Could not remove the symbolic link: {error}"))?;
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(&target).map_err(|error| format!("Could not remove the selected directory: {error}"))?;
+    } else {
+        fs::remove_file(&target).map_err(|error| format!("Could not remove the selected file: {error}"))?;
+    }
+    Ok(format!("Deleted {relative_path}. Tracked deletions are now visible in Changes and can still be restored before committing."))
+}
+
 pub fn prepare_and_pull_repository_update(
     repo_path: &str,
     expected_branch: &str,
