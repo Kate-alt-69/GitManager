@@ -52,6 +52,10 @@
       "internetClient",
       "privateNetworkClientServer"
     ],
-    "packageDescription": "GitManager — a native Git workspace manager by Kastrick."
+    "packageDescription": "GitManager — a native Git workspace manager by Kastrick.",
+    "digitalSignature": {
+      "signWith": "GenerateTestCertificate",
+      "timestampServer": "http://timestamp.sectigo.com"
+    }
   }
 }
