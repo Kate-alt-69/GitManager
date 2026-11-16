@@ -39,10 +39,12 @@ export function RepositoryWorkspace({
 	repo,
 	onRepositoryUpdated,
 	onPullCompleted,
+	onOpenCleaner,
 }: {
 	repo: GitRepository;
 	onRepositoryUpdated: (repo: GitRepository) => void;
 	onPullCompleted: (repoPath: string) => void;
+	onOpenCleaner: () => void;
 }) {
 	const remoteBranches = useMemo(
 		() => (repo.branches ?? []).filter((branch) => branch.is_remote),
@@ -458,6 +460,7 @@ export function RepositoryWorkspace({
 				<button type="button" className="gm-button gm-button-primary" onClick={() => void openPullPreview()} disabled={!repo.has_remote || pullBusy || busy}>
 					{pullBusy && !pullPreview ? "Checking…" : "Pull / Sync"}
 				</button>
+				<button type="button" className="gm-button gm-button-secondary" onClick={onOpenCleaner}>Developer Cleaner</button>
 				<button type="button" className="gm-button gm-button-ghost" onClick={() => { void refreshChanges(); void refreshFiles(); }} disabled={busy || loadingFiles || loadingChanges}>Refresh</button>
 			</div>
 
