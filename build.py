@@ -208,6 +208,7 @@ def windows_packaging_search_directories() -> List[Path]:
     for root in roots:
         directories.extend([
             root / "NSIS",
+            root / "NSIS" / "Bin",
             root / "WiX Toolset v3.14" / "bin",
             root / "WiX Toolset v3.13" / "bin",
             root / "WiX Toolset v3.12" / "bin",

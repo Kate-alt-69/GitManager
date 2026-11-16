@@ -2,7 +2,7 @@
 
 ## Process boundaries
 
-- The desktop executable hands off to the bundled crash_helper sidecar.
+- The desktop executable stays alive as the process-tree root while its bundled crash_helper sidecar supervises the Tauri UI.
 - crash_helper starts and supervises only the Tauri UI process.
 - git-manager-service is a separate executable launched directly by the OS service manager.
 - The UI and helper never place the background service in their process tree or termination scope.

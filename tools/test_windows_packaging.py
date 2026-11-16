@@ -23,6 +23,10 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
             ),
         )
 
+    def test_nsis_bin_directory_is_searched_for_makensis(self):
+        directories = [str(path).replace("\\", "/") for path in BUILD.windows_packaging_search_directories()]
+        self.assertTrue(any(path.endswith("/NSIS/Bin") for path in directories))
+
     def test_tauri_builds_both_nsis_and_wix_installers(self):
         config = json.loads((ROOT / "src-tauri" / "tauri.windows.conf.json").read_text(encoding="utf-8"))
         self.assertEqual(set(config["bundle"]["targets"]), {"nsis", "msi"})
