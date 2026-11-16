@@ -169,7 +169,7 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $signTargets = @("target/windows-package/source/git-manager.exe", "target/windows-package/source/git-manager-service.exe", "target/windows-package/source/crash_helper.exe", "target/windows-package/source/gitm.exe", "target/windows-package/source/gitmanager-setup.exe")
+          $signTargets = @("target/windows-package/source/git-manager.exe", "target/windows-package/source/resources/git-manager-service.exe", "target/windows-package/source/resources/crash_helper.exe", "target/windows-package/source/resources/gitm.exe", "target/windows-package/source/resources/gitmanager-setup.exe")
           $verifyTargets = $signTargets
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
