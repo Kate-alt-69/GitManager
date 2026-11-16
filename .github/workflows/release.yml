@@ -152,10 +152,12 @@ jobs:
         run: |
           $installer = "target/release/bundle/nsis/GitManager-Setup.exe"
           $setupHelper = "target/release/GitManager-Setup.exe"
+          $wixInstaller = Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1
           if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe NSIS installer was not created." }
           if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
+          if (-not $wixInstaller) { throw "The Tauri WiX MSI installer was not created." }
 
-          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/crash_helper.exe", "target/release/gitm.exe", $installer)
+          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/crash_helper.exe", "target/release/gitm.exe", $installer, $wixInstaller.FullName)
           $verifyTargets = $signTargets + @("target/release/gitm.exe", $setupHelper)
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
