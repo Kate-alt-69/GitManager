@@ -55,6 +55,13 @@ pub struct PullExecutionResult {
     pub rebased: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryCommitPreview {
+    pub changes: Vec<WorktreeChange>,
+    pub index_tree: String,
+}
+
 fn validate_relative_path(value: &str) -> Result<PathBuf, String> {
     let normalized = value.replace('\\', "/");
     let path = Path::new(&normalized);
@@ -410,13 +417,26 @@ pub fn unstage_repository_paths(repo_path: &str, paths: &[String]) -> Result<Vec
     collect_worktree_changes(&repo)
 }
 
-pub fn create_repository_commit(repo_path: &str, message: &str) -> Result<(String, Vec<WorktreeChange>), String> {
+pub fn preview_repository_commit(repo_path: &str) -> Result<RepositoryCommitPreview, String> {
+    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let mut index = repo.index().map_err(|error| format!("Could not open repository index: {error}"))?;
+    let index_tree = index.write_tree().map_err(|error| format!("Could not preview staged files: {error}"))?;
+    Ok(RepositoryCommitPreview {
+        changes: collect_worktree_changes(&repo)?,
+        index_tree: index_tree.to_string(),
+    })
+}
+
+pub fn create_repository_commit(repo_path: &str, message: &str, expected_index_tree: &str) -> Result<(String, Vec<WorktreeChange>), String> {
     let message = message.trim();
     if message.is_empty() { return Err("Enter a commit message before creating a commit.".to_string()); }
     if message.len() > 200 { return Err("Commit messages must be 200 characters or fewer.".to_string()); }
     let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
     let mut index = repo.index().map_err(|error| format!("Could not open repository index: {error}"))?;
     let staged_tree = index.write_tree().map_err(|error| format!("Could not write staged tree: {error}"))?;
+    if staged_tree.to_string() != expected_index_tree {
+        return Err("The staged index changed after this commit preview. Nothing was committed; review the current staged files again.".to_string());
+    }
     if let Ok(head) = repo.head() {
         if let Ok(commit) = head.peel_to_commit() {
             let current_tree = commit.tree().map_err(|error| format!("Could not read HEAD tree: {error}"))?;
