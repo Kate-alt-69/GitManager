@@ -102,6 +102,48 @@ export interface UpdateAlert {
 	prompt_message?: string;
 }
 
+export interface RepositoryFileEntry {
+	name: string;
+	path: string;
+	isDir: boolean;
+	isSymlink: boolean;
+	sizeBytes: number;
+}
+
+export interface WorktreeChange {
+	path: string;
+	indexStatus: string;
+	worktreeStatus: string;
+	staged: boolean;
+}
+
+export interface PullPreview {
+	repoName: string;
+	branch: string;
+	remoteName: string;
+	remoteBranch: string;
+	localOid: string;
+	remoteOid: string;
+	commitsAhead: number;
+	commitsBehind: number;
+	changes: WorktreeChange[];
+	statusToken: string;
+	canPull: boolean;
+}
+
+export interface RepositoryCommitPreview {
+	changes: WorktreeChange[];
+	indexTree: string;
+}
+
+export interface PullExecutionResult {
+	message: string;
+	commitCreated: boolean;
+	stashCreated: boolean;
+	rebased: boolean;
+}
+
+
 export interface ScanSummary {
 	repositories: GitRepository[];
 	dependency_repo_ids: string[];
