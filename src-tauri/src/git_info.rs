@@ -1,4 +1,5 @@
-use git2::{BranchType, Repository, Sort, StatusOptions};
+use git2::build::CheckoutBuilder;
+use git2::{BranchType, Repository, RepositoryState, Sort, StatusOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -368,6 +369,102 @@ fn extract_git_repository_info_with_detail(workdir: &Path, git_dir_path: &Path, 
         source_kind: "local_scan".to_string(),
         details_loaded: load_details,
     })
+}
+
+
+/// Lists local branches without loading commit history or walking the working tree.
+pub fn list_local_repository_branches(workdir: &Path) -> Result<Vec<BranchInfo>, String> {
+    let repo = Repository::open(workdir)
+        .map_err(|error| format!("Failed to open Git repository: {error}"))?;
+    let head_name = repo.head().ok()
+        .and_then(|reference| reference.shorthand().map(str::to_string));
+    let default_branch = repo.find_reference("refs/remotes/origin/HEAD").ok()
+        .and_then(|reference| reference.symbolic_target().map(str::to_string))
+        .and_then(|target| target.strip_prefix("refs/remotes/origin/").map(str::to_string));
+    let branches = repo.branches(Some(BranchType::Local))
+        .map_err(|error| format!("Could not list local branches: {error}"))?;
+    let mut result = Vec::new();
+
+    for branch_result in branches {
+        let (branch, _) = branch_result
+            .map_err(|error| format!("Could not read local branch: {error}"))?;
+        let name = branch.name()
+            .map_err(|error| format!("Could not decode branch name: {error}"))?
+            .unwrap_or("unknown")
+            .to_string();
+        let target_oid = branch.get().target().map(|oid| oid.to_string()).unwrap_or_default();
+        let upstream = branch.upstream().ok()
+            .and_then(|value| value.name().ok().flatten().map(str::to_string));
+        result.push(BranchInfo {
+            is_head: head_name.as_deref() == Some(name.as_str()),
+            is_remote: false,
+            is_default: default_branch.as_deref() == Some(name.as_str()),
+            name,
+            target_oid,
+            upstream,
+        });
+    }
+
+    result.sort_by(|left, right| {
+        right.is_head.cmp(&left.is_head)
+            .then_with(|| right.is_default.cmp(&left.is_default))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(result)
+}
+
+/// Switches to an existing local branch only when doing so cannot overwrite working-tree changes.
+pub fn switch_repository_branch(workdir: &Path, branch_name: &str) -> Result<GitRepositoryInfo, String> {
+    let requested = branch_name.trim();
+    if requested.is_empty() {
+        return Err("Choose a local branch before switching.".to_string());
+    }
+
+    let git_dir = {
+        let repo = Repository::open(workdir)
+            .map_err(|error| format!("Failed to open Git repository: {error}"))?;
+
+        if repo.state() != RepositoryState::Clean {
+            return Err("Branch switching is unavailable while a Git operation is in progress. Finish or abort that operation first.".to_string());
+        }
+
+        let mut status_options = StatusOptions::new();
+        status_options.include_untracked(true).recurse_untracked_dirs(false);
+        let statuses = repo.statuses(Some(&mut status_options))
+            .map_err(|error| format!("Could not inspect the working tree before switching branches: {error}"))?;
+        if !statuses.is_empty() {
+            return Err("Branch switching is blocked because this repository has uncommitted or untracked changes. Commit or stash them first.".to_string());
+        }
+
+        let branch = repo.find_branch(requested, BranchType::Local)
+            .map_err(|_| format!("Local branch '{requested}' does not exist. Refresh the branch list and try again."))?;
+        let reference_name = branch.get().name()
+            .ok_or_else(|| "The selected branch has an invalid reference name.".to_string())?
+            .to_string();
+        let original_reference = repo.head().ok()
+            .and_then(|reference| reference.name().map(str::to_string));
+        let original_oid = repo.head().ok().and_then(|reference| reference.target());
+
+        if original_reference.as_deref() != Some(reference_name.as_str()) {
+            repo.set_head(&reference_name)
+                .map_err(|error| format!("Could not select branch '{requested}': {error}"))?;
+            let mut checkout = CheckoutBuilder::new();
+            checkout.safe();
+            if let Err(error) = repo.checkout_head(Some(&mut checkout)) {
+                if let Some(reference) = original_reference.as_deref() {
+                    let _ = repo.set_head(reference);
+                } else if let Some(oid) = original_oid {
+                    let _ = repo.set_head_detached(oid);
+                }
+                return Err(format!("Could not safely switch to '{requested}': {error}"));
+            }
+        }
+
+        repo.path().to_path_buf()
+    };
+
+    extract_git_repository_info(workdir, &git_dir)
+        .map_err(|error| format!("Branch switched, but repository details could not be refreshed: {error}"))
 }
 
 /// Assigns a visual swimlane index (0..N) for each commit node in the Git graph tree

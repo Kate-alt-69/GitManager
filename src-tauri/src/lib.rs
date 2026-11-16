@@ -728,6 +728,22 @@ async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, Stri
 
 
 #[tauri::command]
+async fn list_local_repository_branches(repo_path: String) -> Result<Vec<git_info::BranchInfo>, String> {
+    tokio::task::spawn_blocking(move || git_info::list_local_repository_branches(Path::new(&repo_path)))
+        .await
+        .map_err(|error| format!("Branch listing task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn switch_repository_branch(repo_path: String, branch_name: String) -> Result<GitRepositoryInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        git_info::switch_repository_branch(Path::new(&repo_path), &branch_name)
+    })
+    .await
+    .map_err(|error| format!("Branch switch task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, String> {
     tokio::task::spawn_blocking(remote_providers::detect_github_identity).await
         .map_err(|error| format!("GitHub identity detection task failed: {error}"))?
@@ -1422,6 +1438,8 @@ pub fn run() {
             sign_windows_installer,
             scan_machine_repositories,
             inspect_repository,
+            list_local_repository_branches,
+            switch_repository_branch,
             detect_github_identity,
             get_app_version,
             open_external_url,
