@@ -288,7 +288,7 @@ export function RepositoryWorkspace({
 	async function deleteEntry(entry: RepositoryFileEntry) {
 		if (source !== "local") return;
 		const accepted = window.confirm(
-			"Delete " + entry.path + " from this local repository?\n\nThis removes the file or folder from disk. Tracked deletions will remain visible in Changes and can be restored before committing.",
+			"Delete " + entry.path + " from this local repository?\n\nThis removes the file or folder from disk. Tracked deletions remain visible in Changes and can be restored before committing; untracked data is not recoverable through Git.",
 		);
 		if (!accepted) return;
 		setBusy(true);
