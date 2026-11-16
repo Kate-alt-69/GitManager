@@ -373,7 +373,7 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 .gm-modal-heading p { margin: 4px 0 0; color: #8b949e; font-size: 10px; }
 .gm-modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 17px; border-top: 1px solid #303a45; }
 .gm-not-found { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--canvas); color: var(--text); text-align: center; }
-.gm-not-found-mark { width: 48px; height: 48px; display: grid; place-items: center; border: 1px solid #3c4c5f; border-radius: 12px; background: #192b3d; color: #9bd1ff; font-weight: 800; }
+.gm-not-found-mark { width: 64px; height: 64px; display: block; object-fit: contain; }
 .gm-not-found h1 { margin: 16px 0 4px; font-size: 22px; }
 .gm-not-found p { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
 
@@ -473,6 +473,9 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 .gm-loading-logo-ring { animation: gm-logo-spin 1.8s linear infinite; }
 .gm-loading-logo-center { z-index: 1; }
 @keyframes gm-logo-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+	.gm-loading-logo-ring { animation: none; }
+}
 .gm-boot-brand { display: flex; flex-direction: column; align-items: center; gap: 1px; }
 .gm-boot-brand strong { font-size: 18px; letter-spacing: -.025em; }
 .gm-boot-brand span { color: #8b949e; font-size: 10px; letter-spacing: .04em; }
