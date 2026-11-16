@@ -10,6 +10,7 @@ use walkdir::WalkDir;
 use crate::process_utils::hidden_command;
 
 const MAX_PREVIEW_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_DIRECTORY_ENTRIES: usize = 2_000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,6 +154,11 @@ pub fn list_repository_files(
             let size_bytes = if entry.kind() == Some(ObjectType::Blob) {
                 repo.find_blob(entry.id()).map(|blob| blob.size() as u64).unwrap_or(0)
             } else { 0 };
+            if entries.len() >= MAX_DIRECTORY_ENTRIES {
+                return Err(format!(
+                    "This remote folder contains more than {MAX_DIRECTORY_ENTRIES} items. Open a subfolder to browse a smaller section."
+                ));
+            }
             entries.push(RepositoryFileEntry { name, path, is_dir, is_symlink, size_bytes });
         }
     } else {
@@ -175,6 +181,11 @@ pub fn list_repository_files(
             if !is_symlink {
                 let canonical = fs::canonicalize(item.path()).map_err(|error| error.to_string())?;
                 if !canonical.starts_with(&root) { continue; }
+            }
+            if entries.len() >= MAX_DIRECTORY_ENTRIES {
+                return Err(format!(
+                    "This local folder contains more than {MAX_DIRECTORY_ENTRIES} items. Open a subfolder to browse a smaller section."
+                ));
             }
             entries.push(RepositoryFileEntry { name, path, is_dir, is_symlink, size_bytes });
         }
