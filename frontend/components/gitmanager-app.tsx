@@ -522,6 +522,7 @@ function RepositoryDetail({
 	onOpenWebsite,
 	onRescan,
 	onRepositoryLoaded,
+	onPullCompleted,
 }: {
 	repo: GitRepository;
 	preferences: AppPreferences;
@@ -529,6 +530,7 @@ function RepositoryDetail({
 	onOpenWebsite: (url: string) => void;
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
+	onPullCompleted: (repoPath: string) => void;
 }) {
 	const [archives, setArchives] = useState<ArchiveSnapshot[]>([]);
 	const [repositoryDetails, setRepositoryDetails] = useState<GitRepository | null>(repo.details_loaded ? repo : null);
@@ -679,6 +681,7 @@ function RepositoryDetail({
 			<RepositoryWorkspace
 				repo={displayRepo}
 				onRepositoryUpdated={onRepositoryLoaded}
+				onPullCompleted={onPullCompleted}
 			/>
 
 			<div className="gm-detail-columns">
@@ -799,6 +802,7 @@ function RepositoryPage({
 	preferences,
 	onRescan,
 	onRepositoryLoaded,
+	onPullCompleted,
 	scanTruncated,
 }: {
 	repositories: GitRepository[];
@@ -819,6 +823,7 @@ function RepositoryPage({
 	preferences: AppPreferences;
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
+	onPullCompleted: (repoPath: string) => void;
 	scanTruncated: boolean;
 }) {
 	const dependencySet = useMemo(() => new Set(dependencies), [dependencies]);
@@ -841,6 +846,7 @@ function RepositoryPage({
 				onOpenWebsite={(url) => { void invoke("open_external_url", { url }).catch((error) => window.alert(String(error))); }}
 				onRescan={onRescan}
 				onRepositoryLoaded={onRepositoryLoaded}
+				onPullCompleted={onPullCompleted}
 			/>
 		);
 	}
@@ -1641,6 +1647,7 @@ export function GitManagerApp() {
 							preferences={git.preferences}
 							onRescan={() => void git.scan()}
 							onRepositoryLoaded={git.updateRepository}
+							onPullCompleted={git.clearUpdate}
 						/>
 					)}
 					{page === "accounts" && <AccountsPage accounts={git.accounts} onConnect={git.connectAccount} />}
