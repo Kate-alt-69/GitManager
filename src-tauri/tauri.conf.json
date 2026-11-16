@@ -14,11 +14,11 @@
     "windows": [
       {
         "title": "GitManager — Pure-Rust Local & Remote Git Tree Explorer",
-        "width": 1360,
-        "height": 860,
+        "width": 1280,
+        "height": 800,
         "center": true,
-        "minWidth": 980,
-        "minHeight": 640,
+        "minWidth": 720,
+        "minHeight": 520,
         "resizable": true,
         "fullscreen": false
       }
@@ -66,7 +66,7 @@
     },
     "resources": {
       "../tools/gitmanager_cleaner.py": "tools/gitmanager_cleaner.py",
-      "../tools/runtime/python": "python"
+      "../tools/runtime/python/": "python/"
     },
     "publisher": "Kastrick",
     "copyright": "Copyright © 2026 Kastrick",

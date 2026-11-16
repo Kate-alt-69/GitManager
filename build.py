@@ -186,6 +186,333 @@ def name_windows_setup_installer(project_root: Path) -> Optional[Path]:
     return destination
 
 
+WINDOWS_PACKAGING_WINGET_PACKAGES = (
+    ("WiX Toolset v3", "WiXToolset.WiXToolset"),
+    ("NSIS", "NSIS.NSIS"),
+    ("Master Packager Dev", "MasterPackager.MasterPackagerDev"),
+)
+
+
+def windows_packaging_search_directories() -> List[Path]:
+    """Return likely install locations for WiX, NSIS and Master Packager Dev."""
+    roots = []
+    for env_name in ("ProgramFiles(x86)", "ProgramFiles"):
+        value = os.environ.get(env_name)
+        if value:
+            roots.append(Path(value))
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        roots.append(Path(local_app_data) / "Programs")
+
+    directories = []
+    for root in roots:
+        directories.extend([
+            root / "NSIS",
+            root / "WiX Toolset v3.14" / "bin",
+            root / "WiX Toolset v3.13" / "bin",
+            root / "WiX Toolset v3.12" / "bin",
+            root / "Master Packager Ltd" / "Master Packager Dev",
+            root / "Master Packager" / "Master Packager Dev",
+            root / "Master Packager Dev",
+        ])
+    if local_app_data:
+        directories.append(Path(local_app_data) / "Microsoft" / "WinGet" / "Links")
+    return directories
+
+
+def refresh_windows_packaging_path() -> None:
+    """Refresh this Python process PATH after WinGet installs tools."""
+    current = os.environ.get("PATH", "").split(os.pathsep)
+    discovered = [str(path) for path in windows_packaging_search_directories() if path.is_dir()]
+    os.environ["PATH"] = os.pathsep.join(dict.fromkeys(discovered + current))
+    for directory in discovered:
+        if (Path(directory) / "makensis.exe").is_file():
+            os.environ["NSISDIR"] = directory
+            break
+
+
+def find_master_packager_dev_cli() -> Optional[Path]:
+    """Find mpdev even if WinGet added its install directory after this shell started."""
+    refresh_windows_packaging_path()
+    discovered = shutil.which("mpdev") or shutil.which("mpdev.exe")
+    if discovered:
+        return Path(discovered)
+    for directory in windows_packaging_search_directories():
+        for name in ("mpdev.exe", "mpdev"):
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def setup_windows_packaging_tools() -> int:
+    """Install the three optional Windows packagers using exact WinGet package IDs."""
+    if platform.system() != "Windows":
+        log_err("Windows packaging tools can only be installed on Windows.")
+        return 1
+    winget = shutil.which("winget")
+    if not winget:
+        log_err(
+            "WinGet was not found. Install or update Microsoft's App Installer, then run "
+            "py build.py setup-packaging-tools again."
+        )
+        return 1
+
+    for display_name, package_id in WINDOWS_PACKAGING_WINGET_PACKAGES:
+        code, output, _ = run_capture([
+            winget, "list", "--id", package_id, "--exact",
+            "--accept-source-agreements",
+        ])
+        if code == 0 and package_id.lower() in output.lower():
+            log_ok(f"{display_name} is already installed ({package_id}).")
+            continue
+        log_info(f"Installing {display_name} through WinGet ({package_id})...")
+        command = [
+            winget, "install", "--id", package_id, "--exact", "--source", "winget",
+            "--silent", "--accept-package-agreements", "--accept-source-agreements",
+            "--disable-interactivity",
+        ]
+        result = subprocess.call(command)
+        if result != 0:
+            log_err(f"WinGet could not install {display_name} (exit code {result}).")
+            return result
+
+    refresh_windows_packaging_path()
+    wix_dirs = [
+        directory for directory in windows_packaging_search_directories()
+        if (directory / "candle.exe").is_file() and (directory / "light.exe").is_file()
+    ]
+    nsis_dirs = [
+        directory for directory in windows_packaging_search_directories()
+        if (directory / "makensis.exe").is_file()
+    ]
+    mpdev = find_master_packager_dev_cli()
+    missing = []
+    if not wix_dirs:
+        missing.append("WiX v3 (candle.exe and light.exe)")
+    if not nsis_dirs:
+        missing.append("NSIS (makensis.exe)")
+    if mpdev is None:
+        missing.append("Master Packager Dev (mpdev.exe)")
+    if missing:
+        log_err(
+            "WinGet completed, but these packaging tools could not be located: "
+            + ", ".join(missing)
+            + ". Open a new terminal or repair the corresponding WinGet package."
+        )
+        return 1
+
+    code, version, error = run_capture([str(mpdev), "version"])
+    if code != 0:
+        log_err(f"Master Packager Dev could not report its version: {error or version or code}")
+        return 1
+    log_ok("WiX v3, NSIS and Master Packager Dev are installed and discoverable.")
+    log_info(f"Master Packager Dev: {version}")
+    return 0
+
+
+def verify_windows_packaging_inputs(project_root: Path) -> int:
+    """Fail before Tauri bundling if the Python resource or installer hook is misconfigured."""
+    runtime_dir = project_root / "tools" / "runtime" / "python"
+    required_runtime = ("python.exe", "python314.zip", "python314._pth")
+    missing = [name for name in required_runtime if not (runtime_dir / name).is_file()]
+    if missing:
+        log_err(
+            "The private Python runtime is incomplete before packaging; missing: "
+            + ", ".join(missing)
+        )
+        return 1
+
+    cleaner = project_root / "tools" / "gitmanager_cleaner.py"
+    if not cleaner.is_file():
+        log_err(f"GitManager Cleaner source is missing: {cleaner}")
+        return 1
+
+    try:
+        main_config = json.loads(
+            (project_root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+        )
+        windows_config = json.loads(
+            (project_root / "src-tauri" / "tauri.windows.conf.json").read_text(encoding="utf-8")
+        )
+        hooks = (project_root / "src-tauri" / "windows" / "hooks.nsh").read_text(encoding="utf-8")
+    except (OSError, json.JSONDecodeError) as error:
+        log_err(f"Could not verify Windows installer configuration: {error}")
+        return 1
+
+    resources = main_config.get("bundle", {}).get("resources", {})
+    if resources.get("../tools/runtime/python/") != "python/":
+        log_err(
+            "Tauri must map the Python runtime directory recursively as "
+            "'../tools/runtime/python/': 'python/'."
+        )
+        return 1
+
+    targets = set(windows_config.get("bundle", {}).get("targets", []))
+    if not {"nsis", "msi"}.issubset(targets):
+        log_err("The Windows Tauri configuration must keep both the NSIS and MSI targets enabled.")
+        return 1
+
+    expected_install_dir = "$LOCALAPPDATA\\kastrick's_software\\GitManager"
+    if expected_install_dir not in hooks:
+        log_err("The NSIS pre-install hook does not force GitManager's expected per-user install directory.")
+        return 1
+    if "resources\\python\\python.exe" not in hooks:
+        log_err("The NSIS post-install hook does not verify the bundled Python runtime.")
+        return 1
+
+    log_ok("Windows installer inputs are complete: Python runtime, cleaner, NSIS hook, NSIS and WiX targets.")
+    return 0
+
+
+def name_windows_msi_installer(project_root: Path) -> Optional[Path]:
+    """Verify the MSI produced by Tauri's existing WiX bundler."""
+    if platform.system() != "Windows":
+        return None
+    output_dir = project_root / "target" / "release" / "bundle" / "msi"
+    candidates = sorted(output_dir.glob("*.msi")) if output_dir.is_dir() else []
+    if len(candidates) != 1:
+        log_err(f"Expected one Tauri WiX MSI, found {len(candidates)} in {output_dir}.")
+        return None
+    installer = candidates[0]
+    if installer.stat().st_size < 1024 * 1024:
+        log_err(f"The Tauri WiX MSI is unexpectedly small: {installer}")
+        return None
+    log_ok(f"Created Tauri WiX MSI: {installer} ({installer.stat().st_size:,} bytes)")
+    return installer
+
+
+def build_master_packager_dev_msi(project_root: Path) -> Tuple[int, Optional[Path]]:
+    """Build an optional, local-machine MPDEV comparison MSI from the same release payload."""
+    if platform.system() != "Windows":
+        return 0, None
+    mpdev = find_master_packager_dev_cli()
+    if mpdev is None:
+        log_err("Master Packager Dev is not installed. Run py build.py setup-packaging-tools first.")
+        return 1, None
+
+    target_root = project_root / "target"
+    release_dir = target_root / "release"
+    stage_root = target_root / "packaging" / "master-packager-dev"
+    marker = stage_root / ".gitmanager-generated"
+    if stage_root.exists():
+        if not marker.is_file():
+            log_err(f"Refusing to replace the unmarked MPDEV staging directory: {stage_root}")
+            return 1, None
+        try:
+            shutil.rmtree(stage_root)
+        except OSError as error:
+            log_err(f"Could not clear the previous generated MPDEV staging directory: {error}")
+            return 1, None
+
+    input_dir = stage_root / "input"
+    try:
+        stage_root.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            "Generated by GitManager build.py. Safe to recreate through the MPDEV build command.\n",
+            encoding="utf-8",
+        )
+        input_dir.mkdir(parents=True, exist_ok=True)
+        required_binaries = (
+            ("git-manager.exe", "GitManager.exe"),
+            ("crash_helper.exe", "crash_helper.exe"),
+            ("gitm.exe", "gitm.exe"),
+            ("git-manager-service.exe", "git-manager-service.exe"),
+            ("GitManager-Setup.exe", "GitManager-Setup.exe"),
+        )
+        missing = []
+        for source_name, destination_name in required_binaries:
+            source = release_dir / source_name
+            if not source.is_file() or source.stat().st_size == 0:
+                missing.append(str(source))
+                continue
+            shutil.copy2(source, input_dir / destination_name)
+        if missing:
+            log_err("MPDEV staging is missing required release binaries: " + ", ".join(missing))
+            return 1, None
+
+        runtime_source = project_root / "tools" / "runtime" / "python"
+        runtime_required = ("python.exe", "python314.zip", "python314._pth")
+        absent_runtime = [name for name in runtime_required if not (runtime_source / name).is_file()]
+        if absent_runtime:
+            log_err("The private Python runtime is incomplete for MPDEV staging: " + ", ".join(absent_runtime))
+            return 1, None
+        shutil.copytree(
+            runtime_source,
+            input_dir / "resources" / "python",
+            ignore=shutil.ignore_patterns(".keep"),
+        )
+
+        cleaner_source = project_root / "tools" / "gitmanager_cleaner.py"
+        cleaner_target = input_dir / "resources" / "tools" / "gitmanager_cleaner.py"
+        if not cleaner_source.is_file():
+            log_err(f"GitManager Cleaner source is missing: {cleaner_source}")
+            return 1, None
+        cleaner_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(cleaner_source, cleaner_target)
+
+        icon_source = project_root / "src-tauri" / "icons" / "icon.ico"
+        if not icon_source.is_file():
+            log_err(f"GitManager's Windows icon is missing: {icon_source}")
+            return 1, None
+        shutil.copy2(icon_source, input_dir / "GitManager.ico")
+    except OSError as error:
+        log_err(f"Could not stage the MPDEV application payload: {error}")
+        return 1, None
+
+    config_path = project_root / "src-tauri" / "packaging" / "master-packager-dev.json"
+    if not config_path.is_file():
+        log_err(f"Master Packager Dev project is missing: {config_path}")
+        return 1, None
+    try:
+        tauri_config = json.loads(
+            (project_root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+        )
+        version = str(tauri_config.get("version") or "")
+        if not re.fullmatch(r"[1-9][0-9]*\.[0-9]+\.[0-9]+", version):
+            raise ValueError(f"Unsupported GitManager MSI version: {version!r}")
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        log_err(f"Could not resolve the GitManager version for MPDEV: {error}")
+        return 1, None
+
+    command = [
+        str(mpdev), "build", str(config_path),
+        "--working-dir", str(project_root),
+        "--properties", f"$.version={version}",
+    ]
+    log_info("Building the experimental Master Packager Dev MSI...")
+    try:
+        result = subprocess.call(command, cwd=str(project_root))
+    except OSError as error:
+        log_err(f"Could not start Master Packager Dev: {error}")
+        return 1, None
+    if result != 0:
+        log_err(f"Master Packager Dev failed to build its MSI (exit code {result}).")
+        return result, None
+
+    output_dir = release_dir / "bundle" / "master-packager-dev"
+    candidates = sorted(output_dir.glob("*.msi")) if output_dir.is_dir() else []
+    if len(candidates) != 1:
+        log_err(f"Expected one Master Packager MSI, found {len(candidates)} in {output_dir}.")
+        return 1, None
+    destination = output_dir / "GitManager-MasterPackager.msi"
+    try:
+        if candidates[0] != destination:
+            shutil.copy2(candidates[0], destination)
+            candidates[0].unlink()
+    except OSError as error:
+        log_err(f"Could not normalize the MPDEV MSI output: {error}")
+        return 1, None
+    if not destination.is_file() or destination.stat().st_size < 1024 * 1024:
+        log_err(f"Master Packager MSI is missing or unexpectedly small: {destination}")
+        return 1, None
+    log_ok(
+        f"Created experimental, local-machine MPDEV MSI: {destination} "
+        f"({destination.stat().st_size:,} bytes)"
+    )
+    return 0, destination
+
+
 def ensure_cargo_in_path() -> None:
     """Adds ~/.cargo/bin to PATH if present so rustc/cargo are found even in non-login shells."""
     cargo_bin = Path.home() / ".cargo" / "bin"
@@ -1040,6 +1367,7 @@ def run_build_or_dev(
     toolchain_arg: str,
     has_cargo_tauri: bool,
     release: bool,
+    build_master_packager: bool = False,
 ) -> int:
     src_tauri_dir = project_root / "src-tauri"
 
@@ -1060,6 +1388,9 @@ def run_build_or_dev(
         runtime_result = prepare_windows_python_runtime(project_root)
         if runtime_result != 0:
             return runtime_result
+        packaging_inputs_result = verify_windows_packaging_inputs(project_root)
+        if packaging_inputs_result != 0:
+            return packaging_inputs_result
 
     if mode == "build" and not has_cargo_tauri:
         log_err("The Tauri CLI is required to create GitManager-Setup.exe. Install failed or pass --install-tauri-cli.")
@@ -1091,10 +1422,17 @@ def run_build_or_dev(
         if rc != 0 or mode != "build":
             return rc
 
-        # The dedicated service executable and crash_helper are bundled as
-        # separate sidecars; the background service never shares the UI process tree.
-        if platform.system() == "Windows" and name_windows_setup_installer(project_root) is None:
-            return 1
+        # Keep Tauri's native NSIS and WiX paths. MPDEV is an explicit,
+        # independently testable comparison build; it never replaces either output.
+        if platform.system() == "Windows":
+            if name_windows_setup_installer(project_root) is None:
+                return 1
+            if name_windows_msi_installer(project_root) is None:
+                return 1
+            if build_master_packager:
+                mpdev_result, _ = build_master_packager_dev_msi(project_root)
+                if mpdev_result != 0:
+                    return mpdev_result
         return 0
 
     # Fallback direct Cargo execution
@@ -1121,7 +1459,7 @@ def main() -> int:
         "mode",
         nargs="?",
         default="build",
-        choices=["deps", "check", "dev", "build", "frontend-build", "frontend-dev", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node"],
+        choices=["deps", "check", "dev", "build", "frontend-build", "frontend-dev", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node", "setup-packaging-tools"],
         help="Action: deps, check, dev, build, frontend-build, frontend-dev, prepare-runtime, prepare-sidecar, or prepare-cloud-node.",
     )
     parser.add_argument(
@@ -1140,6 +1478,16 @@ def main() -> int:
         action="store_true",
         help="Install the Rust `tauri-cli` crate via `cargo install tauri-cli` if not already present.",
     )
+    parser.add_argument(
+        "--install-packaging-tools",
+        action="store_true",
+        help="Install WiX v3, NSIS and Master Packager Dev through WinGet before a Windows build.",
+    )
+    parser.add_argument(
+        "--master-packager",
+        action="store_true",
+        help="Build the additional experimental Master Packager Dev MSI (Windows only).",
+    )
 
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parent
@@ -1148,8 +1496,15 @@ def main() -> int:
     print(" GitManager — Pure-Rust Tauri v2 Dependency & Toolchain Manager")
     print("=" * 72)
 
+    if args.mode == "setup-packaging-tools":
+        return setup_windows_packaging_tools()
     if args.mode == "prepare-runtime":
         return prepare_windows_python_runtime(project_root)
+
+    if args.install_packaging_tools:
+        packaging_setup_result = setup_windows_packaging_tools()
+        if packaging_setup_result != 0:
+            return packaging_setup_result
     if args.mode == "prepare-cloud-node":
         return prepare_cloud_node_deployment(project_root)
     if args.mode in ("frontend-build", "frontend-dev"):
@@ -1195,6 +1550,7 @@ def main() -> int:
         toolchain_arg=toolchain_arg,
         has_cargo_tauri=has_cargo_tauri,
         release=is_release,
+        build_master_packager=args.master_packager,
     )
 
 
