@@ -4,7 +4,10 @@
   "version": "1.0.0",
   "identifier": "com.gitmanager.desktop",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../.cache/nextjs-engine/workspace/out",
+    "beforeBuildCommand": "python tools/nextjs_engine_source.py build --project-root .",
+    "beforeDevCommand": "python tools/nextjs_engine_source.py dev --project-root .",
+    "devUrl": "http://localhost:3000"
   },
   "app": {
     "withGlobalTauri": true,
@@ -13,6 +16,7 @@
         "title": "GitManager — Pure-Rust Local & Remote Git Tree Explorer",
         "width": 1360,
         "height": 860,
+        "center": true,
         "minWidth": 980,
         "minHeight": 640,
         "resizable": true,
@@ -20,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' https: data: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost https://api.github.com https://gitlab.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'self'; img-src 'self' https://github.com https://gitlab.com https://avatars.githubusercontent.com data: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost https://api.github.com https://gitlab.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
@@ -50,8 +54,7 @@
         "compression": "lzma",
         "startMenuFolder": "Kastrick's Software",
         "installerIcon": "icons/icon.ico"
-      },
-      "signCommand": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ../tools/sign_windows_file.ps1 -FilePath \"%1\""
+      }
     },
     "linux": {
       "deb": {
@@ -69,6 +72,12 @@
     "copyright": "Copyright © 2026 Kastrick",
     "license": "Apache-2.0",
     "shortDescription": "A free, native Git workspace manager",
-    "longDescription": "GitManager is a free and open-source Git workspace manager by Kastrick."
+    "longDescription": "GitManager is a free and open-source Git workspace manager by Kastrick.",
+    "externalBin": [
+      "binaries/gitm",
+      "binaries/gitmanager-setup",
+      "binaries/crash_helper",
+      "binaries/git-manager-service"
+    ]
   }
 }

@@ -4,11 +4,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\\s', '').ToUpperInvariant()
+$thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\s', '').ToUpperInvariant()
 
 if ([string]::IsNullOrWhiteSpace($thumbprint)) {
-    Write-Host "[GitManager] No WINDOWS_SIGNING_THUMBPRINT configured; leaving this build unsigned."
-    exit 0
+    throw "[GitManager] The signing helper was invoked without WINDOWS_SIGNING_THUMBPRINT. Unsigned builds must clear Tauri signCommand before bundling."
 }
 if ($thumbprint -notmatch '^[A-F0-9]{40}$') {
     throw "WINDOWS_SIGNING_THUMBPRINT must be a 40-character SHA-1 certificate thumbprint."

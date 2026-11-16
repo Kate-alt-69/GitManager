@@ -410,7 +410,7 @@ pub fn fetch_repository_remote(repo_path: &str, remote_name: &str) -> Result<Str
     }
     let mut remote = repo.find_remote(remote_name)
         .map_err(|error| format!("Could not open remote {remote_name}: {error}"))?;
-    remote.fetch(&[], None, None)
+    remote.fetch::<&str>(&[], None, None)
         .map_err(|error| format!("Could not fetch {remote_name}: {error}"))?;
     Ok(format!("Fetched remote-tracking references for {remote_name}."))
 }

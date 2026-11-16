@@ -1,0 +1,10 @@
+[package]
+name = "gitmanager-setup"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Tiny cross-platform bootstrap launcher for GitManager first-run setup"
+
+[[bin]]
+name = "gitmanager-setup"
+path = "src/main.rs"

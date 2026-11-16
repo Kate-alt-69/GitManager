@@ -9,9 +9,81 @@ on:
   workflow_dispatch:
 
 jobs:
+
+  cloud-node-deployment:
+    name: RBE node bootstrap package
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js for the Next.js Engine frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the lightweight RBE bootstrap ZIP (route files and configuration templates)
+        run: python build.py prepare-cloud-node
+
+      - name: Validate bootstrap installer and regression tests
+        run: |
+          python -m py_compile build.py tools/cloud-node-deployment/setup.py tools/cloud-node-deployment/test_setup.py
+          python -m unittest discover -s tools/cloud-node-deployment -p 'test_*.py'
+
+      - name: Verify the bootstrap payload and current runner's RBE download
+        run: |
+          python - <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+          import tempfile
+          import zipfile
+
+          archives = sorted(pathlib.Path("target/deployment").glob("*.zip"))
+          if len(archives) != 1:
+              raise SystemExit(f"Expected one bootstrap ZIP, found {len(archives)}")
+          with tempfile.TemporaryDirectory(prefix="gitmanager-rbe-bootstrap-") as temp:
+              with zipfile.ZipFile(archives[0], "r") as package:
+                  bad = package.testzip()
+                  if bad:
+                      raise SystemExit(f"ZIP CRC verification failed at {bad}")
+                  names = set(package.namelist())
+                  required = {"setup.py", "manifest.json", "settings.json", "setting.node.cn.json", "api/health.route", "api/status.route"}
+                  missing = required - names
+                  if missing:
+                      raise SystemExit(f"Bootstrap ZIP is missing: {sorted(missing)}")
+                  binary_names = {
+                      "backend", "backend.exe", "cloud_node", "cloud_node.exe",
+                      "container", "container.exe", "service", "service.exe",
+                  }
+                  if any(name.startswith("binaries/") or name.rsplit("/", 1)[-1].lower() in binary_names for name in names):
+                      raise SystemExit("Bootstrap ZIP unexpectedly contains platform binaries")
+                  package.extractall(temp)
+              setup = pathlib.Path(temp) / "setup.py"
+              result = subprocess.run([sys.executable, str(setup), "--verify-only"], check=False)
+              if result.returncode:
+                  raise SystemExit(result.returncode)
+          PY
+
+      - name: Upload RBE node bootstrap ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitmanager-cloud-node-deployment
+          path: target/deployment/*.zip
+          if-no-files-found: error
+          compression-level: 0
+
   build-tauri:
     permissions:
       contents: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +95,11 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Install Linux WebKitGTK & libgit2 dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -52,7 +129,7 @@ jobs:
             [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE))
             $securePassword = ConvertTo-SecureString -String $env:WINDOWS_SIGNING_PASSWORD -Force -AsPlainText
             $imported = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
-            $expected = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\\s', '').ToUpperInvariant()
+            $expected = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\s', '').ToUpperInvariant()
             if (-not ($imported | Where-Object { $_.Thumbprint -eq $expected })) {
               throw "The imported PFX does not contain WINDOWS_SIGNING_THUMBPRINT."
             }
@@ -64,7 +141,8 @@ jobs:
       - name: Verify Dependencies & Build via Python Build Script
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
-        run: python3 build.py build --install-tauri-cli
+          GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
+        run: python build.py build --install-tauri-cli
 
       - name: Sign and verify Windows release files
         if: runner.os == 'Windows'
@@ -73,21 +151,30 @@ jobs:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
           $installer = "target/release/bundle/nsis/GitManager-Setup.exe"
-          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe was not created." }
-          $targets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", $installer)
-          foreach ($target in $targets) {
-            if (Test-Path -LiteralPath $target) {
-              & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
-              if ($LASTEXITCODE -ne 0) { throw "Signing failed for $target." }
+          $setupHelper = "target/release/GitManager-Setup.exe"
+          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe NSIS installer was not created." }
+          if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
+
+          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/crash_helper.exe", "target/release/gitm.exe", $installer)
+          $verifyTargets = $signTargets + @("target/release/gitm.exe", $setupHelper)
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
+            Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
+          } else {
+            foreach ($target in $signTargets) {
+              if (Test-Path -LiteralPath $target) {
+                & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
+                if ($LASTEXITCODE -ne 0) { throw "Signing failed for $target." }
+              }
             }
-          }
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
+
+            # gitm and GitManager-Setup are signed before Tauri embeds them as sidecars.
             $kits = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\bin"
             if (-not (Test-Path $kits)) { $kits = Join-Path $env:ProgramFiles "Windows Kits\10\bin" }
             $signtool = Get-ChildItem -LiteralPath $kits -Directory | Sort-Object Name -Descending |
               ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
               Where-Object { Test-Path $_ } | Select-Object -First 1
-            foreach ($target in $targets) {
+            if (-not $signtool) { throw "Windows SDK SignTool was not found for signature verification." }
+            foreach ($target in $verifyTargets) {
               if (Test-Path $target) { & $signtool verify /pa /v $target; if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $target" } }
             }
           }
@@ -98,7 +185,7 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\\s', '').ToUpperInvariant()
+          $thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\s', '').ToUpperInvariant()
           if ($thumbprint) {
             Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $thumbprint } |
               Remove-Item -Force -ErrorAction SilentlyContinue
@@ -108,6 +195,56 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-installers-${{ matrix.platform }}
-          path: target/release/bundle/**
+          path: |
+            target/release/bundle/**
+            target/release/gitm*
+            target/release/GitManager-Setup*
           if-no-files-found: error
           compression-level: 9
+
+  publish-cloud-node:
+    name: Publish RBE node bootstrap package
+    if: >-
+      ${{ github.event_name == 'push' &&
+          (github.ref == 'refs/heads/main' ||
+           github.ref == 'refs/heads/master' ||
+           startsWith(github.ref, 'refs/tags/v')) }}
+    needs: cloud-node-deployment
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified RBE bootstrap ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: gitmanager-cloud-node-deployment
+          path: release-assets
+
+      - name: Check stable download filename and create checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find release-assets -maxdepth 1 -type f -name 'GitManager-Cloud-Node-Setup.zip' -print)
+          if [ "${#archives[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one RBE node bootstrap ZIP; found ${#archives[@]}."
+            exit 1
+          fi
+          (cd release-assets && sha256sum GitManager-Cloud-Node-Setup.zip > GitManager-Cloud-Node-Setup.zip.sha256)
+
+      - name: Publish the moving Cloud Node download release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cloud-node-setup-latest
+          target_commitish: ${{ github.sha }}
+          name: GitManager Cloud Node Setup
+          body: |
+            Standalone, cross-platform RBE Cloud Node deployment package for NAS devices and other computers.
+
+            This ZIP is separate from the GitManager desktop application. It contains RBE API route files, backend and Cloud Node configuration templates, the Python bootstrap installer, licenses and deployment instructions. setup.py downloads and checksum-verifies only the matching full RBE runtime for the host machine when run. It contains no binaries, machine-specific node key or credentials.
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/GitManager-Cloud-Node-Setup.zip
+            release-assets/GitManager-Cloud-Node-Setup.zip.sha256

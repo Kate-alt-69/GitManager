@@ -1,0 +1,13 @@
+[package]
+name = "git-manager-service"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Independent GitManager background service process"
+
+[dependencies]
+git-manager = { path = "../../src-tauri" }
+
+[[bin]]
+name = "git-manager-service"
+path = "src/main.rs"
