@@ -17,6 +17,15 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+#[cfg(windows)]
+mod windows_process;
+
+#[cfg(windows)]
+type ProcessContainment = windows_process::ProcessContainment;
+
+#[cfg(not(windows))]
+struct ProcessContainment;
+
 const DATA_ROOT: &str = "kastrick's_software";
 const ENDPOINT_FILE: &str = "service-control.json";
 const SUSPENSION_FILE: &str = "service-suspension.json";
@@ -585,18 +594,42 @@ fn configure_detached_command(command: &mut Command) {
     }
 }
 
-/// Terminate only the UI process tree. The background service is not a child
-/// of this process group and is never included in this operation.
-fn terminate_ui_tree(pid: u32) {
+fn configure_supervised_ui_command(command: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let pid_text = pid.to_string();
-        let _ = Command::new("taskkill.exe")
-            .args(["/PID", pid_text.as_str(), "/T", "/F"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+}
+
+fn attach_ui_process(pid: u32) -> Result<ProcessContainment, String> {
+    #[cfg(windows)]
+    {
+        windows_process::attach_and_resume(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        Ok(ProcessContainment)
+    }
+}
+
+/// Release only the supervised UI process group. On Windows, dropping the
+/// containment handle closes a kill-on-job-close Job Object; on Unix, the UI
+/// owns a dedicated process group. The background service is never included.
+fn terminate_ui_tree(pid: u32, containment: ProcessContainment) {
+    #[cfg(windows)]
+    {
+        let _ = pid;
+        drop(containment);
     }
     #[cfg(unix)]
     {
@@ -608,6 +641,7 @@ fn terminate_ui_tree(pid: u32) {
         unsafe {
             let _ = libc::kill(group, libc::SIGKILL);
         }
+        drop(containment);
     }
 }
 
@@ -758,7 +792,7 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    configure_detached_command(&mut child_command);
+    configure_supervised_ui_command(&mut child_command);
 
     let mut child: Child = match child_command.spawn() {
         Ok(child) => child,
@@ -769,6 +803,17 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     };
 
     let pid = child.id();
+    let containment = match attach_ui_process(pid) {
+        Ok(containment) => containment,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            record_supervisor_start_failure(&format!(
+                "Could not safely contain the GitManager UI process: {error}"
+            ));
+            return 1;
+        }
+    };
     let started = Instant::now();
     let mut last_heartbeat: Option<Instant> = None;
     let mut stale_since: Option<Instant> = None;
@@ -812,8 +857,8 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
 
         match child.try_wait() {
             Ok(Some(status)) => {
+                terminate_ui_tree(pid, containment);
                 if !status.success() {
-                    terminate_ui_tree(pid);
                     append_incident(
                         "GitManager UI exited unexpectedly",
                         pid,
@@ -827,7 +872,7 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
             Err(error) => {
                 let service_result = request_service_suspend(DEFAULT_SUSPENSION_SECONDS);
                 append_incident(&format!("Could not query GitManager UI process: {error}"), pid, None, service_result);
-                terminate_ui_tree(pid);
+                terminate_ui_tree(pid, containment);
                 let _ = child.kill();
                 let _ = child.wait();
                 return 1;
@@ -853,7 +898,7 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
                 suspended = true;
                 stale_since = Some(Instant::now());
             } else if stale_since.is_some_and(|since| since.elapsed() >= UI_RECOVERY_GRACE) {
-                terminate_ui_tree(pid);
+                terminate_ui_tree(pid, containment);
                 let _ = child.kill();
                 let status = child.wait().ok();
                 append_incident(

@@ -241,7 +241,7 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
         command_prefix.append(toolchain_arg)
 
     package_graphs: Dict[str, set] = {}
-    for package in ("git-manager", "gitm-cli", "gitmanager-setup"):
+    for package in ("git-manager", "gitm-cli", "gitmanager-setup", "crash-helper", "git-manager-service"):
         command = command_prefix + [
             "tree",
             "--package", package,
@@ -267,7 +267,9 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
     sidecar_packages = (
         package_graphs.get("gitm-cli", set())
         | package_graphs.get("gitmanager-setup", set())
-    )
+        | package_graphs.get("crash-helper", set())
+        | package_graphs.get("git-manager-service", set())
+    ) - package_graphs.get("git-manager", set())
     complete_build_packages = set().union(*package_graphs.values()) if package_graphs else set()
 
     if app_count:
@@ -935,9 +937,10 @@ def build_gitm_sidecar(
     ]
     staged: List[Path] = []
 
-    # Tauri's build script validates and copies every externalBin entry even
-    # when Cargo is compiling the git-manager-service binary. Stage the three
-    # independent tools first, before compiling the Tauri package.
+    # Tauri's build script validates every externalBin entry when the
+    # standalone service crate builds its dependency on the Tauri library.
+    # Stage the other tools first, then provide a placeholder for the service
+    # sidecar while compiling the separate service package.
     for source_path, filename in artifacts:
         if not source_path.is_file():
             log_err(f"Cargo completed but the expected sidecar binary is missing: {source_path}")
@@ -971,7 +974,7 @@ def build_gitm_sidecar(
         log_err(f"Could not prepare the service sidecar build placeholder: {error}")
         return 1
 
-    service_cmd = common_prefix + ["build", "--package", "git-manager", "--bin", "git-manager-service"]
+    service_cmd = common_prefix + ["build", "--package", "git-manager-service", "--bin", "git-manager-service"]
     if release:
         service_cmd.append("--release")
     log_info(f"Building independent GitManager background service: {' '.join(service_cmd)}")

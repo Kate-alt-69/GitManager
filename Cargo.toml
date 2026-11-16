@@ -8,6 +8,7 @@ members = [
     "crates/gitm-cli",
     "crates/gitmanager-setup",
     "crates/crash-helper",
+    "crates/git-manager-service",
 ]
 # Plain workspace builds target GitManager; sidecars are built explicitly by build.py.
 default-members = ["src-tauri"]

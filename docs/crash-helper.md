@@ -12,7 +12,7 @@
 
 The frontend reports an authenticated loopback heartbeat every three seconds after the GitManager hook has completed initialization. The helper allows up to 90 seconds for first startup and treats 15 seconds without a heartbeat as unresponsive. It requests a 120-second service suspension and gives the UI another 15 seconds to recover before terminating the UI process tree. A later heartbeat resumes the service immediately. A clean UI exit does not suspend the service. If the UI never returns, the service's own timer resumes background work automatically.
 
-The helper creates a separate process group for the UI on Linux and macOS and terminates that group on an emergency shutdown. On Windows it uses the system task-tree termination command for the UI PID. The background service is launched independently by its OS service manager and is never part of that tree.
+The helper creates a separate process group for the UI on Linux and macOS and terminates that group on an emergency shutdown. On Windows it starts the UI suspended, assigns it to a Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then resumes the primary thread. The helper closes that job handle on UI exit or timeout, which terminates only the UI and its descendants. If the helper exits unexpectedly, closing its handle also tears down the supervised UI. The independent background service is never assigned to this job.
 
 ## Service control
 
