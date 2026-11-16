@@ -1926,9 +1926,7 @@ function renderRepositoryChanges(repo) {
 async function loadRepositoryChanges(repo) {
   const list = document.getElementById("repo-code-changes-list");
   if (!list) return;
-  if (repo.source_kind !== "local_scan") {
-    selectedRepositoryChanges = [];
-    selectedChangePaths.clear();
+  if (repo.source_kind !== "local_scan" || activeCodeSource !== "local") {
     renderRepositoryChanges(repo);
     return;
   }
@@ -2055,6 +2053,7 @@ function renderRepositoryCodeWorkspace(repo) {
   }
   setRepositoryWorkspacePanel(activeRepositoryPanel || "code");
   wireRepositoryCodeActions();
+  renderRepositoryChanges(repo);
   void loadRepositoryChanges(repo);
   if (repo.source_kind !== "local_scan") {
     list.innerHTML = '<div class="repo-code-empty"><strong>No local working copy</strong><small>Clone this remote repository to browse Local files and fetched Remote branches here.</small></div>';
