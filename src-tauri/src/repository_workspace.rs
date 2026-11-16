@@ -2,6 +2,9 @@ use git2::{BranchType, ObjectType, Repository, Status, StatusOptions};
 use serde::Serialize;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+use std::time::UNIX_EPOCH;
 use crate::process_utils::hidden_command;
 
 const MAX_PREVIEW_FILE_BYTES: u64 = 1024 * 1024;
@@ -69,6 +72,17 @@ fn canonical_local_path(repo: &Repository, relative_path: &str) -> Result<(PathB
     let workdir = repo.workdir().ok_or_else(|| "This repository has no working directory.".to_string())?;
     let root = fs::canonicalize(workdir).map_err(|error| format!("Could not resolve repository directory: {error}"))?;
     let relative = validate_relative_path(relative_path)?;
+    let mut cursor = root.clone();
+    for component in relative.components() {
+        if let Component::Normal(part) = component {
+            cursor.push(part);
+            let metadata = fs::symlink_metadata(&cursor)
+                .map_err(|error| format!("Could not inspect repository path: {error}"))?;
+            if metadata.file_type().is_symlink() {
+                return Err("Repository file browsing does not follow symbolic links.".to_string());
+            }
+        }
+    }
     let candidate = root.join(relative);
     let canonical = fs::canonicalize(&candidate).map_err(|error| format!("Could not open repository path: {error}"))?;
     if !canonical.starts_with(&root) {
@@ -206,6 +220,7 @@ fn worktree_status_label(status: Status) -> String {
     else if status.contains(Status::WT_DELETED) { "Deleted".to_string() }
     else if status.contains(Status::WT_RENAMED) { "Renamed".to_string() }
     else if status.contains(Status::WT_TYPECHANGE) { "Type changed".to_string() }
+    else if status.contains(Status::WT_UNREADABLE) { "Unreadable".to_string() }
     else if status.contains(Status::CONFLICTED) { "Conflict".to_string() }
     else { "Clean".to_string() }
 }
@@ -236,6 +251,46 @@ fn status_token(changes: &[WorktreeChange]) -> String {
         (value ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
     });
     format!("{hash:016x}")
+}
+
+fn repository_status_token(repo: &Repository, changes: &[WorktreeChange]) -> String {
+    let mut hasher = DefaultHasher::new();
+    status_token(changes).hash(&mut hasher);
+    if let Some(workdir) = repo.workdir() {
+        for change in changes {
+            let path = workdir.join(&change.path);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) => {
+                    metadata.len().hash(&mut hasher);
+                    metadata.modified().ok()
+                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_nanos())
+                        .unwrap_or(0)
+                        .hash(&mut hasher);
+                    if metadata.is_file() && metadata.len() <= 8 * 1024 * 1024 {
+                        fs::read(&path).unwrap_or_default().hash(&mut hasher);
+                    }
+                }
+                Err(_) => 0_u8.hash(&mut hasher),
+            }
+        }
+    }
+    if let Ok(index) = repo.index() {
+        if let Some(index_path) = index.path() {
+            if let Ok(metadata) = fs::metadata(index_path) {
+                metadata.len().hash(&mut hasher);
+                metadata.modified().ok()
+                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or(0)
+                    .hash(&mut hasher);
+                if metadata.len() <= 32 * 1024 * 1024 {
+                    fs::read(index_path).unwrap_or_default().hash(&mut hasher);
+                }
+            }
+        }
+    }
+    format!("{:016x}", hasher.finish())
 }
 
 pub fn preview_repository_pull(repo_path: &str) -> Result<PullPreview, String> {
@@ -269,9 +324,10 @@ pub fn preview_repository_pull(repo_path: &str) -> Result<PullPreview, String> {
     let (commits_ahead, commits_behind) = repo.graph_ahead_behind(local_oid, remote_oid)
         .map_err(|error| format!("Could not compare local and remote history: {error}"))?;
     let changes = collect_worktree_changes(&repo)?;
-    let token = status_token(&changes);
-    let repo_name = repo_path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next()
-        .filter(|value| !value.is_empty()).unwrap_or("Repository").to_string();
+    let token = repository_status_token(&repo, &changes);
+    let repo_name = repo_path.trim_end_matches(|character| character == '/' || character == '\\')
+        .rsplit(|character| character == '/' || character == '\\')
+        .find(|value| !value.is_empty()).unwrap_or("Repository").to_string();
 
     Ok(PullPreview {
         repo_name, branch: branch_name, remote_name, remote_branch,
@@ -316,6 +372,9 @@ pub fn prepare_and_pull_repository_update(
     }
     if !preview.can_pull {
         return Err("This branch is not a fast-forward-only pull candidate. Review its ahead/behind state before syncing.".to_string());
+    }
+    if preview.changes.iter().any(|change| change.index_status == "Conflict" || change.worktree_status == "Conflict") {
+        return Err("Resolve the existing merge conflicts before preparing a Pull.".to_string());
     }
 
     let mut commit_created = false;
