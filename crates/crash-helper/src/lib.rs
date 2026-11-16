@@ -610,6 +610,26 @@ fn configure_supervised_ui_command(command: &mut Command) {
     }
 }
 
+fn configure_webview_gpu_mode(command: &mut Command, disabled: bool) {
+    #[cfg(windows)]
+    if disabled {
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        let arguments = if existing.split_whitespace().any(|argument| argument == "--disable-gpu") {
+            existing
+        } else if existing.trim().is_empty() {
+            "--disable-gpu".to_string()
+        } else {
+            format!("{} --disable-gpu", existing.trim())
+        };
+        command.env("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", arguments);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (command, disabled);
+    }
+}
+
 fn attach_ui_process(pid: u32) -> Result<ProcessContainment, String> {
     #[cfg(windows)]
     {
@@ -759,9 +779,15 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     }
     let application = PathBuf::from(&arguments[0]);
     let separator = arguments.iter().position(|argument| argument.to_string_lossy() == "--");
-    let app_args = separator
+    let mut app_args = separator
         .map(|index| arguments.iter().skip(index + 1).cloned().collect::<Vec<_>>())
         .unwrap_or_default();
+    let disable_webview_gpu = app_args.iter().any(|argument| {
+        argument.as_os_str() == std::ffi::OsStr::new("--disable-webview-gpu")
+    });
+    app_args.retain(|argument| {
+        argument.as_os_str() != std::ffi::OsStr::new("--disable-webview-gpu")
+    });
 
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(listener) => listener,
@@ -792,6 +818,7 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    configure_webview_gpu_mode(&mut child_command, disable_webview_gpu);
     configure_supervised_ui_command(&mut child_command);
 
     let mut child: Child = match child_command.spawn() {

@@ -14,6 +14,16 @@ The frontend reports an authenticated loopback heartbeat every three seconds aft
 
 The helper creates a separate process group for the UI on Linux and macOS and terminates that group on an emergency shutdown. On Windows it starts the UI suspended, assigns it to a Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then resumes the primary thread. The helper closes that job handle on UI exit or timeout, which terminates only the UI and its descendants. If the helper exits unexpectedly, closing its handle also tears down the supervised UI. The independent background service is never assigned to this job.
 
+## Windows WebView2 compatibility
+
+GitManager uses WebView2 to render its Windows UI. On systems where the WebView2 rendering or GPU path produces a blank window, launch the app with:
+
+```powershell
+& "C:\Path\To\GitManager.exe" --disable-webview-gpu
+```
+
+crash_helper consumes this switch and adds `--disable-gpu` to `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` for the supervised UI process. Existing browser arguments are preserved. GPU acceleration remains enabled by default; use this option as a troubleshooting fallback because software rendering can be slower.
+
 ## Service control
 
 The service exposes a loopback-only TCP endpoint on an ephemeral port. Its address and random token are stored in the per-user GitManager data directory. The endpoint file is owner-readable/writable on Unix and inherits the current user's LocalAppData ACL on Windows. Requests are bounded, authenticated, and limited to status, timed suspend, and resume.

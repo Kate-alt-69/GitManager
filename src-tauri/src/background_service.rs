@@ -1,7 +1,6 @@
-//! Headless background worker shared by the desktop executable and the
-//! optional standalone service binary. The OS service launches the installed
-//! GitManager executable with --background-service, avoiding an extra runtime
-//! binary that would otherwise need to be copied into each native installer.
+//! Headless background worker hosted by the standalone git-manager-service
+//! workspace package. The OS service manager launches that separate executable
+//! directly; it is not a child of the desktop UI or crash_helper.
 
 use std::collections::HashSet;
 use std::path::Path;
