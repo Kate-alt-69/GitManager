@@ -80,6 +80,8 @@ jobs:
 
   archive-and-desktop:
     name: Archive, gitm & Tauri backend (${{ matrix.platform }})
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
     strategy:
       fail-fast: false
       matrix:
