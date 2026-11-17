@@ -109,6 +109,16 @@ export interface UpdateAlert {
 	prompt_message?: string;
 }
 
+export interface AppNotification {
+	id: string;
+	kind: string;
+	title: string;
+	body: string;
+	createdAtUnixMs: number;
+	read: boolean;
+	repositoryPath?: string | null;
+}
+
 export interface RepositoryFileEntry {
 	name: string;
 	path: string;
