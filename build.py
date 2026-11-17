@@ -1529,6 +1529,53 @@ def build_gitm_sidecar(
 
 
 
+def ensure_rust_target_components(targets: List[BuildTarget], toolchain_arg: str) -> int:
+    """Install missing Rust target std components with the already-selected rustup toolchain."""
+    rustup = shutil.which("rustup")
+    if not rustup:
+        try:
+            host_triple = resolve_rust_target_triple(toolchain_arg)
+        except RuntimeError as error:
+            log_err(str(error))
+            return 1
+        missing = [target.triple for target in targets if target.triple != host_triple]
+        if missing:
+            log_err(
+                "rustup is unavailable, and these selected architecture targets are not the active "
+                "compiler host target: " + ", ".join(missing)
+            )
+            log_info("Install rustup or add the required Rust target components manually.")
+            return 1
+        return 0
+
+    command = [rustup, "target", "list", "--installed"]
+    selected_toolchain = toolchain_arg[1:] if toolchain_arg.startswith("+") else ""
+    if selected_toolchain:
+        command.extend(["--toolchain", selected_toolchain])
+    code, output, error = run_capture(command)
+    if code != 0:
+        log_err(f"Could not inspect installed Rust target components: {error or output or code}")
+        return code or 1
+
+    installed = {line.strip() for line in output.splitlines() if line.strip()}
+    missing = sorted({target.triple for target in targets if target.triple not in installed})
+    for triple in missing:
+        add_command = [rustup, "target", "add", triple]
+        if selected_toolchain:
+            add_command.extend(["--toolchain", selected_toolchain])
+        log_info(f"Installing missing Rust target component locally: {triple}")
+        result = subprocess.call(add_command)
+        if result != 0:
+            log_err(
+                f"Could not install Rust target {triple}. Confirm the selected toolchain supports it "
+                "and retry after installing its native linker/SDK dependencies."
+            )
+            return result
+    if not missing:
+        log_ok("All selected Rust target components are already installed.")
+    return 0
+
+
 def prompt_build_selection() -> str:
     """Ask which local architecture set to build; Enter selects every locally supported architecture."""
     host = host_platform()
@@ -2113,6 +2160,11 @@ def main() -> int:
         return 0
 
     is_release = not args.debug
+    if args.mode == "build":
+        target_result = ensure_rust_target_components(selected_targets, toolchain_arg)
+        if target_result != 0:
+            return target_result
+
     if args.mode == "prepare-sidecar":
         return build_gitm_sidecar(project_root, toolchain_arg, is_release)
 
