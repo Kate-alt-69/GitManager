@@ -63,7 +63,7 @@ def parse_build_selection(value: str) -> tuple[str, list[BuildTarget]]:
         raise ValueError(
             "Invalid --build value. Use all, windows, linux, macos, "
             "or a target such as windows(10,x64), windows(11,x86), "
-            "linux(arm64), or macos(x64)."
+            "linux(arm64), linux(armv7), or macos(x64)."
         )
 
     family, raw_parts = match.groups()
@@ -123,7 +123,7 @@ def can_build_locally(target: BuildTarget) -> tuple[bool, str]:
     if target.platform == "linux" and target.architecture != host_arch:
         return False, (
             f"Cross-compiling Linux {target.architecture} from {host_arch} needs a matching "
-            "native linker and WebKitGTK development sysroot. Use the Linux ARM64 workflow runner."
+            "native linker and WebKitGTK development sysroot. Use the matching Linux architecture workflow runner."
         )
     if target.platform == "macos" and target.architecture not in ("x64", "arm64"):
         return False, f"Unsupported macOS host architecture: {host_arch}."
