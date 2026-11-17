@@ -91,7 +91,7 @@ jobs:
         include:
           - platform: windows-latest
             selector: windows(10,x64)
-            output: windows-10-x64
+            output: windows-x64
           - platform: ubuntu-22.04
             selector: linux(x64)
             output: linux-x64
@@ -205,7 +205,7 @@ jobs:
         shell: pwsh
         run: |
           $profileDir = "build/.rcache/x86_64-pc-windows-msvc/release"
-          $distDir = "build/dist/windows-10-x64"
+          $distDir = "build/dist/windows-x64"
           New-Item -ItemType Directory -Force -Path "$distDir/installer", "$distDir/app" | Out-Null
           Copy-Item -Path "$profileDir/bundle/*" -Destination "$distDir/installer" -Recurse -Force
           foreach ($name in @("git-manager.exe", "git-manager-service.exe", "crash_helper.exe", "gitm.exe", "gitmanager-setup.exe", "GitManager-Setup.exe")) {
