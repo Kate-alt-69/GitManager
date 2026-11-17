@@ -26,7 +26,7 @@ The Flatpak path first builds GitManager's native Linux DEB package locally, the
 - ARMv7: DEB/RPM only; Flatpak runtime support is not included
 - Output: `build/dist/store/flatpak/GitManager-<arch>.flatpak`
 
-Required local tools include `dpkg-deb`, `flatpak` and `flatpak-builder`, plus the GNOME 51 platform and SDK. The Flatpak builder uses the generated local DEB payload.
+Required local tools include `dpkg-deb`, `flatpak` and `flatpak-builder`. The packaging script adds the Flathub remote for the current user when needed and installs the matching GNOME 51 platform and SDK into that user's Flatpak installation. Tauri creates only the DEB payload for this stream, so RPM/AppImage packaging tools are not required.
 
 The manifest grants Wayland/X11, graphics, network, SSH-agent, home-directory and mounted-media access. Home access is currently required because GitManager scans and performs Git operations on user-selected local repositories.
 
