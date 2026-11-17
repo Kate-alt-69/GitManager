@@ -1345,19 +1345,21 @@ def build_gitm_sidecar(
     common_prefix = ["cargo"]
     if toolchain_arg:
         common_prefix.append(toolchain_arg)
+    target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+    target_args = ["--target", target_triple] if target_triple else []
 
     commands = [
         (
             "native gitm CLI",
-            common_prefix + ["build", "--package", "gitm-cli", "--bin", "gitm"],
+            common_prefix + ["build", "--package", "gitm-cli", "--bin", "gitm"] + target_args,
         ),
         (
             "GitManager first-run setup companion",
-            common_prefix + ["build", "--package", "gitmanager-setup", "--bin", "gitmanager-setup"],
+            common_prefix + ["build", "--package", "gitmanager-setup", "--bin", "gitmanager-setup"] + target_args,
         ),
         (
             "crash_helper UI supervisor",
-            common_prefix + ["build", "--package", "crash-helper", "--bin", "crash_helper"],
+            common_prefix + ["build", "--package", "crash-helper", "--bin", "crash_helper"] + target_args,
         ),
     ]
     if release:
@@ -1380,7 +1382,6 @@ def build_gitm_sidecar(
     target_dir = cargo_target_root(project_root)
     if not target_dir.is_absolute():
         target_dir = project_root / target_dir
-    target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
     binary_triple = target_triple or host_triple
     binary_dir = target_dir / target_triple / profile if target_triple else target_dir / profile
 
@@ -1432,7 +1433,7 @@ def build_gitm_sidecar(
         log_err(f"Could not prepare the service sidecar build placeholder: {error}")
         return 1
 
-    service_cmd = common_prefix + ["build", "--package", "git-manager-service", "--bin", "git-manager-service"]
+    service_cmd = common_prefix + ["build", "--package", "git-manager-service", "--bin", "git-manager-service"] + target_args
     if release:
         service_cmd.append("--release")
     log_info(f"Building independent GitManager background service: {' '.join(service_cmd)}")
