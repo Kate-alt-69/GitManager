@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { EngineBox, EngineGrid } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
@@ -160,6 +160,7 @@ function TopBar({
 	onRetryService: () => void;
 }) {
 	const [openPanel, setOpenPanel] = useState<"tasks" | "notifications" | null>(null);
+	const panelHostRef = useRef<HTMLDivElement | null>(null);
 	const unreadCount = inAppNotificationsEnabled ? notifications.filter((item) => !item.read).length : 0;
 	const currentRoute = parseInternalRoute(internalRoute);
 	const label = routeLabel(currentRoute);
@@ -169,6 +170,24 @@ function TopBar({
 			void onRefreshNotifications();
 		}
 	}, [openPanel, inAppNotificationsEnabled, onRefreshNotifications]);
+
+	useEffect(() => {
+		if (!openPanel) return;
+		const closeOnEscape = (event: KeyboardEvent) => {
+			if (event.key === "Escape") setOpenPanel(null);
+		};
+		const closeOnOutsidePointer = (event: PointerEvent) => {
+			if (event.target instanceof Node && !panelHostRef.current?.contains(event.target)) {
+				setOpenPanel(null);
+			}
+		};
+		document.addEventListener("keydown", closeOnEscape);
+		document.addEventListener("pointerdown", closeOnOutsidePointer);
+		return () => {
+			document.removeEventListener("keydown", closeOnEscape);
+			document.removeEventListener("pointerdown", closeOnOutsidePointer);
+		};
+	}, [openPanel]);
 
 	return (
 		<header className="gm-topbar">
@@ -189,7 +208,7 @@ function TopBar({
 					<kbd>Ctrl K</kbd>
 				</label>
 				<span className="gm-version-pill">v{version}</span>
-				<div className="gm-topbar-popover-host">
+				<div className="gm-topbar-popover-host" ref={panelHostRef}>
 					<div className="gm-topbar-panel-triggers">
 						<button
 							type="button"
