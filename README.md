@@ -57,22 +57,30 @@ Windows installer builds automatically use MPDEV for both MSI and MSIX; Tauri's 
 
 ---
 
-## 2. Background Repository Update Service (User-Level OS Service + Loading Spinner)
+## 2. GitManager Core Service & Notifications
 
-Implemented in `src-tauri/src/background_service.rs` and `src-tauri/src/watcher_service.rs`. The independent `git-manager-service` executable runs the headless worker; it is bundled with the desktop app but **is not started until the user enables Background updates in Settings → General**.
+Implemented in `src-tauri/src/background_service.rs`, `src-tauri/src/scanner.rs` and `src-tauri/src/notification_center.rs`. The required `gitmanager.service` process owns repository discovery, the persisted local repository index, scheduled remote checks, archive watchers and notification history. The desktop UI starts it on demand and waits for an authenticated readiness handshake before enabling the workspace.
 
-- **OS Registration & Background Worker**:
-  - **Windows 10 & 11**: Registers a current-user Task Scheduler task named `GitManager Background Service` and starts `git-manager-service.exe` immediately. This is deliberately **not** a Windows Service Control Manager service, so it does not appear in Services.msc. Find the registration under Task Scheduler → Task Scheduler Library; while it is running, find `git-manager-service.exe` in Task Manager → Details.
-  - **Linux**: Registers and starts `~/.config/systemd/user/gitmanager-updater.service` via `systemctl --user`, running the separate `git-manager-service` executable.
-  - **macOS**: Registers and loads `~/Library/LaunchAgents/com.gitmanager.updater.plist` via `launchctl`, running the separate `git-manager-service` executable.
+- **Service lifecycle**:
+  - **Windows 10 & 11**: Runs as the signed-in user. Optional sign-in startup registers a current-user Task Scheduler task named `GitManager Core Service`; this is deliberately **not** a Windows Service Control Manager service and does not appear in Services.msc. The process is `gitmanager.service.exe`.
+  - **Linux**: Runs as the signed-in user. Optional sign-in startup registers `~/.config/systemd/user/gitmanager-core.service`.
+  - **macOS**: Runs as the signed-in user. Optional sign-in startup registers `~/Library/LaunchAgents/com.gitmanager.core.plist`.
+  - The service is independent from the Tauri UI and crash-helper process tree. Closing the desktop does not automatically stop it.
 
-The background worker is optional. Its absence from Task Manager immediately after installing or launching GitManager does not by itself mean the MSI omitted it. The installer payload includes it under the app's `resources` directory; enabling the option registers and starts it.
-- **Automatic Update Notification Prompt**:
-  - Periodically polls remote `origin` heads (`libgit2` fetch / `ls-remote`) across all indexed repositories.
-  - Whenever a repository has new upstream commits, it triggers both an OS desktop notification and an in-app interactive banner asking:
-    > **"Hay you have `<X-REPO_NAME>` update do you want to update it?"**
-- **Clear Animated Loading Spinner**:
-  - Displays the GitManager loading mark: the orange ring rotates around the stationary center PNG while scanning remotes or when clicking **"Yes, Update Now"** to pull/fast-forward the repository.
+- **Repository indexing & storage**:
+  - The service is the only process that walks configured scan roots and publishes the repository inventory.
+  - The UI hydrates the last saved index before requesting refreshes, keeping repository cards available while indexing runs.
+  - Persistent inventory and metadata live under `data/GitManager/repo/metadata`; cache and Git/account data use separate folders under the same per-user data root.
+
+- **Task Center & Notifications**:
+  - Task Center and Notifications open as compact, mutually exclusive popovers at the top-right of the app.
+  - In-app notifications use a bounded persistent history with unread/read and dismiss actions.
+  - One event record feeds the in-app history and OS notification delivery. Duplicate OS toasts for the same repository/remote commit are suppressed.
+  - Settings exposes independent in-app and OS notification switches.
+
+- **Remote update safety**:
+  - Periodically checks remote `origin` heads across indexed repositories.
+  - Update application remains fast-forward-only and refuses to overwrite uncommitted or untracked work.
 
 ---
 
