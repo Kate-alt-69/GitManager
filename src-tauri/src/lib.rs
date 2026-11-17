@@ -311,6 +311,36 @@ async fn get_commit_details(repo_path: String, oid: String) -> Result<CommitDeta
         .await.map_err(|error| format!("Commit detail task failed: {error}"))?
 }
 
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliToolAvailability {
+    git: bool,
+    github: bool,
+}
+
+fn cli_tool_available(name: &str) -> bool {
+    let output = hidden_command(name)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    output.map(|status| status.success()).unwrap_or(false)
+}
+
+#[tauri::command]
+fn check_cli_tools() -> CliToolAvailability {
+    CliToolAvailability {
+        git: cli_tool_available("git"),
+        github: cli_tool_available("gh"),
+    }
+}
+
+#[tauri::command]
+fn exit_application(app_handle: AppHandle) {
+    app_handle.exit(0);
+}
+
 fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     if roots.len() > 32 {
         return Err("GitManager supports up to 32 scan roots.".to_string());
@@ -1504,6 +1534,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            check_cli_tools,
+            exit_application,
             get_default_scan_directories,
             get_default_archive_directory,
             get_archive_cloud_storage_info,
