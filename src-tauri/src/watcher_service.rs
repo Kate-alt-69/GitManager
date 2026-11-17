@@ -77,8 +77,8 @@ mod tests {
         assert_eq!(
             command,
             vec![
-                "/usr/bin/flatpak",
-                "run",
+                "flatpak".to_string(),
+                "run".to_string(),
                 "--command=git-manager-service",
                 "com.gitmanager.desktop",
             ]
@@ -353,14 +353,6 @@ fn systemd_quote(value: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn find_executable_in_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
-#[cfg(target_os = "linux")]
 fn linux_background_service_command(
     service_executable: &Path,
     flatpak_id: Option<&str>,
@@ -501,8 +493,11 @@ pub fn register_os_background_service(app_handle: AppHandle) -> Result<String, S
             .map_err(|error| format!("Could not create {}: {error}", systemd_dir.display()))?;
         let unit_path = systemd_dir.join("gitmanager-updater.service");
         let flatpak_id = std::env::var("FLATPAK_ID").ok();
+        // This code runs inside the Flatpak sandbox, where the host's Flatpak CLI
+        // is not visible on PATH. A bare command name lets the host systemd user
+        // manager resolve it using its normal host executable search path.
         let flatpak_executable = if flatpak_id.as_deref() == Some(GITMANAGER_FLATPAK_APP_ID) {
-            find_executable_in_path("flatpak")
+            Some(PathBuf::from("flatpak"))
         } else {
             None
         };
