@@ -4,7 +4,7 @@
 
 - The desktop executable stays alive as the process-tree root while its bundled crash_helper sidecar supervises the Tauri UI.
 - crash_helper starts and supervises only the Tauri UI process.
-- git-manager-service is a separate executable launched directly by the OS service manager.
+- gitmanager.service is a separate executable launched directly by the OS service manager.
 - The UI and helper never place the background service in their process tree or termination scope.
 - Cloud Node keeps using its existing RBE Error Reporter; this feature does not duplicate it.
 
@@ -26,16 +26,16 @@ crash_helper consumes this switch and adds `--disable-gpu` to `WEBVIEW2_ADDITION
 
 ## Service control
 
-The service exposes a loopback-only TCP endpoint on an ephemeral port. Its address and random token are stored in the per-user GitManager data directory. The endpoint file is owner-readable/writable on Unix and inherits the current user's LocalAppData ACL on Windows. Requests are bounded, authenticated, and limited to status, timed suspend, and resume.
+The required service exposes a loopback-only TCP endpoint on an ephemeral port. Its address and random token are stored in the per-user GitManager data directory. The endpoint file is owner-readable/writable on Unix and inherits the current user's LocalAppData ACL on Windows. Requests are bounded, authenticated, and limited to status, timed suspend, resume, and a repository-index refresh request.
 
-Suspension is cooperative. The service stops scheduling new remote checks, archive watcher work, and cloud sync. Already-running transactional operations are allowed to reach their safe stopping points. The service process is not OS-frozen, so its control channel and expiry timer remain alive.
+Suspension is cooperative. The service stops scheduling new remote checks, archive watcher work, and cloud sync. Already-running transactional operations are allowed to reach their safe stopping points. The service process is not OS-frozen, so its control channel and expiry timer remain alive. The Tauri UI starts this service on demand and waits for its authenticated readiness response before enabling the workspace.
 
 The default suspension is 120 seconds and requests are clamped to a 15–600 second range.
 
 ## Platform integration
 
-- Windows: Task Scheduler starts git-manager-service.exe directly.
-- Linux: the systemd user unit starts git-manager-service directly and uses a bounded restart policy.
-- macOS: the LaunchAgent starts git-manager-service directly and uses launchd throttling.
+- Windows: Task Scheduler starts gitmanager.service.exe directly.
+- Linux: the systemd user unit starts gitmanager.service directly and uses a bounded restart policy.
+- macOS: the LaunchAgent starts gitmanager.service directly and uses launchd throttling.
 
 Both executables are packaged as Tauri sidecars. The build script stages target-triple-suffixed sidecars before Tauri packaging.
