@@ -3,7 +3,7 @@
   "outputTypes": [
     "msi"
   ],
-  "outputDirectory": "target/windows-installers",
+  "outputDirectory": "build/.rcache/windows-installers",
   "outputFileName": "GitManager_$.version_$.platform",
   "compressionLevel": "Normal",
   "packageName": "GitManager",
