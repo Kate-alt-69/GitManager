@@ -346,7 +346,7 @@ export function useGitManager() {
 			unlistenState?.();
 			unlistenNotifications?.();
 		};
-	}, [scan]);
+	}, [performScan, refreshNotifications]);
 
 	return {
 		available, serviceReady, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
