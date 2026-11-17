@@ -128,9 +128,28 @@ jobs:
 
   msix:
     needs: validate
-    name: Windows Microsoft Store MSIX
+    name: Microsoft Store MSIX (${{ matrix.platform }})
     if: ${{ inputs.store == 'all' || inputs.store == 'msix' }}
-    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            selector: windows(10,x64)
+            output: windows-x64
+            target: x86_64-pc-windows-msvc
+            runner: windows-2025
+          - platform: x86
+            selector: windows(11,x86)
+            output: windows-x86
+            target: i686-pc-windows-msvc
+            runner: windows-2025
+          - platform: arm64
+            selector: windows(11,arm64)
+            output: windows-arm64
+            target: aarch64-pc-windows-msvc
+            runner: windows-11-vs2026-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}\build\.rcache
@@ -172,16 +191,16 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
 
       - name: Build Windows app-only payload
         shell: pwsh
-        run: python build.py --build='windows(10,x64)' --type=app
+        run: python build.py --build='${{ matrix.selector }}' --type=app
 
       - name: Stage Windows Store package payload
         shell: pwsh
         run: |
-          python tools/package_windows_store.py
+          python tools/package_windows_store.py --app-dir 'build/dist/${{ matrix.output }}/app' --platform ${{ matrix.platform }}
           $source = (Resolve-Path "build/.rcache/windows-store/source").Path
           "GITMANAGER_APP_SOURCE=$source" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -201,7 +220,7 @@ jobs:
       - name: Upload MSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gitmanager-microsoft-store-msix-x64
+          name: gitmanager-microsoft-store-msix-${{ matrix.platform }}
           path: build/dist/store/msix/*
           if-no-files-found: error
           retention-days: 30
