@@ -145,9 +145,6 @@ pub fn run() -> ! {
                             eprintln!("GitManager core service: repository indexing failed: {error}");
                         }
                     }
-                    // Requests received while this scan was running are satisfied
-                    // by the just-published index; avoid an immediate duplicate crawl.
-                    let _ = service_control.take_scan_request();
                 }
 
                 if last_cloud_archive_sync.elapsed() >= CLOUD_ARCHIVE_SYNC_INTERVAL {
@@ -206,7 +203,10 @@ pub fn run() -> ! {
         }
 
         let refresh_deadline = Instant::now() + PREFERENCE_REFRESH;
-        while Instant::now() < refresh_deadline && !service_control.is_suspended() {
+        while Instant::now() < refresh_deadline
+            && !service_control.is_suspended()
+            && !service_control.scan_request_pending()
+        {
             thread::sleep(Duration::from_secs(1));
         }
     }
