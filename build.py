@@ -304,7 +304,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
         return 1
 
     log_ok(f"Staged complete Windows app payload for MPDEV: {staging}")
-    log_info("Included git-manager.exe, crash_helper.exe, background service, gitm, setup helper, cleaner and private CPython.")
+    log_info("Included gitmanager.exe, crash_helper.exe, background service, gitm, setup helper, cleaner and private CPython.")
     return 0
 
 
@@ -1798,7 +1798,7 @@ def build_local_store_package(
             (cargo_target_root(project_root) / "windows-store" / "source").resolve()
         )
         if not (Path(environment["GITMANAGER_APP_SOURCE"]) / "gitmanager.exe").is_file():
-            log_err("The staged Microsoft Store app payload is missing git-manager.exe.")
+            log_err("The staged Microsoft Store app payload is missing gitmanager.exe.")
             return 1
         command = [
             str(mpdev), "build", str(manifest),
@@ -1906,7 +1906,7 @@ def publish_build_outputs(
             f"gitm{suffix}": sidecar_dir / f"gitm-{target.triple}{suffix}",
             f"gitmanager-setup{suffix}": sidecar_dir / f"gitmanager-setup-{target.triple}{suffix}",
             f"crash_helper{suffix}": sidecar_dir / f"crash_helper-{target.triple}{suffix}",
-            f"gitmanager.service{suffix}": sidecar_dir / f"git-manager-service-{target.triple}{suffix}",
+            f"gitmanager.service{suffix}": sidecar_dir / f"gitmanager.service-{target.triple}{suffix}",
         }
         names = (
             f"gitmanager{suffix}",
@@ -2102,7 +2102,7 @@ def run_build_or_dev(
         cmd.append(toolchain_arg)
 
     if mode == "dev":
-        cmd.extend(["run", "--bin", "git-manager", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
+        cmd.extend(["run", "--bin", "gitmanager", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
     else:
         cmd.extend(["build", "--bins", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
         if release:
