@@ -1566,28 +1566,30 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool) -> in
                 return 1
             shutil.copytree(bundle_source, output_root / "installer")
             log_ok(f"Published installer bundles: {output_root / 'installer'}")
-        else:
-            suffix = ".exe" if target.platform == "windows" else ""
-            names = (
-                f"git-manager{suffix}",
-                f"gitm{suffix}",
-                f"gitmanager-setup{suffix}",
-                f"crash_helper{suffix}",
-                f"git-manager-service{suffix}",
-            )
-            app_dir = output_root / "app"
-            app_dir.mkdir(parents=True, exist_ok=True)
-            missing = []
-            for name in names:
-                source = profile_dir / name
-                if not source.is_file() or source.stat().st_size == 0:
-                    missing.append(name)
-                    continue
-                shutil.copy2(source, app_dir / name)
-            if missing:
-                log_err("App-only build is missing target executables: " + ", ".join(missing))
-                return 1
-            log_ok(f"Published app binaries: {app_dir}")
+
+        suffix = ".exe" if target.platform == "windows" else ""
+        setup_alias = "GitManager-Setup" + suffix
+        names = (
+            f"git-manager{suffix}",
+            f"gitm{suffix}",
+            f"gitmanager-setup{suffix}",
+            f"crash_helper{suffix}",
+            f"git-manager-service{suffix}",
+            setup_alias,
+        )
+        app_dir = output_root / "app"
+        app_dir.mkdir(parents=True, exist_ok=True)
+        missing = []
+        for name in names:
+            source = profile_dir / name
+            if not source.is_file() or source.stat().st_size == 0:
+                missing.append(name)
+                continue
+            shutil.copy2(source, app_dir / name)
+        if missing:
+            log_err("Build output is missing required app executables: " + ", ".join(missing))
+            return 1
+        log_ok(f"Published app binaries: {app_dir}")
 
         manifest = {
             "product": "GitManager",
