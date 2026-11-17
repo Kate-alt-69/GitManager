@@ -6,13 +6,8 @@ on:
       build:
         description: Platform group to build
         required: true
-        type: choice
+        type: string
         default: all
-        options:
-          - all
-          - windows
-          - linux
-          - macos
       type:
         description: Output type
         required: true
@@ -32,7 +27,7 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.label }}
-    if: ${{ inputs.build == 'all' || inputs.build == matrix.platform }}
+    if: ${{ inputs.build == 'all' || inputs.build == matrix.platform || inputs.build == matrix.selector }}
     strategy:
       fail-fast: false
       matrix:
