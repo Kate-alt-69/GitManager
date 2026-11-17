@@ -53,7 +53,7 @@ For direct-download MSIX distribution outside the Store, use a certificate trust
 
 ## Acceptance checks
 
-- MSI carries the worker and installs it only for the current user; enabling/disabling the feature registers/removes the current-user Task Scheduler task.
+- MSI carries the worker and installs it only for the current user; enabling registers the current-user Task Scheduler task. A complete disable/uninstall lifecycle must remove only that named task without touching unrelated tasks.
 - Store MSIX carries the worker but does not declare MPDEV `services[]` or restricted packaged-service capabilities.
 - Store MSIX can be installed locally with the Partner Center identity and test certificate, and can be submitted without a CA-issued PFX; Microsoft signs it after certification.
 - Native DEB/RPM user-unit lifecycle is validated on supported distributions.
