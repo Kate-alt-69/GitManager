@@ -89,7 +89,8 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
 
     def test_windows_installer_build_invokes_mpdev_for_both_formats(self):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
-        self.assertIn("build_master_packager_installers(project_root, release)", source)
+        self.assertIn("build_master_packager_installers(project_root, mpdev_manifest)", source)
+        self.assertIn("prepare_master_packager_manifest(project_root)", source)
         self.assertIn('package_config["outputTypes"] = ["msi", "msix"]', source)
         self.assertIn("MPDEV is the required", source)
 
