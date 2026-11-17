@@ -1052,6 +1052,14 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 	color: #8999aa;
 	font-size: 10px;
 }
+.gm-workbench-layout .gm-workspace-files > .gm-workspace-empty,
+.gm-workbench-layout .gm-workspace-changes > .gm-workspace-empty:not(.gm-workspace-source-empty) {
+	display: grid;
+	flex: 1 1 auto;
+	place-items: center;
+	padding: 22px;
+	text-align: center;
+}
 
 .gm-workbench-layout .gm-workspace-source-empty {
 	display: flex;
