@@ -182,7 +182,7 @@ def main() -> int:
             "python3", "--version",
         ], cwd=CACHE)
         run([
-            "flatpak-builder", "--run", str(build_dir), str(generated_manifest),
+            "flatpak-builder", "--user", "--run", str(build_dir), str(generated_manifest),
             "gitm", "--version",
         ], cwd=CACHE)
 
