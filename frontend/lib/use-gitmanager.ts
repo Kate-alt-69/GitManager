@@ -36,6 +36,8 @@ export function useGitManager() {
 	const [loading, setLoading] = useState(true);
 	const [scanning, setScanning] = useState(false);
 	const [scanTruncated, setScanTruncated] = useState(false);
+	const [indexReady, setIndexReady] = useState(false);
+	const indexGeneration = useRef("0");
 	const [version, setVersion] = useState("—");
 	const [preferences, setPreferences] = useState<AppPreferences>(DEFAULT_PREFERENCES);
 	const [directories, setDirectories] = useState<ApplicationDirectories | null>(null);
@@ -75,6 +77,7 @@ export function useGitManager() {
 			setRepositories(local);
 			setDependencies(summary.dependency_repo_ids ?? []);
 			setScanTruncated(Boolean(summary.scan_truncated));
+			setIndexReady(true);
 			setStatus(summary.scan_truncated
 				? `Indexed ${local.length} repositories · stopped at a safety limit`
 				: `Indexed ${local.length} repositories`);
@@ -146,6 +149,41 @@ export function useGitManager() {
 		setNotifications((current) => current.filter((item) => item.id !== id));
 	}, []);
 
+
+	// Initial discovery is owned by gitmanager.service. Poll only the tiny index
+	// generation stamp until the service publishes its first index; then read the
+	// full inventory exactly once. This avoids a duplicate startup directory walk.
+	useEffect(() => {
+		if (!serviceReady || !preferences.firstRunComplete || indexReady) return;
+		let active = true;
+		const refreshInitialIndex = async () => {
+			try {
+				const generation = await invoke<string>("get_repository_index_generation");
+				if (!active || generation === "0" || generation === indexGeneration.current) return;
+				const summary = await invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" });
+				if (!active) return;
+				indexGeneration.current = generation;
+				const local = Array.isArray(summary.repositories)
+					? summary.repositories.filter((repo) => repo.source_kind === "local_scan")
+					: [];
+				setRepositories(local);
+				setDependencies(summary.dependency_repo_ids ?? []);
+				setScanTruncated(Boolean(summary.scan_truncated));
+				setIndexReady(true);
+				setStatus(summary.scan_truncated
+					? `Indexed ${local.length} repositories · stopped at a safety limit`
+					: `Indexed ${local.length} repositories`);
+			} catch {
+				// A missing index is normal while the service performs first-run discovery.
+			}
+		};
+		void refreshInitialIndex();
+		const timer = window.setInterval(() => void refreshInitialIndex(), 1500);
+		return () => {
+			active = false;
+			window.clearInterval(timer);
+		};
+	}, [serviceReady, preferences.firstRunComplete, indexReady]);
 
 	// Report only after the desktop hook is ready. The independent crash_helper
 	// treats a missing heartbeat as an unresponsive UI.
@@ -284,9 +322,12 @@ export function useGitManager() {
 
 				// Hydrate the last published inventory before requesting any refresh.
 				// This is a read of the service-owned index, never a filesystem scan.
-				const cachedIndex = await invoke<ScanSummary>("load_indexed_repositories", {
-					filterMode: "grouped",
-				}).catch(() => null);
+				const [cachedIndex, generation] = await Promise.all([
+					invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" }).catch(() => null),
+					invoke<string>("get_repository_index_generation").catch(() => "0"),
+				]);
+				indexGeneration.current = generation;
+				if (active && generation !== "0") setIndexReady(true);
 				if (active && cachedIndex) {
 					const local = Array.isArray(cachedIndex.repositories)
 						? cachedIndex.repositories.filter((repo) => repo.source_kind === "local_scan")
@@ -307,9 +348,12 @@ export function useGitManager() {
 						setSetupOpen(true);
 					}
 				} else {
-					// Paint the application shell first; native discovery fills the skeleton cards.
+					// The service owns first-run discovery. Render cached data immediately
+					// and let the lightweight generation poll hydrate the first new index.
 					setLoading(false);
-					void performScan(resolved);
+					setStatus(indexGeneration.current === "0"
+						? "GitManager Core Service is indexing repositories…"
+						: "Repository index loaded");
 				}
 
 				// GitHub CLI detection is intentionally deferred to Accounts.
@@ -349,7 +393,9 @@ export function useGitManager() {
 	}, [performScan, refreshNotifications]);
 
 	return {
-		available, serviceReady, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
+		available, serviceReady, loading, scanning, scanTruncated, indexReady,
+		awaitingInitialIndex: serviceReady && preferences.firstRunComplete && !indexReady,
+		version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, updates, notifications, setupOpen, setSetupOpen,
 		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
 		refreshNotifications, markNotificationRead, dismissNotification,
