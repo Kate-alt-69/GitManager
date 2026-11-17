@@ -194,7 +194,7 @@ export function useGitManager() {
 						"Git CLI and GitHub CLI were not detected.\n\n" +
 						"GitManager has its own built-in Git engine, so it can still scan local repositories. " +
 						"However, features that launch Git commands and GitHub CLI account integration will be unavailable.\n\n" +
-						"Would you like to continue with the repository scan?"
+						"Would you like to continue with the repository scan?\n\nChoose OK to continue scanning or Cancel to close GitManager."
 					);
 					if (!proceed) {
 						await invoke("exit_application");
