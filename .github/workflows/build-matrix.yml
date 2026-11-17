@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       build:
-        description: Platform group to build
+        description: all, a platform group, or an exact selector such as windows(11,x86)
         required: true
         type: string
         default: all
