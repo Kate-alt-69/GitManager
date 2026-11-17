@@ -71,9 +71,15 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertEqual(config["platform"], "x64")
         self.assertEqual(config["outputDirectory"], "build/.rcache/windows-installers")
         self.assertEqual(
-            config["msi"]["installDir"],
-            "[LocalAppDataFolder]kastrick's_software\\GitManager",
+            config["installDir"],
+            "%ProgramFiles%\\Kastrick's Software\\GitManager",
         )
+        self.assertNotIn("installDir", config["msi"])
+        msi_properties = {item["name"]: item["value"] for item in config["msi"]["properties"]}
+        self.assertEqual(msi_properties["ALLUSERS"], "2")
+        self.assertEqual(msi_properties["MSIINSTALLPERUSER"], "1")
+        dependency = config["msi"]["packageDependencies"][0]
+        self.assertEqual(dependency["displayName"], "Microsoft Edge WebView2 Runtime")
         self.assertEqual(config["fileSystemEntries"][0]["sourcePath"], "%GITMANAGER_APP_SOURCE%")
         self.assertEqual(config["fileSystemEntries"][0]["targetPath"], "$.installDir")
         self.assertEqual(config["msix"]["digitalSignature"]["signWith"], "GenerateTestCertificate")
