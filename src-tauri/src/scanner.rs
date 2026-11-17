@@ -86,11 +86,6 @@ pub fn repository_index_modified_unix_nanos() -> Result<u128, String> {
 
 pub fn load_persisted_repository_index() -> Result<Option<PersistedRepositoryIndex>, String> {
     let path = repository_index_path()?;
-    let backup = path.with_extension("json.previous");
-    if !path.is_file() && backup.is_file() {
-        fs::rename(&backup, &path)
-            .map_err(|error| format!("Could not recover the previous repository index: {error}"))?;
-    }
     if !path.is_file() {
         return Ok(None);
     }
@@ -123,6 +118,13 @@ pub fn save_persisted_repository_index(report: &ScanReport) -> Result<PersistedR
         .ok_or_else(|| "Repository index path has no parent directory.".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Could not create repository metadata directory: {error}"))?;
+    let backup = path.with_extension("json.previous");
+    // Recovery belongs to the single-writer service. Readers must never move
+    // the backup while a publish is in progress.
+    if !path.is_file() && backup.is_file() {
+        fs::rename(&backup, &path)
+            .map_err(|error| format!("Could not recover the previous repository index: {error}"))?;
+    }
 
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -161,7 +163,6 @@ pub fn save_persisted_repository_index(report: &ScanReport) -> Result<PersistedR
         file.sync_all()
             .map_err(|error| format!("Could not flush temporary repository index: {error}"))?;
     }
-    let backup = path.with_extension("json.previous");
     let had_previous = path.is_file();
     if had_previous {
         if backup.exists() {
