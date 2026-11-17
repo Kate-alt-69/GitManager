@@ -544,6 +544,12 @@ WantedBy=default.target
         if !enable.status.success() {
             return Err(format!("Could not enable/start GitManager's systemd user service: {}", String::from_utf8_lossy(&enable.stderr).trim()));
         }
+        if flatpak_id.as_deref() == Some(GITMANAGER_FLATPAK_APP_ID) {
+            return Ok(
+                "Registered and started the GitManager Flatpak background worker through the host systemd user manager."
+                    .to_string(),
+            );
+        }
         return Ok(format!("Registered and started the independent Linux systemd service at {}.", service_exe.display()));
     }
 
