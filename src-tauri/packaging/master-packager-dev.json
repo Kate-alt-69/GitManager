@@ -3,17 +3,17 @@
   "outputTypes": [
     "msi"
   ],
-  "outputDirectory": "target/release/bundle/master-packager-dev",
+  "outputDirectory": "build/.rcache/x86_64-pc-windows-msvc/release/bundle/master-packager-dev",
   "outputFileName": "GitManager-MasterPackager",
   "packageName": "GitManager",
   "publisher": "Kastrick",
   "version": "1.0.0",
   "platform": "x64",
   "installDir": "%LOCALAPPDATA%\\kastrick's_software\\GitManager",
-  "icon": "target/packaging/master-packager-dev/input/GitManager.ico",
+  "icon": "build/.rcache/packaging/master-packager-dev/input/GitManager.ico",
   "fileSystemEntries": [
     {
-      "sourcePath": "target/packaging/master-packager-dev/input",
+      "sourcePath": "build/.rcache/packaging/master-packager-dev/input",
       "targetPath": "$.installDir"
     }
   ],
