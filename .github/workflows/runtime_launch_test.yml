@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: linux-runtime-\${{ github.workflow }}-\${{ github.ref }}
+  group: linux-runtime-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 45
     env:
       GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
-      CARGO_TARGET_DIR: \${{ github.workspace }}/build/.rcache
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: "1"
       WEBKIT_DISABLE_COMPOSITING_MODE: "1"
