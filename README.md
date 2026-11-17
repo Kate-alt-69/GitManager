@@ -23,7 +23,7 @@ py build.py deps
 # Run in development mode
 py build.py dev
 
-# Build all seven supported desktop targets (requires authenticated GitHub CLI)
+# Build all eight supported desktop targets (requires authenticated GitHub CLI)
 py build.py --build=all --type=installer
 
 # Build one exact target locally
