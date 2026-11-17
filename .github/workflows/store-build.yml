@@ -5,6 +5,8 @@ on:
     paths:
       - "build.py"
       - "tools/build_targets.py"
+      - "tools/setup_build_environment.py"
+      - "tools/test_build_environment.py"
       - "tools/package_flatpak.py"
       - "tools/package_windows_store.py"
       - "installer/flatpak/**"
@@ -30,7 +32,7 @@ jobs:
 
       - name: Validate Python, JSON and AppStream metadata
         run: |
-          python -m py_compile build.py tools/build_targets.py tools/package_flatpak.py tools/package_windows_store.py
+          python -m py_compile build.py tools/build_targets.py tools/setup_build_environment.py tools/test_build_environment.py tools/package_flatpak.py tools/package_windows_store.py
           python -m json.tool installer/master-packager/package.json > /dev/null
           python -m json.tool installer/store/msix/package.json > /dev/null
           python -c "import xml.etree.ElementTree as ET; ET.parse('installer/flatpak/com.gitmanager.desktop.metainfo.xml')"
@@ -44,3 +46,4 @@ jobs:
         run: |
           python tools/test_build_targets.py
           python tools/test_windows_packaging.py
+          python tools/test_build_environment.py
