@@ -117,7 +117,6 @@ jobs:
           APP="build/.rcache/x86_64-unknown-linux-gnu/debug/git-manager"
           mkdir -p build/runtime-test
           dbus-run-session -- xvfb-run -a \
-            /usr/bin/time -v \
             timeout --signal=TERM --kill-after=10s 60s \
             env XDG_DATA_HOME="$GITHUB_WORKSPACE/build/runtime-test/xdg-data" GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
             python tools/runtime_launch_probe.py --app "$APP" --duration 45 --log build/runtime-test/app.log \
@@ -130,12 +129,16 @@ jobs:
             exit "$status"
           fi
 
-          MAX_RSS_KB=$(awk '/Maximum resident set size/ {print $6}' build/runtime-test/linux-launch.log)
-          if [ -n "$MAX_RSS_KB" ] && [ "$MAX_RSS_KB" -gt 1572864 ]; then
-            echo "GitManager exceeded the 1.5 GiB startup/scan memory budget: $MAX_RSS_KB KiB"
+          MAX_RSS_KB=$(grep -o 'GITMANAGER_PEAK_RSS_KB=[0-9]*' build/runtime-test/linux-launch.log | tail -n 1 | cut -d= -f2)
+          if [ -z "$MAX_RSS_KB" ]; then
+            echo "GitManager process-tree RSS was not reported by the runtime probe."
             exit 1
           fi
-          echo "Peak resident memory: $MAX_RSS_KB KiB"
+          if [ "$MAX_RSS_KB" -gt 1572864 ]; then
+            echo "GitManager and its WebKit child processes exceeded the 1.5 GiB startup/scan memory budget: $MAX_RSS_KB KiB"
+            exit 1
+          fi
+          echo "Peak GitManager process-tree RSS: $MAX_RSS_KB KiB"
 
       - name: Upload runtime diagnostics
         if: always()
