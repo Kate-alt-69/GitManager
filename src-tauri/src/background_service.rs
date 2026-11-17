@@ -106,6 +106,15 @@ pub fn run() -> ! {
 
         match load_background_preferences() {
             Ok(preferences) => {
+                // The service must be available during first-run setup, but it
+                // must not crawl default home-directory roots before the user
+                // confirms their scan locations.
+                if !preferences.first_run_complete {
+                    archive_watcher::stop_archive_watchers();
+                    thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+
                 let scan_settings = serde_json::to_string(&(
                     &preferences.scan_roots,
                     preferences.max_scan_depth,
