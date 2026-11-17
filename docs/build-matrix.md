@@ -68,18 +68,34 @@ build/
   dist/
     windows-x64/
       app/                 # GitManager, gitm, setup, crash-helper and service binaries
+      installer/           # NSIS setup.exe, WiX MSI and MPDEV comparison MSI
+      build-manifest.json
+    windows-x86/
+      app/                 # 32-bit app and sidecar binaries
+      installer/           # NSIS setup.exe and WiX MSI
+      build-manifest.json
+    windows-arm64/
+      app/                 # ARM64 app and sidecar binaries
       installer/           # NSIS setup.exe and WiX MSI
       build-manifest.json
     linux-x64/
       app/                 # Native app and sidecar binaries
-      installer/           # deb, rpm, AppImage and app bundle outputs
+      installer/           # DEB, RPM, AppImage and app bundle outputs
+      build-manifest.json
+    linux-arm64/
+      app/                 # ARM64 app and sidecar binaries
+      installer/           # DEB, RPM, AppImage and app bundle outputs
       build-manifest.json
     linux-armv7/
       app/                 # ARMv7 app and sidecar binaries
       installer/           # ARMv7 DEB and RPM packages
       build-manifest.json
+    macos-x64/
+      app/                 # Intel macOS app and sidecar binaries
+      installer/           # DMG and app bundle outputs
+      build-manifest.json
     macos-arm64/
-      app/                 # Native app and sidecar binaries
+      app/                 # Apple Silicon app and sidecar binaries
       installer/           # DMG and app bundle outputs
       build-manifest.json
 ```
