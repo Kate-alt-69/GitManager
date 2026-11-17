@@ -6,7 +6,7 @@ GitManager keeps three Windows installer paths available:
 | --- | --- | --- |
 | `GitManager-Setup.exe` | Tauri + NSIS | Interactive setup |
 | Tauri `*.msi` | Tauri + WiX | Standard MSI fallback |
-| `GitManager-MasterPackager.msi` | Master Packager Dev | Experimental local comparison |
+| `GitManager_1.0.0.0_x64.msi` | Master Packager Dev | Additional comparison MSI (CI and opt-in local) |
 
 Master Packager Dev is additive. It does not replace WiX or NSIS.
 
@@ -53,9 +53,9 @@ A normal Windows `py build.py --build='windows(10,x64)' --type=installer` create
 - NSIS setup executable under `build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/`
 - WiX MSI under `build/.rcache/x86_64-pc-windows-msvc/release/bundle/msi/`
 
-When `--master-packager` is supplied, the build script stages the same release executables and supporting files into a generated directory, then calls `mpdev build` using `src-tauri/packaging/master-packager-dev.json`. Its output is placed under `build/.rcache/x86_64-pc-windows-msvc/release/bundle/master-packager-dev/`.
+The Windows release workflow builds the additional MPDEV MSI from `installer/master-packager/package.json` after staging and signing the app payload. For a local comparison build, pass `--master-packager`; it uses the same manifest and writes to `build/.rcache/windows-installers/`.
 
-The MPDEV test payload includes:
+The MPDEV payload includes:
 
 - `GitManager.exe`
 - `crash_helper.exe`
@@ -65,9 +65,9 @@ The MPDEV test payload includes:
 - `resources/python/` (the private CPython embeddable runtime)
 - `resources/tools/gitmanager_cleaner.py`
 
-### Important: MPDEV output is local-build-only for now
+### Important: compare the MPDEV MSI before making it the default
 
-Master Packager Dev expands environment variables such as `%LOCALAPPDATA%` while building its project. The current experimental manifest therefore resolves the install path using the account that built the MSI. This is suitable for comparing the install flow on that same Windows account, but **do not redistribute this experimental MSI**: a build on a CI runner or another account would bake in that builder's profile path. The normal Tauri NSIS and WiX installers remain the portable release artifacts.
+The MPDEV MSI currently targets the per-user Local AppData location. Compare install, upgrade and uninstall behavior against the Tauri NSIS/WiX outputs before deciding whether it should replace either baseline. Do not treat a CI test artifact as a production release until its signing, identity and clean-machine install behavior have been verified.
 
 The MPDEV MSI uses its own stable upgrade code. Do not change it between test builds of the same product; changing it causes Windows Installer to treat the package as a different product.
 
