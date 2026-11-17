@@ -75,6 +75,9 @@ export function RepositoryWorkspace({
 	const [previewTitle, setPreviewTitle] = useState("");
 	const [previewText, setPreviewText] = useState("");
 	const [previewKind, setPreviewKind] = useState<"file" | "diff">("file");
+	const [editorDraft, setEditorDraft] = useState("");
+	const [editorDirty, setEditorDirty] = useState(false);
+	const [savingResolution, setSavingResolution] = useState(false);
 	const [loadingFiles, setLoadingFiles] = useState(false);
 	const [loadingChanges, setLoadingChanges] = useState(false);
 	const [busy, setBusy] = useState(false);
@@ -173,6 +176,8 @@ export function RepositoryWorkspace({
 		setSelectedFile(null);
 		setPreviewTitle("");
 		setPreviewText("");
+		setEditorDraft("");
+		setEditorDirty(false);
 	}
 
 	function openParentDirectory() {
@@ -194,6 +199,8 @@ export function RepositoryWorkspace({
 		setSelectedFile(entry);
 		setPreviewTitle(entry.path);
 		setPreviewText("Loading file…");
+		setEditorDraft("");
+		setEditorDirty(false);
 		setPreviewKind("file");
 		setError("");
 		try {
@@ -203,7 +210,11 @@ export function RepositoryWorkspace({
 				source,
 				branch: source === "remote" ? remoteBranch : null,
 			});
-			if (requestId === previewRequestId.current) setPreviewText(text);
+			if (requestId === previewRequestId.current) {
+				setPreviewText(text);
+				setEditorDraft(text);
+				setEditorDirty(false);
+			}
 		} catch (cause) {
 			if (requestId === previewRequestId.current) {
 				setPreviewText("");
@@ -212,10 +223,36 @@ export function RepositoryWorkspace({
 		}
 	}
 
+	async function saveConflictResolution() {
+		if (focus !== "conflicts" || source !== "local" || !selectedFile || previewKind !== "file") return;
+		setSavingResolution(true);
+		setError("");
+		setNotice("Saving resolved file…");
+		try {
+			const result = await invoke<string>("save_conflict_resolution", {
+				repoPath: repo.path,
+				relativePath: selectedFile.path,
+				content: editorDraft,
+			});
+			setPreviewText(editorDraft);
+			setEditorDirty(false);
+			setNotice(result);
+			await refreshChanges();
+			await refreshRepositoryDetails();
+		} catch (cause) {
+			setError(messageOf(cause));
+			setNotice("");
+		} finally {
+			setSavingResolution(false);
+		}
+	}
+
 	async function previewDiff(change: WorktreeChange) {
 		const requestId = ++previewRequestId.current;
 		setPreviewTitle(change.path + (change.staged ? " · staged diff" : " · unstaged diff"));
 		setPreviewText("Loading diff…");
+		setEditorDraft("");
+		setEditorDirty(false);
 		setPreviewKind("diff");
 		setSelectedFile(null);
 		setError("");
@@ -570,9 +607,27 @@ export function RepositoryWorkspace({
 				<aside className="gm-workspace-card gm-workspace-preview" aria-label="File editor and preview">
 					<div className="gm-workspace-card-heading">
 						<div><h3>{previewKind === "diff" ? "Diff Editor" : "Editor"}</h3><span>{previewTitle || "No file selected"}</span></div>
-						<button type="button" className="gm-workspace-mini" onClick={() => { previewRequestId.current += 1; setPreviewTitle(""); setPreviewText(""); setSelectedFile(null); }}>Clear</button>
+						<button type="button" className="gm-workspace-mini" onClick={() => { previewRequestId.current += 1; setPreviewTitle(""); setPreviewText(""); setEditorDraft(""); setEditorDirty(false); setSelectedFile(null); }}>Clear</button>
 					</div>
-					{previewText ? (
+					{focus === "conflicts" && source === "local" && selectedFile && previewKind === "file" ? (
+						<div className="gm-workspace-conflict-editor">
+							<div className="gm-workspace-conflict-editor-note">Edit the merged contents below. Saving writes only this currently conflicted file; use Stage in Source Control to mark it resolved.</div>
+							<textarea
+								className="gm-workspace-preview-text gm-workspace-conflict-textarea"
+								value={editorDraft}
+								onChange={(event) => { setEditorDraft(event.target.value); setEditorDirty(true); }}
+								spellCheck={false}
+								aria-label="Resolved conflict file contents"
+								maxLength={1024 * 1024}
+							/>
+							<div className="gm-workspace-conflict-editor-actions">
+								<span>{editorDraft.length.toLocaleString()} characters{editorDirty ? " · unsaved" : ""}</span>
+								<button type="button" className="gm-button gm-button-primary" onClick={() => void saveConflictResolution()} disabled={!editorDirty || savingResolution || loadingFiles}>
+									{savingResolution ? "Saving…" : "Save resolved file"}
+								</button>
+							</div>
+						</div>
+					) : previewText ? (
 						<pre className="gm-workspace-preview-text">{previewText}</pre>
 					) : (
 						<div className="gm-workspace-empty gm-workspace-editor-empty">
