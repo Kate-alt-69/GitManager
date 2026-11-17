@@ -869,6 +869,11 @@ fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn get_core_service_status() -> Result<crash_helper::ServiceStatus, String> {
+    crash_helper::request_service_status()
+}
+
+#[tauri::command]
 async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {
     tokio::task::spawn_blocking(move || {
         let workdir = PathBuf::from(repo_path);
@@ -1714,6 +1719,7 @@ pub fn run() {
             load_indexed_repositories,
             scan_machine_repositories,
             ensure_required_service,
+            get_core_service_status,
             inspect_repository,
             list_repository_files,
             read_repository_file,
