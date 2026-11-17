@@ -70,7 +70,21 @@ Implemented in `crates/git-manager-service/src/background_service.rs`, `crates/g
 - **Repository indexing & storage**:
   - The service is the only process that walks configured scan roots and publishes the repository inventory.
   - The UI hydrates the last saved index before requesting refreshes, keeping repository cards available while indexing runs.
-  - Persistent inventory and metadata live under `data/GitManager/repo/metadata`; cache and Git/account data use separate folders under the same per-user data root.
+  - Persistent data lives under the per-user `kastrick's_software/data/GitManager` root:
+    ```text
+    repo/
+      metadata/
+      remote/
+        metadata/
+        git_data/
+    git_data/
+    account/
+      metadata/
+      git_data/
+    .cache/
+    notifications/
+    ```
+  - The desktop UI and service share this disk layout. Repository scans write the index to `repo/metadata/index.json`; Git working trees themselves remain at their original user-selected locations.
 
 - **Task Center & Notifications**:
   - Task Center and Notifications open as compact, mutually exclusive popovers at the top-right of the app.
