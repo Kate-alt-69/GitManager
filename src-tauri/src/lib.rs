@@ -11,6 +11,8 @@ pub mod watcher_service;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 use serde::{Deserialize, Serialize};
 use git2::{Oid, Repository};
@@ -339,6 +341,99 @@ fn check_cli_tools() -> CliToolAvailability {
 #[tauri::command]
 fn exit_application(app_handle: AppHandle) {
     app_handle.exit(0);
+}
+
+const FLATPAK_GITM_WRAPPER_MARKER: &str = "# Managed by GitManager Flatpak CLI integration.";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlatpakCliIntegrationStatus {
+    is_flatpak: bool,
+    installed: bool,
+    wrapper_path: Option<String>,
+}
+
+fn flatpak_gitm_wrapper_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".local").join("bin").join("gitm"))
+}
+
+fn is_gitmanager_flatpak() -> bool {
+    std::env::var("FLATPAK_ID")
+        .map(|value| value == "com.gitmanager.desktop")
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+fn get_flatpak_cli_integration_status() -> FlatpakCliIntegrationStatus {
+    let is_flatpak = is_gitmanager_flatpak();
+    let wrapper_path = if is_flatpak { flatpak_gitm_wrapper_path() } else { None };
+    let installed = wrapper_path.as_ref().map(|path| {
+        fs::read_to_string(path)
+            .map(|content| content.starts_with(FLATPAK_GITM_WRAPPER_MARKER))
+            .unwrap_or(false)
+    }).unwrap_or(false);
+    FlatpakCliIntegrationStatus {
+        is_flatpak,
+        installed,
+        wrapper_path: wrapper_path.map(|path| path.to_string_lossy().to_string()),
+    }
+}
+
+#[tauri::command]
+fn install_flatpak_gitm_cli() -> Result<String, String> {
+    if !is_gitmanager_flatpak() {
+        return Err("The gitm Flatpak wrapper can only be installed from the GitManager Flatpak.".to_string());
+    }
+    let path = flatpak_gitm_wrapper_path()
+        .ok_or_else(|| "The user's home directory could not be resolved.".to_string())?;
+    if path.exists() {
+        let existing = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not inspect the existing gitm command: {error}"))?;
+        if !existing.starts_with(FLATPAK_GITM_WRAPPER_MARKER) {
+            return Err(format!(
+                "A different file already exists at {}. It was not overwritten.",
+                path.display()
+            ));
+        }
+    }
+    let parent = path.parent()
+        .ok_or_else(|| "The gitm wrapper directory could not be resolved.".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
+    let wrapper = format!(
+        "{marker}\n#!/bin/sh\nexec flatpak run --command=gitm --filesystem=home com.gitmanager.desktop \"$@\"\n",
+        marker = FLATPAK_GITM_WRAPPER_MARKER
+    );
+    fs::write(&path, wrapper)
+        .map_err(|error| format!("Could not write {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+        .map_err(|error| format!("Could not make {} executable: {error}", path.display()))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn remove_flatpak_gitm_cli() -> Result<(), String> {
+    if !is_gitmanager_flatpak() {
+        return Err("The gitm Flatpak wrapper can only be managed from the GitManager Flatpak.".to_string());
+    }
+    let path = flatpak_gitm_wrapper_path()
+        .ok_or_else(|| "The user's home directory could not be resolved.".to_string())?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let existing = fs::read_to_string(&path)
+        .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
+    if !existing.starts_with(FLATPAK_GITM_WRAPPER_MARKER) {
+        return Err(format!(
+            "The file at {} is not managed by GitManager and was not removed.",
+            path.display()
+        ));
+    }
+    fs::remove_file(&path)
+        .map_err(|error| format!("Could not remove {}: {error}", path.display()))
 }
 
 fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
@@ -1536,6 +1631,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_cli_tools,
             exit_application,
+            get_flatpak_cli_integration_status,
+            install_flatpak_gitm_cli,
+            remove_flatpak_gitm_cli,
             get_default_scan_directories,
             get_default_archive_directory,
             get_archive_cloud_storage_info,
