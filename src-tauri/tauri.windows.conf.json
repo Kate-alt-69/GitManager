@@ -6,6 +6,13 @@
     ],
     "resources": {
       "../tools/runtime/python/": "python/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "template": "windows/installer.nsi",
+        "installerHooks": "windows/hooks.nsh"
+      }
     }
   }
 }
