@@ -183,14 +183,16 @@ pub fn run() -> ! {
 
                         let key = format!("{}::{}", update.repo_path, update.remote_oid);
                         if notified_commits.insert(key) {
-                            let _ = publish_repository_update(
+                            let should_notify_os = publish_repository_update(
                                 &update.repo_id,
                                 &update.repo_name,
                                 &update.repo_path,
                                 &update.remote_oid,
                                 &update.prompt_message,
-                            );
-                            send_os_desktop_notification(&update);
+                            ).map(|(_, created)| created).unwrap_or(true);
+                            if should_notify_os {
+                                send_os_desktop_notification(&update);
+                            }
                         }
                     }
                     last_remote_check = Instant::now();
