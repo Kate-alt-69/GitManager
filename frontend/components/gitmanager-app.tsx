@@ -6,7 +6,8 @@ import { EngineBox, EngineGrid } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
 import { invoke, openDialog } from "../lib/tauri";
 import { Button, EmptyState, Field, Glyph, ProviderMark, RepoAvatar, Switch } from "./shared-ui";
-import { parseInternalRoute, repositoryRouteForItem, routeLabel, sectionRoute } from "../lib/internal-routing";
+import { parseInternalRoute, repositoryRouteForItem, repositorySubroute, routeLabel, sectionRoute } from "../lib/internal-routing";
+import type { RepositoryDestination } from "../lib/internal-routing";
 import type { AppPreferences, ArchiveSnapshot, AppNotification, BranchInfo, GitRepository, UpdateAlert } from "../lib/types";
 
 const BRAND_LOGO = "/image/git-managar-orange_default-white.png";
@@ -548,6 +549,8 @@ function RepositoryCard({
 function RepositoryDetail({
 	repo,
 	preferences,
+	destination,
+	onNavigateDestination,
 	onClose,
 	onOpenWebsite,
 	onRescan,
@@ -557,6 +560,8 @@ function RepositoryDetail({
 }: {
 	repo: GitRepository;
 	preferences: AppPreferences;
+	destination: RepositoryDestination;
+	onNavigateDestination: (destination: RepositoryDestination) => void;
 	onClose: () => void;
 	onOpenWebsite: (url: string) => void;
 	onRescan: () => void;
@@ -657,6 +662,21 @@ function RepositoryDetail({
 	}, [repo.path]);
 
 	useEffect(() => {
+		if (!commitRouteSha) {
+			setSelectedCommit(null);
+			setCommitDetail(null);
+			return;
+		}
+		let active = true;
+		setSelectedCommit(commitRouteSha);
+		setCommitDetail(null);
+		void invoke("get_commit_details", { repoPath: repo.path, oid: commitRouteSha })
+			.then((details) => { if (active) setCommitDetail(details); })
+			.catch((error) => { if (active) setCommitDetail({ error: String(error) }); });
+		return () => { active = false; };
+	}, [repo.path, commitRouteSha]);
+
+	useEffect(() => {
 		let active = true;
 		if (repo.details_loaded) {
 			setRepositoryDetails(repo);
@@ -679,9 +699,25 @@ function RepositoryDetail({
 		return () => { active = false; };
 	}, [repo.path, repo.details_loaded, onRepositoryLoaded]);
 
+	const commitRouteSha = destination.kind === "commit-details" ? destination.sha : null;
 	const displayRepo = repositoryDetails ?? repo;
-	const branches = (displayRepo.branches ?? []).filter((branch) => !branch.is_remote);
+	const isPullRoute = destination.kind === "pull-browser" || destination.kind === "pull-request";
+	const branches = (displayRepo.branches ?? []).filter((branch) => isPullRoute ? branch.is_remote : !branch.is_remote);
 	const commits = displayRepo.commits ?? [];
+	const isCommitRoute = destination.kind === "commit-browser" || destination.kind === "commit-details";
+	const showWorkspace = destination.kind === "overview"
+		|| destination.kind === "conflicts"
+		|| destination.kind === "pull-browser"
+		|| destination.kind === "pull-conflicts";
+	const showCommitHistory = destination.kind === "overview" || isCommitRoute || destination.kind === "pull-request";
+	const activeDestination = destination.kind === "commit-details"
+		? "commit-browser"
+		: destination.kind === "pull-request"
+			? "pull-browser"
+			: destination.kind;
+	const remotePullRequestUrl = destination.kind === "pull-request"
+		? pullRequestUrl(displayRepo, destination.number)
+		: null;
 
 	return (
 		<section className="gm-detail-view">
