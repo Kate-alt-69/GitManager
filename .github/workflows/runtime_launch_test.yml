@@ -53,6 +53,11 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Validate build-script syntax and target selectors
+        run: |
+          python -m py_compile build.py tools/build_targets.py
+          python tools/test_build_targets.py
+
       - name: Build the Linux x64 app without creating installers
         run: python build.py --build='linux(x64)' --type=app --debug
 
