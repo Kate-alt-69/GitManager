@@ -901,6 +901,19 @@ async fn read_repository_file(
 }
 
 #[tauri::command]
+async fn save_conflict_resolution(
+    repo_path: String,
+    relative_path: String,
+    content: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        repository_workspace::save_conflict_resolution(&repo_path, &relative_path, &content)
+    })
+    .await
+    .map_err(|error| format!("Conflict resolution save task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn preview_repository_pull(repo_path: String) -> Result<repository_workspace::PullPreview, String> {
     tokio::task::spawn_blocking(move || repository_workspace::preview_repository_pull(&repo_path))
         .await.map_err(|error| format!("Pull preview task failed: {error}"))?
@@ -1722,6 +1735,7 @@ pub fn run() {
             inspect_repository,
             list_repository_files,
             read_repository_file,
+            save_conflict_resolution,
             preview_repository_pull,
             prepare_and_pull_repository_update,
             get_repository_changes,
