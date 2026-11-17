@@ -26,6 +26,8 @@ export function SettingsPage({
 	const [newRoot, setNewRoot] = useState("");
 	const [saving, setSaving] = useState(false);
 	const [message, setMessage] = useState("");
+	const [backgroundServiceBusy, setBackgroundServiceBusy] = useState(false);
+	const [backgroundServiceMessage, setBackgroundServiceMessage] = useState("");
 	const [cloudJson, setCloudJson] = useState("");
 	const [cloudInfo, setCloudInfo] = useState<Record<string, unknown> | null>(null);
 	const [cloudStatus, setCloudStatus] = useState("");
