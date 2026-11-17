@@ -4,8 +4,6 @@ on:
   push:
     branches: [main, master]
     tags: ["v*"]
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
 
 jobs:
@@ -80,11 +78,9 @@ jobs:
           compression-level: 0
 
   build-tauri:
+    name: Build native-target installers (${{ matrix.platform }})
     permissions:
-      contents: write
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-      CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -113,20 +109,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Linux WebKitGTK & libgit2 dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+      - name: Install Linux WebKitGTK and packaging dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential curl wget file pkg-config libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libfuse2 rpm patchelf
 
-      - name: Install Rust Stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Master Packager Dev MSI toolchain
+      - name: Install Windows MPDEV and NSIS
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           winget install --id MasterPackager.MasterPackagerDev --exact --silent --accept-package-agreements --accept-source-agreements
+          winget install --id NSIS.NSIS --exact --silent --accept-package-agreements --accept-source-agreements
           $candidates = @(
             (Get-Command mpdev.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
             "$env:ProgramFiles\Master Packager Ltd\Master Packager Dev\mpdev.exe",
@@ -136,10 +130,13 @@ jobs:
             $found = Get-ChildItem -Path "$env:ProgramFiles" -Filter mpdev.exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($found) { $candidates = @($found.FullName) }
           }
-          if (-not $candidates) { throw "Master Packager Dev was installed by WinGet but mpdev.exe could not be located." }
+          if (-not $candidates) { throw "Required Master Packager Dev installation did not expose mpdev.exe." }
           "MPDEV_EXE=$($candidates[0])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & "$($candidates[0])" version
-          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev CLI failed its version check." }
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev version check failed." }
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Import optional Windows production signing certificate
         if: runner.os == 'Windows'
@@ -152,7 +149,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE) -or
               [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PASSWORD) -or
               [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
-            Write-Host "::notice::No complete Windows signing credentials are configured. The Windows package will be built unsigned."
+            Write-Host "::notice::No complete Windows signing credentials are configured. The release packages will use development/unsigned signing."
             exit 0
           }
           $pfxPath = Join-Path $env:RUNNER_TEMP "gitmanager-signing.pfx"
@@ -164,76 +161,94 @@ jobs:
             if (-not ($imported | Where-Object { $_.Thumbprint -eq $expected })) {
               throw "The imported PFX does not contain WINDOWS_SIGNING_THUMBPRINT."
             }
-            Write-Host "::notice::Windows production signing certificate imported into the ephemeral runner."
           } finally {
             Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
           }
 
-      - name: Verify Dependencies & Build via Python Build Script
+      - name: Build on this native runner with the build script
         env:
-          WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
           GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
+          GITMANAGER_DEFER_MPDEV_PACKAGING: "1"
         run: python build.py --build='${{ matrix.selector }}' --type=installer --install-tauri-cli
 
-      - name: Sign and verify Windows release files
+      - name: Sign Windows app payload and NSIS fallback before MPDEV packaging
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $installer = "build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/GitManager-Setup.exe"
-          $setupHelper = "build/.rcache/x86_64-pc-windows-msvc/release/GitManager-Setup.exe"
-          $wixInstaller = Get-ChildItem -LiteralPath "build/.rcache/x86_64-pc-windows-msvc/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1
-          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe NSIS installer was not created." }
-          if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
-          if (-not $wixInstaller) { throw "The Tauri WiX MSI installer was not created." }
+          $profileDir = "build/.rcache/x86_64-pc-windows-msvc/release"
+          $staging = "build/.rcache/windows-package/source"
+          $installer = Join-Path $profileDir "bundle/nsis/GitManager-Setup.exe"
+          $setupHelper = Join-Path $profileDir "GitManager-Setup.exe"
+          $required = @(
+            (Join-Path $profileDir "git-manager.exe"),
+            (Join-Path $profileDir "git-manager-service.exe"),
+            (Join-Path $profileDir "crash_helper.exe"),
+            (Join-Path $profileDir "gitm.exe"),
+            $setupHelper,
+            $installer,
+            (Join-Path $staging "git-manager.exe"),
+            (Join-Path $staging "resources/git-manager-service.exe"),
+            (Join-Path $staging "resources/crash_helper.exe"),
+            (Join-Path $staging "resources/gitm.exe"),
+            (Join-Path $staging "resources/gitmanager-setup.exe")
+          )
+          $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_) })
+          if ($missing.Count -gt 0) { throw "Windows release payload is incomplete: $($missing -join ', ')" }
 
-          $signTargets = @("build/.rcache/x86_64-pc-windows-msvc/release/git-manager.exe", "build/.rcache/x86_64-pc-windows-msvc/release/git-manager-service.exe", "build/.rcache/x86_64-pc-windows-msvc/release/crash_helper.exe", "build/.rcache/x86_64-pc-windows-msvc/release/gitm.exe", $installer, $wixInstaller.FullName, "build/.rcache/windows-package/source/git-manager.exe", "build/.rcache/windows-package/source/resources/git-manager-service.exe", "build/.rcache/windows-package/source/resources/crash_helper.exe", "build/.rcache/windows-package/source/resources/gitm.exe", "build/.rcache/windows-package/source/resources/gitmanager-setup.exe")
-          $verifyTargets = $signTargets + @("build/.rcache/x86_64-pc-windows-msvc/release/gitm.exe", $setupHelper)
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
-            Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
+            Write-Host "::notice::No production signing certificate configured. MPDEV will use the manifest's local test signing settings."
           } else {
-            foreach ($target in $signTargets) {
-              if (Test-Path -LiteralPath $target) {
-                & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
-                if ($LASTEXITCODE -ne 0) { throw "Signing failed for $target." }
-              }
-            }
-
-            # gitm and GitManager-Setup are signed before Tauri embeds them as sidecars.
-            $kits = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\bin"
-            if (-not (Test-Path $kits)) { $kits = Join-Path $env:ProgramFiles "Windows Kits\10\bin" }
-            $signtool = Get-ChildItem -LiteralPath $kits -Directory | Sort-Object Name -Descending |
-              ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
-              Where-Object { Test-Path $_ } | Select-Object -First 1
-            if (-not $signtool) { throw "Windows SDK SignTool was not found for signature verification." }
-            foreach ($target in $verifyTargets) {
-              if (Test-Path $target) { & $signtool verify /pa /v $target; if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $target" } }
+            foreach ($target in $required) {
+              & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $target
+              if ($LASTEXITCODE -ne 0) { throw "Signing failed for $target." }
             }
           }
 
-      - name: Build the additional MSI with Master Packager Dev
+      - name: Build required MSI and MSIX packages with Master Packager Dev
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $appRoot = Resolve-Path "build/.rcache/windows-package/source"
-          if (-not (Test-Path (Join-Path $appRoot "git-manager.exe"))) { throw "The staged GitManager executable is missing." }
-          $env:GITMANAGER_APP_SOURCE = $appRoot.Path
-          $tauriVersion = (Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
-          $versionParts = @("$tauriVersion" -split '\.')
-          if ($versionParts.Count -lt 1 -or $versionParts.Count -gt 4 -or ($versionParts | Where-Object { $_ -notmatch '^\d+          $outputs = @(Get-ChildItem "build/.rcache/windows-installers" -File -ErrorAction SilentlyContinue)
-          $msi = @($outputs | Where-Object { $_.Extension -eq ".msi" })
-          $msix = @($outputs | Where-Object { $_.Extension -eq ".msix" })
-          if ($msi.Count -ne 1 -or $msix.Count -ne 0) {
-            throw "Expected exactly one MPDEV MSI and no MSIX in the desktop installer stream; found MSI=$($msi.Count), MSIX=$($msix.Count)."
+          $appRoot = (Resolve-Path "build/.rcache/windows-package/source").Path
+          $manifest = "build/.rcache/windows-package/mpdev-package.json"
+          if (-not (Test-Path -LiteralPath $manifest)) { throw "Generated MPDEV MSI/MSIX manifest is missing: $manifest" }
+          $env:GITMANAGER_APP_SOURCE = $appRoot
+          & $env:MPDEV_EXE build $manifest --working-dir "$PWD" --use-msbuild-message-format true
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev failed to build Windows MSI/MSIX." }
+
+          $outputDir = "build/.rcache/windows-installers"
+          $msi = @(Get-ChildItem $outputDir -Filter "*.msi" -File -ErrorAction SilentlyContinue)
+          $msix = @(Get-ChildItem $outputDir -Filter "*.msix" -File -ErrorAction SilentlyContinue)
+          if ($msi.Count -ne 1 -or $msix.Count -ne 1) {
+            throw "Expected exactly one MPDEV MSI and one MPDEV MSIX; found MSI=$($msi.Count), MSIX=$($msix.Count)."
           }
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
-            & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $msi[0].FullName
-            if ($LASTEXITCODE -ne 0) { throw "Signing failed for $($msi[0].FullName)." }
+          foreach ($package in @($msi[0], $msix[0])) {
+            if ($package.Length -lt 1MB) { throw "MPDEV output is unexpectedly small: $($package.FullName)" }
+            if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
+              & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $package.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Signing failed for $($package.FullName)." }
+            }
+            Write-Host "Created MPDEV package: $($package.FullName)"
           }
-          Write-Host "Created MPDEV comparison MSI: $($msi[0].FullName)"
+
+      - name: Verify Windows signatures when production signing is configured
+        if: runner.os == 'Windows' && vars.WINDOWS_SIGNING_THUMBPRINT != ''
+        shell: pwsh
+        run: |
+          $kits = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\bin"
+          if (-not (Test-Path $kits)) { $kits = Join-Path $env:ProgramFiles "Windows Kits\10\bin" }
+          $signtool = Get-ChildItem -LiteralPath $kits -Directory | Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $signtool) { throw "Windows SDK SignTool was not found." }
+          $verify = @("build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/GitManager-Setup.exe") + @((Get-ChildItem "build/.rcache/windows-installers" -File).FullName)
+          foreach ($target in $verify) {
+            & $signtool verify /pa /v $target
+            if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $target" }
+          }
 
       - name: Remove imported signing certificate
         if: runner.os == 'Windows' && always()
@@ -247,21 +262,24 @@ jobs:
               Remove-Item -Force -ErrorAction SilentlyContinue
           }
 
-      - name: Refresh published Windows artifacts after signing
+      - name: Refresh Windows release artifacts after signing and packaging
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $profileDir = "build/.rcache/x86_64-pc-windows-msvc/release"
+          $staging = "build/.rcache/windows-package/source"
           $distDir = "build/dist/windows-x64"
           New-Item -ItemType Directory -Force -Path "$distDir/installer", "$distDir/app" | Out-Null
-          Copy-Item -Path "$profileDir/bundle/*" -Destination "$distDir/installer" -Recurse -Force
+          Copy-Item -Path "$profileDir/bundle/nsis/*" -Destination "$distDir/installer" -Recurse -Force
           Copy-Item -Path "build/.rcache/windows-installers/*.msi" -Destination "$distDir/installer" -Force
-          foreach ($name in @("git-manager.exe", "git-manager-service.exe", "crash_helper.exe", "gitm.exe", "gitmanager-setup.exe", "GitManager-Setup.exe")) {
+          Copy-Item -Path "build/.rcache/windows-installers/*.msix" -Destination "$distDir/installer" -Force
+          Copy-Item -Path "$profileDir/git-manager.exe" -Destination "$distDir/app" -Force
+          foreach ($name in @("gitm.exe", "gitmanager-setup.exe", "crash_helper.exe", "git-manager-service.exe", "GitManager-Setup.exe")) {
             $source = Join-Path $profileDir $name
-            if (Test-Path -LiteralPath $source) {
-              Copy-Item -LiteralPath $source -Destination "$distDir/app" -Force
-            }
+            if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination "$distDir/app" -Force }
           }
+          New-Item -ItemType Directory -Force -Path "$distDir/app/resources" | Out-Null
+          Copy-Item -Path "$staging/resources/." -Destination "$distDir/app/resources" -Recurse -Force
 
       - name: Upload platform installers
         uses: actions/upload-artifact@v4
