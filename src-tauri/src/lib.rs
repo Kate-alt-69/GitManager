@@ -1216,14 +1216,16 @@ async fn check_repo_updates_now(
     }
 
     for upd in &updates {
-        let _ = notification_center::publish_repository_update(
+        let should_notify_os = notification_center::publish_repository_update(
             &upd.repo_id,
             &upd.repo_name,
             &upd.repo_path,
             &upd.remote_oid,
             &upd.prompt_message,
-        );
-        send_os_desktop_notification(upd);
+        ).map(|(_, created)| created).unwrap_or(true);
+        if should_notify_os {
+            send_os_desktop_notification(upd);
+        }
         let _ = app_handle.emit("gitmanager://repo-update-available", upd);
     }
 
