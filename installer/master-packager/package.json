@@ -1,7 +1,8 @@
 {
   "$schema": "https://www.masterpackager.com/support-master-packager-dev/mpdev-schema.json",
   "outputTypes": [
-    "msi"
+    "msi",
+    "msix"
   ],
   "outputDirectory": "build/.rcache/windows-installers",
   "outputFileName": "GitManager_$.version_$.platform",
@@ -26,6 +27,18 @@
       "icon": "frontend/static/image/git-managar-orange_default-black.png"
     }
   ],
+  "msix": {
+    "capabilities": [
+      "runFullTrust",
+      "internetClient",
+      "privateNetworkClientServer"
+    ],
+    "packageDescription": "GitManager — a native Git workspace manager by Kastrick.",
+    "digitalSignature": {
+      "signWith": "GenerateTestCertificate",
+      "timestampServer": "http://timestamp.sectigo.com"
+    }
+  },
   "msi": {
     "installDir": "[LocalAppDataFolder]kastrick's_software\\GitManager",
     "upgradeCode": "6B4A7D19-8E32-4C81-AF53-2D9B7E1C4065",
