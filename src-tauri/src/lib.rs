@@ -31,7 +31,7 @@ use remote_providers::{
 };
 use scanner::{
     build_indexed_summary_with_scan_status, default_scan_roots, load_persisted_repository_index,
-    IndexedRepoSummary, ScanReport,
+    repository_index_modified_unix_nanos, IndexedRepoSummary, ScanReport,
 };
 use watcher_service::{
     apply_repository_update, check_all_repos_for_updates, register_os_background_service,
@@ -882,27 +882,27 @@ async fn scan_machine_repositories(
     // into gitmanager.service. Preferences are saved separately before a scan
     // is requested; the service reads those persisted scan settings.
     let _requested_settings = (root_paths, max_depth, include_hidden_dirs, index_dependency_repositories);
-    let previous_indexed_at = tokio::task::spawn_blocking(load_persisted_repository_index)
+    let previous_modified = tokio::task::spawn_blocking(repository_index_modified_unix_nanos)
         .await
-        .map_err(|error| format!("Repository index read task failed: {error}"))??
-        .map(|index| index.indexed_at_unix_ms)
-        .unwrap_or(0);
+        .map_err(|error| format!("Repository index metadata task failed: {error}"))??;
 
     crash_helper::request_service_scan()
         .map_err(|error| format!("Could not request repository indexing from gitmanager.service: {error}"))?;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     let report = loop {
-        let index = tokio::task::spawn_blocking(load_persisted_repository_index)
+        let modified = tokio::task::spawn_blocking(repository_index_modified_unix_nanos)
             .await
-            .map_err(|error| format!("Repository index read task failed: {error}"))??;
-        if let Some(index) = index {
-            if index.indexed_at_unix_ms > previous_indexed_at {
-                break ScanReport {
-                    repositories: index.repositories,
-                    truncated: index.truncated,
-                };
-            }
+            .map_err(|error| format!("Repository index metadata task failed: {error}"))??;
+        if modified > previous_modified {
+            let index = tokio::task::spawn_blocking(load_persisted_repository_index)
+                .await
+                .map_err(|error| format!("Repository index read task failed: {error}"))??
+                .ok_or_else(|| "The service published an empty repository index file.".to_string())?;
+            break ScanReport {
+                repositories: index.repositories,
+                truncated: index.truncated,
+            };
         }
         if std::time::Instant::now() >= deadline {
             return Err(
