@@ -934,6 +934,8 @@ def setup_build_environment(
                 include_flatpak=include_flatpak,
                 default_yes=True,
             ))
+        elif all_platform_request:
+            _log("Linux/Flatpak setup skipped: use a native Linux machine or prepare Ubuntu WSL2 from Windows.")
         else:
             _log("Linux/Flatpak packaging needs a native Linux host or an Ubuntu WSL2 environment on Windows.")
             outcomes.append(2)
