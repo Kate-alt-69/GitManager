@@ -6,7 +6,7 @@ license = "Apache-2.0"
 description = "Independent GitManager background data service"
 
 [dependencies]
-gitmanager-core = { path = "../gitmanager-core" }
+gitmanager-core = { path = "../gitmanager-core", features = ["scan-engine"] }
 gitmanager-archive = { path = "../archive-core" }
 crash-helper = { path = "../crash-helper" }
 git2 = { version = "0.20.4", default-features = false, features = ["https", "ssh"] }
