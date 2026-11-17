@@ -31,12 +31,7 @@ struct NotificationStore {
 }
 
 fn notification_file() -> Result<PathBuf, String> {
-    let local_data = dirs::data_local_dir()
-        .ok_or_else(|| "Could not resolve the user's local data directory for notifications.".to_string())?;
-    Ok(local_data
-        .join("kastrick's_software")
-        .join("data")
-        .join("GitManager")
+    Ok(crate::storage::data_dir()?
         .join("notifications")
         .join("notifications.json"))
 }
