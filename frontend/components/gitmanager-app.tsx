@@ -75,6 +75,17 @@ function pullRequestUrl(repository: GitRepository, number: number): string | nul
 	return null;
 }
 
+function pullRequestListUrl(repository: GitRepository): string | null {
+	const remote = repository.remotes.find((item) => item.name === "origin") ?? repository.remotes[0];
+	const base = (repository.web_url ?? remote?.web_url ?? "").replace(/\\/+$/, "");
+	const provider = (repository.primary_provider || remote?.provider || "").toLowerCase();
+	if (!base) return null;
+	if (provider.includes("github")) return base + "/pulls";
+	if (provider.includes("gitlab")) return base + "/-/merge_requests";
+	if (provider.includes("bitbucket")) return base + "/pull-requests";
+	return null;
+}
+
 function Sidebar({
 	page,
 	setPage,
@@ -709,7 +720,7 @@ function RepositoryDetail({
 		|| destination.kind === "conflicts"
 		|| destination.kind === "pull-browser"
 		|| destination.kind === "pull-conflicts";
-	const showCommitHistory = destination.kind === "overview" || isCommitRoute || destination.kind === "pull-request";
+	const showCommitHistory = destination.kind === "overview" || isCommitRoute || destination.kind === "pull-request" || destination.kind === "pull-browser";
 	const activeDestination = destination.kind === "commit-details"
 		? "commit-browser"
 		: destination.kind === "pull-request"
@@ -930,11 +941,15 @@ function RepositoryPage({
 	onPullCompleted,
 	onOpenCleaner,
 	scanTruncated,
+	destination,
+	onNavigateDestination,
 }: {
 	repositories: GitRepository[];
 	dependencies: string[];
 	selectedRepo: GitRepository | null;
 	setSelectedRepo: (repo: GitRepository | null) => void;
+	destination: RepositoryDestination;
+	onNavigateDestination: (destination: RepositoryDestination) => void;
 	query: string;
 	setQuery: (value: string) => void;
 	filter: RepoFilter;
@@ -969,6 +984,8 @@ function RepositoryPage({
 			<RepositoryDetail
 				repo={selectedRepo}
 				preferences={preferences}
+				destination={destination}
+				onNavigateDestination={onNavigateDestination}
 				onClose={() => setSelectedRepo(null)}
 				onOpenWebsite={(url) => { void invoke("open_external_url", { url }).catch((error) => window.alert(String(error))); }}
 				onRescan={onRescan}
@@ -1169,6 +1186,10 @@ export function GitManagerApp() {
 	const [kind, setKind] = useState<RepoKind>("projects");
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const selectedRepo = git.repositories.find((repo) => repo.id === selectedId) ?? null;
+	const parsedInternalRoute = parseInternalRoute(internalRoute);
+	const currentDestination: RepositoryDestination = parsedInternalRoute.kind === "repository"
+		? parsedInternalRoute.destination
+		: { kind: "overview" };
 
 	function navigatePage(next: PageKey) {
 		setPage(next);
@@ -1179,6 +1200,13 @@ export function GitManagerApp() {
 	function selectRepository(repo: GitRepository | null) {
 		setSelectedId(repo?.id ?? null);
 		setInternalRoute(repo ? repositoryRouteForItem(repo) : "/r");
+	}
+
+	function navigateRepositoryDestination(destination: RepositoryDestination) {
+		if (!selectedRepo) return;
+		const baseRoute = parseInternalRoute(repositoryRouteForItem(selectedRepo));
+		if (baseRoute.kind !== "repository") return;
+		setInternalRoute(repositorySubroute(baseRoute.owner, baseRoute.repository, destination));
 	}
 
 	async function openNotificationRepository(item: AppNotification) {
@@ -1254,6 +1282,8 @@ export function GitManagerApp() {
 							dependencies={git.dependencies}
 							selectedRepo={selectedRepo}
 							setSelectedRepo={selectRepository}
+							destination={currentDestination}
+							onNavigateDestination={navigateRepositoryDestination}
 							query={query}
 							setQuery={setQuery}
 							filter={filter}
