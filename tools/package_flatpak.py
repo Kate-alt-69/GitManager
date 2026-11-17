@@ -196,6 +196,7 @@ def main() -> int:
         run([
             "flatpak", "build-bundle", f"--arch={arch}",
             str(repo), str(bundle), APP_ID, "stable",
+            "--runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo",
         ], cwd=ROOT)
         if not bundle.is_file() or bundle.stat().st_size == 0:
             raise RuntimeError("Flatpak builder completed without producing a non-empty bundle.")
