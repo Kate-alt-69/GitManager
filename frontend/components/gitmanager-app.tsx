@@ -33,6 +33,7 @@ import type {
 	ApplicationDirectories,
 	AppPreferences,
 	ArchiveSnapshot,
+	AppNotification,
 	BranchInfo,
 	ConnectedAccount,
 	GitRepository,
@@ -253,7 +254,15 @@ function TopBar({
 	query,
 	setQuery,
 	scanning,
+	serviceReady,
+	repositoryCount,
+	scanTruncated,
+	notifications,
+	onRefreshNotifications,
+	onMarkNotificationRead,
+	onDismissNotification,
 	onScan,
+	onRetryService,
 }: {
 	page: PageKey;
 	version: string;
@@ -261,11 +270,29 @@ function TopBar({
 	query: string;
 	setQuery: (value: string) => void;
 	scanning: boolean;
+	serviceReady: boolean;
+	repositoryCount: number;
+	scanTruncated: boolean;
+	notifications: AppNotification[];
+	onRefreshNotifications: () => Promise<unknown>;
+	onMarkNotificationRead: (id: string) => Promise<void>;
+	onDismissNotification: (id: string) => Promise<void>;
 	onScan: () => void;
+	onRetryService: () => void;
 }) {
+	const [openPanel, setOpenPanel] = useState<"tasks" | "notifications" | null>(null);
+	const unreadCount = notifications.filter((item) => !item.read).length;
 	const label = page === "repositories" ? "Repositories"
 		: page === "accounts" ? "Accounts"
 		: page === "cleaner" ? "Developer Cleaner" : "Settings";
+
+	useEffect(() => {
+		if (openPanel !== "notifications") return;
+		void onRefreshNotifications();
+		const timer = window.setInterval(() => void onRefreshNotifications(), 30000);
+		return () => window.clearInterval(timer);
+	}, [openPanel, onRefreshNotifications]);
+
 	return (
 		<header className="gm-topbar">
 			<div className="gm-breadcrumb">
@@ -285,13 +312,92 @@ function TopBar({
 					<kbd>Ctrl K</kbd>
 				</label>
 				<span className="gm-version-pill">v{version}</span>
-				<Button onClick={onScan} disabled={scanning} variant="secondary" className="gm-top-scan">
+				<div className="gm-topbar-popover-host">
+					<div className="gm-topbar-panel-triggers">
+						<button
+							type="button"
+							className={openPanel === "tasks" ? "gm-topbar-panel-trigger active" : "gm-topbar-panel-trigger"}
+							aria-expanded={openPanel === "tasks"}
+							aria-controls="gm-task-center-popover"
+							onClick={() => setOpenPanel((current) => current === "tasks" ? null : "tasks")}
+						>
+							<span aria-hidden="true">≡</span> Tasks
+							<span className={scanning ? "gm-panel-indicator busy" : serviceReady ? "gm-panel-indicator ready" : "gm-panel-indicator offline"} />
+						</button>
+						<button
+							type="button"
+							className={openPanel === "notifications" ? "gm-topbar-panel-trigger active" : "gm-topbar-panel-trigger"}
+							aria-expanded={openPanel === "notifications"}
+							aria-controls="gm-notifications-popover"
+							onClick={() => setOpenPanel((current) => current === "notifications" ? null : "notifications")}
+						>
+							<span aria-hidden="true">♢</span> Notifications
+							{unreadCount > 0 && <span className="gm-topbar-unread-count">{unreadCount > 99 ? "99+" : unreadCount}</span>}
+						</button>
+					</div>
+					{openPanel === "tasks" && (
+						<section id="gm-task-center-popover" className="gm-topbar-popover gm-task-center" role="dialog" aria-label="Task Center">
+							<div className="gm-popover-heading">
+								<div><strong>Task Center</strong><small>Background activity and service health</small></div>
+								<button type="button" onClick={() => setOpenPanel(null)} aria-label="Close Task Center">×</button>
+							</div>
+							<div className="gm-task-list">
+								<div className="gm-task-row">
+									<span className={serviceReady ? "gm-task-state ready" : "gm-task-state offline"} />
+									<div><strong>GitManager Core Service</strong><small>{serviceReady ? "Connected · required engine ready" : "Not connected · application features are unavailable"}</small></div>
+									<span className="gm-task-meta">{serviceReady ? "Ready" : "Offline"}</span>
+								</div>
+								<div className="gm-task-row">
+									<span className={scanning ? "gm-task-state busy" : "gm-task-state ready"} />
+									<div><strong>Repository index</strong><small>{scanning ? "Discovering repositories in the service process…" : scanTruncated ? "Index ready · safety limit reached" : `${repositoryCount} repositories indexed`}</small></div>
+									<span className="gm-task-meta">{scanning ? "Running" : "Idle"}</span>
+								</div>
+								<div className="gm-task-row">
+									<span className="gm-task-state idle" />
+									<div><strong>Service status</strong><small>{status}</small></div>
+								</div>
+							</div>
+							<div className="gm-popover-actions">
+								<button type="button" onClick={onScan} disabled={!serviceReady || scanning}>{scanning ? "Indexing…" : "Refresh repository index"}</button>
+								{!serviceReady && <button type="button" className="primary" onClick={onRetryService}>Start service</button>}
+							</div>
+						</section>
+					)}
+					{openPanel === "notifications" && (
+						<section id="gm-notifications-popover" className="gm-topbar-popover gm-notifications-panel" role="dialog" aria-label="Notifications">
+							<div className="gm-popover-heading">
+								<div><strong>Notifications</strong><small>{unreadCount} unread · latest activity</small></div>
+								<button type="button" onClick={() => setOpenPanel(null)} aria-label="Close Notifications">×</button>
+							</div>
+							<div className="gm-notification-list">
+								{notifications.length === 0 ? (
+									<div className="gm-notification-empty"><strong>You're all caught up</strong><span>Repository updates and GitManager activity will appear here.</span></div>
+								) : notifications.map((item) => (
+									<article className={item.read ? "gm-notification-item read" : "gm-notification-item unread"} key={item.id}>
+										<div className="gm-notification-copy">
+											<div className="gm-notification-title"><strong>{item.title}</strong><time>{new Date(item.createdAtUnixMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>
+											<p>{item.body}</p>
+										</div>
+										<div className="gm-notification-actions">
+											{!item.read && <button type="button" onClick={() => void onMarkNotificationRead(item.id)}>Mark read</button>}
+											<button type="button" onClick={() => void onDismissNotification(item.id)}>Dismiss</button>
+										</div>
+									</article>
+								))}
+							</div>
+							<div className="gm-popover-actions">
+								<button type="button" onClick={() => void onRefreshNotifications()}>Refresh notifications</button>
+							</div>
+						</section>
+					)}
+				</div>
+				<Button onClick={onScan} disabled={!serviceReady || scanning} variant="secondary" className="gm-top-scan">
 					<Glyph>↻</Glyph>{scanning ? "Scanning" : "Scan"}
 				</Button>
 			</div>
 			<div className="gm-topbar-status">
-				<span className="gm-status-dot" />
-				<span>{status}</span>
+				<span className={serviceReady ? "gm-status-dot" : "gm-status-dot offline"} />
+				<span>{serviceReady ? status : "Core service unavailable"}</span>
 			</div>
 		</header>
 	);
@@ -1727,7 +1833,15 @@ export function GitManagerApp() {
 					query={query}
 					setQuery={setQuery}
 					scanning={git.scanning}
+					serviceReady={git.serviceReady}
+					repositoryCount={git.repositories.length}
+					scanTruncated={git.scanTruncated}
+					notifications={git.notifications}
+					onRefreshNotifications={git.refreshNotifications}
+					onMarkNotificationRead={git.markNotificationRead}
+					onDismissNotification={git.dismissNotification}
 					onScan={() => void git.scan()}
+					onRetryService={() => void git.retryService()}
 				/>
 				<main className="gm-main">
 					{(git.loading || git.scanning) && <div className="gm-loading-bar"><i /></div>}
