@@ -58,21 +58,21 @@ jobs:
             aliases: ["linux(x64)"]
             output: linux-x64
             target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             label: Linux x64
           - platform: linux
             selector: linux(arm64)
             aliases: ["linux(arm64)"]
             output: linux-arm64
             target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             label: Linux ARM64
           - platform: linux
             selector: linux(armv7)
             aliases: ["linux(armv7)"]
             output: linux-armv7
             target: armv7-unknown-linux-gnueabihf
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             label: Linux ARMv7 (32-bit)
           - platform: macos
             selector: macos(x64)
@@ -123,8 +123,8 @@ jobs:
           sudo dpkg --add-architecture armhf
           sudo tee /etc/apt/sources.list.d/ubuntu-armhf.sources > /dev/null <<'EOF'
           Types: deb
-          URIs: https://ports.ubuntu.com/ubuntu-ports
-          Suites: noble noble-updates noble-backports noble-security
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: jammy jammy-updates jammy-backports jammy-security
           Components: main restricted universe multiverse
           Architectures: armhf
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
