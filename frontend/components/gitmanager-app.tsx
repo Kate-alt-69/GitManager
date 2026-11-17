@@ -29,6 +29,12 @@ function LoadingLogo({ size = 76 }: { size?: number }) {
 }
 import { invoke, openDialog } from "../lib/tauri";
 import { RepositoryWorkspace } from "./repository-workspace";
+import {
+	parseInternalRoute,
+	repositoryRouteForItem,
+	routeLabel,
+	sectionRoute,
+} from "../lib/internal-routing";
 import type {
 	ApplicationDirectories,
 	AppPreferences,
@@ -248,7 +254,7 @@ function Sidebar({
 }
 
 function TopBar({
-	page,
+	internalRoute,
 	version,
 	status,
 	query,
@@ -264,7 +270,7 @@ function TopBar({
 	onScan,
 	onRetryService,
 }: {
-	page: PageKey;
+	internalRoute: string;
 	version: string;
 	status: string;
 	query: string;
@@ -282,9 +288,8 @@ function TopBar({
 }) {
 	const [openPanel, setOpenPanel] = useState<"tasks" | "notifications" | null>(null);
 	const unreadCount = notifications.filter((item) => !item.read).length;
-	const label = page === "repositories" ? "Repositories"
-		: page === "accounts" ? "Accounts"
-		: page === "cleaner" ? "Developer Cleaner" : "Settings";
+	const currentRoute = parseInternalRoute(internalRoute);
+	const label = routeLabel(currentRoute);
 
 	useEffect(() => {
 		if (openPanel !== "notifications") return;
@@ -1795,11 +1800,23 @@ function SetupDialog({
 export function GitManagerApp() {
 	const git = useGitManager();
 	const [page, setPage] = useState<PageKey>("repositories");
+	const [internalRoute, setInternalRoute] = useState("/r");
 	const [query, setQuery] = useState("");
 	const [filter, setFilter] = useState<RepoFilter>("all");
 	const [kind, setKind] = useState<RepoKind>("projects");
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const selectedRepo = git.repositories.find((repo) => repo.id === selectedId) ?? null;
+
+	function navigatePage(next: PageKey) {
+		setPage(next);
+		setSelectedId(null);
+		setInternalRoute(sectionRoute(next));
+	}
+
+	function selectRepository(repo: GitRepository | null) {
+		setSelectedId(repo?.id ?? null);
+		setInternalRoute(repo ? repositoryRouteForItem(repo) : "/r");
+	}
 
 	if (git.loading) {
 		return (
@@ -1821,13 +1838,13 @@ export function GitManagerApp() {
 		<EngineBox className="gm-app-shell">
 			<Sidebar
 				page={page}
-				setPage={setPage}
+				setPage={navigatePage}
 				repositoryCount={git.repositories.length}
 				accountCount={git.accounts.length}
 			/>
 			<div className="gm-main-column">
 				<TopBar
-					page={page}
+					internalRoute={internalRoute}
 					version={git.version}
 					status={git.status}
 					query={query}
@@ -1851,7 +1868,7 @@ export function GitManagerApp() {
 							repositories={git.repositories}
 							dependencies={git.dependencies}
 							selectedRepo={selectedRepo}
-							setSelectedRepo={(repo) => setSelectedId(repo?.id ?? null)}
+							setSelectedRepo={selectRepository}
 							query={query}
 							setQuery={setQuery}
 							filter={filter}
@@ -1868,7 +1885,7 @@ export function GitManagerApp() {
 							onRescan={() => void git.scan()}
 							onRepositoryLoaded={git.updateRepository}
 							onPullCompleted={git.clearUpdate}
-							onOpenCleaner={() => setPage("cleaner")}
+							onOpenCleaner={() => navigatePage("cleaner")}
 						/>
 					)}
 					{page === "accounts" && <AccountsPage accounts={git.accounts} onConnect={git.connectAccount} />}
@@ -1878,7 +1895,7 @@ export function GitManagerApp() {
 							directories={git.directories}
 							onSave={git.savePreferences}
 							onScan={() => void git.scan()}
-							onOpenCleaner={() => setPage("cleaner")}
+							onOpenCleaner={() => navigatePage("cleaner")}
 						/>
 					)}
 					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={() => void git.scan()} initialRepoPath={selectedRepo?.path} />}
