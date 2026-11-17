@@ -59,7 +59,7 @@ Windows installer builds automatically use MPDEV for both MSI and MSIX; Tauri's 
 
 ## 2. GitManager Core Service & Notifications
 
-Implemented in `src-tauri/src/background_service.rs`, `crates/gitmanager-core/src/scanner.rs`, `crates/gitmanager-core/src/git_info.rs` and `crates/gitmanager-core/src/notification_center.rs`. The required `gitmanager.service` process owns repository discovery, the persisted local repository index, scheduled remote checks, archive watchers and notification history. The desktop UI starts it on demand and waits for an authenticated readiness handshake before enabling the workspace.
+Implemented in `crates/git-manager-service/src/background_service.rs`, `crates/git-manager-service/src/archive_watcher.rs`, `crates/gitmanager-core/src/scanner.rs`, `crates/gitmanager-core/src/git_info.rs`, `crates/gitmanager-core/src/notification_center.rs` and `crates/gitmanager-core/src/storage.rs`. The required `gitmanager.service` process owns repository discovery, the persisted local repository index, scheduled remote checks, archive watchers and notification history. The desktop UI starts it on demand and waits for an authenticated readiness handshake before enabling the workspace.
 
 - **Service lifecycle**:
   - **Windows 10 & 11**: Runs as the signed-in user. Optional sign-in startup registers a current-user Task Scheduler task named `GitManager Core Service`; this is deliberately **not** a Windows Service Control Manager service and does not appear in Services.msc. The process is `gitmanager.service.exe`.
