@@ -500,10 +500,10 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
         log_err(f"Could not verify Windows installer configuration: {error}")
         return 1
 
-    resources = main_config.get("bundle", {}).get("resources", {})
+    resources = windows_config.get("bundle", {}).get("resources", {})
     if resources.get("../tools/runtime/python/") != "python/":
         log_err(
-            "Tauri must map the Python runtime directory recursively as "
+            "The Windows Tauri configuration must map the Python runtime directory recursively as "
             "'../tools/runtime/python/': 'python/'."
         )
         return 1
