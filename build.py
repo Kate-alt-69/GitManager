@@ -567,6 +567,21 @@ def build_master_packager_dev_msi(project_root: Path) -> Tuple[int, Optional[Pat
         log_err(f"Master Packager Dev package definition is missing: {manifest}")
         return 1, None
 
+    try:
+        tauri_config = json.loads(
+            (project_root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+        )
+        version_parts = str(tauri_config.get("version", "")).split(".")
+        if not version_parts or len(version_parts) > 4 or any(not part.isdigit() for part in version_parts):
+            raise ValueError("Tauri version must contain one to four numeric components for the MSI.")
+        version_parts.extend(["0"] * (4 - len(version_parts)))
+        if any(int(part) > 65535 for part in version_parts):
+            raise ValueError("MSI version components cannot exceed 65535.")
+        package_version = ".".join(version_parts)
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        log_err(f"Could not resolve the MPDEV MSI version from tauri.conf.json: {error}")
+        return 1, None
+
     output_dir = cargo_target_root(project_root) / "windows-installers"
     if output_dir.exists():
         try:
@@ -583,6 +598,7 @@ def build_master_packager_dev_msi(project_root: Path) -> Tuple[int, Optional[Pat
     command = [
         str(mpdev), "build", str(manifest),
         "--working-dir", str(project_root),
+        "--properties", f"$.version={package_version}",
         "--use-msbuild-message-format", "true",
     ]
     log_info("Building the optional MPDEV comparison MSI from the staged Windows app payload...")
