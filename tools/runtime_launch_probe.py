@@ -166,18 +166,22 @@ def main() -> int:
             process.wait()
         return 1
     finally:
-        if process and process.poll() is None:
+        if process:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            try:
-                process.wait(timeout=8)
-            except subprocess.TimeoutExpired:
+            if process.poll() is None:
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
+                    process.wait(timeout=8)
+                except subprocess.TimeoutExpired:
                     pass
+            time.sleep(0.5)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if process.poll() is None:
                 process.wait(timeout=5)
         server.shutdown()
         server.server_close()
