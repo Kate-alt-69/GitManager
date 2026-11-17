@@ -515,7 +515,7 @@ Function .onInit
       ${EndIf}
     !else if "${INSTALLMODE}" == "currentUser"
       ; GitManager default: keep the app under the Kastrick per-user product folder.
-      StrCpy $INSTDIR "$LOCALAPPDATA\\kastrick's_software\\${PRODUCTNAME}"
+      StrCpy $INSTDIR "$LOCALAPPDATA\kastrick's_software\${PRODUCTNAME}"
     !endif
 
     Call RestorePreviousInstallLocation
