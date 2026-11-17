@@ -63,12 +63,7 @@ pub struct PersistedRepositoryIndex {
 }
 
 pub fn repository_index_path() -> Result<PathBuf, String> {
-    let local_data = dirs::data_local_dir()
-        .ok_or_else(|| "Could not resolve the user's local data directory for the repository index.".to_string())?;
-    Ok(local_data
-        .join("kastrick's_software")
-        .join("data")
-        .join("GitManager")
+    Ok(crate::storage::data_dir()?
         .join("repo")
         .join("metadata")
         .join("index.json"))
