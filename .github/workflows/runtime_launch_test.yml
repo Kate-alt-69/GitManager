@@ -17,7 +17,7 @@ concurrency:
 jobs:
   linux-runtime-launch:
     name: Build and launch GitManager on Linux x64
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 45
     env:
       GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
