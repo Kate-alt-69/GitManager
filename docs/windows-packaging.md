@@ -79,11 +79,11 @@ The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padde
 
 ## Windows background worker
 
-Both the desktop MSI/MSIX payload and the separate Store MSIX payload include `resources\\git-manager-service.exe`. GitManager currently registers this executable as an **opt-in per-user logon worker** through Windows Task Scheduler; it reads the signed-in user's repository paths and preferences.
+Both the desktop MSI/MSIX payload and the separate Store MSIX payload include `resources\\gitmanager.service.exe`. GitManager starts this executable on demand during desktop startup and waits for its authenticated readiness handshake. The Settings page can also register it as an **opt-in per-user sign-in process** through Windows Task Scheduler, allowing repository indexing and remote checks to begin before the desktop UI opens.
 
 This is deliberately not declared in MPDEV's `services[]` section. MPDEV's service feature creates a Windows Service Control Manager service. GitManager's worker is not currently an SCM service binary, and running it as `LocalSystem` or `LocalService` would move it out of the interactive user's profile and repository permissions. MSIX also does not support per-user Windows services; packaged services require restricted capabilities that Microsoft says are rarely approved for Store submissions. Do not add `packagedServices` or `localSystemServices` just to register this worker.
 
-The supported direction is to keep the worker in the package and launch it as the signed-in user. The current MSI/MSIX task-registration path still requires real-machine validation, especially for MSIX package identity and Store certification; packaging the executable alone does not prove that the scheduled launch succeeds.
+The supported direction is to keep the required service in the package and launch it as the signed-in user. The current MSI/MSIX sign-in registration path still requires real-machine validation, especially for MSIX package identity and Store certification; packaging the executable alone does not prove that the scheduled launch succeeds.
 
 ## Install locations and runtime files
 
