@@ -2165,10 +2165,10 @@ def main() -> int:
     project_root = Path(__file__).resolve().parent
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
 
-    if args.store_target and args.mode != "build":
-        log_err("--store can only be used with the build action.")
+    if args.store_target and args.mode not in ("build", "setup-build-tools"):
+        log_err("--store can only be used with the build or setup-build-tools actions.")
         return 2
-    if args.store_target == "all":
+    if args.store_target == "all" and args.mode == "build":
         log_err(
             "--store=all cannot build both store formats from one operating system. "
             "Run --store=flatpak on Linux and --store=msix on Windows; both build locally."
@@ -2178,7 +2178,7 @@ def main() -> int:
     if args.mode == "setup-packaging-tools":
         return setup_windows_packaging_tools()
     if args.mode == "setup-build-tools":
-        return setup_build_environment()
+        return setup_build_environment(args.build_target, args.store_target)
     if args.mode == "prepare-runtime":
         return prepare_windows_python_runtime(project_root)
     if args.install_packaging_tools:
