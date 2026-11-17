@@ -4,9 +4,9 @@ pub mod archive_watcher;
 pub mod notification_center;
 pub mod background_service;
 mod repository_workspace;
-pub mod git_info;
+pub use gitmanager_core::git_info;
 pub mod remote_providers;
-pub mod scanner;
+pub use gitmanager_core::scanner;
 pub mod watcher_service;
 
 use std::collections::HashMap;
