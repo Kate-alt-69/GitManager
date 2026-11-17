@@ -43,7 +43,7 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
-from tools.build_targets import BuildTarget, can_build_locally, parse_build_selection
+from tools.build_targets import can_build_locally, parse_build_selection
 
 RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
@@ -1444,7 +1444,7 @@ def build_gitm_sidecar(
 
 
 def dispatch_build_matrix(selection: str, build_type: str) -> int:
-    """Dispatch multi-platform builds to native GitHub-hosted runners."""
+    """Dispatch multi-platform builds to native GitHub-hosted runners and download the artifacts."""
     gh = shutil.which("gh")
     if not gh:
         log_err(
@@ -1458,6 +1458,14 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
         code, branch, _ = run_capture(["git", "branch", "--show-current"])
         if code != 0:
             branch = ""
+    if not branch:
+        code, branch, _ = run_capture([
+            gh, "repo", "view", "--json", "defaultBranchRef",
+            "--jq", ".defaultBranchRef.name",
+        ])
+        if code != 0:
+            branch = ""
+
     command = [gh, "workflow", "run", "build-matrix.yml"]
     if branch:
         command.extend(["--ref", branch])
@@ -1468,8 +1476,50 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
         log_err("GitHub Actions workflow dispatch failed. Check gh auth status and workflow permissions.")
         return result
 
-    log_ok("Build matrix dispatched. Open the Actions run to follow each native platform build.")
-    log_info("Artifacts are uploaded separately for Windows, Linux and macOS targets.")
+    run_id = None
+    for _ in range(15):
+        list_command = [
+            gh, "run", "list", "--workflow", "build-matrix.yml",
+            "--event", "workflow_dispatch", "--limit", "10",
+            "--json", "databaseId,event,headBranch",
+        ]
+        code, output, error = run_capture(list_command)
+        if code == 0:
+            try:
+                runs = json.loads(output)
+                matching = [
+                    item for item in runs
+                    if item.get("event") == "workflow_dispatch"
+                    and (not branch or item.get("headBranch") == branch)
+                ]
+                if matching:
+                    run_id = matching[0].get("databaseId")
+                    if run_id:
+                        break
+            except (json.JSONDecodeError, TypeError):
+                pass
+        time.sleep(2)
+
+    if not run_id:
+        log_warn("The workflow was dispatched, but its run ID could not be resolved yet. Check the GitHub Actions tab.")
+        return 0
+
+    log_info(f"Watching GitHub Actions build run {run_id}...")
+    watch_result = subprocess.call([gh, "run", "watch", str(run_id), "--exit-status"])
+    if watch_result != 0:
+        log_err(f"GitHub Actions build run {run_id} did not complete successfully.")
+        return watch_result
+
+    download_dir = Path(__file__).resolve().parent / "build" / "dist"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    download_result = subprocess.call([
+        gh, "run", "download", str(run_id), "--dir", str(download_dir),
+    ])
+    if download_result != 0:
+        log_err(f"Build run {run_id} succeeded, but artifact download failed.")
+        return download_result
+
+    log_ok(f"Downloaded platform artifacts to {download_dir}")
     return 0
 
 
