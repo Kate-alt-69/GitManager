@@ -23,7 +23,7 @@
     {
       "name": "GitManager",
       "description": "Git workspace manager by Kastrick",
-      "target": "$.installDir\\git-manager.exe",
+      "target": "$.installDir\\gitmanager.exe",
       "icon": "frontend/static/image/git-managar-orange_default-black.png"
     }
   ],
@@ -52,9 +52,9 @@
       }
     ],
     "detectRunningProcesses": [
-      "git-manager.exe",
+      "gitmanager.exe",
       "crash_helper.exe",
-      "git-manager-service.exe"
+      "gitmanager.service.exe"
     ],
     "packageDependencies": [
       {
@@ -75,7 +75,7 @@
       "promptAppsAfterInstall": [
         {
           "displayName": "Launch GitManager",
-          "file": "$.installDir\\git-manager.exe"
+          "file": "$.installDir\\gitmanager.exe"
         }
       ]
     }
