@@ -5,7 +5,7 @@ import { invoke } from "../lib/tauri";
 import type { ConnectedAccount } from "../lib/types";
 import { Button, EmptyState, Field, ProviderMark, RepoAvatar } from "./shared-ui";
 
-function AccountsPage({
+export function AccountsPage({
 	accounts,
 	onConnect,
 }: {
@@ -18,8 +18,6 @@ function AccountsPage({
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const [message, setMessage] = useState("");
-	const [backgroundServiceBusy, setBackgroundServiceBusy] = useState(false);
-	const [backgroundServiceMessage, setBackgroundServiceMessage] = useState("");
 
 	async function connect() {
 		setBusy(true);
