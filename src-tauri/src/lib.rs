@@ -852,6 +852,11 @@ fn get_default_scan_directories() -> Vec<String> {
 }
 
 #[tauri::command]
+fn get_repository_index_generation() -> Result<String, String> {
+    repository_index_modified_unix_nanos().map(|generation| generation.to_string())
+}
+
+#[tauri::command]
 async fn load_indexed_repositories(
     filter_mode: Option<String>,
     state: State<'_, AppState>,
@@ -1763,6 +1768,7 @@ pub fn run() {
             get_commit_details,
             list_windows_signing_certificates,
             sign_windows_installer,
+            get_repository_index_generation,
             load_indexed_repositories,
             scan_machine_repositories,
             ensure_required_service,
