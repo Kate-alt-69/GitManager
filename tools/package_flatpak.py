@@ -21,6 +21,18 @@ def run(command: list[str], *, cwd: Path | None = None) -> None:
     subprocess.run(command, cwd=cwd, check=True)
 
 
+def ensure_user_flatpak_runtime() -> None:
+    """Prepare the GNOME runtime and SDK in the invoking user's Flatpak installation."""
+    run([
+        "flatpak", "remote-add", "--user", "--if-not-exists",
+        "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo",
+    ])
+    run([
+        "flatpak", "install", "--user", "--noninteractive", "--assumeyes",
+        "flathub", "org.gnome.Platform//51", "org.gnome.Sdk//51",
+    ])
+
+
 def find_main_binary(extracted_usr: Path) -> Path:
     candidates = (
         extracted_usr / "bin" / "git-manager",
@@ -130,16 +142,22 @@ def main() -> int:
     deb = args.deb.resolve()
     if not deb.is_file() or deb.suffix.lower() != ".deb":
         parser.error(f"--deb must point to an existing .deb file: {deb}")
-    for tool in ("dpkg-deb", "flatpak-builder", "flatpak"):
-        if shutil.which(tool) is None:
-            print(f"Required Flatpak packaging tool not found: {tool}", file=sys.stderr)
-            return 2
+    missing_tools = [tool for tool in ("dpkg-deb", "flatpak-builder", "flatpak") if shutil.which(tool) is None]
+    if missing_tools:
+        print(
+            "Missing Flatpak build tools: " + ", ".join(missing_tools) + ". "
+            "Install them with your Linux distribution's package manager, then retry.",
+            file=sys.stderr,
+        )
+        return 2
     if not MANIFEST.is_file():
         print(f"Flatpak manifest is missing: {MANIFEST}", file=sys.stderr)
         return 2
 
     staging = CACHE / "staging"
     try:
+        print("Preparing the GNOME 51 runtime and SDK in the current user's Flatpak installation...")
+        ensure_user_flatpak_runtime()
         stage_deb(deb, staging)
         repo = CACHE / "repo"
         build_dir = CACHE / "build"
@@ -153,14 +171,14 @@ def main() -> int:
         if repo.exists():
             shutil.rmtree(repo)
         run([
-            "flatpak-builder", "--force-clean", f"--repo={repo}",
+            "flatpak-builder", "--user", "--force-clean", f"--repo={repo}",
             str(build_dir), str(generated_manifest),
         ], cwd=CACHE)
 
         # The Linux Developer Cleaner requires Python 3.10+ inside the runtime;
         # verify it now rather than shipping a bundle with a silently broken tool.
         run([
-            "flatpak-builder", "--run", str(build_dir), str(generated_manifest),
+            "flatpak-builder", "--user", "--run", str(build_dir), str(generated_manifest),
             "python3", "--version",
         ], cwd=CACHE)
         run([
