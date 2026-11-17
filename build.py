@@ -514,7 +514,7 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
     if nsis_config.get("installerHooks") != "windows/hooks.nsh":
         log_err("The Windows Tauri configuration must load the GitManager NSIS installer hooks.")
         return 1
-    if r'StrCpy $INSTDIR "$LOCALAPPDATA\\kastrick' not in nsis_template:
+    if r'StrCpy $INSTDIR "$LOCALAPPDATA\kastrick' not in nsis_template:
         log_err("The NSIS template does not set GitManager's expected per-user install directory before the directory page.")
         return 1
     if 'StrCpy $INSTDIR' in hooks:
