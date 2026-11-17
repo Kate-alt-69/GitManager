@@ -65,7 +65,7 @@ def stage_deb(deb: Path, staging: Path) -> None:
     required = ("gitm", "crash_helper", "git-manager-service", "gitmanager-setup")
     search_roots = (staging / "bin", staging / "lib")
     for name in required:
-        if any(path.is_file() and path.name.startswith(name) for path in (staging / "bin").rglob("*")):
+        if (staging / "bin" / name).is_file():
             continue
         candidates = [
             path for root in search_roots for path in root.rglob("*")
