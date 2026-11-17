@@ -1,8 +1,7 @@
 {
   "$schema": "https://www.masterpackager.com/support-master-packager-dev/mpdev-schema.json",
   "outputTypes": [
-    "msi",
-    "msix"
+    "msi"
   ],
   "outputDirectory": "target/windows-installers",
   "outputFileName": "GitManager_$.version_$.platform",
