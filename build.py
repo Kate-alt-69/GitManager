@@ -226,13 +226,13 @@ def cargo_target_root(project_root: Path) -> Path:
     return value if value.is_absolute() else project_root / value
 
 
-def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str) -> int:
+def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release: bool = True) -> int:
     """Stage the raw Windows app and every runtime/sidecar for MPDEV packaging."""
     if platform.system() != "Windows":
         return 0
 
     target_dir = cargo_target_root(project_root)
-    profile_dir = target_profile_dir(project_root, release=True)
+    profile_dir = target_profile_dir(project_root, release=release)
     main_exe = profile_dir / "git-manager.exe"
     if not main_exe.is_file():
         log_err(f"Windows desktop executable is missing: {main_exe}")
@@ -547,7 +547,7 @@ def name_windows_msi_installer(project_root: Path, release: bool = True) -> Opti
     return installer
 
 
-def build_master_packager_dev_msi(project_root: Path) -> Tuple[int, Optional[Path]]:
+def build_master_packager_dev_msi(project_root: Path, release: bool) -> Tuple[int, Optional[Path]]:
     """Build the local MPDEV comparison MSI from the same staged payload as CI."""
     if platform.system() != "Windows":
         return 0, None
@@ -558,7 +558,7 @@ def build_master_packager_dev_msi(project_root: Path) -> Tuple[int, Optional[Pat
 
     staging = cargo_target_root(project_root) / "windows-package" / "source"
     if not (staging / "git-manager.exe").is_file():
-        stage_result = stage_windows_mpdev_package(project_root, "")
+        stage_result = stage_windows_mpdev_package(project_root, "", release)
         if stage_result != 0:
             return stage_result, None
 
@@ -1840,7 +1840,7 @@ def run_build_or_dev(
 
         # App-only builds skip installer validation and bundler output checks.
         if bundle and platform.system() == "Windows":
-            stage_result = stage_windows_mpdev_package(project_root, toolchain_arg)
+            stage_result = stage_windows_mpdev_package(project_root, toolchain_arg, release)
             if stage_result != 0:
                 return stage_result
             if name_windows_setup_installer(project_root, release) is None:
@@ -1848,7 +1848,7 @@ def run_build_or_dev(
             if name_windows_msi_installer(project_root, release) is None:
                 return 1
             if build_master_packager and os.environ.get("CARGO_BUILD_TARGET", "").startswith("x86_64-"):
-                mpdev_result, _ = build_master_packager_dev_msi(project_root)
+                mpdev_result, _ = build_master_packager_dev_msi(project_root, release)
                 if mpdev_result != 0:
                     return mpdev_result
         if publish_build_outputs(project_root, release, bundle, build_master_packager) != 0:
