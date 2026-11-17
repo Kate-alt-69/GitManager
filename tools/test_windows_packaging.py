@@ -95,7 +95,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
 
     def test_docs_describe_mpdev_as_mandatory_and_nsis_as_fallback(self):
         docs = (ROOT / "docs" / "windows-packaging.md").read_text(encoding="utf-8")
-        self.assertIn("required Windows MSI and MSIX packager", docs)
+        self.assertIn("required Windows MSI/MSIX packager", docs)
         self.assertIn("NSIS fallback", docs)
         self.assertIn("--master-packager", docs)
 
