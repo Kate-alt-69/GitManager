@@ -1,20 +1,43 @@
 # Build environment setup
 
-Run this once on each machine that will compile a GitManager target:
+Run this on the machine that will compile the selected GitManager target:
 
     py build.py setup-build-tools
 
-The command checks what is already installed and prepares only the current host's supported toolchain. It does not dispatch or download builds from GitHub Actions.
+The setup is target-aware and asks before installing missing SDKs or packages. It does not dispatch builds to GitHub Actions and does not replace a working Rust compiler.
+
+## Install prompts
+
+When a prerequisite is missing, the prompt names the tool and purpose, for example:
+
+    Do you want to install Ubuntu 24.04 + GTK/WebKitGTK to build Linux? [Y/n]
+
+An explicitly requested target (`--build=linux(x64)` or `--store=flatpak`) defaults to **Yes**. Optional platforms that were not selected are not installed. If the required tools are already present, setup skips the prompt and reuses the existing `cargo`/`rustc` toolchain. It only installs Rustup when no usable Rust compiler exists, and it does not reset an existing active toolchain.
+
+Use these commands to select what should be prepared:
+
+    py build.py setup-build-tools
+    py build.py setup-build-tools --build='linux(x64)'
+    py build.py setup-build-tools --store=flatpak
+    py build.py setup-build-tools --build=all
 
 ## Windows 10/11
 
-The Windows setup prepares Visual Studio 2022 Build Tools with the C++ workload and Windows SDK, Rustup and the Windows x64/x86 Rust targets, Node.js 22, Master Packager Dev and NSIS.
+For Windows targets, setup checks for Visual Studio 2022 C++ Build Tools and the Windows SDK, Node.js 22, Master Packager Dev and NSIS. It installs only missing components after the confirmation prompt. WebView2 is already included with supported Windows 10 (version 1803+) and later installations.
 
-It also provisions Ubuntu 24.04 under WSL2 for Linux builds. On first setup, Windows may need an elevated terminal and/or a restart. Launch Ubuntu once from the Start menu, create its Linux username/password, and rerun the setup command.
+Windows does not install Linux/Flatpak tools unless Linux or Flatpak was selected. To prepare Linux x64 on a Windows x64 machine, run:
 
-The WSL Ubuntu setup installs Tauri's GTK/WebKitGTK 4.1 dependencies, Node.js 22, Rustup, Flatpak, Flatpak Builder, Debian/RPM packaging tools, and the matching GNOME 51 runtime and SDK. It runs a Bubblewrap namespace smoke test because Flatpak Builder requires sandbox namespaces. If that test fails under WSL, use a native Linux installation or VM for Flatpak packaging rather than weakening Flatpak's sandbox.
+    py build.py setup-build-tools --build='linux(x64)'
 
-To build Linux from WSL, work from a Linux-side checkout for better filesystem performance:
+That provisions Ubuntu 24.04 under WSL2 if needed, then asks before installing Tauri's GTK/WebKitGTK 4.1 dependencies, Node.js 22 and any missing Rust build prerequisites. On first WSL installation, Windows may require elevation and a restart. Launch Ubuntu once from the Start menu to create the Linux username/password, then rerun the same setup command.
+
+To prepare Flatpak as well, run:
+
+    py build.py setup-build-tools --store=flatpak
+
+That additionally installs Flatpak, Flatpak Builder, the GNOME 51 runtime and SDK. It checks Bubblewrap user namespaces; if WSL cannot create the required namespaces, keep using WSL for Linux DEB/RPM builds and use native Linux or a Linux VM for Flatpak.
+
+Build Linux from a Linux-side checkout for better filesystem performance:
 
     mkdir -p ~/src
     git clone --branch feature/cross-platform-build-matrix --single-branch https://github.com/Kate-alt-69/GitManager.git ~/src/GitManager
@@ -22,33 +45,29 @@ To build Linux from WSL, work from a Linux-side checkout for better filesystem p
     python3 build.py --build='linux(x64)' --type=installer
     python3 build.py --store=flatpak
 
-For later builds, run git pull --ff-only in that WSL checkout before building. WSL can build Linux x64 on an x64 Windows PC. Linux ARM64/ARMv7 still need matching native Linux hosts or a separately configured cross-linker/sysroot.
-
-WSL is a build environment, not a replacement for a native Linux desktop when validating Flatpak notifications, systemd user services, sandbox permissions or GUI behavior. WSL instances can stop when no process keeps them alive.
+WSL is a build environment, not a replacement for a native Linux desktop when validating Flatpak notifications, systemd user services, sandbox permissions or GUI behavior.
 
 ## Linux (native Debian/Ubuntu)
 
-The setup command installs the Tauri v2 WebKitGTK/GTK development packages, build utilities, Node.js 22, Rustup, Flatpak Builder, Debian/RPM packaging tools, and GNOME 51 runtime/SDK for Flatpak.
+Run `py build.py setup-build-tools` to check the current machine's native dependencies. For the Flatpak runtime and SDK, explicitly request `--store=flatpak`. The setup installs GTK/WebKitGTK, Node.js 22 and Debian packaging dependencies only when missing and after confirmation. It installs GNOME 51 runtime/SDK only for a Flatpak request.
 
-Other Linux distributions are not modified automatically yet. Install the Tauri prerequisites for your distribution, then add Flatpak, Flatpak Builder, dpkg-deb and RPM/AppImage tools as required.
+Other Linux distributions are not modified automatically yet. Install the Tauri prerequisites for your distribution, then add Flatpak/Flatpak Builder, dpkg-deb and RPM/AppImage tools as required.
 
 ## macOS
 
-Run the setup command on the Mac. It checks for Xcode Command Line Tools, installs Node.js 22 and pkg-config through Homebrew when available, and adds both x86_64-apple-darwin and aarch64-apple-darwin Rust targets.
+Run `py build.py setup-build-tools` on a real Mac. It checks Xcode Command Line Tools, Node.js 22, pkg-config and the requested Rust target components. If Xcode Command Line Tools are missing, setup asks before opening Apple's installer dialog. Complete the installation and rerun setup.
 
-If Command Line Tools are missing, macOS opens Apple's installer dialog; complete that installation and run setup again. The command does not install the full Xcode application. Xcode itself is needed for some Apple workflows beyond this desktop build, and code signing/notarization still requires Apple Developer credentials.
-
-A Windows or Linux machine cannot install Apple's macOS SDK or produce a native macOS application bundle. Build macOS packages on a real Mac.
+A Windows or Linux machine cannot install Apple's macOS SDK or produce a native macOS application bundle. Build macOS packages on a real Mac. Code signing/notarization still requires Apple Developer credentials.
 
 ## Build matrix boundaries
 
 | Output | Build host | Notes |
 | --- | --- | --- |
-| Windows x64/x86 MSI + MSIX + NSIS | Windows x64 | Requires MSVC, MPDEV and NSIS |
+| Windows x64/x86 MSI + MSIX + NSIS | Windows x64 | Requires MSVC, Windows SDK, MPDEV and NSIS |
 | Windows ARM64 | Native Windows ARM64 | Current build selector does not cross-build ARM64 Windows from x64 |
 | Linux x64 DEB/RPM/AppImage | Native Linux x64 or x64 WSL2 | Requires GTK/WebKitGTK sysroot |
 | Flatpak x64 | Native Linux x64; WSL2 only if Bubblewrap smoke test passes | GNOME 51 runtime/SDK |
 | Linux ARM64/ARMv7 | Matching native Linux architecture | Matching linker and WebKitGTK sysroot required |
-| macOS Intel/Apple Silicon | Real Mac with Xcode Command Line Tools | Both Rust targets are installed by setup |
+| macOS Intel/Apple Silicon | Real Mac with Xcode Command Line Tools | Both Rust targets can be installed with rustup |
 
-This command installs toolchains and SDK prerequisites; it does not make every operating system cross-compilable from one host. To publish all formats from one Windows PC, build Windows natively and build Linux in WSL2 (or a native Linux VM). Use a Mac for the macOS artifact.
+This command prepares the selected host environment; it does not make all operating systems cross-compilable from one host. From Windows, build Windows natively and Linux in WSL2 (Flatpak only if Bubblewrap works). Use a Mac for the macOS artifact.
