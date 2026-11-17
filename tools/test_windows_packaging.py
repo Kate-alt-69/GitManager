@@ -124,6 +124,21 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         source = (ROOT / "tools" / "package_windows_store.py").read_text(encoding="utf-8")
         self.assertIn('package_config["platform"] = mpdev_platform_name(args.platform)', source)
 
+    def test_background_worker_is_not_registered_as_a_machine_service(self):
+        desktop = json.loads(
+            (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
+        )
+        store = json.loads(
+            (ROOT / "installer" / "store" / "msix" / "package.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("services", desktop)
+        self.assertNotIn("services", store)
+        watcher = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
+        self.assertIn('args(["/Create", "/SC", "ONLOGON",', watcher)
+        self.assertIn('args(["/RL", "LIMITED", "/F"])', watcher)
+        self.assertIn(".config/systemd/user", watcher)
+        self.assertIn("Library/LaunchAgents", watcher)
+
     def test_store_msix_has_its_own_identity_manifest(self):
         desktop = json.loads(
             (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
