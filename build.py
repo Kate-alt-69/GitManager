@@ -1747,7 +1747,7 @@ def main() -> int:
         "-build", "--build",
         dest="build_target",
         default="all",
-        help="Build target: all, windows, linux, macos, or windows(10,x64), windows(11,x86), linux(arm64), macos(x64). Default: all (GitHub Actions matrix).",
+        help="Build target: all, windows, linux, macos, or windows(10,x64), windows(11,x86), linux(arm64), linux(armv7), macos(x64). Default: all (GitHub Actions matrix).",
     )
     parser.add_argument(
         "-type", "--type",
