@@ -106,6 +106,13 @@ struct ApplicationDirectories {
     install_dir: String,
     config_dir: String,
     data_dir: String,
+    repo_metadata_dir: String,
+    git_data_dir: String,
+    account_metadata_dir: String,
+    account_git_data_dir: String,
+    remote_repo_metadata_dir: String,
+    remote_repo_git_data_dir: String,
+    cache_dir: String,
 }
 
 fn application_directory_layout(local_data: &Path) -> ApplicationDirectories {
@@ -113,25 +120,49 @@ fn application_directory_layout(local_data: &Path) -> ApplicationDirectories {
     let install_dir = software_root.join("GitManager");
     let config_dir = software_root.join("config").join("GitManager");
     let data_dir = software_root.join("data").join("GitManager");
+    let repo_metadata_dir = data_dir.join("repo").join("metadata");
+    let git_data_dir = data_dir.join("git_data");
+    let account_metadata_dir = data_dir.join("account").join("metadata");
+    let account_git_data_dir = data_dir.join("account").join("git_data");
+    let remote_repo_metadata_dir = data_dir.join("repo").join("remote").join("metadata");
+    let remote_repo_git_data_dir = data_dir.join("repo").join("remote").join("git_data");
+    let cache_dir = data_dir.join(".cache");
     ApplicationDirectories {
         software_root: software_root.to_string_lossy().to_string(),
         install_dir: install_dir.to_string_lossy().to_string(),
         config_dir: config_dir.to_string_lossy().to_string(),
         data_dir: data_dir.to_string_lossy().to_string(),
+        repo_metadata_dir: repo_metadata_dir.to_string_lossy().to_string(),
+        git_data_dir: git_data_dir.to_string_lossy().to_string(),
+        account_metadata_dir: account_metadata_dir.to_string_lossy().to_string(),
+        account_git_data_dir: account_git_data_dir.to_string_lossy().to_string(),
+        remote_repo_metadata_dir: remote_repo_metadata_dir.to_string_lossy().to_string(),
+        remote_repo_git_data_dir: remote_repo_git_data_dir.to_string_lossy().to_string(),
+        cache_dir: cache_dir.to_string_lossy().to_string(),
     }
 }
 
 fn application_directories() -> Result<ApplicationDirectories, String> {
     // On Windows dirs::data_local_dir resolves to %LOCALAPPDATA%; on macOS/Linux
-    // it selects the corresponding per-user local application-data location.
+    // it selects the corresponding per-user local application-data directory.
     let local_data = dirs::data_local_dir()
         .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
     let directories = application_directory_layout(&local_data);
 
-    fs::create_dir_all(&directories.config_dir)
-        .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
-    fs::create_dir_all(&directories.data_dir)
-        .map_err(|error| format!("Could not create GitManager data directory: {error}"))?;
+    for (label, path) in [
+        ("config", &directories.config_dir),
+        ("data", &directories.data_dir),
+        ("repository metadata", &directories.repo_metadata_dir),
+        ("Git data", &directories.git_data_dir),
+        ("account metadata", &directories.account_metadata_dir),
+        ("account Git data", &directories.account_git_data_dir),
+        ("remote repository metadata", &directories.remote_repo_metadata_dir),
+        ("remote repository Git data", &directories.remote_repo_git_data_dir),
+        ("cache", &directories.cache_dir),
+    ] {
+        fs::create_dir_all(path)
+            .map_err(|error| format!("Could not create GitManager {label} directory: {error}"))?;
+    }
 
     Ok(directories)
 }
@@ -1777,6 +1808,14 @@ mod application_path_tests {
         assert_eq!(PathBuf::from(paths.software_root), product_root);
         assert_eq!(PathBuf::from(paths.install_dir), product_root.join("GitManager"));
         assert_eq!(PathBuf::from(paths.config_dir), product_root.join("config").join("GitManager"));
-        assert_eq!(PathBuf::from(paths.data_dir), product_root.join("data").join("GitManager"));
+        let data = product_root.join("data").join("GitManager");
+        assert_eq!(PathBuf::from(paths.data_dir), data);
+        assert_eq!(PathBuf::from(paths.repo_metadata_dir), data.join("repo").join("metadata"));
+        assert_eq!(PathBuf::from(paths.git_data_dir), data.join("git_data"));
+        assert_eq!(PathBuf::from(paths.account_metadata_dir), data.join("account").join("metadata"));
+        assert_eq!(PathBuf::from(paths.account_git_data_dir), data.join("account").join("git_data"));
+        assert_eq!(PathBuf::from(paths.remote_repo_metadata_dir), data.join("repo").join("remote").join("metadata"));
+        assert_eq!(PathBuf::from(paths.remote_repo_git_data_dir), data.join("repo").join("remote").join("git_data"));
+        assert_eq!(PathBuf::from(paths.cache_dir), data.join(".cache"));
     }
 }
