@@ -8,7 +8,7 @@ GitManager uses **Master Packager Dev (MPDEV) as the required Windows MSI/MSIX p
 | `GitManager_<version>_<arch>.msi` | Master Packager Dev | Required Windows Installer package |
 | `GitManager_<version>_<arch>.msix` | Master Packager Dev | Required Windows app package |
 
-Tauri's WiX MSI target is disabled. WiX is not required or installed by the Windows build script. The NSIS fallback uses a version-matched Tauri installer template so its directory field defaults to `%LOCALAPPDATA%\\kastrick's_software\\GitManager`; users can still choose another folder.
+Tauri's WiX MSI target is disabled. WiX is not required or installed by the Windows build script. The NSIS fallback uses a version-matched Tauri installer template so its directory field defaults to `%LOCALAPPDATA%\kastrick's_software\GitManager`; users can still choose another folder.
 
 ## Requirements
 
