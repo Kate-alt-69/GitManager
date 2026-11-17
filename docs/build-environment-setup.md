@@ -31,7 +31,24 @@ Windows does not install Linux/Flatpak tools unless Linux or Flatpak was selecte
 
     py build.py setup-build-tools --build='linux(x64)'
 
-That provisions Ubuntu 24.04 under WSL2 if needed, then asks before installing Tauri's GTK/WebKitGTK 4.1 dependencies, Node.js 22 and any missing Rust build prerequisites. On first WSL installation, Windows may require elevation and a restart. Launch Ubuntu once from the Start menu to create the Linux username/password, then rerun the same setup command.
+That provisions Ubuntu 24.04 under WSL2 if needed, then asks before installing Tauri's GTK/WebKitGTK 4.1 dependencies, Node.js 22 and any missing Rust build prerequisites. On first WSL installation, Windows may require elevation and a restart. Ubuntu must complete a one-time Linux account setup before GitManager can install Linux build packages.
+
+**First launch — create your Ubuntu username and password**
+
+1. Open **Ubuntu 24.04 LTS** from the Windows Start menu. You can also start it from PowerShell with `wsl --distribution Ubuntu-24.04`.
+2. When Ubuntu displays `Enter new UNIX username:`, type a Linux username and press Enter. This is a Linux account; it does not have to match your Windows username.
+3. At `New password:`, type a password and press Enter. **The terminal shows nothing while you type**—no letters, dots or asterisks. This is normal Linux password behaviour.
+4. At `Retype new password:`, type the same password again and press Enter.
+5. Wait until Ubuntu displays its normal shell prompt. Type `exit` and press Enter to return to PowerShell.
+6. Rerun the same setup command. For the all-platform Windows workflow, use:
+
+   ```powershell
+   py build.py setup-build-tools --build=all
+   ```
+
+   For Linux x64 only, use `py build.py setup-build-tools --build='linux(x64)'`.
+
+GitManager will then enter Ubuntu, check its prerequisites, ask before installing missing packages, and preserve any existing Rust toolchain. The username/password are used by Ubuntu inside WSL; they are not your Windows sign-in credentials and GitManager does not read or store them.
 
 To prepare Flatpak as well, run:
 
