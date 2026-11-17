@@ -83,7 +83,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertEqual(config["outputDirectory"], "build/.rcache/windows-installers")
         self.assertEqual(
             config["installDir"],
-            "%ProgramFiles%\\Kastrick's Software\\GitManager",
+            "%LOCALAPPDATA%\\kastrick's_software\\GitManager",
         )
         self.assertNotIn("installDir", config["msi"])
         msi_properties = {item["name"]: item["value"] for item in config["msi"]["properties"]}
