@@ -79,6 +79,9 @@ def parse_build_selection(value: str) -> tuple[str, list[BuildTarget]]:
             "for example windows(10,x64) or windows(11,arm64)."
         )
 
+    if family == "windows" and windows_version == "10" and architecture == "arm64":
+        raise ValueError("Windows ARM64 builds target Windows 11 ARM64; use windows(11,arm64).")
+
     if architecture not in SUPPORTED_ARCHITECTURES[family]:
         choices = ", ".join(SUPPORTED_ARCHITECTURES[family])
         raise ValueError(f"Unsupported {family} architecture '{architecture}'. Supported: {choices}.")
