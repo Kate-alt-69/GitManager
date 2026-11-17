@@ -12,3 +12,4 @@ fs2 = "0.4"
 git2 = { version = "0.20.4", default-features = false, features = ["https", "ssh"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+gitmanager-archive = { path = "../archive-core" }

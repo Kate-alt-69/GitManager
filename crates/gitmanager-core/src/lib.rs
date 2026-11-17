@@ -1,10 +1,11 @@
-//! Shared GitManager repository discovery, metadata and notification storage.
+//! Shared GitManager repository discovery, preferences, metadata and notification storage.
 //!
-//! This crate is Tauri-free and contains only native Git/filesystem-facing
-//! modules. Both the desktop library and service host consume it; the current
-//! service runtime entry point still reuses the desktop library for its
-//! higher-level archive and platform-integration modules.
+//! This crate is Tauri-free. The desktop UI and required headless data service
+//! share its repository index, user preferences and notification store.
 
+pub mod app_preferences;
 pub mod git_info;
 pub mod scanner;
 pub mod notification_center;
+
+pub use app_preferences::{load_background_preferences, AppPreferences, RepositoryPreferences};
