@@ -98,7 +98,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("Git workspace manager", dialog["packageDescription"])
         self.assertEqual(dialog["publisherUrl"], "https://kastrick.vercel.app")
         self.assertEqual(dialog["primaryAccent"], "#F97316")
-        self.assertEqual(dialog["promptAppsAfterInstall"][0]["file"], "$.installDir\\git-manager.exe")
+        self.assertEqual(dialog["promptAppsAfterInstall"][0]["file"], "$.installDir\\gitmanager.exe")
 
     def test_service_worker_is_packaged_but_not_registered_as_a_machine_service(self):
         desktop = json.loads(
@@ -113,8 +113,8 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
 
         self.assertNotIn("services", desktop)
         self.assertNotIn("services", store)
-        self.assertIn('"git-manager-service.exe": sidecar_dir / f"git-manager-service-{triple}.exe"', build_source)
-        self.assertIn('"git-manager-service.exe"', store_source)
+        self.assertIn('"gitmanager.service.exe": sidecar_dir / f"gitmanager.service-{triple}.exe"', build_source)
+        self.assertIn('"gitmanager.service.exe"', store_source)
         self.assertIn('"/SC", "ONLOGON"', watcher_source)
         self.assertIn("Windows Task Scheduler (user logon)", watcher_source)
         store_capabilities = store["msix"]["capabilities"]
