@@ -135,6 +135,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}\build\.rcache
       GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
+      MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
     steps:
       - name: Check out GitManager
         uses: actions/checkout@v4
@@ -186,7 +187,9 @@ jobs:
       - name: Build MSIX with Master Packager Dev
         shell: pwsh
         run: |
-          & $env:MPDEV_EXE build "installer/store/msix/package.json" --working-dir "$PWD" --use-msbuild-message-format true
+          $manifest = "build/.rcache/windows-store/package.json"
+          if (-not (Test-Path -LiteralPath $manifest)) { throw "Generated MPDEV MSIX manifest is missing: $manifest" }
+          & $env:MPDEV_EXE build $manifest --working-dir "$PWD" --use-msbuild-message-format true
           if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev failed to build the Microsoft Store MSIX." }
           $packages = @(Get-ChildItem "build/dist/store/msix" -Filter "*.msix" -File -ErrorAction SilentlyContinue)
           if ($packages.Count -ne 1 -or $packages[0].Length -lt 1MB) {
