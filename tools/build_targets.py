@@ -38,13 +38,14 @@ TARGETS = {
     ("windows", "arm64"): "aarch64-pc-windows-msvc",
     ("linux", "x64"): "x86_64-unknown-linux-gnu",
     ("linux", "arm64"): "aarch64-unknown-linux-gnu",
+    ("linux", "armv7"): "armv7-unknown-linux-gnueabihf",
     ("macos", "x64"): "x86_64-apple-darwin",
     ("macos", "arm64"): "aarch64-apple-darwin",
 }
 
 SUPPORTED_ARCHITECTURES = {
     "windows": ("x64", "x86", "arm64"),
-    "linux": ("x64", "arm64"),
+    "linux": ("x64", "arm64", "armv7"),
     "macos": ("x64", "arm64"),
 }
 
@@ -116,7 +117,7 @@ def can_build_locally(target: BuildTarget) -> tuple[bool, str]:
     aliases = {
         "amd64": "x64", "x86_64": "x64",
         "i386": "x86", "i686": "x86", "x86": "x86",
-        "aarch64": "arm64", "arm64": "arm64",
+        "aarch64": "arm64", "arm64": "arm64", "armv7l": "armv7",
     }
     host_arch = aliases.get(machine, machine)
     if target.platform == "linux" and target.architecture != host_arch:
