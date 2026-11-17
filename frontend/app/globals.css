@@ -1256,3 +1256,321 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 		flex: 1;
 	}
 }
+
+/* Compact top-right Task Center and Notifications surfaces. */
+.gm-topbar-popover-host {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
+.gm-topbar-panel-triggers {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+.gm-topbar-panel-trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	min-height: 30px;
+	padding: 0 9px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: #aab6c3;
+	font-size: 10px;
+	font-weight: 600;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.gm-topbar-panel-trigger:hover,
+.gm-topbar-panel-trigger.active {
+	border-color: #354252;
+	background: #182330;
+	color: #e6edf3;
+}
+.gm-panel-indicator,
+.gm-task-state {
+	display: inline-block;
+	width: 7px;
+	height: 7px;
+	flex: 0 0 7px;
+	background: #687786;
+}
+.gm-panel-indicator.ready,
+.gm-task-state.ready {
+	background: #3fb950;
+}
+.gm-panel-indicator.busy,
+.gm-task-state.busy {
+	background: #d29922;
+	box-shadow: 0 0 0 3px rgba(210,153,34,.12);
+}
+.gm-panel-indicator.offline,
+.gm-task-state.offline {
+	background: #f85149;
+}
+.gm-task-state.idle {
+	background: #718096;
+}
+.gm-topbar-unread-count {
+	display: inline-grid;
+	min-width: 16px;
+	height: 16px;
+	place-items: center;
+	padding: 0 4px;
+	background: #9e3434;
+	color: #fff;
+	font-size: 9px;
+	font-variant-numeric: tabular-nums;
+}
+.gm-topbar-popover {
+	position: absolute;
+	z-index: 80;
+	top: calc(100% + 9px);
+	right: 0;
+	display: flex;
+	flex-direction: column;
+	width: min(420px, calc(100vw - 28px));
+	max-height: min(620px, calc(100vh - 94px));
+	overflow: hidden;
+	border: 1px solid #3a4654;
+	background: #121a24;
+	box-shadow: 0 18px 46px rgba(0,0,0,.56);
+}
+.gm-notifications-panel {
+	width: min(460px, calc(100vw - 28px));
+}
+.gm-popover-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 13px 14px;
+	border-bottom: 1px solid #303b48;
+	background: #192431;
+}
+.gm-popover-heading > div {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+.gm-popover-heading strong {
+	color: #e5edf5;
+	font-size: 12px;
+	font-weight: 700;
+}
+.gm-popover-heading small {
+	color: #8798a9;
+	font-size: 9px;
+}
+.gm-popover-heading > button {
+	width: 25px;
+	height: 25px;
+	border: 1px solid #354251;
+	background: #111922;
+	color: #9eacba;
+	font-size: 16px;
+	line-height: 1;
+	cursor: pointer;
+}
+.gm-popover-heading > button:hover {
+	border-color: #65788a;
+	color: #fff;
+}
+.gm-task-list,
+.gm-notification-list {
+	min-height: 0;
+	overflow: auto;
+	overscroll-behavior: contain;
+}
+.gm-task-row {
+	display: grid;
+	grid-template-columns: 9px minmax(0, 1fr) auto;
+	align-items: start;
+	gap: 10px;
+	padding: 12px 13px;
+	border-bottom: 1px solid #26323e;
+}
+.gm-task-row > .gm-task-state {
+	margin-top: 4px;
+}
+.gm-task-row > div {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	min-width: 0;
+}
+.gm-task-row strong {
+	color: #d9e3ed;
+	font-size: 10px;
+	font-weight: 650;
+}
+.gm-task-row small {
+	color: #8798a9;
+	font-size: 9px;
+	line-height: 1.45;
+	overflow-wrap: anywhere;
+}
+.gm-task-meta {
+	color: #9aaaba;
+	font: 9px "JetBrains Mono", Consolas, monospace;
+}
+.gm-popover-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 7px;
+	padding: 10px 12px;
+	border-top: 1px solid #303b48;
+	background: #101720;
+}
+.gm-popover-actions button {
+	min-height: 29px;
+	padding: 0 9px;
+	border: 1px solid #3a4857;
+	background: #1a2531;
+	color: #cbd8e5;
+	font-size: 9px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.gm-popover-actions button:hover:not(:disabled) {
+	border-color: #64819f;
+	background: #243445;
+}
+.gm-popover-actions button.primary {
+	border-color: #2ea043;
+	background: #238636;
+	color: #fff;
+}
+.gm-popover-actions button:disabled {
+	cursor: not-allowed;
+	opacity: .45;
+}
+.gm-notification-item {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px 13px;
+	border-bottom: 1px solid #293541;
+}
+.gm-notification-item.unread {
+	background: #162333;
+	box-shadow: inset 2px 0 #2f81f7;
+}
+.gm-notification-item.read {
+	background: #121a24;
+}
+.gm-notification-copy {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	min-width: 0;
+}
+.gm-notification-title {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+}
+.gm-notification-title strong {
+	color: #dce7f1;
+	font-size: 10px;
+	font-weight: 650;
+	line-height: 1.4;
+}
+.gm-notification-title time {
+	flex: 0 0 auto;
+	color: #77889a;
+	font: 8px "JetBrains Mono", Consolas, monospace;
+}
+.gm-notification-copy p {
+	margin: 0;
+	color: #9aabba;
+	font-size: 9px;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+.gm-notification-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+}
+.gm-notification-actions button {
+	padding: 3px 6px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: #8fb8e0;
+	font-size: 8px;
+	cursor: pointer;
+}
+.gm-notification-actions button:hover {
+	border-color: #34485e;
+	background: #1c2b3a;
+	color: #d7eaff;
+}
+.gm-notification-actions button:last-child {
+	color: #9b8c8a;
+}
+.gm-notification-actions button:last-child:hover {
+	border-color: #684442;
+	color: #ffaaa4;
+}
+.gm-notification-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 5px;
+	padding: 34px 20px;
+	text-align: center;
+}
+.gm-notification-empty strong {
+	color: #cbd8e5;
+	font-size: 11px;
+}
+.gm-notification-empty span {
+	max-width: 34ch;
+	color: #7e8e9f;
+	font-size: 9px;
+	line-height: 1.5;
+}
+.gm-topbar-status .gm-status-dot.offline {
+	background: #f85149;
+}
+
+@media (max-width: 920px) {
+	.gm-topbar-panel-trigger {
+		padding-inline: 6px;
+		font-size: 9px;
+	}
+	.gm-topbar-panel-trigger > span:first-child {
+		display: none;
+	}
+}
+@media (max-width: 660px) {
+	.gm-topbar {
+		flex-wrap: wrap;
+		gap: 7px;
+		padding-block: 8px;
+	}
+	.gm-topbar-actions {
+		width: 100%;
+		order: 2;
+		justify-content: flex-end;
+	}
+	.gm-topbar-status {
+		margin-left: auto;
+	}
+	.gm-global-search {
+		flex: 1 1 150px;
+		width: auto;
+	}
+	.gm-topbar-popover-host {
+		position: static;
+	}
+	.gm-topbar-popover {
+		top: calc(100% + 1px);
+		right: 10px;
+	}
+}
