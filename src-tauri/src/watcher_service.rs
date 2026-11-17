@@ -60,6 +60,68 @@ fn repository_worktree_is_clean(repo: &Repository) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::repository_worktree_is_clean;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn flatpak_background_service_is_started_inside_its_sandbox() {
+        use super::{linux_background_service_command, systemd_exec_start};
+        use std::path::Path;
+
+        let command = linux_background_service_command(
+            Path::new("/app/bin/git-manager-service"),
+            Some("com.gitmanager.desktop"),
+            Some(Path::new("/usr/bin/flatpak")),
+        )
+        .expect("construct Flatpak service command");
+
+        assert_eq!(
+            command,
+            vec![
+                "/usr/bin/flatpak",
+                "run",
+                "--command=git-manager-service",
+                "com.gitmanager.desktop",
+            ]
+        );
+        let exec_start = systemd_exec_start(&command);
+        assert!(exec_start.starts_with("\\"/usr/bin/flatpak\\""));
+        assert!(!exec_start.contains("/app/bin/git-manager-service"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_linux_background_service_uses_its_packaged_executable() {
+        use super::linux_background_service_command;
+        use std::path::Path;
+
+        let command = linux_background_service_command(
+            Path::new("/usr/lib/gitmanager/git-manager-service"),
+            None,
+            None,
+        )
+        .expect("construct native Linux service command");
+
+        assert_eq!(
+            command,
+            vec!["/usr/lib/gitmanager/git-manager-service".to_string()]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn flatpak_service_registration_fails_clearly_without_flatpak_cli() {
+        use super::linux_background_service_command;
+        use std::path::Path;
+
+        let error = linux_background_service_command(
+            Path::new("/app/bin/git-manager-service"),
+            Some("com.gitmanager.desktop"),
+            None,
+        )
+        .expect_err("missing host Flatpak CLI must not create a broken unit");
+
+        assert!(error.contains("Flatpak command was not found"));
+    }
     use git2::Repository;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -278,6 +340,9 @@ pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
 /// The worker must run as the interactive user so it reads the same per-user
 /// preferences and holds the same archive-watcher lease as the desktop app.
 #[cfg(target_os = "linux")]
+const GITMANAGER_FLATPAK_APP_ID: &str = "com.gitmanager.desktop";
+
+#[cfg(target_os = "linux")]
 fn systemd_quote(value: &str) -> String {
     let escaped = value
         .replace('\\', "\\\\")
@@ -285,6 +350,45 @@ fn systemd_quote(value: &str) -> String {
         .replace('%', "%%")
         .replace('\n', "");
     format!("\"{escaped}\"")
+}
+
+#[cfg(target_os = "linux")]
+fn find_executable_in_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_background_service_command(
+    service_executable: &Path,
+    flatpak_id: Option<&str>,
+    flatpak_executable: Option<&Path>,
+) -> Result<Vec<String>, String> {
+    if flatpak_id == Some(GITMANAGER_FLATPAK_APP_ID) {
+        let flatpak = flatpak_executable.ok_or_else(|| {
+            "GitManager is running as a Flatpak, but the host Flatpak command was not found on PATH."
+                .to_string()
+        })?;
+        return Ok(vec![
+            flatpak.to_string_lossy().into_owned(),
+            "run".to_string(),
+            "--command=git-manager-service".to_string(),
+            GITMANAGER_FLATPAK_APP_ID.to_string(),
+        ]);
+    }
+
+    Ok(vec![service_executable.to_string_lossy().into_owned()])
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_exec_start(arguments: &[String]) -> String {
+    arguments
+        .iter()
+        .map(|argument| systemd_quote(argument))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(target_os = "macos")]
@@ -396,6 +500,18 @@ pub fn register_os_background_service(app_handle: AppHandle) -> Result<String, S
         std::fs::create_dir_all(&systemd_dir)
             .map_err(|error| format!("Could not create {}: {error}", systemd_dir.display()))?;
         let unit_path = systemd_dir.join("gitmanager-updater.service");
+        let flatpak_id = std::env::var("FLATPAK_ID").ok();
+        let flatpak_executable = if flatpak_id.as_deref() == Some(GITMANAGER_FLATPAK_APP_ID) {
+            find_executable_in_path("flatpak")
+        } else {
+            None
+        };
+        let service_command = linux_background_service_command(
+            &service_exe,
+            flatpak_id.as_deref(),
+            flatpak_executable.as_deref(),
+        )?;
+        let exec_start = systemd_exec_start(&service_command);
         let unit_content = format!(
             r#"[Unit]
 Description=GitManager Background Repository and Archive Watcher
@@ -414,7 +530,7 @@ UMask=0077
 [Install]
 WantedBy=default.target
 "#,
-            systemd_quote(&service_exe.to_string_lossy())
+            exec_start
         );
         std::fs::write(&unit_path, unit_content)
             .map_err(|error| format!("Could not write {}: {error}", unit_path.display()))?;
