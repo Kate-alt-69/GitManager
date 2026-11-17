@@ -157,6 +157,17 @@ def main() -> int:
             str(build_dir), str(generated_manifest),
         ], cwd=CACHE)
 
+        # The Linux Developer Cleaner requires Python 3.10+ inside the runtime;
+        # verify it now rather than shipping a bundle with a silently broken tool.
+        run([
+            "flatpak-builder", "--run", str(build_dir), str(generated_manifest),
+            "python3", "--version",
+        ], cwd=CACHE)
+        run([
+            "flatpak-builder", "--run", str(build_dir), str(generated_manifest),
+            "gitm", "--version",
+        ], cwd=CACHE)
+
         arch = subprocess.check_output(
             ["flatpak", "--default-arch"], text=True
         ).strip()
