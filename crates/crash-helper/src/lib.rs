@@ -220,6 +220,11 @@ impl ServiceControlServer {
     pub fn take_scan_request(&self) -> bool {
         self.scan_requested.swap(false, Ordering::AcqRel)
     }
+
+    /// Allows the service loop to wake early without consuming a request.
+    pub fn scan_request_pending(&self) -> bool {
+        self.scan_requested.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for ServiceControlServer {
