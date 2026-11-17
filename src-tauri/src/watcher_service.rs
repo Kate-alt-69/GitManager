@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use crate::process_utils::hidden_command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::thread;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::scanner::load_persisted_repository_index;
@@ -68,7 +70,7 @@ mod tests {
         use std::path::Path;
 
         let command = linux_background_service_command(
-            Path::new("/app/bin/git-manager-service"),
+            Path::new("/app/bin/gitmanager.service"),
             Some("com.gitmanager.desktop"),
             Some(Path::new("flatpak")),
         )
@@ -79,13 +81,13 @@ mod tests {
             vec![
                 "flatpak".to_string(),
                 "run".to_string(),
-                "--command=git-manager-service".to_string(),
+                "--command=gitmanager.service".to_string(),
                 "com.gitmanager.desktop".to_string(),
             ]
         );
         let exec_start = systemd_exec_start(&command);
         assert!(exec_start.starts_with("\"flatpak\""));
-        assert!(!exec_start.contains("/app/bin/git-manager-service"));
+        assert!(!exec_start.contains("/app/bin/gitmanager.service"));
     }
 
     #[cfg(target_os = "linux")]
@@ -95,7 +97,7 @@ mod tests {
         use std::path::Path;
 
         let command = linux_background_service_command(
-            Path::new("/usr/lib/gitmanager/git-manager-service"),
+            Path::new("/usr/lib/gitmanager/gitmanager.service"),
             None,
             None,
         )
@@ -103,7 +105,7 @@ mod tests {
 
         assert_eq!(
             command,
-            vec!["/usr/lib/gitmanager/git-manager-service".to_string()]
+            vec!["/usr/lib/gitmanager/gitmanager.service".to_string()]
         );
     }
 
@@ -114,7 +116,7 @@ mod tests {
         use std::path::Path;
 
         let error = linux_background_service_command(
-            Path::new("/app/bin/git-manager-service"),
+            Path::new("/app/bin/gitmanager.service"),
             Some("com.gitmanager.desktop"),
             None,
         )
@@ -320,8 +322,8 @@ pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
 
 /// Registers or starts the per-user OS background watcher:
 /// - Windows 10/11: creates and runs a current-user Task Scheduler logon task.
-/// - Linux: writes `~/.config/systemd/user/gitmanager-updater.service` and starts it via `systemctl --user`.
-/// - macOS: writes `~/Library/LaunchAgents/com.gitmanager.updater.plist` and loads it via `launchctl`.
+/// - Linux: writes `~/.config/systemd/user/gitmanager-core.service` and starts it via `systemctl --user`.
+/// - macOS: writes `~/Library/LaunchAgents/com.gitmanager.core.plist` and loads it via `launchctl`.
 ///
 /// The worker must run as the interactive user so it reads the same per-user
 /// preferences and holds the same archive-watcher lease as the desktop app.
@@ -352,7 +354,7 @@ fn linux_background_service_command(
         return Ok(vec![
             flatpak.to_string_lossy().into_owned(),
             "run".to_string(),
-            "--command=git-manager-service".to_string(),
+            "--command=gitmanager.service".to_string(),
             GITMANAGER_FLATPAK_APP_ID.to_string(),
         ]);
     }
@@ -397,7 +399,7 @@ fn resolve_background_service_executable(app_handle: &AppHandle) -> Result<PathB
     }
 
     for directory in directories {
-        let direct = directory.join(format!("git-manager-service{suffix}"));
+        let direct = directory.join(format!("gitmanager.service{suffix}"));
         if direct.is_file() {
             return Ok(direct);
         }
@@ -409,7 +411,7 @@ fn resolve_background_service_executable(app_handle: &AppHandle) -> Result<PathB
                     path.is_file()
                         && path.file_name()
                             .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.starts_with("git-manager-service-") && name.ends_with(suffix))
+                            .is_some_and(|name| name.starts_with("gitmanager.service-") && name.ends_with(suffix))
                 })
                 .collect::<Vec<_>>();
             candidates.sort();
@@ -419,7 +421,48 @@ fn resolve_background_service_executable(app_handle: &AppHandle) -> Result<PathB
         }
     }
 
-    Err("The packaged git-manager-service executable was not found. Rebuild the installer with the service sidecar included.".to_string())
+
+}
+
+/// Ensures the required repository/data engine is running before the UI becomes
+/// functional. The service is launched as a detached per-user process and uses
+/// its own authenticated local control endpoint for its readiness handshake.
+pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> {
+    if let Ok(status) = crash_helper::request_service_status() {
+        return Ok(status.message);
+    }
+
+    let service_exe = resolve_background_service_executable(&app_handle)?;
+    let mut command = Command::new(&service_exe);
+    command.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Could not start required GitManager core service at {}: {error}",
+            service_exe.display()
+        )
+    })?;
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Ok(status) = crash_helper::request_service_status() {
+            return Ok(status.message);
+        }
+        if let Ok(Some(exit)) = child.try_wait() {
+            return Err(format!(
+                "GitManager core service exited before becoming ready ({exit}). Check Task Center → Service diagnostics."
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                "GitManager core service did not become ready within 20 seconds. The UI is waiting for its repository engine; open Service diagnostics or retry."
+                    .to_string()
+            );
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
 }
 
 /// Registers or starts the dedicated service executable. The service remains
@@ -429,7 +472,7 @@ pub fn register_os_background_service(app_handle: AppHandle) -> Result<String, S
 
     #[cfg(target_os = "windows")]
     {
-        let task_name = "GitManager Background Service";
+        let task_name = "GitManager Core Service";
         let task_command = format!("\"{}\"", service_exe.display());
         let create = hidden_command("schtasks.exe")
             .args(["/Create", "/SC", "ONLOGON", "/TN", task_name, "/TR"])
@@ -444,13 +487,13 @@ pub fn register_os_background_service(app_handle: AppHandle) -> Result<String, S
             } else {
                 detail.into_owned()
             };
-            return Err(format!("Could not register GitManager Background Service: {}", detail.trim()));
+            return Err(format!("Could not register GitManager Core Service: {}", detail.trim()));
         }
 
         let start = hidden_command("schtasks.exe")
             .args(["/Run", "/TN", task_name])
             .output()
-            .map_err(|error| format!("Could not start GitManager Background Service: {error}"))?;
+            .map_err(|error| format!("Could not start GitManager Core Service: {error}"))?;
         if !start.status.success() {
             let detail = String::from_utf8_lossy(&start.stderr);
             let detail = if detail.trim().is_empty() {
@@ -458,7 +501,7 @@ pub fn register_os_background_service(app_handle: AppHandle) -> Result<String, S
             } else {
                 detail.into_owned()
             };
-            return Err(format!("GitManager Background Service was registered but could not start: {}", detail.trim()));
+            return Err(format!("GitManager Core Service was registered but could not start: {}", detail.trim()));
         }
 
         let _ = hidden_command("sc.exe").args(["stop", "GitManagerUpdateSvc"]).output();
@@ -477,7 +520,7 @@ pub fn register_os_background_service(app_handle: AppHandle) -> Result<String, S
         let systemd_dir = home.join(".config/systemd/user");
         std::fs::create_dir_all(&systemd_dir)
             .map_err(|error| format!("Could not create {}: {error}", systemd_dir.display()))?;
-        let unit_path = systemd_dir.join("gitmanager-updater.service");
+        let unit_path = systemd_dir.join("gitmanager-core.service");
         let flatpak_id = std::env::var("FLATPAK_ID").ok();
         // This code runs inside the Flatpak sandbox, where the host's Flatpak CLI
         // is not visible on PATH. A bare command name lets the host systemd user
@@ -524,7 +567,7 @@ WantedBy=default.target
             return Err(format!("Could not reload systemd user manager: {}", String::from_utf8_lossy(&reload.stderr).trim()));
         }
         let enable = hidden_command("systemctl")
-            .args(["--user", "enable", "--now", "gitmanager-updater.service"])
+            .args(["--user", "enable", "--now", "gitmanager-core.service"])
             .output()
             .map_err(|error| format!("Could not enable GitManager's systemd user service: {error}"))?;
         if !enable.status.success() {
@@ -555,7 +598,7 @@ WantedBy=default.target
             .join("Library/LaunchAgents");
         std::fs::create_dir_all(&agents_dir)
             .map_err(|error| format!("Could not create {}: {error}", agents_dir.display()))?;
-        let label = "com.gitmanager.updater";
+        let label = "com.gitmanager.core";
         let plist_path = agents_dir.join(format!("{label}.plist"));
         let executable = xml_escape(&service_exe.to_string_lossy());
         let plist_content = format!(
@@ -563,7 +606,7 @@ WantedBy=default.target
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.gitmanager.updater</string>
+  <key>Label</key><string>com.gitmanager.core</string>
   <key>ProgramArguments</key>
   <array><string>{executable}</string></array>
   <key>RunAtLoad</key><true/>
