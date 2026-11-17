@@ -484,6 +484,7 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
             (project_root / "src-tauri" / "tauri.windows.conf.json").read_text(encoding="utf-8")
         )
         hooks = (project_root / "src-tauri" / "windows" / "hooks.nsh").read_text(encoding="utf-8")
+        nsis_template = (project_root / "src-tauri" / "windows" / "installer.nsi").read_text(encoding="utf-8")
     except (OSError, json.JSONDecodeError) as error:
         log_err(f"Could not verify Windows installer configuration: {error}")
         return 1
@@ -506,9 +507,18 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
         log_err("The Windows Tauri configuration must keep NSIS enabled as the fallback and leave MSI/MSIX to Master Packager Dev.")
         return 1
 
-    expected_install_dir = "$LOCALAPPDATA\\kastrick's_software\\GitManager"
-    if expected_install_dir not in hooks:
-        log_err("The NSIS pre-install hook does not force GitManager's expected per-user install directory.")
+    nsis_config = windows_config.get("bundle", {}).get("windows", {}).get("nsis", {})
+    if nsis_config.get("template") != "windows/installer.nsi":
+        log_err("The Windows Tauri configuration must use the version-matched custom NSIS template.")
+        return 1
+    if nsis_config.get("installerHooks") != "windows/hooks.nsh":
+        log_err("The Windows Tauri configuration must load the GitManager NSIS installer hooks.")
+        return 1
+    if r'StrCpy $INSTDIR "$LOCALAPPDATA\\kastrick' not in nsis_template:
+        log_err("The NSIS template does not set GitManager's expected per-user install directory before the directory page.")
+        return 1
+    if 'StrCpy $INSTDIR' in hooks:
+        log_err("The NSIS pre-install hook must not overwrite a user's directory-page selection.")
         return 1
     expected_python_machine = PYTHON_EMBED_PACKAGES[windows_target_architecture()][2]
     if windows_pe_machine(runtime_dir / "python.exe") != expected_python_machine:
