@@ -1655,6 +1655,14 @@ def resolve_local_build_targets(selection: str) -> List[BuildTarget]:
         target = selected[0]
         can_build, reason = can_build_locally(target)
         if not can_build:
+            if target.platform == "linux" and host == "windows":
+                raise ValueError(
+                    reason + " Prepare it with "
+                    + f"py build.py setup-build-tools --build='{target.selector}', "
+                    + "then run the build from the Ubuntu WSL2 checkout."
+                )
+            if target.platform == "macos" and host != "macos":
+                raise ValueError(reason + " Apple's SDK must be used on a real Mac.")
             raise ValueError(reason)
         return [target]
 
