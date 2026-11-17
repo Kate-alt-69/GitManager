@@ -1,6 +1,14 @@
 name: Store Distribution Packages
 
 on:
+  pull_request:
+    paths:
+      - "build.py"
+      - "tools/package_flatpak.py"
+      - "tools/package_windows_store.py"
+      - "installer/flatpak/**"
+      - "installer/store/**"
+      - ".github/workflows/store-build.yml"
   workflow_dispatch:
     inputs:
       store:
@@ -21,7 +29,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate store packaging definitions
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out GitManager
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate Python, JSON and CLI help
+        run: |
+          python -m py_compile build.py tools/build_targets.py tools/package_flatpak.py tools/package_windows_store.py
+          python -m json.tool installer/store/msix/package.json > /dev/null
+          python build.py --help > /dev/null
+
+      - name: Validate workflow YAML syntax
+        run: ruby -e "require 'yaml'; YAML.load_file('.github/workflows/store-build.yml', aliases: true)"
+
   flatpak:
+    needs: validate
     name: Linux Flatpak bundle
     if: ${{ inputs.store == 'all' || inputs.store == 'flatpak' }}
     runs-on: ubuntu-22.04
@@ -84,6 +114,7 @@ jobs:
           retention-days: 30
 
   msix:
+    needs: validate
     name: Windows Microsoft Store MSIX
     if: ${{ inputs.store == 'all' || inputs.store == 'msix' }}
     runs-on: windows-2025
