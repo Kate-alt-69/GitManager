@@ -21,6 +21,8 @@ Use these commands to select what should be prepared:
     py build.py setup-build-tools --store=flatpak
     py build.py setup-build-tools --build=all
 
+On Windows, `--build=all` prepares the supported Windows targets and the matching Linux/WSL2 environment, then skips macOS with a note because Apple's SDK requires a real Mac. On Linux or macOS, it prepares that host's native targets and skips the other operating systems. It does not attempt to cross-install foreign SDKs.
+
 ## Windows 10/11
 
 For Windows targets, setup checks for Visual Studio 2022 C++ Build Tools and the Windows SDK, Node.js 22, Master Packager Dev and NSIS. It installs only missing components after the confirmation prompt. WebView2 is already included with supported Windows 10 (version 1803+) and later installations.
