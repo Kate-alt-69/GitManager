@@ -1554,6 +1554,92 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
     return 0
 
 
+def dispatch_store_build(store: str) -> int:
+    """Dispatch Flatpak and/or Microsoft Store packaging to their native CI runners."""
+    project_root = Path(__file__).resolve().parent
+    gh = shutil.which("gh")
+    if not gh:
+        log_err(
+            "Store packaging needs the GitHub CLI. Install it and authenticate with gh auth login, "
+            "or run .github/workflows/store-build.yml from the GitHub Actions tab."
+        )
+        return 2
+
+    branch = os.environ.get("GITHUB_REF_NAME", "").strip()
+    if not branch and shutil.which("git"):
+        code, output, _ = run_capture(["git", "branch", "--show-current"], cwd=project_root)
+        if code == 0:
+            branch = output.strip()
+
+    local_head = ""
+    if shutil.which("git"):
+        code, output, _ = run_capture(["git", "rev-parse", "HEAD"], cwd=project_root)
+        if code == 0:
+            local_head = output.strip()
+
+    command = [gh, "workflow", "run", "store-build.yml"]
+    if branch:
+        command.extend(["--ref", branch])
+    command.extend(["-f", f"store={store}"])
+    dispatch_started = time.time()
+    log_info(f"Dispatching store packaging workflow: store={store}")
+    result = subprocess.call(command, cwd=str(project_root))
+    if result != 0:
+        log_err("Store workflow dispatch failed. Check gh auth status and workflow permissions.")
+        return result
+
+    run_id = None
+    for _ in range(15):
+        code, output, _ = run_capture([
+            gh, "run", "list", "--workflow", "store-build.yml",
+            "--event", "workflow_dispatch", "--limit", "10",
+            "--json", "databaseId,event,headBranch,headSha,createdAt",
+        ], cwd=project_root)
+        if code == 0:
+            try:
+                runs = json.loads(output)
+                for item in runs:
+                    if item.get("event") != "workflow_dispatch":
+                        continue
+                    if branch and item.get("headBranch") != branch:
+                        continue
+                    if local_head and item.get("headSha") != local_head:
+                        continue
+                    created_at = datetime.fromisoformat(
+                        item.get("createdAt", "").replace("Z", "+00:00")
+                    ).timestamp()
+                    if created_at >= dispatch_started - 15:
+                        run_id = item.get("databaseId")
+                        break
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if run_id:
+            break
+        time.sleep(2)
+
+    if not run_id:
+        log_err("The store workflow was dispatched, but its run ID could not be resolved. Check GitHub Actions.")
+        return 1
+
+    log_info(f"Watching store packaging run {run_id}...")
+    result = subprocess.call([gh, "run", "watch", str(run_id), "--exit-status"], cwd=str(project_root))
+    if result != 0:
+        log_err(f"Store packaging run {run_id} did not complete successfully.")
+        return result
+
+    download_dir = project_root / "build" / "dist" / "store"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    result = subprocess.call([
+        gh, "run", "download", str(run_id), "--dir", str(download_dir),
+    ], cwd=str(project_root))
+    if result != 0:
+        log_err(f"Store packaging run {run_id} succeeded, but artifact download failed.")
+        return result
+
+    log_ok(f"Downloaded store artifacts to {download_dir}")
+    return 0
+
+
 def publish_build_outputs(project_root: Path, release: bool, bundle: bool) -> int:
     """Copy target outputs out of Cargo's cache into a stable build/dist layout."""
     selector = os.environ.get("GITMANAGER_BUILD_SELECTOR", "").strip()
@@ -1801,9 +1887,20 @@ def main() -> int:
         action="store_true",
         help="Build the additional experimental Master Packager Dev MSI (Windows only).",
     )
+    parser.add_argument(
+        "-store", "--store",
+        dest="store_target",
+        choices=["flatpak", "msix", "all"],
+        help="Build a separate store-distribution package: flatpak, msix, or all.",
+    )
 
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parent
+    if args.store_target:
+        if args.mode != "build":
+            log_err("--store can only be used with the build action.")
+            return 2
+        return dispatch_store_build(args.store_target)
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
 
     if args.mode == "build":
