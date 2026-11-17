@@ -8,7 +8,7 @@ GitManager uses **Master Packager Dev (MPDEV) as the required Windows MSI/MSIX p
 | `GitManager_<version>_<arch>.msi` | Master Packager Dev | Required Windows Installer package |
 | `GitManager_<version>_<arch>.msix` | Master Packager Dev | Required Windows app package |
 
-Tauri's WiX MSI target is disabled. WiX is not required or installed by the Windows build script.
+Tauri's WiX MSI target is disabled. WiX is not required or installed by the Windows build script. The NSIS fallback uses a version-matched Tauri installer template so its directory field defaults to `%LOCALAPPDATA%\\kastrick's_software\\GitManager`; users can still choose another folder.
 
 ## Requirements
 
@@ -73,9 +73,11 @@ build/
         GitManager_1.0.0.0_x64.msix
 ```
 
-The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padded to four numeric components. GitManager's CLI selector stays lowercase (`arm64`), while the generated MPDEV manifest uses the documented `Arm64` platform enum for Windows ARM64. The generated desktop MSIX uses MPDEV's development/test signing certificate for local installation testing. Do not treat that certificate as a trusted public release identity.
+The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padded to four numeric components. The custom NSIS template is based on Tauri CLI 2.11.4's upstream template; update the vendored template when upgrading the CLI, preserving the Kastrick default-directory change. GitManager's CLI selector stays lowercase (`arm64`), while the generated MPDEV manifest uses the documented `Arm64` platform enum for Windows ARM64. The generated desktop MSIX uses MPDEV's development/test signing certificate for local installation testing. Do not treat that certificate as a trusted public release identity.
 
 ## Install locations and runtime files
+
+The MPDEV MSI displays a branded install dialog with the GitManager description, Kastrick website/release links, an orange accent, and an optional `Launch GitManager` action after installation. The built-in layout and interaction model are provided by MPDEV; the project file customizes its supported branding fields rather than drawing arbitrary new dialogs.
 
 The MSI is authored as a per-user package with `ALLUSERS=2` and `MSIINSTALLPERUSER=1`. Its MPDEV manifest uses the supported Program Files directory root; Windows Installer redirects that folder to the current user's per-user Programs location:
 
