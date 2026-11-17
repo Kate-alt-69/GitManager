@@ -120,7 +120,7 @@ def main() -> int:
             )
         generated_manifest = output.parent / "package.json"
         generated_manifest.write_text(
-            json.dumps(package_config, indent=2) + "\\n",
+            json.dumps(package_config, indent=2) + "\n",
             encoding="utf-8",
         )
     except (OSError, json.JSONDecodeError, ValueError) as error:
