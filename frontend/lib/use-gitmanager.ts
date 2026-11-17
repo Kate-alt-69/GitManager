@@ -322,12 +322,11 @@ export function useGitManager() {
 
 				// Hydrate the last published inventory before requesting any refresh.
 				// This is a read of the service-owned index, never a filesystem scan.
-				const [cachedIndex, generation] = await Promise.all([
-					invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" }).catch(() => null),
-					invoke<string>("get_repository_index_generation").catch(() => "0"),
-				]);
-				indexGeneration.current = generation;
-				if (active && generation !== "0") setIndexReady(true);
+				const generationBeforeLoad = await invoke<string>("get_repository_index_generation").catch(() => "0");
+				const cachedIndex = await invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" }).catch(() => null);
+				const generationAfterLoad = await invoke<string>("get_repository_index_generation").catch(() => generationBeforeLoad);
+				indexGeneration.current = generationAfterLoad;
+				if (active && cachedIndex && generationBeforeLoad === generationAfterLoad && generationAfterLoad !== "0") setIndexReady(true);
 				if (active && cachedIndex) {
 					const local = Array.isArray(cachedIndex.repositories)
 						? cachedIndex.repositories.filter((repo) => repo.source_kind === "local_scan")

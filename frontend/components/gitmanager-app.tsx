@@ -163,6 +163,8 @@ function TopBar({
 }) {
 	const [openPanel, setOpenPanel] = useState<"tasks" | "notifications" | null>(null);
 	const panelHostRef = useRef<HTMLDivElement | null>(null);
+	const [serviceLog, setServiceLog] = useState<string | null>(null);
+	const [serviceLogBusy, setServiceLogBusy] = useState(false);
 	const unreadCount = inAppNotificationsEnabled ? notifications.filter((item) => !item.read).length : 0;
 	const currentRoute = parseInternalRoute(internalRoute);
 	const label = routeLabel(currentRoute);
@@ -255,8 +257,16 @@ function TopBar({
 									<div><strong>Service status</strong><small>{status}</small></div>
 								</div>
 							</div>
+							{serviceLog !== null && <pre className="gm-service-log">{serviceLog || "No service log output yet."}</pre>}
 							<div className="gm-popover-actions">
 								<button type="button" onClick={onScan} disabled={!serviceReady || scanning}>{scanning ? "Indexing…" : "Refresh repository index"}</button>
+								<button type="button" disabled={serviceLogBusy} onClick={async () => {
+									if (serviceLog !== null) { setServiceLog(null); return; }
+									setServiceLogBusy(true);
+									try { setServiceLog(await invoke<string>("read_service_log_tail")); }
+									catch (cause) { setServiceLog(cause instanceof Error ? cause.message : String(cause)); }
+									finally { setServiceLogBusy(false); }
+								}}>{serviceLogBusy ? "Loading log…" : serviceLog !== null ? "Hide service log" : "View service log"}</button>
 								{!serviceReady && <button type="button" className="primary" onClick={onRetryService}>Start service</button>}
 							</div>
 						</section>

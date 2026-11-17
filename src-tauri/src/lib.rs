@@ -1191,6 +1191,13 @@ async fn pull_repository_update(
 }
 
 #[tauri::command]
+async fn read_service_log_tail() -> Result<String, String> {
+    tokio::task::spawn_blocking(watcher_service::read_service_log_tail)
+        .await
+        .map_err(|error| format!("Service log read task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn list_app_notifications() -> Result<Vec<notification_center::AppNotification>, String> {
     tokio::task::spawn_blocking(notification_center::list_notifications)
         .await
@@ -1730,6 +1737,7 @@ pub fn run() {
             connect_git_account,
             check_repo_updates_now,
             pull_repository_update,
+            read_service_log_tail,
             list_app_notifications,
             mark_app_notification_read,
             dismiss_app_notification,

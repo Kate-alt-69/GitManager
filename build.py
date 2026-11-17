@@ -1456,10 +1456,8 @@ def build_gitm_sidecar(
     ]
     staged: List[Path] = []
 
-    # Tauri's build script validates every externalBin entry when the
-    # standalone service crate builds its dependency on the Tauri library.
-    # Stage the other tools first, then provide a placeholder for the service
-    # sidecar while compiling the separate service package.
+    # The service is compiled independently from Tauri. A placeholder is kept
+    # only so the separate desktop build can validate its declared externalBin.
     for source_path, filename in artifacts:
         if not source_path.is_file():
             log_err(f"Cargo completed but the expected sidecar binary is missing: {source_path}")

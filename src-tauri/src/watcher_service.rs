@@ -1,6 +1,8 @@
 use git2::{Direction, FetchOptions, Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use crate::process_utils::hidden_command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -424,6 +426,63 @@ fn resolve_background_service_executable(app_handle: &AppHandle) -> Result<PathB
     Err("The packaged gitmanager.service executable was not found. Rebuild the installer with the service sidecar included.".to_string())
 }
 
+const SERVICE_LOG_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
+const SERVICE_LOG_TAIL_BYTES: u64 = 64 * 1024;
+
+fn service_log_path() -> Result<PathBuf, String> {
+    let local_data = dirs::data_local_dir()
+        .ok_or_else(|| "Could not resolve the user's local data directory for service logs.".to_string())?;
+    let directory = local_data
+        .join("kastrick's_software")
+        .join("data")
+        .join("GitManager")
+        .join("log");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create GitManager service log directory: {error}"))?;
+    Ok(directory.join("service.log"))
+}
+
+fn open_service_log_streams() -> Result<(Stdio, Stdio), String> {
+    let path = service_log_path()?;
+    if fs::metadata(&path).map(|metadata| metadata.len() > SERVICE_LOG_LIMIT_BYTES).unwrap_or(false) {
+        let rotated = path.with_extension("log.1");
+        if rotated.exists() {
+            fs::remove_file(&rotated)
+                .map_err(|error| format!("Could not remove previous service log: {error}"))?;
+        }
+        fs::rename(&path, &rotated)
+            .map_err(|error| format!("Could not rotate GitManager service log: {error}"))?;
+    }
+    let output = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| format!("Could not open GitManager service log {}: {error}", path.display()))?;
+    let errors = output.try_clone()
+        .map_err(|error| format!("Could not duplicate GitManager service log handle: {error}"))?;
+    Ok((Stdio::from(output), Stdio::from(errors)))
+}
+
+/// Returns the most recent 64 KiB of the required service's log for Task Center diagnostics.
+pub fn read_service_log_tail() -> Result<String, String> {
+    let path = service_log_path()?;
+    if !path.is_file() {
+        return Ok("The core service has not written a log yet.".to_string());
+    }
+    let mut file = File::open(&path)
+        .map_err(|error| format!("Could not open GitManager service log: {error}"))?;
+    let length = file.metadata()
+        .map_err(|error| format!("Could not inspect GitManager service log: {error}"))?
+        .len();
+    let offset = length.saturating_sub(SERVICE_LOG_TAIL_BYTES);
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("Could not seek GitManager service log: {error}"))?;
+    let mut bytes = Vec::with_capacity((length - offset) as usize);
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read GitManager service log: {error}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Ensures the required repository/data engine is running before the UI becomes
 /// functional. The service is launched as a detached per-user process and uses
 /// its own authenticated local control endpoint for its readiness handshake.
@@ -433,10 +492,11 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
     }
 
     let service_exe = resolve_background_service_executable(&app_handle)?;
+    let (service_stdout, service_stderr) = open_service_log_streams()?;
     let mut command = Command::new(&service_exe);
     command.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(service_stdout)
+        .stderr(service_stderr);
 
     // The UI is isolated in its own process group on Unix and a kill-on-close
     // Job Object on Windows. Break away so the long-lived data engine does not
