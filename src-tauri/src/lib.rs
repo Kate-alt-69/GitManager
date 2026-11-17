@@ -5,7 +5,7 @@ pub use gitmanager_core::{load_background_preferences, AppPreferences, Repositor
 mod repository_workspace;
 pub use gitmanager_core::git_info;
 pub mod remote_providers;
-pub use gitmanager_core::scanner;
+pub use gitmanager_core::repository_index;
 pub mod watcher_service;
 
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ use git_info::{extract_git_repository_info, GitRepositoryInfo};
 use remote_providers::{
     fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
 };
-use scanner::{
+use repository_index::{
     build_indexed_summary_with_scan_status, default_scan_roots, load_persisted_repository_index,
     repository_index_modified_unix_nanos, IndexedRepoSummary, ScanReport,
 };
