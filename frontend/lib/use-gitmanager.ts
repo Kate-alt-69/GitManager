@@ -25,6 +25,8 @@ const DEFAULT_PREFERENCES: AppPreferences = {
 	archiveTrigger: "manual",
 	archiveQuietMs: 1500,
 	cloudNodeAddress: "",
+	inAppNotificationsEnabled: true,
+	osNotificationsEnabled: true,
 };
 
 export function useGitManager() {
