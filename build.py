@@ -40,6 +40,7 @@ import urllib.request
 import zipfile
 import stat
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
@@ -1476,10 +1477,17 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
         if code != 0:
             branch = ""
 
+    local_head = ""
+    if shutil.which("git"):
+        head_code, head_output, _ = run_capture(["git", "rev-parse", "HEAD"])
+        if head_code == 0:
+            local_head = head_output.strip()
+
     command = [gh, "workflow", "run", "build-matrix.yml"]
     if branch:
         command.extend(["--ref", branch])
     command.extend(["-f", f"build={selection}", "-f", f"type={build_type}"])
+    dispatch_started = time.time()
     log_info(f"Dispatching GitHub Actions build matrix: build={selection}, type={build_type}")
     result = subprocess.call(command, cwd=str(Path(__file__).resolve().parent))
     if result != 0:
@@ -1491,17 +1499,29 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
         list_command = [
             gh, "run", "list", "--workflow", "build-matrix.yml",
             "--event", "workflow_dispatch", "--limit", "10",
-            "--json", "databaseId,event,headBranch",
+            "--json", "databaseId,event,headBranch,headSha,createdAt",
         ]
-        code, output, error = run_capture(list_command)
+        code, output, _ = run_capture(list_command)
         if code == 0:
             try:
                 runs = json.loads(output)
-                matching = [
-                    item for item in runs
-                    if item.get("event") == "workflow_dispatch"
-                    and (not branch or item.get("headBranch") == branch)
-                ]
+                matching = []
+                for item in runs:
+                    if item.get("event") != "workflow_dispatch":
+                        continue
+                    if branch and item.get("headBranch") != branch:
+                        continue
+                    if local_head and item.get("headSha") != local_head:
+                        continue
+                    try:
+                        created_at = datetime.fromisoformat(
+                            item.get("createdAt", "").replace("Z", "+00:00")
+                        ).timestamp()
+                    except (TypeError, ValueError):
+                        continue
+                    if created_at < dispatch_started - 15:
+                        continue
+                    matching.append(item)
                 if matching:
                     run_id = matching[0].get("databaseId")
                     if run_id:
