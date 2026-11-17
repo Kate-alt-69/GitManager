@@ -45,7 +45,7 @@ jobs:
           import tempfile
           import zipfile
 
-          archives = sorted(pathlib.Path("target/deployment").glob("*.zip"))
+          archives = sorted(pathlib.Path("build/dist/deployment").glob("*.zip"))
           if len(archives) != 1:
               raise SystemExit(f"Expected one bootstrap ZIP, found {len(archives)}")
           with tempfile.TemporaryDirectory(prefix="gitmanager-rbe-bootstrap-") as temp:
@@ -75,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-cloud-node-deployment
-          path: target/deployment/*.zip
+          path: build/dist/deployment/*.zip
           if-no-files-found: error
           compression-level: 0
 
@@ -84,13 +84,20 @@ jobs:
       contents: write
     env:
       GITHUB_TOKEN: ${{ github.token }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: windows-latest
+            selector: windows(10,x64)
+            output: windows-10-x64
           - platform: ubuntu-22.04
+            selector: linux(x64)
+            output: linux-x64
           - platform: macos-latest
+            selector: macos(arm64)
+            output: macos-arm64
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -142,7 +149,7 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
           GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
-        run: python build.py build --install-tauri-cli
+        run: python build.py --build='${{ matrix.selector }}' --type=installer --install-tauri-cli
 
       - name: Sign and verify Windows release files
         if: runner.os == 'Windows'
@@ -150,15 +157,15 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $installer = "target/release/bundle/nsis/GitManager-Setup.exe"
-          $setupHelper = "target/release/GitManager-Setup.exe"
-          $wixInstaller = Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1
+          $installer = "build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/GitManager-Setup.exe"
+          $setupHelper = "build/.rcache/x86_64-pc-windows-msvc/release/GitManager-Setup.exe"
+          $wixInstaller = Get-ChildItem -LiteralPath "build/.rcache/x86_64-pc-windows-msvc/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1
           if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe NSIS installer was not created." }
           if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
           if (-not $wixInstaller) { throw "The Tauri WiX MSI installer was not created." }
 
-          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/crash_helper.exe", "target/release/gitm.exe", $installer, $wixInstaller.FullName)
-          $verifyTargets = $signTargets + @("target/release/gitm.exe", $setupHelper)
+          $signTargets = @("build/.rcache/x86_64-pc-windows-msvc/release/git-manager.exe", "build/.rcache/x86_64-pc-windows-msvc/release/git-manager-service.exe", "build/.rcache/x86_64-pc-windows-msvc/release/crash_helper.exe", "build/.rcache/x86_64-pc-windows-msvc/release/gitm.exe", $installer, $wixInstaller.FullName)
+          $verifyTargets = $signTargets + @("build/.rcache/x86_64-pc-windows-msvc/release/gitm.exe", $setupHelper)
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
           } else {
@@ -193,14 +200,26 @@ jobs:
               Remove-Item -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Refresh published Windows artifacts after signing
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $profileDir = "build/.rcache/x86_64-pc-windows-msvc/release"
+          $distDir = "build/dist/windows-10-x64"
+          New-Item -ItemType Directory -Force -Path "$distDir/installer", "$distDir/app" | Out-Null
+          Copy-Item -Path "$profileDir/bundle/*" -Destination "$distDir/installer" -Recurse -Force
+          foreach ($name in @("git-manager.exe", "git-manager-service.exe", "crash_helper.exe", "gitm.exe", "gitmanager-setup.exe", "GitManager-Setup.exe")) {
+            $source = Join-Path $profileDir $name
+            if (Test-Path -LiteralPath $source) {
+              Copy-Item -LiteralPath $source -Destination "$distDir/app" -Force
+            }
+          }
+
       - name: Upload platform installers
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-installers-${{ matrix.platform }}
-          path: |
-            target/release/bundle/**
-            target/release/gitm*
-            target/release/GitManager-Setup*
+          path: build/dist/${{ matrix.output }}/
           if-no-files-found: error
           compression-level: 9
 
