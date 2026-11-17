@@ -67,9 +67,8 @@ fn repository_auto_update_enabled(repo_path: &str) -> bool {
 
 /// Runs until the operating system stops the background process.
 ///
-/// A cross-process lease in archive_watcher makes it safe for the desktop
-/// process and this worker to use the same watcher implementation: one owns
-/// filesystem notifications at a time, and the other retries periodically.
+/// The archive-watcher lease protects against duplicate service instances;
+/// the desktop UI consumes the published repository index and never owns watches.
 pub fn run() -> ! {
     let service_control = match start_service_control_server() {
         Ok(server) => server,
