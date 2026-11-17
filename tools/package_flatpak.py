@@ -85,6 +85,9 @@ def stage_deb(deb: Path, staging: Path) -> None:
 
     applications = staging / "share" / "applications"
     applications.mkdir(parents=True, exist_ok=True)
+    for old_desktop in applications.glob("*.desktop"):
+        if old_desktop.name != f"{APP_ID}.desktop":
+            old_desktop.unlink()
     desktop = applications / f"{APP_ID}.desktop"
     desktop.write_text(
         "[Desktop Entry]\n"
