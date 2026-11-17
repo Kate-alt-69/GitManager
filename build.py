@@ -39,15 +39,13 @@ import urllib.parse
 import urllib.request
 import zipfile
 import stat
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
 try:
-    from tools.build_targets import can_build_locally, host_platform, parse_build_selection
+    from tools.build_targets import BuildTarget, can_build_locally, host_platform, parse_build_selection
 except ModuleNotFoundError:
-    from build_targets import can_build_locally, host_platform, parse_build_selection
+    from build_targets import BuildTarget, can_build_locally, host_platform, parse_build_selection
 
 RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
@@ -1540,7 +1538,7 @@ def prompt_build_selection() -> str:
     raise ValueError("Invalid architecture selection. Choose A or one of the listed numbers.")
 
 
-def resolve_local_build_targets(selection: str) -> List[object]:
+def resolve_local_build_targets(selection: str) -> List[BuildTarget]:
     """Resolve a selector into targets that the current machine can actually build."""
     kind, selected = parse_build_selection(selection)
     host = host_platform()
@@ -1597,7 +1595,7 @@ def configure_local_target(project_root: Path, target: object) -> None:
 def build_local_store_package(
     project_root: Path,
     store: str,
-    target: object,
+    target: BuildTarget,
     toolchain_arg: str,
     has_cargo_tauri: bool,
     release: bool,
