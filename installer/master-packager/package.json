@@ -66,6 +66,18 @@
           }
         }
       }
-    ]
+    ],
+    "installDialog": {
+      "packageDescription": "A native Git workspace manager for local and remote repositories, built by Kastrick.",
+      "publisherUrl": "https://kastrick.vercel.app",
+      "releaseNotesUrl": "https://github.com/Kate-alt-69/GitManager/releases",
+      "primaryAccent": "#F97316",
+      "promptAppsAfterInstall": [
+        {
+          "displayName": "Launch GitManager",
+          "file": "$.installDir\\git-manager.exe"
+        }
+      ]
+    }
   }
 }
