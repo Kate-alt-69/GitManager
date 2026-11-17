@@ -39,6 +39,7 @@ py build.py --build=macos --type=installer
 py build.py --build='windows(10,x64)' --type=installer
 py build.py --build='windows(11,x86)' --type=app
 py build.py --build='linux(arm64)' --type=app
+py build.py --build='linux(armv7)' --type=installer
 py build.py --build='macos(x64)' --type=installer
 ```
 
