@@ -27,33 +27,33 @@ This uses exact WinGet package IDs:
 You can combine the install and build steps:
 
 \`\`\`powershell
-py build.py build --install-packaging-tools
+py build.py --build='windows(10,x64)' --type=installer --install-packaging-tools
 \`\`\`
 
 To also generate the experimental MPDEV MSI:
 
 \`\`\`powershell
-py build.py build --master-packager
+py build.py --build='windows(10,x64)' --type=installer --master-packager
 \`\`\`
 
 Or do everything in one command:
 
 \`\`\`powershell
-py build.py build --install-packaging-tools --master-packager
+py build.py --build='windows(10,x64)' --type=installer --install-packaging-tools --master-packager
 \`\`\`
 
-The installer-tool setup is explicit because WinGet may install machine-wide developer tools and may request elevation. A normal \`py build.py build\` does not silently install software. Tauri can also download/cache the bundler tools it needs.
+The installer-tool setup is explicit because WinGet may install machine-wide developer tools and may request elevation. A normal \`py build.py --build='windows(10,x64)' --type=installer\` does not silently install software. Tauri can also download/cache the bundler tools it needs.
 
 Master Packager Dev is free without activation for open-source and non-commercial projects. Commercial use follows its own licensing terms; no license key is stored in this repository.
 
 ## Build outputs
 
-A normal Windows \`py build.py build\` creates both Tauri-native outputs:
+A normal Windows \`py build.py --build='windows(10,x64)' --type=installer\` creates both Tauri-native outputs:
 
-- NSIS setup executable under \`target/release/bundle/nsis/\`
-- WiX MSI under \`target/release/bundle/msi/\`
+- NSIS setup executable under \`build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/\`
+- WiX MSI under \`build/.rcache/x86_64-pc-windows-msvc/release/bundle/msi/\`
 
-When \`--master-packager\` is supplied, the build script stages the same release executables and supporting files into a generated directory, then calls \`mpdev build\` using \`src-tauri/packaging/master-packager-dev.json\`. Its output is placed under \`target/release/bundle/master-packager-dev/\`.
+When \`--master-packager\` is supplied, the build script stages the same release executables and supporting files into a generated directory, then calls \`mpdev build\` using \`src-tauri/packaging/master-packager-dev.json\`. Its output is placed under \`build/.rcache/x86_64-pc-windows-msvc/release/bundle/master-packager-dev/\`.
 
 The MPDEV test payload includes:
 
