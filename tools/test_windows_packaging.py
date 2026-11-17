@@ -50,18 +50,33 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn(r"$INSTDIR\resources\python\python.exe", hooks)
         self.assertIn("NSIS_HOOK_POSTINSTALL", hooks)
 
-    def test_master_packager_project_is_x64_msi_and_profile_scoped(self):
+    def test_master_packager_project_is_x64_msi_and_uses_the_shared_stage(self):
         config = json.loads(
-            (ROOT / "src-tauri" / "packaging" / "master-packager-dev.json").read_text(encoding="utf-8")
+            (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
         )
         self.assertEqual(config["outputTypes"], ["msi"])
         self.assertEqual(config["platform"], "x64")
-        self.assertEqual(config["installDir"], r"%LOCALAPPDATA%\kastrick's_software\GitManager")
+        self.assertEqual(config["outputDirectory"], "build/.rcache/windows-installers")
+        self.assertEqual(
+            config["msi"]["installDir"],
+            "[LocalAppDataFolder]kastrick's_software\\\\GitManager",
+        )
+        self.assertEqual(config["fileSystemEntries"][0]["sourcePath"], "%GITMANAGER_APP_SOURCE%")
         self.assertEqual(config["fileSystemEntries"][0]["targetPath"], "$.installDir")
 
-    def test_experimental_msi_is_not_silently_used_as_a_release_artifact(self):
+    def test_store_msix_is_not_emitted_by_the_desktop_mpdev_manifest(self):
+        desktop = json.loads(
+            (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
+        )
+        store = json.loads(
+            (ROOT / "installer" / "store" / "msix" / "package.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(desktop["outputTypes"], ["msi"])
+        self.assertEqual(store["outputTypes"], ["msix"])
+
+    def test_mpdev_comparison_is_documented_as_an_additional_desktop_installer(self):
         docs = (ROOT / "docs" / "windows-packaging.md").read_text(encoding="utf-8")
-        self.assertIn("do not redistribute this experimental MSI", docs)
+        self.assertIn("Additional comparison MSI", docs)
         self.assertIn("--master-packager", docs)
 
 
