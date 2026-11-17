@@ -501,7 +501,17 @@ pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Res
     let mut command = Command::new(helper);
     command.arg("--supervise").arg(current_exe).arg("--").args(args);
     configure_detached_command(&mut command);
-    command.spawn().map_err(|error| format!("Could not start crash_helper: {error}"))?;
+    let mut helper_process = command.spawn()
+        .map_err(|error| format!("Could not start crash_helper: {error}"))?;
+
+    // Keep the original GitManager process alive as the process-tree root.
+    // This makes crash_helper.exe visible beneath the launched app while it
+    // supervises the UI; the independent service remains outside this tree.
+    let status = helper_process.wait()
+        .map_err(|error| format!("Could not wait for crash_helper: {error}"))?;
+    if !status.success() {
+        return Err(format!("crash_helper exited unexpectedly with status {status}."));
+    }
     Ok(true)
 }
 
@@ -584,8 +594,9 @@ fn configure_detached_command(command: &mut Command) {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        // Keep the helper in the launched GitManager process tree. Job Object
+        // containment below remains the mechanism that terminates the UI.
+        command.creation_flags(CREATE_NO_WINDOW);
     }
     #[cfg(unix)]
     {
@@ -599,9 +610,10 @@ fn configure_supervised_ui_command(command: &mut Command) {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_SUSPENDED: u32 = 0x0000_0004;
-        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+        // The visible UI remains a descendant of crash_helper.exe. Its Job
+        // Object is still the authoritative crash-containment boundary.
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
     #[cfg(unix)]
     {

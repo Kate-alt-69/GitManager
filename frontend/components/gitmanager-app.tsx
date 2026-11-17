@@ -28,6 +28,7 @@ function LoadingLogo({ size = 76 }: { size?: number }) {
 	);
 }
 import { invoke, openDialog } from "../lib/tauri";
+import { RepositoryWorkspace } from "./repository-workspace";
 import type {
 	ApplicationDirectories,
 	AppPreferences,
@@ -302,10 +303,7 @@ function RepositoryCard({
 	dependency,
 	archiveRoot,
 	canSnapshot,
-	updates,
 	onSelect,
-	onCheckUpdates,
-	onPullUpdate,
 	onSwitchBranch,
 }: {
 	repo: GitRepository;
@@ -313,10 +311,7 @@ function RepositoryCard({
 	dependency: boolean;
 	archiveRoot: string;
 	canSnapshot: boolean;
-	updates: UpdateAlert[];
 	onSelect: () => void;
-	onCheckUpdates: () => Promise<UpdateAlert[]>;
-	onPullUpdate: (path: string) => Promise<boolean>;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 }) {
 	const currentBranchTip = repo.branches?.find((branch) => branch.name === repo.current_branch && !branch.is_remote)?.target_oid;
@@ -337,7 +332,6 @@ function RepositoryCard({
 	const [branchSwitching, setBranchSwitching] = useState(false);
 	const [selectedBranch, setSelectedBranch] = useState(repo.current_branch || "HEAD");
 	const [branchMessage, setBranchMessage] = useState("");
-	const [isSyncing, setIsSyncing] = useState(false);
 	const [isSnapshotting, setIsSnapshotting] = useState(false);
 	const [feedback, setFeedback] = useState("");
 
@@ -415,35 +409,6 @@ function RepositoryCard({
 			setFeedback(error instanceof Error ? error.message : String(error));
 		} finally {
 			setIsSnapshotting(false);
-		}
-	}
-
-	async function handleSync() {
-		if (isSyncing || !repo.has_remote) return;
-		setIsSyncing(true);
-		setFeedback("");
-		try {
-			let update = updates.find((item) => item.repo_path === repo.path);
-			if (!update) {
-				const checked = await onCheckUpdates();
-				update = checked.find((item) => item.repo_path === repo.path);
-			}
-			if (!update) {
-				setFeedback("No fast-forward update is currently available.");
-				return;
-			}
-			if (update.working_tree_clean === false || Number(update.commits_ahead ?? 0) > 0) {
-				setFeedback("Sync blocked: local changes or outgoing commits require manual review.");
-				return;
-			}
-			const synced = await onPullUpdate(repo.path);
-			setFeedback(synced
-				? "Repository synchronized."
-				: "Sync stopped safely. Check the application status for details.");
-		} catch (error) {
-			setFeedback(error instanceof Error ? error.message : String(error));
-		} finally {
-			setIsSyncing(false);
 		}
 	}
 
@@ -547,8 +512,8 @@ function RepositoryCard({
 				</div>
 				<div className="gm-repo-card-actions">
 					{repo.has_remote && (
-						<button type="button" className="gm-card-action" onClick={() => void handleSync()} disabled={isSyncing}>
-							{isSyncing ? "Syncing…" : "⇄ Sync"}
+						<button type="button" className="gm-card-action" onClick={onSelect}>
+							⇄ Review Pull
 						</button>
 					)}
 					<button type="button" className="gm-card-action primary"
@@ -570,6 +535,8 @@ function RepositoryDetail({
 	onOpenWebsite,
 	onRescan,
 	onRepositoryLoaded,
+	onPullCompleted,
+	onOpenCleaner,
 }: {
 	repo: GitRepository;
 	preferences: AppPreferences;
@@ -577,6 +544,8 @@ function RepositoryDetail({
 	onOpenWebsite: (url: string) => void;
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
+	onPullCompleted: (repoPath: string) => void;
+	onOpenCleaner: () => void;
 }) {
 	const [archives, setArchives] = useState<ArchiveSnapshot[]>([]);
 	const [repositoryDetails, setRepositoryDetails] = useState<GitRepository | null>(repo.details_loaded ? repo : null);
@@ -724,6 +693,14 @@ function RepositoryDetail({
 				<div><span>Remotes</span><strong>{displayRepo.remotes?.length ?? 0}</strong></div>
 			</div>
 
+			<RepositoryWorkspace
+				key={repo.path}
+				repo={displayRepo}
+				onRepositoryUpdated={onRepositoryLoaded}
+				onPullCompleted={onPullCompleted}
+				onOpenCleaner={onOpenCleaner}
+			/>
+
 			<div className="gm-detail-columns">
 				<div className="gm-panel gm-commit-panel">
 					<div className="gm-panel-heading">
@@ -838,11 +815,12 @@ function RepositoryPage({
 	onScan,
 	onCheckUpdates,
 	updates,
-	onPullUpdate,
 	onSwitchBranch,
 	preferences,
 	onRescan,
 	onRepositoryLoaded,
+	onPullCompleted,
+	onOpenCleaner,
 	scanTruncated,
 }: {
 	repositories: GitRepository[];
@@ -859,11 +837,12 @@ function RepositoryPage({
 	onScan: () => void;
 	onCheckUpdates: () => Promise<UpdateAlert[]>;
 	updates: UpdateAlert[];
-	onPullUpdate: (path: string) => Promise<boolean>;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 	preferences: AppPreferences;
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
+	onPullCompleted: (repoPath: string) => void;
+	onOpenCleaner: () => void;
 	scanTruncated: boolean;
 }) {
 	const dependencySet = useMemo(() => new Set(dependencies), [dependencies]);
@@ -886,6 +865,8 @@ function RepositoryPage({
 				onOpenWebsite={(url) => { void invoke("open_external_url", { url }).catch((error) => window.alert(String(error))); }}
 				onRescan={onRescan}
 				onRepositoryLoaded={onRepositoryLoaded}
+				onPullCompleted={onPullCompleted}
+				onOpenCleaner={onOpenCleaner}
 			/>
 		);
 	}
@@ -919,13 +900,16 @@ function RepositoryPage({
 					<div className="gm-update-banner-icon">↑</div>
 					<div className="gm-update-banner-copy">
 						<strong>{updates.length} remote update{updates.length === 1 ? "" : "s"} available</strong>
-						<span>Updates are fast-forward only. Repositories with local changes are not pulled automatically.</span>
+						<span>Review each repository, choose how to protect local changes, and confirm every Pull.</span>
 					</div>
 					<div className="gm-update-list">
 						{updates.slice(0, 3).map((update) => (
 							<div key={update.repo_path}>
 								<span>{update.repo_name} · {update.commits_behind} behind</span>
-								<Button variant="primary" onClick={() => onPullUpdate(update.repo_path)}>Pull</Button>
+								<Button variant="primary" onClick={() => {
+									const target = repositories.find((item) => item.path === update.repo_path);
+									if (target) setSelectedRepo(target);
+								}}>Review Pull</Button>
 							</div>
 						))}
 					</div>
@@ -974,10 +958,7 @@ function RepositoryPage({
 							dependency={dependencySet.has(repo.id)}
 							archiveRoot={preferences.archiveRoot}
 							canSnapshot={preferences.archiveLocalEnabled !== false}
-							updates={updates}
 							onSelect={() => setSelectedRepo(repo)}
-							onCheckUpdates={onCheckUpdates}
-							onPullUpdate={onPullUpdate}
 							onSwitchBranch={onSwitchBranch}
 						/>
 					))}
@@ -1428,9 +1409,10 @@ function SettingsPage({
 	);
 }
 
-function CleanerPage({ repositories, onRefresh }: { repositories: GitRepository[]; onRefresh: () => void }) {
+function CleanerPage({ repositories, onRefresh, initialRepoPath }: { repositories: GitRepository[]; onRefresh: () => void; initialRepoPath?: string }) {
 	const [scope, setScope] = useState<CleanerScope>("repository");
-	const [repoPath, setRepoPath] = useState(repositories[0]?.path ?? "");
+	const [repoPath, setRepoPath] = useState(initialRepoPath || repositories[0]?.path || "");
+	useEffect(() => { if (initialRepoPath) setRepoPath(initialRepoPath); }, [initialRepoPath]);
 	const [remoteUrl, setRemoteUrl] = useState("");
 	const [branch, setBranch] = useState("");
 	const [includeDependencies, setIncludeDependencies] = useState(false);
@@ -1685,11 +1667,12 @@ export function GitManagerApp() {
 							scanTruncated={git.scanTruncated}
 							onCheckUpdates={() => git.checkUpdates()}
 							updates={git.updates}
-							onPullUpdate={(path) => git.pullUpdate(path)}
 							onSwitchBranch={git.switchBranch}
 							preferences={git.preferences}
 							onRescan={() => void git.scan()}
 							onRepositoryLoaded={git.updateRepository}
+							onPullCompleted={git.clearUpdate}
+							onOpenCleaner={() => setPage("cleaner")}
 						/>
 					)}
 					{page === "accounts" && <AccountsPage accounts={git.accounts} onConnect={git.connectAccount} />}
@@ -1702,7 +1685,7 @@ export function GitManagerApp() {
 							onOpenCleaner={() => setPage("cleaner")}
 						/>
 					)}
-					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={() => void git.scan()} />}
+					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={() => void git.scan()} initialRepoPath={selectedRepo?.path} />}
 				</main>
 				<footer className="gm-footer">
 					<span><i /> {git.available ? "Tauri runtime connected" : "Browser preview mode"}</span>

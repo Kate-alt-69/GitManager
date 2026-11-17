@@ -41,8 +41,9 @@ fn main() {
     let arguments = std::env::args_os().skip(1).collect::<Vec<OsString>>();
     let is_supervised_child = crash_helper::is_supervised_child(&arguments);
 
-    // The normal release executable is only a handoff. The crash helper then
-    // owns the UI process; the independent background service is never its child.
+    // The normal release executable remains alive as the process-tree root
+    // while crash_helper supervises the UI. The independent background service
+    // is never launched beneath this process tree.
     if !is_supervised_child {
         if let Ok(current_exe) = std::env::current_exe() {
             match crash_helper::launch_supervisor(&current_exe, &arguments) {

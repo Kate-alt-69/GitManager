@@ -2,6 +2,7 @@ mod process_utils;
 pub mod archive;
 pub mod archive_watcher;
 pub mod background_service;
+mod repository_workspace;
 pub mod git_info;
 pub mod remote_providers;
 pub mod scanner;
@@ -728,6 +729,92 @@ async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, Stri
 
 
 #[tauri::command]
+async fn list_repository_files(
+    repo_path: String, relative_path: Option<String>, source: Option<String>, branch: Option<String>,
+) -> Result<Vec<repository_workspace::RepositoryFileEntry>, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::list_repository_files(
+        &repo_path, relative_path.as_deref(), source.as_deref().unwrap_or("local"), branch.as_deref()
+    )).await.map_err(|error| format!("Repository file listing task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_repository_file(
+    repo_path: String, relative_path: String, source: Option<String>, branch: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::read_repository_file(
+        &repo_path, &relative_path, source.as_deref().unwrap_or("local"), branch.as_deref()
+    )).await.map_err(|error| format!("Repository file read task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn preview_repository_pull(repo_path: String) -> Result<repository_workspace::PullPreview, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::preview_repository_pull(&repo_path))
+        .await.map_err(|error| format!("Pull preview task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn get_repository_changes(repo_path: String) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::get_repository_changes(&repo_path))
+        .await.map_err(|error| format!("Repository status task failed: {error}"))?
+}
+#[tauri::command]
+async fn read_repository_file_diff(repo_path: String, relative_path: String, staged: bool) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::read_repository_file_diff(&repo_path, &relative_path, staged))
+        .await.map_err(|error| format!("Repository diff task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn fetch_repository_remote(repo_path: String, remote_name: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::fetch_repository_remote(&repo_path, &remote_name))
+        .await.map_err(|error| format!("Remote fetch task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn stage_repository_paths(repo_path: String, paths: Vec<String>) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::stage_repository_paths(&repo_path, &paths))
+        .await.map_err(|error| format!("Repository stage task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn unstage_repository_paths(repo_path: String, paths: Vec<String>) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::unstage_repository_paths(&repo_path, &paths))
+        .await.map_err(|error| format!("Repository unstage task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn preview_repository_commit(repo_path: String) -> Result<repository_workspace::RepositoryCommitPreview, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::preview_repository_commit(&repo_path))
+        .await.map_err(|error| format!("Repository commit preview task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn create_repository_commit(
+    repo_path: String, message: String, expected_index_tree: String,
+) -> Result<(String, Vec<repository_workspace::WorktreeChange>), String> {
+    tokio::task::spawn_blocking(move || repository_workspace::create_repository_commit(&repo_path, &message, &expected_index_tree))
+        .await.map_err(|error| format!("Repository commit task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn delete_repository_path(repo_path: String, relative_path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::delete_repository_path(&repo_path, &relative_path))
+        .await.map_err(|error| format!("Repository delete task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn prepare_and_pull_repository_update(
+    repo_path: String, expected_branch: String, expected_local_oid: String,
+    expected_remote_oid: String, expected_status_token: String, mode: String,
+    stage_paths: Vec<String>, commit_message: Option<String>,
+) -> Result<repository_workspace::PullExecutionResult, String> {
+    tokio::task::spawn_blocking(move || repository_workspace::prepare_and_pull_repository_update(
+        &repo_path, &expected_branch, &expected_local_oid, &expected_remote_oid,
+        &expected_status_token, &mode, &stage_paths, commit_message.as_deref().unwrap_or("")
+    )).await.map_err(|error| format!("Confirmed Pull task failed: {error}"))?
+}
+
+
+#[tauri::command]
 async fn list_local_repository_branches(repo_path: String) -> Result<Vec<git_info::BranchInfo>, String> {
     tokio::task::spawn_blocking(move || git_info::list_local_repository_branches(Path::new(&repo_path)))
         .await
@@ -1438,6 +1525,18 @@ pub fn run() {
             sign_windows_installer,
             scan_machine_repositories,
             inspect_repository,
+            list_repository_files,
+            read_repository_file,
+            preview_repository_pull,
+            prepare_and_pull_repository_update,
+            get_repository_changes,
+            read_repository_file_diff,
+            fetch_repository_remote,
+            stage_repository_paths,
+            unstage_repository_paths,
+            preview_repository_commit,
+            create_repository_commit,
+            delete_repository_path,
             list_local_repository_branches,
             switch_repository_branch,
             detect_github_identity,
