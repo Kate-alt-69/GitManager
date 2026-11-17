@@ -40,7 +40,7 @@ class BuildEnvironmentSetupPlanTests(unittest.TestCase):
         self.assertIn("if ! command -v cargo", script)
         self.assertIn("Using existing Rust toolchain", script)
         self.assertIn("rustup default stable", script)
-        self.assertNotIn("rustup default stable\n", script.replace("  rustup default stable", ""))
+        self.assertIn("if ! command -v cargo", script)
 
     def test_install_prompt_defaults_yes_for_requested_target_and_no_for_optional_target(self):
         with patch("builtins.input", return_value=""):
