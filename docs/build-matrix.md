@@ -23,6 +23,8 @@ Linux release artifacts currently build on Ubuntu 22.04 to keep the glibc/WebKit
 
 ## Build commands
 
+The GitHub Actions workflows must first be merged into the repository's default branch. The dispatch commands require the GitHub CLI authenticated for this repository (`gh auth status` should succeed). Cross-platform targets are built on their matching hosted runners; the local machine downloads the finished artifacts.
+
 The default build selection is all platforms and architectures, with installer packaging enabled:
 
 ```powershell
@@ -108,7 +110,7 @@ The generated `build/` directory is ignored by Git. It is safe to delete when no
 
 `.github/workflows/runtime_launch_test.yml` builds the Linux x64 application without bundling, verifies its shared-library dependencies, then launches the actual Tauri UI under Xvfb and a D-Bus session. It seeds twelve small local Git repositories and configures GitManager to scan them on startup.
 
-The workflow records launch logs and `/usr/bin/time -v` resource metrics. A launch that exits before the 45-second observation window fails, as does an unresolved shared library or peak resident memory above 1.5 GiB. The diagnostic log and dependency report are uploaded even when the test fails.
+The workflow records launch logs and samples `/proc` to measure the GitManager process tree, including WebKit child processes. A launch that exits before the 45-second observation window fails, as does an unresolved shared library, a missing UI heartbeat, or peak aggregate RSS above 1.5 GiB. The diagnostic log and dependency report are uploaded even when the test fails.
 
 ## Git command-line tools
 
