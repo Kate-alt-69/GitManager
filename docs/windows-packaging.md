@@ -10,6 +10,8 @@ GitManager uses **Master Packager Dev (MPDEV) as the required Windows MSI/MSIX p
 
 Tauri's WiX MSI target is disabled. WiX is not required or installed by the Windows build script. The NSIS fallback uses a version-matched Tauri installer template so its directory field defaults to `%LOCALAPPDATA%\kastrick's_software\GitManager`; users can still choose another folder.
 
+See [Background worker packaging](background-service-packaging.md) for why GitManager ships the per-user worker without registering it as an MPDEV machine-wide Windows Service, and how the Store/MSIX path differs.
+
 ## Requirements
 
 - Rust toolchain and the Tauri CLI
