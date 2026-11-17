@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import {
-	EngineBox,
-	EngineGrid,
-} from "@/engine";
+import { EngineBox, EngineGrid } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
+import { invoke, openDialog } from "../lib/tauri";
+import { Button, EmptyState, Field, Glyph, ProviderMark, RepoAvatar, Switch } from "./shared-ui";
+import { parseInternalRoute, repositoryRouteForItem, routeLabel, sectionRoute } from "../lib/internal-routing";
+import type { AppPreferences, ArchiveSnapshot, AppNotification, BranchInfo, GitRepository, UpdateAlert } from "../lib/types";
 
 const BRAND_LOGO = "/image/git-managar-orange_default-white.png";
 const BRAND_RING = "/image/git-managar-orange-ring_default-white.png";
@@ -66,113 +67,6 @@ type PageKey = "repositories" | "accounts" | "settings" | "cleaner";
 type RepoFilter = "all" | "remote" | "local";
 type RepoKind = "projects" | "dependencies" | "all";
 
-function Glyph({ children }: { children: string }) {
-	return <span className="gm-glyph" aria-hidden="true">{children}</span>;
-}
-
-function Button({
-	children,
-	onClick,
-	variant = "secondary",
-	disabled = false,
-	className = "",
-	type = "button",
-}: {
-	children: ReactNode;
-	onClick?: () => void;
-	variant?: "primary" | "secondary" | "ghost" | "danger";
-	disabled?: boolean;
-	className?: string;
-	type?: "button" | "submit";
-}) {
-	return (
-		<button
-			type={type}
-			className={`gm-button gm-button-${variant} ${className}`}
-			onClick={onClick}
-			disabled={disabled}
-		>
-			{children}
-		</button>
-	);
-}
-
-function Field({
-	label,
-	value,
-	onChange,
-	placeholder,
-	type = "text",
-}: {
-	label: string;
-	value: string | number;
-	onChange: (value: string) => void;
-	placeholder?: string;
-	type?: string;
-}) {
-	return (
-		<label className="gm-field">
-			<span>{label}</span>
-			<input
-				type={type}
-				value={value}
-				onChange={(event) => onChange(event.target.value)}
-				placeholder={placeholder}
-			/>
-		</label>
-	);
-}
-
-function Switch({
-	label,
-	checked,
-	onChange,
-	description,
-}: {
-	label: string;
-	checked: boolean;
-	onChange: (checked: boolean) => void;
-	description?: string;
-}) {
-	return (
-		<label className="gm-switch-row">
-			<span className="gm-switch-copy">
-				<strong>{label}</strong>
-				{description && <small>{description}</small>}
-			</span>
-			<input
-				type="checkbox"
-				checked={checked}
-				onChange={(event) => onChange(event.target.checked)}
-			/>
-			<span className="gm-switch-track" aria-hidden="true"><i /></span>
-		</label>
-	);
-}
-
-function ProviderMark({ provider }: { provider: string }) {
-	const value = provider.toLowerCase();
-	const label = value === "github" ? "GH" : value === "gitlab" ? "GL" : value === "local" ? "L" : "↗";
-	return <span className={`gm-provider-mark gm-provider-${value}`}>{label}</span>;
-}
-
-function RepoAvatar({ repo }: { repo: GitRepository }) {
-	const letter = (repo.name?.trim().charAt(0) || "R").toUpperCase();
-	let image = "";
-	try {
-		const url = new URL(repo.icon_url || "");
-		const allowed = ["github.com", "gitlab.com", "avatars.githubusercontent.com"];
-		if (url.protocol === "https:" && allowed.includes(url.hostname.toLowerCase())) image = url.href;
-	} catch {
-		image = "";
-	}
-	return (
-		<span className="gm-repo-avatar">
-			{image ? <img src={image} alt="" /> : <span>{letter}</span>}
-		</span>
-	);
-}
-
 function relativeDate(timestamp: number): string {
 	if (!timestamp) return "No commit date";
 	const elapsed = Math.max(0, Date.now() - timestamp * 1000);
@@ -183,27 +77,6 @@ function relativeDate(timestamp: number): string {
 	const days = Math.floor(hours / 24);
 	if (days < 30) return `${days}d ago`;
 	return new Date(timestamp * 1000).toLocaleDateString();
-}
-
-function EmptyState({
-	icon,
-	title,
-	body,
-	action,
-}: {
-	icon: string;
-	title: string;
-	body: string;
-	action?: ReactNode;
-}) {
-	return (
-		<div className="gm-empty-state">
-			<div className="gm-empty-icon">{icon}</div>
-			<h3>{title}</h3>
-			<p>{body}</p>
-			{action}
-		</div>
-	);
 }
 
 function Sidebar({
