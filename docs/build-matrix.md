@@ -50,7 +50,7 @@ py build.py -build='windows(11,x86)' -type=app
 
 - `--build=all`, `--build=windows`, `--build=linux`, and `--build=macos` dispatch the matrix workflow through the GitHub CLI.
 - Authenticate the GitHub CLI first with `gh auth login`. The current branch must be pushed to GitHub. The matrix workflow must exist on the repository's default branch before GitHub will accept manual workflow dispatch.
-- An exact target selector builds locally only when the host platform is compatible. Windows x86 can be cross-compiled from a Windows x64 build host; Linux ARM64 and macOS targets use their native runners in the matrix.
+- An exact target selector builds locally when the host toolchain supports it. If the current machine cannot build that platform or architecture, the script automatically dispatches only that exact target to its native GitHub Actions runner.
 - `--type=installer` is the default and creates the platform's Tauri bundles/installers. `--type=app` uses Tauri's `--no-bundle` mode and publishes the application and its required sidecar executables without installer packaging.
 - `--debug` selects debug binaries; release builds are the default.
 
