@@ -23,7 +23,7 @@ Linux ARMv7 is limited to DEB/RPM packaging in this build stream; AppImage is no
 
 ## Toolchain setup
 
-Run the setup-build-tools action on each native build machine. Windows installs the MSVC/Windows SDK, Node.js 22, Rust targets, MPDEV and NSIS, then provisions Ubuntu 24.04 under WSL2 for Linux/Flatpak builds. macOS prepares Xcode Command Line Tools, Node.js 22, Homebrew dependencies and both macOS Rust targets. See [Build environment setup](build-environment-setup.md) for prerequisites, WSL first-run steps and platform limits.
+Run `py build.py setup-build-tools` to prepare only the current host. Use `py build.py setup-build-tools --build=all` to prepare every target environment this machine can support: Windows also prepares matching Linux x64 through Ubuntu/WSL2, while macOS is skipped because Apple requires a real Mac. Missing prerequisites prompt before installation; explicitly requested targets default to Yes, already-installed tools are reused, and the current Rust toolchain is preserved. Use `--store=flatpak` to additionally install Flatpak Builder and the GNOME 51 runtime/SDK. See [Build environment setup](build-environment-setup.md) for prerequisites, WSL first-run steps and platform limits.
 
 ## Interactive selection
 
