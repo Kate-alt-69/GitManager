@@ -3,10 +3,18 @@ name = "gitmanager-service"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Independent GitManager background service process"
+description = "Independent GitManager background data service"
 
 [dependencies]
-git-manager = { path = "../../src-tauri" }
+gitmanager-core = { path = "../gitmanager-core" }
+gitmanager-archive = { path = "../archive-core" }
+crash-helper = { path = "../crash-helper" }
+git2 = { version = "0.20.4", default-features = false, features = ["https", "ssh"] }
+dirs = "5.0"
+fs2 = "0.4"
+notify = "8.2.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [[bin]]
 name = "gitmanager-service"

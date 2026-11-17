@@ -2,7 +2,7 @@ mod process_utils;
 pub mod archive;
 pub mod archive_watcher;
 pub use gitmanager_core::notification_center;
-pub mod background_service;
+pub use gitmanager_core::{load_background_preferences, AppPreferences, RepositoryPreferences};
 mod repository_workspace;
 pub use gitmanager_core::git_info;
 pub mod remote_providers;
@@ -45,64 +45,6 @@ pub struct AppState {
     pub connected_accounts: Mutex<Vec<ConnectedAccountSummary>>,
     pub pending_updates: Mutex<Vec<RepoUpdateNotification>>,
     pub watcher: BackgroundWatcherControl,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(default, rename_all = "camelCase")]
-pub struct RepositoryPreferences {
-    pub auto_update: bool,
-    pub keep_remote_clean: bool,
-    pub commit_clean: bool,
-    pub cleaner_include_dependencies: bool,
-    pub cleaner_include_virtualenvs: bool,
-    pub cleaner_exclude_patterns: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct AppPreferences {
-    pub scan_roots: Vec<String>,
-    pub max_scan_depth: usize,
-    pub include_hidden_dirs: bool,
-    pub index_dependency_repositories: bool,
-    pub show_dependency_repositories: bool,
-    pub repository_settings: HashMap<String, RepositoryPreferences>,
-    pub first_run_complete: bool,
-    pub archive_root: String,
-    pub archive_local_enabled: bool,
-    pub archive_remote_enabled: bool,
-    pub archive_trigger: String,
-    pub archive_quiet_ms: u64,
-    pub cloud_node_address: String,
-    pub in_app_notifications_enabled: bool,
-    pub os_notifications_enabled: bool,
-}
-
-impl Default for AppPreferences {
-    fn default() -> Self {
-        Self {
-            scan_roots: default_scan_roots()
-                .into_iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect(),
-            max_scan_depth: 8,
-            include_hidden_dirs: false,
-            index_dependency_repositories: true,
-            show_dependency_repositories: true,
-            repository_settings: HashMap::new(),
-            first_run_complete: false,
-            archive_root: archive::default_archive_root()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            archive_local_enabled: true,
-            archive_remote_enabled: true,
-            archive_trigger: "manual".to_string(),
-            archive_quiet_ms: 1500,
-            cloud_node_address: String::new(),
-            in_app_notifications_enabled: true,
-            os_notifications_enabled: true,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -247,13 +189,6 @@ fn read_app_preferences_file(path: &Path) -> Result<AppPreferences, String> {
     Ok(preferences)
 }
 
-/// Loads the same validated preferences file from the standalone background
-/// service without requiring a Tauri AppHandle.
-pub fn load_background_preferences() -> Result<AppPreferences, String> {
-    let directories = application_directories()?;
-    let path = PathBuf::from(directories.config_dir).join("preferences.json");
-    read_app_preferences_file(&path)
-}
 
 #[tauri::command]
 fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String> {
