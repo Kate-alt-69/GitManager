@@ -70,7 +70,7 @@ mod tests {
         let command = linux_background_service_command(
             Path::new("/app/bin/git-manager-service"),
             Some("com.gitmanager.desktop"),
-            Some(Path::new("/usr/bin/flatpak")),
+            Some(Path::new("flatpak")),
         )
         .expect("construct Flatpak service command");
 
@@ -79,12 +79,12 @@ mod tests {
             vec![
                 "flatpak".to_string(),
                 "run".to_string(),
-                "--command=git-manager-service",
-                "com.gitmanager.desktop",
+                "--command=git-manager-service".to_string(),
+                "com.gitmanager.desktop".to_string(),
             ]
         );
         let exec_start = systemd_exec_start(&command);
-        assert!(exec_start.starts_with("\\"/usr/bin/flatpak\\""));
+        assert!(exec_start.starts_with("\\"flatpak\\""));
         assert!(!exec_start.contains("/app/bin/git-manager-service"));
     }
 
