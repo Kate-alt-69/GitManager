@@ -20,7 +20,7 @@ const MAX_PENDING_DIRECTORIES: usize = 8_192;
 const MAX_REPOSITORIES: usize = 1_000;
 const MAX_DEPENDENCY_DESCENT: usize = 2;
 
-// Prevent UI, archive watcher, and update service scans from multiplying I/O.
+// Prevent overlapping service refresh requests from multiplying filesystem I/O.
 static ACTIVE_SCAN: Mutex<()> = Mutex::new(());
 
 const IGNORED_DIRECTORY_NAMES: &[&str] = &[
