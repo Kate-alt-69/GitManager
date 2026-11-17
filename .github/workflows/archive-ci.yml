@@ -80,6 +80,8 @@ jobs:
 
   archive-and-desktop:
     name: Archive, gitm & Tauri backend (${{ matrix.platform }})
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
     strategy:
       fail-fast: false
       matrix:
@@ -130,7 +132,10 @@ jobs:
         shell: bash
         run: |
           node --check ui/app.js
-          python -m py_compile build.py
+          python -m py_compile build.py tools/build_targets.py tools/package_flatpak.py tools/package_windows_store.py tools/runtime_launch_probe.py
+          python tools/test_build_targets.py
+          ruby -e "require 'yaml'; YAML.load_file('.github/workflows/store-build.yml', aliases: true); YAML.load_file('installer/flatpak/com.gitmanager.desktop.yml', aliases: true)"
+          python -m json.tool installer/store/msix/package.json > /dev/null
           python -m py_compile tools/cloud-node-deployment/setup.py
           python -m py_compile tools/cloud-node-deployment/test_setup.py
           python tools/cloud-node-deployment/test_setup.py
