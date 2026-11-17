@@ -981,6 +981,8 @@ function AccountsPage({
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const [message, setMessage] = useState("");
+	const [backgroundServiceBusy, setBackgroundServiceBusy] = useState(false);
+	const [backgroundServiceMessage, setBackgroundServiceMessage] = useState("");
 
 	async function connect() {
 		setBusy(true);
@@ -1223,6 +1225,24 @@ function SettingsPage({
 		}
 	}
 
+	async function enableBackgroundService() {
+		setBackgroundServiceBusy(true);
+		setBackgroundServiceMessage("");
+		try {
+			await invoke("control_background_service", { enableInApp: true, installOsService: true });
+			setBackgroundServiceMessage(
+				"Background worker registered and started for this user. On Windows, open Task Scheduler → Task Scheduler Library and look for 'GitManager Background Service'. The running process appears as git-manager-service.exe in Task Manager → Details."
+			);
+		} catch (cause) {
+			setBackgroundServiceMessage(
+				"Could not register or start the background worker: " +
+				(cause instanceof Error ? cause.message : String(cause))
+			);
+		} finally {
+			setBackgroundServiceBusy(false);
+		}
+	}
+
 	async function save() {
 		setSaving(true);
 		setMessage("");
@@ -1384,10 +1404,12 @@ function SettingsPage({
 					<section className="gm-panel gm-settings-card">
 						<div className="gm-panel-heading"><div><h2>Background updates</h2><p>Check remote branches and register the per-user background worker.</p></div><span className="gm-panel-icon">↻</span></div>
 						<p className="gm-muted-copy">Updates use a safe fast-forward-only strategy. GitManager does not overwrite local commits or pull over a dirty working tree.</p>
+						<p className="gm-muted-copy">The worker is optional and starts only after you enable it. On Windows it runs as your user through Task Scheduler—not as a Windows Service—so it will not appear in Services.msc. The separate git-manager-service.exe process is visible in Task Manager only while the scheduled task is running.</p>
 						<div className="gm-panel-actions">
 							<Button onClick={() => void invoke("check_repo_updates_now", { rootPaths: draft.scanRoots })}>Check remotes</Button>
-							<Button variant="primary" onClick={() => void invoke("control_background_service", { enableInApp: true, installOsService: true })}>Enable background service</Button>
+							<Button variant="primary" onClick={() => void enableBackgroundService()} disabled={backgroundServiceBusy}>{backgroundServiceBusy ? "Registering…" : "Enable background service"}</Button>
 						</div>
+						{backgroundServiceMessage && <p className="gm-muted-copy" role="status">{backgroundServiceMessage}</p>}
 					</section>
 
 					<section className="gm-panel gm-settings-card">
