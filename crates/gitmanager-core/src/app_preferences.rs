@@ -36,7 +36,7 @@ pub struct AppPreferences {
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
-            scan_roots: crate::scanner::default_scan_roots()
+            scan_roots: crate::repository_index::default_scan_roots()
                 .into_iter()
                 .map(|path| path.to_string_lossy().to_string())
                 .collect(),
