@@ -1,7 +1,7 @@
 //! Canonical per-user GitManager storage layout shared by the desktop and service.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn software_root() -> Result<PathBuf, String> {
     let local_data = dirs::data_local_dir()
@@ -21,6 +21,11 @@ pub fn data_dir() -> Result<PathBuf, String> {
 /// starts indexing. Keep cache separate from durable metadata and Git data.
 pub fn ensure_data_layout() -> Result<PathBuf, String> {
     let root = data_dir()?;
+    ensure_data_layout_at(&root)?;
+    Ok(root)
+}
+
+fn ensure_data_layout_at(root: &Path) -> Result<(), String> {
     for (label, relative) in [
         ("repository metadata", "repo/metadata"),
         ("Git data", "git_data"),
@@ -34,7 +39,7 @@ pub fn ensure_data_layout() -> Result<PathBuf, String> {
         fs::create_dir_all(root.join(relative))
             .map_err(|error| format!("Could not create GitManager {label} directory: {error}"))?;
     }
-    Ok(root)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -49,7 +54,8 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("gitmanager-layout-{suffix}"));
-        let paths = [
+        ensure_data_layout_at(&root).expect("create canonical data directory layout");
+        for relative in [
             "repo/metadata",
             "git_data",
             "account/metadata",
@@ -58,9 +64,7 @@ mod tests {
             "repo/remote/git_data",
             ".cache",
             "notifications",
-        ];
-        for relative in paths {
-            fs::create_dir_all(root.join(relative)).unwrap();
+        ] {
             assert!(root.join(relative).is_dir(), "missing {relative}");
         }
         let _ = fs::remove_dir_all(root);
