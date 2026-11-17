@@ -111,7 +111,7 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Master Packager Dev (MSI/MSIX toolchain)
+      - name: Install Master Packager Dev (optional MSI comparison toolchain)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -195,7 +195,7 @@ jobs:
             }
           }
 
-      - name: Build MSI and MSIX with Master Packager Dev
+      - name: Build the additional MSI with Master Packager Dev
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -203,15 +203,14 @@ jobs:
           if (-not (Test-Path (Join-Path $appRoot "git-manager.exe"))) { throw "The staged GitManager executable is missing." }
           $env:GITMANAGER_APP_SOURCE = $appRoot.Path
           & $env:MPDEV_EXE build "installer/master-packager/package.json" --working-dir "$PWD" --use-msbuild-message-format true
-          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev failed to build GitManager MSI/MSIX." }
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev failed to build the GitManager MSI." }
           $outputs = @(Get-ChildItem "target/windows-installers" -File -ErrorAction SilentlyContinue)
           $msi = @($outputs | Where-Object { $_.Extension -eq ".msi" })
           $msix = @($outputs | Where-Object { $_.Extension -eq ".msix" })
-          if ($msi.Count -ne 1 -or $msix.Count -ne 1) {
-            throw "Expected exactly one MSI and one MSIX from MPDEV; found MSI=$($msi.Count), MSIX=$($msix.Count)."
+          if ($msi.Count -ne 1 -or $msix.Count -ne 0) {
+            throw "Expected exactly one MPDEV MSI and no MSIX in the desktop installer stream; found MSI=$($msi.Count), MSIX=$($msix.Count)."
           }
-          Write-Host "Created MSI: $($msi[0].FullName)"
-          Write-Host "Created MSIX: $($msix[0].FullName)"
+          Write-Host "Created MPDEV comparison MSI: $($msi[0].FullName)"
 
       - name: Remove imported signing certificate
         if: runner.os == 'Windows' && always()
@@ -236,7 +235,6 @@ jobs:
             target/release/crash_helper*.exe
             target/release/gitmanager-setup*.exe
             target/windows-installers/*.msi
-            target/windows-installers/*.msix
             target/windows-installers/*.pfx
           if-no-files-found: error
           compression-level: 9
