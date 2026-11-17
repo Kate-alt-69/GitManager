@@ -63,12 +63,8 @@ impl Default for AppPreferences {
 /// Reads per-user preferences without bringing Tauri or a WebView into the
 /// service process. The desktop performs additional provider URL validation.
 pub fn load_background_preferences() -> Result<AppPreferences, String> {
-    let local_data = dirs::data_local_dir()
-        .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
-    let config_dir = local_data
-        .join("kastrick's_software")
-        .join("config")
-        .join("GitManager");
+    crate::storage::ensure_data_layout()?;
+    let config_dir = crate::storage::config_dir()?;
     fs::create_dir_all(&config_dir)
         .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
     let path = config_dir.join("preferences.json");
