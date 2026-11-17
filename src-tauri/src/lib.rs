@@ -371,7 +371,7 @@ fn get_flatpak_cli_integration_status() -> FlatpakCliIntegrationStatus {
     let wrapper_path = if is_flatpak { flatpak_gitm_wrapper_path() } else { None };
     let installed = wrapper_path.as_ref().map(|path| {
         fs::read_to_string(path)
-            .map(|content| content.starts_with(FLATPAK_GITM_WRAPPER_MARKER))
+            .map(|content| content.lines().nth(1) == Some(FLATPAK_GITM_WRAPPER_MARKER))
             .unwrap_or(false)
     }).unwrap_or(false);
     FlatpakCliIntegrationStatus {
@@ -391,7 +391,7 @@ fn install_flatpak_gitm_cli() -> Result<String, String> {
     if path.exists() {
         let existing = fs::read_to_string(&path)
             .map_err(|error| format!("Could not inspect the existing gitm command: {error}"))?;
-        if !existing.starts_with(FLATPAK_GITM_WRAPPER_MARKER) {
+        if existing.lines().nth(1) != Some(FLATPAK_GITM_WRAPPER_MARKER) {
             return Err(format!(
                 "A different file already exists at {}. It was not overwritten.",
                 path.display()
