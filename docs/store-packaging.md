@@ -30,6 +30,8 @@ Required local tools include `dpkg-deb`, `flatpak` and `flatpak-builder`. The pa
 
 The manifest grants Wayland/X11, graphics, network, SSH-agent, home-directory and mounted-media access. Home access is currently required because GitManager scans and performs Git operations on user-selected local repositories.
 
+The opt-in background worker uses the user's systemd service manager. When launched inside Flatpak, the unit starts it with the host `flatpak run --command=git-manager-service com.gitmanager.desktop` command so the process is re-entered into the app sandbox; the host systemd unit must not point directly at `/app/bin`, which exists only inside the sandbox. This path requests only the `org.freedesktop.systemd1` and `org.freedesktop.Notifications` session-bus names rather than unrestricted session-bus access. It still needs validation on a real GNOME 51 Flatpak install, including service start/stop, notifications, app upgrades and removal.
+
 The Settings → General page exposes an explicit **Install gitm command** action. It writes only a GitManager-marked wrapper at `~/.local/bin/gitm`, refuses to overwrite an unrelated file, and never edits `.bashrc`, `.zshrc`, or the host PATH. The user must already have `~/.local/bin` on PATH. The `~/.local/bin:create` permission documents the intended write location; while the broad home grant remains enabled for repository access, that narrower path grant is redundant. The action is opt-in and does not run during installation.
 
 The current `--filesystem=home`, `/media`, `/run/media` and `/mnt` grants are intentionally broad because the first Flatpak iteration needs read/write access to arbitrary user-selected Git working trees and mounted removable drives. Before Flathub submission, replace these grants with portal-backed, user-selected directory access and persisted grants where feasible, then run Flathub lint/review.
@@ -61,6 +63,9 @@ Both values must match Partner Center exactly. When both are set, the generated 
 The Store identity is all-or-nothing: set both `MSIX_PUBLISHER` and `MSIX_IDENTITY_NAME` from Partner Center, or leave both unset for a development/test-signed local package. A half-configured identity is rejected before MPDEV runs.
 
 A generated Store MSIX is not automatically published. Submission and certification still happen through Partner Center.
+
+A Partner Center developer account does **not** issue a reusable code-signing PFX certificate. For the Microsoft Store MSIX route, submit the package using the exact Store identity; Microsoft signs it after certification. The development/test certificate is only for local installation tests. If GitManager distributes MSI/EXE installers outside the Store, those installers need a publisher-owned Authenticode code-signing certificate. If submitting an MSI/EXE installer through the Store's Win32 installer path, Microsoft does not re-sign that installer either.
+
 
 Official Microsoft guidance:
 - https://learn.microsoft.com/en-us/windows/apps/publish/get-started
