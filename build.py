@@ -1727,6 +1727,13 @@ def build_local_store_package(
         if target.platform != "windows":
             log_err("Microsoft Store MSIX packaging is supported only from a native Windows build host.")
             return 2
+        mpdev = find_master_packager_dev_cli()
+        if mpdev is None:
+            log_err(
+                "Master Packager Dev is required for Microsoft Store MSIX packaging. "
+                "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
+            )
+            return 1
         result = run_build_or_dev(
             project_root=project_root,
             mode="build",
@@ -1750,10 +1757,6 @@ def build_local_store_package(
         if staged != 0:
             return staged
 
-        mpdev = find_master_packager_dev_cli()
-        if mpdev is None:
-            log_err("Master Packager Dev is required to build the Store MSIX.")
-            return 1
         manifest = cargo_target_root(project_root) / "windows-store" / "package.json"
         output_dir = project_root / "build" / "dist" / "store" / "msix"
         output_dir.mkdir(parents=True, exist_ok=True)
