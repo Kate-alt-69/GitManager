@@ -421,7 +421,7 @@ fn resolve_background_service_executable(app_handle: &AppHandle) -> Result<PathB
         }
     }
 
-
+    Err("The packaged gitmanager.service executable was not found. Rebuild the installer with the service sidecar included.".to_string())
 }
 
 /// Ensures the required repository/data engine is running before the UI becomes
