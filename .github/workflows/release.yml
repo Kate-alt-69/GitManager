@@ -183,7 +183,7 @@ jobs:
           $setupHelper = Join-Path $profileDir "GitManager-Setup.exe"
           $required = @(
             (Join-Path $profileDir "gitmanager.exe"),
-            (Join-Path $profileDir "gitmanager.service.exe"),
+            (Join-Path $profileDir "gitmanager-service.exe"),
             (Join-Path $profileDir "crash_helper.exe"),
             (Join-Path $profileDir "gitm.exe"),
             $setupHelper,
