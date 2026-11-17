@@ -26,13 +26,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: gitmanager-build-matrix-\${{ github.ref }}-\${{ inputs.build }}-\${{ inputs.type }}
+  group: gitmanager-build-matrix-${{ github.ref }}-${{ inputs.build }}-${{ inputs.type }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: \${{ matrix.label }}
-    if: \${{ inputs.build == 'all' || inputs.build == matrix.platform }}
+    name: ${{ matrix.label }}
+    if: ${{ inputs.build == 'all' || inputs.build == matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
@@ -79,10 +79,10 @@ jobs:
             target: aarch64-apple-darwin
             runner: macos-15
             label: macOS Apple Silicon ARM64
-    runs-on: \${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
-      CARGO_TARGET_DIR: \${{ github.workspace }}/build/.rcache
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
       CARGO_TERM_COLOR: always
       GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
     steps:
@@ -111,16 +111,21 @@ jobs:
       - name: Install Rust target
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: \${{ matrix.target }}
+          targets: ${{ matrix.target }}
+
+      - name: Validate build-script syntax and target selectors
+        run: |
+          python -m py_compile build.py tools/build_targets.py
+          python tools/test_build_targets.py
 
       - name: Build selected target
         shell: bash
-        run: python build.py --build='\${{ matrix.selector }}' --type='\${{ inputs.type }}'
+        run: python build.py --build='${{ matrix.selector }}' --type='${{ inputs.type }}'
 
       - name: Verify published output
         shell: bash
         run: |
-          OUTPUT="build/dist/\${{ matrix.output }}"
+          OUTPUT="build/dist/${{ matrix.output }}"
           test -d "$OUTPUT"
           test -s "$OUTPUT/build-manifest.json"
           cat "$OUTPUT/build-manifest.json"
@@ -128,7 +133,7 @@ jobs:
       - name: Upload target artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gitmanager-\${{ matrix.output }}
-          path: build/dist/\${{ matrix.output }}/
+          name: gitmanager-${{ matrix.output }}
+          path: build/dist/${{ matrix.output }}/
           if-no-files-found: error
           retention-days: 21
