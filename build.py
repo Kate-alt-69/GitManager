@@ -1664,6 +1664,10 @@ def run_build_or_dev(
                 cmd.extend(["--target", target_triple])
             if not bundle:
                 cmd.append("--no-bundle")
+            elif target_triple == "armv7-unknown-linux-gnueabihf":
+                # Cross-built ARMv7 AppImages need a QEMU runtime; ship native
+                # Debian/RPM packages for this target in the first matrix pass.
+                cmd.extend(["--bundles", "deb,rpm"])
             if not release:
                 cmd.append("--debug")
             elif platform.system() == "Windows":
