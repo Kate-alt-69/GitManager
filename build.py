@@ -1777,9 +1777,16 @@ def main() -> int:
         target = selected_targets[0]
         can_build, reason = can_build_locally(target)
         if not can_build:
+            allow_ci_cross_compile = (
+                os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+                and os.environ.get("GITMANAGER_ALLOW_CROSS_COMPILE") == "1"
+            )
+            if not allow_ci_cross_compile:
+                log_warn(reason)
+                log_info(f"Dispatching exact target to its native GitHub Actions runner: {target.selector}")
+                return dispatch_build_matrix(args.build_target.lower(), args.build_type)
             log_warn(reason)
-            log_info(f"Dispatching exact target to its native GitHub Actions runner: {target.selector}")
-            return dispatch_build_matrix(args.build_target.lower(), args.build_type)
+            log_info("Using the explicitly configured GitHub Actions cross-compilation toolchain for this target.")
         os.environ["CARGO_BUILD_TARGET"] = target.triple
         os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
         os.environ["GITMANAGER_BUILD_SELECTOR"] = args.build_target.lower()
