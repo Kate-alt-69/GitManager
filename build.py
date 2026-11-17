@@ -45,9 +45,9 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
 try:
-    from tools.build_targets import can_build_locally, parse_build_selection
+    from tools.build_targets import can_build_locally, host_platform, parse_build_selection
 except ModuleNotFoundError:
-    from build_targets import can_build_locally, parse_build_selection
+    from build_targets import can_build_locally, host_platform, parse_build_selection
 
 RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
@@ -1496,190 +1496,195 @@ def build_gitm_sidecar(
 
 
 
-def dispatch_build_matrix(selection: str, build_type: str) -> int:
-    """Dispatch multi-platform builds to native GitHub-hosted runners and download the artifacts."""
-    project_root = Path(__file__).resolve().parent
-    gh = shutil.which("gh")
-    if not gh:
-        log_err(
-            "The all/platform-group build needs the GitHub CLI. Install it and authenticate with gh auth login, "
-            "or run .github/workflows/build-matrix.yml from the GitHub Actions tab."
+def prompt_build_selection() -> str:
+    """Ask which local architecture set to build; Enter selects every locally supported architecture."""
+    host = host_platform()
+    _, host_targets = parse_build_selection(host)
+    available = []
+    unavailable = []
+    for target in host_targets:
+        can_build, reason = can_build_locally(target)
+        if can_build:
+            available.append(target)
+        else:
+            unavailable.append((target, reason))
+
+    print()
+    print(f"Detected build host: {host} ({platform.machine()})")
+    print("Choose the local build architecture:")
+    print("  [A] All architectures supported by this machine (default)")
+    for index, target in enumerate(available, start=1):
+        print(f"  [{index}] {target.selector}  [{target.triple}]")
+    for target, reason in unavailable:
+        print(f"  [-] {target.selector}  [not available locally: {reason}]")
+
+    if not available:
+        raise RuntimeError(f"No supported {host} target can be built on this machine.")
+
+    if not sys.stdin.isatty():
+        log_info("Non-interactive build: selecting all architectures supported by this machine.")
+        return host
+
+    try:
+        choice = input("Architecture selection [A]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise RuntimeError("Build selection was cancelled.")
+
+    if not choice or choice in {"a", "all"}:
+        return host
+    if choice.isdigit():
+        index = int(choice)
+        if 1 <= index <= len(available):
+            return available[index - 1].selector
+    raise ValueError("Invalid architecture selection. Choose A or one of the listed numbers.")
+
+
+def resolve_local_build_targets(selection: str) -> List[object]:
+    """Resolve a selector into targets that the current machine can actually build."""
+    kind, selected = parse_build_selection(selection)
+    host = host_platform()
+
+    if kind == "exact":
+        target = selected[0]
+        can_build, reason = can_build_locally(target)
+        if not can_build:
+            raise ValueError(reason)
+        return [target]
+
+    if kind == "group":
+        group_platform = selected[0].platform if selected else ""
+        if group_platform != host:
+            raise ValueError(
+                f"Local builds cannot target {group_platform} from this {host} machine. "
+                "Run the build on a machine with the target operating system and native SDK."
+            )
+
+    local_candidates = [target for target in selected if target.platform == host]
+    local_targets = []
+    skipped = []
+    for target in local_candidates:
+        can_build, reason = can_build_locally(target)
+        if can_build:
+            local_targets.append(target)
+        else:
+            skipped.append((target, reason))
+    foreign = [target for target in selected if target.platform != host]
+
+    if foreign:
+        platforms = ", ".join(sorted({target.platform for target in foreign}))
+        log_warn(
+            f"Skipping {platforms}: this machine is {host}. Cross-OS desktop builds require "
+            "the corresponding operating system and native SDK; no GitHub Actions job will be started."
         )
-        return 2
+    for target, reason in skipped:
+        log_warn(f"Skipping {target.selector}: {reason}")
 
-    branch = os.environ.get("GITHUB_REF_NAME", "").strip()
-    if not branch and shutil.which("git"):
-        code, branch, _ = run_capture(["git", "branch", "--show-current"], cwd=project_root)
-        if code != 0:
-            branch = ""
-    if not branch:
-        code, branch, _ = run_capture([
-            gh, "repo", "view", "--json", "defaultBranchRef",
-            "--jq", ".defaultBranchRef.name",
-        ], cwd=project_root)
-        if code != 0:
-            branch = ""
+    if not local_targets:
+        raise ValueError(f"No selected target can be built locally on this {host} machine.")
+    return local_targets
 
-    local_head = ""
-    if shutil.which("git"):
-        head_code, head_output, _ = run_capture(["git", "rev-parse", "HEAD"], cwd=project_root)
-        if head_code == 0:
-            local_head = head_output.strip()
 
-    command = [gh, "workflow", "run", "build-matrix.yml"]
-    if branch:
-        command.extend(["--ref", branch])
-    command.extend(["-f", f"build={selection}", "-f", f"type={build_type}"])
-    dispatch_started = time.time()
-    log_info(f"Dispatching GitHub Actions build matrix: build={selection}, type={build_type}")
-    result = subprocess.call(command, cwd=str(project_root))
-    if result != 0:
-        log_err("GitHub Actions workflow dispatch failed. Check gh auth status and workflow permissions.")
-        return result
+def configure_local_target(project_root: Path, target: object) -> None:
+    os.environ["CARGO_BUILD_TARGET"] = target.triple
+    os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
+    os.environ["GITMANAGER_BUILD_SELECTOR"] = target.selector
+    log_info(f"Selected local target: {target.selector} ({target.triple})")
+    log_info(f"Rust build cache: {os.environ['CARGO_TARGET_DIR']}")
+    log_info(f"Artifacts: {project_root / 'build' / 'dist' / target.output_name}")
 
-    run_id = None
-    for _ in range(15):
-        list_command = [
-            gh, "run", "list", "--workflow", "build-matrix.yml",
-            "--event", "workflow_dispatch", "--limit", "10",
-            "--json", "databaseId,event,headBranch,headSha,createdAt",
+
+def build_local_store_package(
+    project_root: Path,
+    store: str,
+    target: object,
+    toolchain_arg: str,
+    has_cargo_tauri: bool,
+    release: bool,
+) -> int:
+    """Build Flatpak or Store MSIX on the native local host, without workflow dispatch."""
+    if store == "flatpak":
+        if target.platform != "linux":
+            log_err("Flatpak packaging is supported only from a native Linux build host.")
+            return 2
+        result = run_build_or_dev(
+            project_root=project_root,
+            mode="build",
+            toolchain_arg=toolchain_arg,
+            has_cargo_tauri=has_cargo_tauri,
+            release=release,
+            bundle=True,
+        )
+        if result != 0:
+            return result
+        deb_dir = project_root / "build" / "dist" / target.output_name / "installer"
+        debs = sorted(path for path in deb_dir.glob("*.deb") if path.is_file() and path.stat().st_size > 0)
+        if len(debs) != 1:
+            log_err(f"Expected exactly one Linux DEB payload for Flatpak staging; found {len(debs)} in {deb_dir}.")
+            return 1
+        command = [
+            sys.executable,
+            str(project_root / "tools" / "package_flatpak.py"),
+            "--deb",
+            str(debs[0]),
         ]
-        code, output, _ = run_capture(list_command, cwd=project_root)
-        if code == 0:
-            try:
-                runs = json.loads(output)
-                matching = []
-                for item in runs:
-                    if item.get("event") != "workflow_dispatch":
-                        continue
-                    if branch and item.get("headBranch") != branch:
-                        continue
-                    if local_head and item.get("headSha") != local_head:
-                        continue
-                    try:
-                        created_at = datetime.fromisoformat(
-                            item.get("createdAt", "").replace("Z", "+00:00")
-                        ).timestamp()
-                    except (TypeError, ValueError):
-                        continue
-                    if created_at < dispatch_started - 15:
-                        continue
-                    matching.append(item)
-                if matching:
-                    run_id = matching[0].get("databaseId")
-                    if run_id:
-                        break
-            except (json.JSONDecodeError, TypeError):
-                pass
-        time.sleep(2)
+        log_info("Building the Flatpak bundle locally from the native Linux DEB payload...")
+        return subprocess.call(command, cwd=str(project_root))
 
-    if not run_id:
-        log_err("The workflow was dispatched, but its new run ID could not be resolved. Verify that the current branch is pushed and check the GitHub Actions tab.")
-        return 1
-
-    log_info(f"Watching GitHub Actions build run {run_id}...")
-    watch_result = subprocess.call([gh, "run", "watch", str(run_id), "--exit-status"], cwd=str(project_root))
-    if watch_result != 0:
-        log_err(f"GitHub Actions build run {run_id} did not complete successfully.")
-        return watch_result
-
-    download_dir = project_root / "build" / "dist"
-    download_dir.mkdir(parents=True, exist_ok=True)
-    download_result = subprocess.call([
-        gh, "run", "download", str(run_id), "--dir", str(download_dir),
-    ], cwd=str(project_root))
-    if download_result != 0:
-        log_err(f"Build run {run_id} succeeded, but artifact download failed.")
-        return download_result
-
-    log_ok(f"Downloaded platform artifacts to {download_dir}")
-    return 0
-
-
-def dispatch_store_build(store: str) -> int:
-    """Dispatch Flatpak and/or Microsoft Store packaging to their native CI runners."""
-    project_root = Path(__file__).resolve().parent
-    gh = shutil.which("gh")
-    if not gh:
-        log_err(
-            "Store packaging needs the GitHub CLI. Install it and authenticate with gh auth login, "
-            "or run .github/workflows/store-build.yml from the GitHub Actions tab."
+    if store == "msix":
+        if target.platform != "windows":
+            log_err("Microsoft Store MSIX packaging is supported only from a native Windows build host.")
+            return 2
+        result = run_build_or_dev(
+            project_root=project_root,
+            mode="build",
+            toolchain_arg=toolchain_arg,
+            has_cargo_tauri=has_cargo_tauri,
+            release=release,
+            bundle=False,
         )
-        return 2
+        if result != 0:
+            return result
 
-    branch = os.environ.get("GITHUB_REF_NAME", "").strip()
-    if not branch and shutil.which("git"):
-        code, output, _ = run_capture(["git", "branch", "--show-current"], cwd=project_root)
-        if code == 0:
-            branch = output.strip()
+        app_dir = project_root / "build" / "dist" / target.output_name / "app"
+        platform_name = target.architecture
+        stage_command = [
+            sys.executable,
+            str(project_root / "tools" / "package_windows_store.py"),
+            "--app-dir", str(app_dir),
+            "--platform", platform_name,
+        ]
+        staged = subprocess.call(stage_command, cwd=str(project_root))
+        if staged != 0:
+            return staged
 
-    local_head = ""
-    if shutil.which("git"):
-        code, output, _ = run_capture(["git", "rev-parse", "HEAD"], cwd=project_root)
-        if code == 0:
-            local_head = output.strip()
+        mpdev = find_master_packager_dev_cli()
+        if mpdev is None:
+            log_err("Master Packager Dev is required to build the Store MSIX.")
+            return 1
+        manifest = cargo_target_root(project_root) / "windows-store" / "package.json"
+        output_dir = project_root / "build" / "dist" / "store" / "msix"
+        command = [
+            str(mpdev), "build", str(manifest),
+            "--working-dir", str(project_root),
+            "--use-msbuild-message-format", "true",
+        ]
+        log_info(f"Building the Microsoft Store {platform_name} MSIX locally with MPDEV...")
+        result = subprocess.call(command, cwd=str(project_root))
+        if result != 0:
+            return result
+        packages = sorted(
+            path for path in output_dir.glob("*.msix")
+            if path.is_file() and path.stat().st_size > 1024 * 1024
+        )
+        if len(packages) != 1:
+            log_err(f"Expected one non-empty Microsoft Store MSIX; found {len(packages)} in {output_dir}.")
+            return 1
+        log_ok(f"Created Microsoft Store MSIX: {packages[0]} ({packages[0].stat().st_size:,} bytes)")
+        return 0
 
-    command = [gh, "workflow", "run", "store-build.yml"]
-    if branch:
-        command.extend(["--ref", branch])
-    command.extend(["-f", f"store={store}"])
-    dispatch_started = time.time()
-    log_info(f"Dispatching store packaging workflow: store={store}")
-    result = subprocess.call(command, cwd=str(project_root))
-    if result != 0:
-        log_err("Store workflow dispatch failed. Check gh auth status and workflow permissions.")
-        return result
-
-    run_id = None
-    for _ in range(15):
-        code, output, _ = run_capture([
-            gh, "run", "list", "--workflow", "store-build.yml",
-            "--event", "workflow_dispatch", "--limit", "10",
-            "--json", "databaseId,event,headBranch,headSha,createdAt",
-        ], cwd=project_root)
-        if code == 0:
-            try:
-                runs = json.loads(output)
-                for item in runs:
-                    if item.get("event") != "workflow_dispatch":
-                        continue
-                    if branch and item.get("headBranch") != branch:
-                        continue
-                    if local_head and item.get("headSha") != local_head:
-                        continue
-                    created_at = datetime.fromisoformat(
-                        item.get("createdAt", "").replace("Z", "+00:00")
-                    ).timestamp()
-                    if created_at >= dispatch_started - 15:
-                        run_id = item.get("databaseId")
-                        break
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-        if run_id:
-            break
-        time.sleep(2)
-
-    if not run_id:
-        log_err("The store workflow was dispatched, but its run ID could not be resolved. Check GitHub Actions.")
-        return 1
-
-    log_info(f"Watching store packaging run {run_id}...")
-    result = subprocess.call([gh, "run", "watch", str(run_id), "--exit-status"], cwd=str(project_root))
-    if result != 0:
-        log_err(f"Store packaging run {run_id} did not complete successfully.")
-        return result
-
-    download_dir = project_root / "build" / "dist" / "store"
-    download_dir.mkdir(parents=True, exist_ok=True)
-    result = subprocess.call([
-        gh, "run", "download", str(run_id), "--dir", str(download_dir),
-    ], cwd=str(project_root))
-    if result != 0:
-        log_err(f"Store packaging run {run_id} succeeded, but artifact download failed.")
-        return result
-
-    log_ok(f"Downloaded store artifacts to {download_dir}")
-    return 0
+    log_err(f"Unsupported local store build selection: {store}")
+    return 2
 
 
 def publish_build_outputs(project_root: Path, release: bool, bundle: bool, include_mpdev: bool = False) -> int:
@@ -1819,7 +1824,6 @@ def run_build_or_dev(
     toolchain_arg: str,
     has_cargo_tauri: bool,
     release: bool,
-    build_master_packager: bool = False,
     bundle: bool = True,
 ) -> int:
     src_tauri_dir = project_root / "src-tauri"
