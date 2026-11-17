@@ -45,7 +45,7 @@ jobs:
           import tempfile
           import zipfile
 
-          archives = sorted(pathlib.Path("target/deployment").glob("*.zip"))
+          archives = sorted(pathlib.Path("build/dist/deployment").glob("*.zip"))
           if len(archives) != 1:
               raise SystemExit(f"Expected one bootstrap ZIP, found {len(archives)}")
           with tempfile.TemporaryDirectory(prefix="gitmanager-rbe-bootstrap-") as temp:
@@ -75,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-cloud-node-deployment
-          path: target/deployment/*.zip
+          path: build/dist/deployment/*.zip
           if-no-files-found: error
           compression-level: 0
 
@@ -90,13 +90,23 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
+            selector: windows(10,x64)
+            output: windows-x64
           - platform: ubuntu-22.04
-          - platform: ubuntu-22.04-arm
+            selector: linux(x64)
+            output: linux-x64
           - platform: macos-latest
+            selector: macos(arm64)
+            output: macos-arm64
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -104,10 +114,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install Linux WebKitGTK & libgit2 dependencies
-        if: startsWith(matrix.platform, 'ubuntu-22.04')
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev pkg-config rpm
+          sudo apt-get install -y build-essential curl wget file pkg-config libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libfuse2 rpm patchelf
 
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
@@ -128,9 +138,8 @@ jobs:
           }
           if (-not $candidates) { throw "Master Packager Dev was installed by WinGet but mpdev.exe could not be located." }
           "MPDEV_EXE=$($candidates[0])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          $mpdevExe = [string]$candidates[0]
-          & "$mpdevExe" version
-          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev CLI failed its version check: $mpdevExe" }
+          & "$($candidates[0])" version
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev CLI failed its version check." }
 
       - name: Import optional Windows production signing certificate
         if: runner.os == 'Windows'
@@ -164,7 +173,7 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
           GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
-        run: python build.py build --install-tauri-cli
+        run: python build.py --build='${{ matrix.selector }}' --type=installer --install-tauri-cli
 
       - name: Sign and verify Windows release files
         if: runner.os == 'Windows'
@@ -172,8 +181,15 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $signTargets = @("build/.rcache/windows-package/source/git-manager.exe", "build/.rcache/windows-package/source/resources/git-manager-service.exe", "build/.rcache/windows-package/source/resources/crash_helper.exe", "build/.rcache/windows-package/source/resources/gitm.exe", "build/.rcache/windows-package/source/resources/gitmanager-setup.exe")
-          $verifyTargets = $signTargets
+          $installer = "build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/GitManager-Setup.exe"
+          $setupHelper = "build/.rcache/x86_64-pc-windows-msvc/release/GitManager-Setup.exe"
+          $wixInstaller = Get-ChildItem -LiteralPath "build/.rcache/x86_64-pc-windows-msvc/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1
+          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe NSIS installer was not created." }
+          if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
+          if (-not $wixInstaller) { throw "The Tauri WiX MSI installer was not created." }
+
+          $signTargets = @("build/.rcache/x86_64-pc-windows-msvc/release/git-manager.exe", "build/.rcache/x86_64-pc-windows-msvc/release/git-manager-service.exe", "build/.rcache/x86_64-pc-windows-msvc/release/crash_helper.exe", "build/.rcache/x86_64-pc-windows-msvc/release/gitm.exe", $installer, $wixInstaller.FullName, "build/.rcache/windows-package/source/git-manager.exe", "build/.rcache/windows-package/source/resources/git-manager-service.exe", "build/.rcache/windows-package/source/resources/crash_helper.exe", "build/.rcache/windows-package/source/resources/gitm.exe", "build/.rcache/windows-package/source/resources/gitmanager-setup.exe")
+          $verifyTargets = $signTargets + @("build/.rcache/x86_64-pc-windows-msvc/release/gitm.exe", $setupHelper)
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
           } else {
@@ -184,7 +200,7 @@ jobs:
               }
             }
 
-            # All app and helper executables are signed before MPDEV packages the raw app bundle.
+            # gitm and GitManager-Setup are signed before Tauri embeds them as sidecars.
             $kits = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\bin"
             if (-not (Test-Path $kits)) { $kits = Join-Path $env:ProgramFiles "Windows Kits\10\bin" }
             $signtool = Get-ChildItem -LiteralPath $kits -Directory | Sort-Object Name -Descending |
@@ -199,6 +215,8 @@ jobs:
       - name: Build the additional MSI with Master Packager Dev
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
           $appRoot = Resolve-Path "build/.rcache/windows-package/source"
           if (-not (Test-Path (Join-Path $appRoot "git-manager.exe"))) { throw "The staged GitManager executable is missing." }
@@ -210,6 +228,10 @@ jobs:
           $msix = @($outputs | Where-Object { $_.Extension -eq ".msix" })
           if ($msi.Count -ne 1 -or $msix.Count -ne 0) {
             throw "Expected exactly one MPDEV MSI and no MSIX in the desktop installer stream; found MSI=$($msi.Count), MSIX=$($msix.Count)."
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
+            & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $msi[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signing failed for $($msi[0].FullName)." }
           }
           Write-Host "Created MPDEV comparison MSI: $($msi[0].FullName)"
 
@@ -225,17 +247,27 @@ jobs:
               Remove-Item -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Refresh published Windows artifacts after signing
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $profileDir = "build/.rcache/x86_64-pc-windows-msvc/release"
+          $distDir = "build/dist/windows-x64"
+          New-Item -ItemType Directory -Force -Path "$distDir/installer", "$distDir/app" | Out-Null
+          Copy-Item -Path "$profileDir/bundle/*" -Destination "$distDir/installer" -Recurse -Force
+          Copy-Item -Path "build/.rcache/windows-installers/*.msi" -Destination "$distDir/installer" -Force
+          foreach ($name in @("git-manager.exe", "git-manager-service.exe", "crash_helper.exe", "gitm.exe", "gitmanager-setup.exe", "GitManager-Setup.exe")) {
+            $source = Join-Path $profileDir $name
+            if (Test-Path -LiteralPath $source) {
+              Copy-Item -LiteralPath $source -Destination "$distDir/app" -Force
+            }
+          }
+
       - name: Upload platform installers
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-installers-${{ matrix.platform }}
-          path: |
-            build/.rcache/release/bundle/**
-            build/.rcache/release/gitm*
-            build/.rcache/release/git-manager*.exe
-            build/.rcache/release/crash_helper*.exe
-            build/.rcache/release/gitmanager-setup*.exe
-            build/.rcache/windows-installers/*.msi
+          path: build/dist/${{ matrix.output }}/
           if-no-files-found: error
           compression-level: 9
 
