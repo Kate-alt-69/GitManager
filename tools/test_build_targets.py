@@ -7,7 +7,7 @@ class BuildTargetSelectionTests(unittest.TestCase):
     def test_all_includes_every_supported_desktop_target(self):
         kind, targets = parse_build_selection("all")
         self.assertEqual(kind, "all")
-        self.assertEqual(len(targets), 7)
+        self.assertEqual(len(targets), 8)
         self.assertEqual(
             {target.triple for target in targets},
             {
@@ -16,6 +16,7 @@ class BuildTargetSelectionTests(unittest.TestCase):
                 "aarch64-pc-windows-msvc",
                 "x86_64-unknown-linux-gnu",
                 "aarch64-unknown-linux-gnu",
+                "armv7-unknown-linux-gnueabihf",
                 "x86_64-apple-darwin",
                 "aarch64-apple-darwin",
             },
@@ -25,6 +26,8 @@ class BuildTargetSelectionTests(unittest.TestCase):
         kind, windows = parse_build_selection("windows")
         self.assertEqual(kind, "group")
         self.assertEqual({target.architecture for target in windows}, {"x64", "x86", "arm64"})
+        _, linux = parse_build_selection("linux")
+        self.assertEqual({target.architecture for target in linux}, {"x64", "arm64", "armv7"})
 
     def test_windows_version_is_metadata_not_a_different_binary_target(self):
         _, win10 = parse_build_selection("windows(10,x64)")
@@ -37,6 +40,8 @@ class BuildTargetSelectionTests(unittest.TestCase):
         _, linux = parse_build_selection("linux(arm64)")
         _, macos = parse_build_selection("macos(x64)")
         self.assertEqual(linux[0].triple, "aarch64-unknown-linux-gnu")
+        _, linux_armv7 = parse_build_selection("linux(armv7)")
+        self.assertEqual(linux_armv7[0].triple, "armv7-unknown-linux-gnueabihf")
         self.assertEqual(macos[0].triple, "x86_64-apple-darwin")
 
     def test_invalid_os_versions_and_architectures_are_rejected(self):
