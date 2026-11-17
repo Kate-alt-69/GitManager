@@ -1,6 +1,10 @@
-# GitManager — Native Git Workspace
+# GitManager
 
-**GitManager** is a **free, open-source** cross-platform Rust desktop application for local Git repositories, remote provider accounts, commit history and background repository updates. It is published by **Kastrick** (Copyright © 2026) under the **Apache License 2.0**. No subscription, paid tier or account is required to use the app. It uses top-and-bottom tab navigation with no permanent sidebar. The Repositories page is the local-machine homepage; GitHub/GitLab account repositories live separately under Accounts. The current Tauri 2 shell is the portable host while the Windows-specific wl_ui hosting contract is prepared for its upcoming WinUI 3 / Win32 backends.
+**By Kastrick** · Native Git Workspace
+
+![GitManager logo](frontend/static/image/git-managar-orange_default-black.png)
+
+**GitManager** is a **free, open-source** cross-platform Rust desktop application for local Git repositories, remote provider accounts, commit history and background repository updates. It is released under the **Apache License 2.0**. No subscription, paid tier or account is required to use the app. It uses top-and-bottom tab navigation with no permanent sidebar. The Repositories page is the local-machine homepage; GitHub/GitLab account repositories live separately under Accounts. The current Tauri 2 shell is the portable host while the Windows-specific wl_ui hosting contract is prepared for its upcoming WinUI 3 / Win32 backends.
 
 ---
 
@@ -45,7 +49,7 @@ Implemented in `src-tauri/src/background_service.rs` and `src-tauri/src/watcher_
   - Whenever a repository has new upstream commits, it triggers both an OS desktop notification and an in-app interactive banner asking:
     > **"Hay you have `<X-REPO_NAME>` update do you want to update it?"**
 - **Clear Animated Loading Spinner**:
-  - Displays a crisp rotating SVG loading icon (`#service-spinner-icon` and `.loading-spinner.active-spin`) while scanning remotes or when clicking **"Yes, Update Now"** to pull/fast-forward the repository.
+  - Displays the GitManager loading mark: the orange ring rotates around the stationary center PNG while scanning remotes or when clicking **"Yes, Update Now"** to pull/fast-forward the repository.
 
 ---
 
@@ -144,11 +148,13 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 ## 6. Windows production installer and signing
 
-On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It creates a current-user NSIS application installer:
+On Windows, `py build.py build` prepares the architecture-matched private CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It produces the Tauri NSIS setup executable and WiX MSI, plus an additional comparison MSI from Master Packager Dev (MPDEV):
 
     target/release/bundle/nsis/GitManager-Setup.exe
+    target/release/bundle/msi/*.msi
+    target/windows-installers/*.msi
 
-The Windows MSI target is intentionally disabled for the per-user build. Tauri's generated MSI resource components currently use file key paths under the user profile, which fail Windows Installer ICE38/ICE64 validation. We do not suppress those checks: a valid per-user MSI needs HKCU registry key paths and explicit user-profile directory cleanup for every generated component. The NSIS installer already supports the required current-user install layout without elevation.
+The Tauri WiX MSI and MPDEV MSI are separate packaging outputs so their install, repair and uninstall behavior can be compared. The Microsoft Store MSIX is not part of this ordinary desktop build; use `py build.py --store=msix` for the dedicated Store package stream.
 
 The build also creates a separate first-run helper alongside the native binaries:
 

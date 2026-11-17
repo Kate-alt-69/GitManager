@@ -6,6 +6,27 @@ import {
 	EngineGrid,
 } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
+
+const BRAND_LOGO = "/image/git-managar-orange_default-white.png";
+const BRAND_RING = "/image/git-managar-orange-ring_default-white.png";
+const BRAND_CENTER = "/image/git-managar-orange-center_default-white.png";
+
+function BrandMark({ size = 36 }: { size?: number }) {
+	return (
+		<span className="gm-brand-mark" style={{ width: size, height: size }}>
+			<img src={BRAND_LOGO} alt="" aria-hidden="true" />
+		</span>
+	);
+}
+
+function LoadingLogo({ size = 76 }: { size?: number }) {
+	return (
+		<span className="gm-loading-logo" style={{ width: size, height: size }} aria-hidden="true">
+			<img className="gm-loading-logo-ring" src={BRAND_RING} alt="" />
+			<img className="gm-loading-logo-center" src={BRAND_CENTER} alt="" />
+		</span>
+	);
+}
 import { invoke, openDialog } from "../lib/tauri";
 import { RepositoryWorkspace } from "./repository-workspace";
 import type {
@@ -184,18 +205,10 @@ function Sidebar({
 	return (
 		<aside className="gm-sidebar">
 			<div className="gm-brand">
-				<div className="gm-brand-mark">
-					<svg viewBox="0 0 32 32" role="img" aria-label="GitManager">
-						<path d="M8 7.5 16 3l8 4.5v9L16 21l-8-4.5z" />
-						<path d="M16 21v8M8 16.5l8 4.5 8-4.5M16 12v9" />
-						<circle cx="8" cy="7.5" r="2.2" />
-						<circle cx="24" cy="7.5" r="2.2" />
-						<circle cx="16" cy="12" r="2.2" />
-					</svg>
-				</div>
+				<BrandMark />
 				<div className="gm-brand-name">
 					<strong>GitManager</strong>
-					<span>by Kastrick</span>
+					<span>By Kastrick</span>
 				</div>
 			</div>
 
@@ -1557,7 +1570,7 @@ function SetupDialog({
 		<div className="gm-modal-backdrop">
 			<div className="gm-modal gm-setup-modal">
 				<div className="gm-modal-heading">
-					<div className="gm-brand-mark small">GM</div>
+					<BrandMark size={42} />
 					<div><div className="gm-eyebrow">FIRST-RUN SETUP</div><h2>Set up your workspace</h2><p>Choose where GitManager should discover your projects.</p></div>
 				</div>
 				<div className="gm-root-list">
@@ -1604,8 +1617,11 @@ export function GitManagerApp() {
 		return (
 			<div className="gm-boot-screen" role="status" aria-live="polite">
 				<div className="gm-boot-card">
-					<div className="gm-boot-mark">GM</div>
-					<strong>Loading GitManager</strong>
+					<LoadingLogo />
+					<div className="gm-boot-brand">
+						<strong>GitManager</strong>
+						<span>By Kastrick</span>
+					</div>
 					<span>Starting your native workspace…</span>
 					<div className="gm-boot-progress"><i /></div>
 				</div>

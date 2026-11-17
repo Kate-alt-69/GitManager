@@ -1,0 +1,70 @@
+{
+  "$schema": "https://www.masterpackager.com/support-master-packager-dev/mpdev-schema.json",
+  "outputTypes": [
+    "msi"
+  ],
+  "outputDirectory": "target/windows-installers",
+  "outputFileName": "GitManager_$.version_$.platform",
+  "compressionLevel": "Normal",
+  "packageName": "GitManager",
+  "publisher": "Kastrick",
+  "version": "1.0.0.0",
+  "platform": "x64",
+  "installDir": "%ProgramFiles%\\Kastrick's Software\\GitManager",
+  "icon": "frontend/static/image/git-managar-orange_default-black.png",
+  "fileSystemEntries": [
+    {
+      "sourcePath": "%GITMANAGER_APP_SOURCE%",
+      "targetPath": "$.installDir"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "GitManager",
+      "description": "Git workspace manager by Kastrick",
+      "target": "$.installDir\\git-manager.exe",
+      "icon": "frontend/static/image/git-managar-orange_default-black.png"
+    }
+  ],
+  "msi": {
+    "installDir": "[LocalAppDataFolder]kastrick's_software\\GitManager",
+    "upgradeCode": "6B4A7D19-8E32-4C81-AF53-2D9B7E1C4065",
+    "properties": [
+      {
+        "name": "ALLUSERS",
+        "value": "2"
+      },
+      {
+        "name": "MSIINSTALLPERUSER",
+        "value": "1"
+      }
+    ],
+    "detectRunningProcesses": [
+      "git-manager.exe",
+      "crash_helper.exe",
+      "git-manager-service.exe"
+    ],
+    "packageDependencies": [
+      {
+        "namePattern": "Microsoft Edge WebView2 Runtime",
+        "install": {
+          "winGet": {
+            "id": "Microsoft.EdgeWebView2Runtime"
+          }
+        }
+      }
+    ]
+  },
+  "msix": {
+    "capabilities": [
+      "runFullTrust",
+      "internetClient",
+      "privateNetworkClientServer"
+    ],
+    "packageDescription": "GitManager — a native Git workspace manager by Kastrick.",
+    "digitalSignature": {
+      "signWith": "GenerateTestCertificate",
+      "timestampServer": "http://timestamp.sectigo.com"
+    }
+  }
+}

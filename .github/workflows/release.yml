@@ -90,6 +90,7 @@ jobs:
         include:
           - platform: windows-latest
           - platform: ubuntu-22.04
+          - platform: ubuntu-22.04-arm
           - platform: macos-latest
 
     runs-on: ${{ matrix.platform }}
@@ -102,13 +103,33 @@ jobs:
           python-version: "3.12"
 
       - name: Install Linux WebKitGTK & libgit2 dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.platform, 'ubuntu-22.04')
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev pkg-config
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev pkg-config rpm
 
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Master Packager Dev MSI toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          winget install --id MasterPackager.MasterPackagerDev --exact --silent --accept-package-agreements --accept-source-agreements
+          $candidates = @(
+            (Get-Command mpdev.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
+            "$env:ProgramFiles\Master Packager Ltd\Master Packager Dev\mpdev.exe",
+            "$env:ProgramFiles\Master Packager Dev\mpdev.exe"
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+          if (-not $candidates) {
+            $found = Get-ChildItem -Path "$env:ProgramFiles" -Filter mpdev.exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $candidates = @($found.FullName) }
+          }
+          if (-not $candidates) { throw "Master Packager Dev was installed by WinGet but mpdev.exe could not be located." }
+          "MPDEV_EXE=$($candidates[0])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $mpdevExe = [string]$candidates[0]
+          & "$mpdevExe" version
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev CLI failed its version check: $mpdevExe" }
 
       - name: Import optional Windows production signing certificate
         if: runner.os == 'Windows'
@@ -150,15 +171,8 @@ jobs:
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
         run: |
-          $installer = "target/release/bundle/nsis/GitManager-Setup.exe"
-          $setupHelper = "target/release/GitManager-Setup.exe"
-          $wixInstaller = Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" | Select-Object -First 1
-          if (-not (Test-Path -LiteralPath $installer)) { throw "GitManager-Setup.exe NSIS installer was not created." }
-          if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
-          if (-not $wixInstaller) { throw "The Tauri WiX MSI installer was not created." }
-
-          $signTargets = @("target/release/git-manager.exe", "target/release/git-manager-service.exe", "target/release/crash_helper.exe", "target/release/gitm.exe", $installer, $wixInstaller.FullName)
-          $verifyTargets = $signTargets + @("target/release/gitm.exe", $setupHelper)
+          $signTargets = @("target/windows-package/source/git-manager.exe", "target/windows-package/source/resources/git-manager-service.exe", "target/windows-package/source/resources/crash_helper.exe", "target/windows-package/source/resources/gitm.exe", "target/windows-package/source/resources/gitmanager-setup.exe")
+          $verifyTargets = $signTargets
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
           } else {
@@ -169,7 +183,7 @@ jobs:
               }
             }
 
-            # gitm and GitManager-Setup are signed before Tauri embeds them as sidecars.
+            # All app and helper executables are signed before MPDEV packages the raw app bundle.
             $kits = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\bin"
             if (-not (Test-Path $kits)) { $kits = Join-Path $env:ProgramFiles "Windows Kits\10\bin" }
             $signtool = Get-ChildItem -LiteralPath $kits -Directory | Sort-Object Name -Descending |
@@ -180,6 +194,23 @@ jobs:
               if (Test-Path $target) { & $signtool verify /pa /v $target; if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $target" } }
             }
           }
+
+      - name: Build the additional MSI with Master Packager Dev
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $appRoot = Resolve-Path "target/windows-package/source"
+          if (-not (Test-Path (Join-Path $appRoot "git-manager.exe"))) { throw "The staged GitManager executable is missing." }
+          $env:GITMANAGER_APP_SOURCE = $appRoot.Path
+          & $env:MPDEV_EXE build "installer/master-packager/package.json" --working-dir "$PWD" --use-msbuild-message-format true
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev failed to build the GitManager MSI." }
+          $outputs = @(Get-ChildItem "target/windows-installers" -File -ErrorAction SilentlyContinue)
+          $msi = @($outputs | Where-Object { $_.Extension -eq ".msi" })
+          $msix = @($outputs | Where-Object { $_.Extension -eq ".msix" })
+          if ($msi.Count -ne 1 -or $msix.Count -ne 0) {
+            throw "Expected exactly one MPDEV MSI and no MSIX in the desktop installer stream; found MSI=$($msi.Count), MSIX=$($msix.Count)."
+          }
+          Write-Host "Created MPDEV comparison MSI: $($msi[0].FullName)"
 
       - name: Remove imported signing certificate
         if: runner.os == 'Windows' && always()
@@ -200,7 +231,10 @@ jobs:
           path: |
             target/release/bundle/**
             target/release/gitm*
-            target/release/GitManager-Setup*
+            target/release/git-manager*.exe
+            target/release/crash_helper*.exe
+            target/release/gitmanager-setup*.exe
+            target/windows-installers/*.msi
           if-no-files-found: error
           compression-level: 9
 

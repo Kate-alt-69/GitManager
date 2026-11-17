@@ -525,6 +525,7 @@ mod branch_switch_tests {
         let mut checkout = CheckoutBuilder::new();
         checkout.force();
         repo.checkout_head(Some(&mut checkout)).unwrap();
+        drop(main_commit);
         drop(repo);
         path
     }

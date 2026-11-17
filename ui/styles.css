@@ -61,10 +61,12 @@ body {
   justify-content: center;
   width: 36px;
   height: 36px;
+  flex: 0 0 36px;
+  overflow: hidden;
   border-radius: 9px;
-  background: linear-gradient(135deg, #238636, #1f6feb);
-  color: #ffffff;
+  background: transparent;
 }
+.brand-logo img { display: block; width: 100%; height: 100%; object-fit: contain; }
 
 .brand-title {
   font-size: 15px;
@@ -877,12 +879,15 @@ body {
 }
 
 .loading-spinner {
-  flex-shrink: 0;
+  position: relative;
+  display: inline-block;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
 }
-
-.loading-spinner.active-spin {
-  animation: gitmanager-spin 0.95s linear infinite;
-}
+.loading-spinner img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
+.loading-spinner.active-spin .loading-ring { animation: gitmanager-spin 0.95s linear infinite; }
+.loading-spinner .loading-center { z-index: 1; }
 
 .service-status-pill {
   display: inline-flex;
@@ -1854,7 +1859,7 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
   *,*::before,*::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
-.brand-logo { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; }
+.brand-logo { background: transparent; border: 0; color: #c9d1d9; }
 .btn-primary { background: #238636; border-color: rgba(240,246,252,.1); }
 .btn-primary:hover { background: #2ea043; }
 
@@ -2552,7 +2557,7 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
 @media (max-width: 1120px) {
   .topbar { grid-template-columns: auto minmax(270px,1fr) auto; gap: 12px; padding-inline: 16px; }
   .app-tab { min-width: 103px; padding-inline: 10px; }
-  .brand-subtitle { display: none; }
+  .brand-subtitle { display: block; }
   .repo-toolbar-main { align-items: flex-start; flex-direction: column; }
   .repo-search-wrap { width: 100%; max-width: 520px; }
   .repo-toolbar-filters { justify-content: flex-start; }

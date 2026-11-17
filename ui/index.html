@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GitManager — Pure-Rust &amp; Tauri v2 Git Explorer</title>
+    <title>GitManager by Kastrick — Native Git Workspace</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -11,12 +11,9 @@
       <header class="topbar">
         <div class="brand" aria-label="GitManager">
           <div class="brand-logo" aria-hidden="true">
-            <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle>
-              <path d="M6 9v6"></path><path d="M18 9a9 9 0 0 1-9 9"></path>
-            </svg>
+            <img src="../frontend/static/image/git-managar-orange_default-white.png" alt="" />
           </div>
-          <div class="brand-copy"><div class="brand-title-row"><h1 class="brand-title">GitManager</h1><span id="app-version-badge" class="app-version-badge">v—</span></div><span class="brand-subtitle">Your Git workspace</span></div>
+          <div class="brand-copy"><div class="brand-title-row"><h1 class="brand-title">GitManager</h1><span id="app-version-badge" class="app-version-badge">v—</span></div><span class="brand-subtitle">By Kastrick</span></div>
         </div>
         <nav class="top-tab-row" aria-label="Main navigation" role="tablist">
           <button class="app-tab active" type="button" role="tab" aria-selected="true" aria-controls="page-repositories" data-page="repositories">
@@ -30,10 +27,10 @@
           </button>
         </nav>
         <div id="service-status-pill" class="service-status-pill" title="Background repository update service">
-          <svg id="service-spinner-icon" class="loading-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity="0.25" stroke-width="3"></circle>
-            <path d="M12 3a9 9 0 0 1 9 9" stroke="#58a6ff" stroke-width="3" stroke-linecap="round"></path>
-          </svg><span id="service-status-text">Svc: Starting…</span>
+          <span id="service-spinner-icon" class="loading-spinner" aria-hidden="true">
+            <img class="loading-ring" src="../frontend/static/image/git-managar-orange-ring_default-white.png" alt="" />
+            <img class="loading-center" src="../frontend/static/image/git-managar-orange-center_default-white.png" alt="" />
+          </span><span id="service-status-text">Svc: Starting…</span>
         </div>
       </header>
       <div id="update-notifications-tray" class="update-notifications-tray"></div>
