@@ -56,6 +56,8 @@ const MAX_REPOSITORY_INDEX_BYTES: u64 = 64 * 1024 * 1024;
 pub struct PersistedRepositoryIndex {
     pub schema_version: u32,
     pub indexed_at_unix_ms: u64,
+    #[serde(default)]
+    pub scan_settings_hash: String,
     pub truncated: bool,
     pub repositories: Vec<GitRepositoryInfo>,
 }
@@ -112,7 +114,10 @@ pub fn load_persisted_repository_index() -> Result<Option<PersistedRepositoryInd
     Ok(Some(index))
 }
 
-pub fn save_persisted_repository_index(report: &ScanReport) -> Result<PersistedRepositoryIndex, String> {
+pub fn save_persisted_repository_index(
+    report: &ScanReport,
+    scan_settings_hash: &str,
+) -> Result<PersistedRepositoryIndex, String> {
     let path = repository_index_path()?;
     let parent = path.parent()
         .ok_or_else(|| "Repository index path has no parent directory.".to_string())?;
@@ -143,6 +148,7 @@ pub fn save_persisted_repository_index(report: &ScanReport) -> Result<PersistedR
     let index = PersistedRepositoryIndex {
         schema_version: REPOSITORY_INDEX_VERSION,
         indexed_at_unix_ms,
+        scan_settings_hash: scan_settings_hash.to_string(),
         truncated: report.truncated,
         repositories: report.repositories.clone(),
     };
@@ -546,6 +552,20 @@ mod tests {
         should_visit_directory,
     };
     use std::path::{Path, PathBuf, MAIN_SEPARATOR};
+
+    #[test]
+    fn persisted_repository_index_accepts_a_legacy_record_without_settings_hash() {
+        let legacy = serde_json::json!({
+            "schema_version": 1,
+            "indexed_at_unix_ms": 123,
+            "truncated": false,
+            "repositories": []
+        });
+        let index: super::PersistedRepositoryIndex =
+            serde_json::from_value(legacy).expect("legacy index remains readable");
+        assert_eq!(index.scan_settings_hash, "");
+        assert_eq!(index.indexed_at_unix_ms, 123);
+    }
 
     #[test]
     fn classifies_dependency_directory_paths() {
