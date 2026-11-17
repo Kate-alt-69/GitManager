@@ -346,14 +346,13 @@ def name_windows_setup_installer(project_root: Path, release: bool = True) -> Op
 
 
 WINDOWS_PACKAGING_WINGET_PACKAGES = (
-    ("WiX Toolset v3", "WiXToolset.WiXToolset"),
-    ("NSIS", "NSIS.NSIS"),
-    ("Master Packager Dev", "MasterPackager.MasterPackagerDev"),
+    ("NSIS fallback installer", "NSIS.NSIS"),
+    ("Master Packager Dev (required MSI/MSIX packager)", "MasterPackager.MasterPackagerDev"),
 )
 
 
 def windows_packaging_search_directories() -> List[Path]:
-    """Return likely install locations for WiX, NSIS and Master Packager Dev."""
+    """Return likely install locations for NSIS and Master Packager Dev."""
     roots = []
     for env_name in ("ProgramFiles(x86)", "ProgramFiles"):
         value = os.environ.get(env_name)
@@ -368,9 +367,6 @@ def windows_packaging_search_directories() -> List[Path]:
         directories.extend([
             root / "NSIS",
             root / "NSIS" / "Bin",
-            root / "WiX Toolset v3.14" / "bin",
-            root / "WiX Toolset v3.13" / "bin",
-            root / "WiX Toolset v3.12" / "bin",
             root / "Master Packager Ltd" / "Master Packager Dev",
             root / "Master Packager" / "Master Packager Dev",
             root / "Master Packager Dev",
@@ -438,18 +434,12 @@ def setup_windows_packaging_tools() -> int:
             return result
 
     refresh_windows_packaging_path()
-    wix_dirs = [
-        directory for directory in windows_packaging_search_directories()
-        if (directory / "candle.exe").is_file() and (directory / "light.exe").is_file()
-    ]
     nsis_dirs = [
         directory for directory in windows_packaging_search_directories()
         if (directory / "makensis.exe").is_file()
     ]
     mpdev = find_master_packager_dev_cli()
     missing = []
-    if not wix_dirs:
-        missing.append("WiX v3 (candle.exe and light.exe)")
     if not nsis_dirs:
         missing.append("NSIS (makensis.exe)")
     if mpdev is None:
@@ -466,7 +456,7 @@ def setup_windows_packaging_tools() -> int:
     if code != 0:
         log_err(f"Master Packager Dev could not report its version: {error or version or code}")
         return 1
-    log_ok("WiX v3, NSIS and Master Packager Dev are installed and discoverable.")
+    log_ok("NSIS fallback and required Master Packager Dev are installed and discoverable.")
     log_info(f"Master Packager Dev: {version}")
     return 0
 
@@ -514,8 +504,8 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
         return 1
 
     targets = set(windows_config.get("bundle", {}).get("targets", []))
-    if not {"nsis", "msi"}.issubset(targets):
-        log_err("The Windows Tauri configuration must keep both the NSIS and MSI targets enabled.")
+    if "nsis" not in targets or "msi" in targets:
+        log_err("The Windows Tauri configuration must keep NSIS enabled as the fallback and leave MSI/MSIX to Master Packager Dev.")
         return 1
 
     expected_install_dir = "$LOCALAPPDATA\\kastrick's_software\\GitManager"
@@ -531,7 +521,7 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
         log_err("The NSIS post-install hook does not verify the bundled Python runtime.")
         return 1
 
-    log_ok("Windows installer inputs are complete: Python runtime, cleaner, NSIS hook, NSIS and WiX targets.")
+    log_ok("Windows installer inputs are complete: private Python runtime, cleaner, NSIS fallback and MPDEV package path.")
     return 0
 
 
