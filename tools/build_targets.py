@@ -131,6 +131,11 @@ def can_build_locally(target: BuildTarget) -> tuple[bool, str]:
             "Windows ARM64 requires the Visual Studio ARM64 C++ toolchain. "
             "Use the Windows ARM64 workflow runner or install that toolchain first."
         )
+    if target.platform == "windows" and host_arch == "arm64" and target.architecture != "arm64":
+        return False, (
+            "The Windows ARM64 runner is configured for native ARM64 builds. "
+            "Use the Windows x64 runner for x64 and x86 application targets."
+        )
     return True, ""
 
 
