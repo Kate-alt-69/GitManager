@@ -20,6 +20,12 @@
 - **OS Native Library Check**:
   - Checks WebView2/Win32 on Windows 10/11, `webkit2gtk-4.1` / `gtk+-3.0` / `openssl` via `pkg-config` on Linux, and Xcode Command Line Tools on macOS.
 
+Install the current machine's compiler, SDK and packaging prerequisites (Windows also prepares Ubuntu under WSL2):
+
+    py build.py setup-build-tools
+
+See [Build environment setup](docs/build-environment-setup.md) for the native/WSL build workflow and the macOS host requirement.
+
 Run the interactive target selector and press Enter to build every architecture the current machine can build:
 
 ```powershell
