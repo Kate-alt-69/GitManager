@@ -7,7 +7,7 @@ import { Button, EmptyState, Field, Switch } from "./shared-ui";
 
 type CleanerScope = "repository" | "system" | "remote";
 
-function CleanerPage({ repositories, onRefresh, initialRepoPath }: { repositories: GitRepository[]; onRefresh: () => void; initialRepoPath?: string }) {
+export function CleanerPage({ repositories, onRefresh, initialRepoPath }: { repositories: GitRepository[]; onRefresh: () => void; initialRepoPath?: string }) {
 	const [scope, setScope] = useState<CleanerScope>("repository");
 	const [repoPath, setRepoPath] = useState(initialRepoPath || repositories[0]?.path || "");
 	useEffect(() => { if (initialRepoPath) setRepoPath(initialRepoPath); }, [initialRepoPath]);
