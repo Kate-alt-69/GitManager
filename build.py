@@ -2126,7 +2126,7 @@ def main() -> int:
     parser.add_argument(
         "--master-packager",
         action="store_true",
-        help="Deprecated compatibility flag. MPDEV is now automatic and mandatory for Windows installer builds.",
+        help="Compatibility flag. MPDEV always builds Windows MSI and MSIX for --type=installer; this option is no longer required.",
     )
     parser.add_argument(
         "-store", "--store",
