@@ -16,19 +16,26 @@
 - **OS Native Library Check**:
   - Checks WebView2/Win32 on Windows 10/11, `webkit2gtk-4.1` / `gtk+-3.0` / `openssl` via `pkg-config` on Linux, and Xcode Command Line Tools on macOS.
 
-```bash
+```powershell
 # Check installed Rust/Tauri/OS dependencies only
-python3 build.py deps
+py build.py deps
 
-# Run in development mode (uses your already-installed Rust toolchain)
-python3 build.py dev
+# Run in development mode
+py build.py dev
 
-# Build optimized native release binaries (GitManager GUI with built-in headless background mode, plus CLI/setup sidecars)
-python3 build.py build
+# Build all seven supported desktop targets (requires authenticated GitHub CLI)
+py build.py --build=all --type=installer
 
-# Prepare the isolated CPython runtime used by Windows installers
-python3 build.py prepare-runtime
+# Build one exact target locally
+py build.py --build='windows(10,x64)' --type=installer
+py build.py --build='windows(11,x86)' --type=app
+py build.py --build='linux(x64)' --type=app
+
+# Prepare the isolated CPython runtime for the current Windows target
+py build.py prepare-runtime
 ```
+
+Build target selection, supported architectures, GitHub Actions dispatch, Linux runtime testing and the `build/.rcache` / `build/dist` layout are documented in [docs/build-matrix.md](docs/build-matrix.md).
 
 ---
 
