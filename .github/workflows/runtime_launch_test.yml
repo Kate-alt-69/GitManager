@@ -1,0 +1,105 @@
+name: Linux Runtime Launch Test
+
+on:
+  push:
+    branches: [main, master, "feature/**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-runtime-\${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-runtime-launch:
+    name: Build and launch GitManager on Linux x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
+      CARGO_TARGET_DIR: \${{ github.workspace }}/build/.rcache
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+      WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GDK_BACKEND: x11
+    steps:
+      - name: Check out GitManager
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux desktop and WebKit runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file pkg-config \
+            libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libfuse2 xvfb xauth dbus-x11 time
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the Linux x64 app without creating installers
+        run: python build.py --build='linux(x64)' --type=app --debug
+
+      - name: Verify the expected executable exists
+        shell: bash
+        run: |
+          APP="build/.rcache/x86_64-unknown-linux-gnu/debug/git-manager"
+          test -x "$APP"
+          file "$APP"
+          ldd "$APP" | tee build/linux-runtime-ldd.txt
+          if grep -q "not found" build/linux-runtime-ldd.txt; then
+            echo "The Linux executable has unresolved shared-library dependencies."
+            exit 1
+          fi
+
+      - name: Launch the actual Tauri UI under a virtual X display
+        shell: bash
+        run: |
+          set +e
+          APP="build/.rcache/x86_64-unknown-linux-gnu/debug/git-manager"
+          mkdir -p build/runtime-test
+          dbus-run-session -- xvfb-run -a \
+            /usr/bin/time -v \
+            timeout --signal=TERM --kill-after=10s 45s \
+            env GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
+            "$APP" --crash-helper-child \
+            2>&1 | tee build/runtime-test/linux-launch.log
+          status=\${PIPESTATUS[0]}
+          set -e
+
+          if [ "$status" -eq 124 ]; then
+            echo "GitManager remained alive for the full 45-second launch window."
+          elif [ "$status" -eq 0 ]; then
+            echo "GitManager exited before the launch window ended; treating this as a startup failure."
+            exit 1
+          else
+            echo "GitManager launch failed with exit code $status."
+            exit "$status"
+          fi
+
+      - name: Upload runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitmanager-linux-runtime-diagnostics
+          path: |
+            build/runtime-test/
+            build/linux-runtime-ldd.txt
+          if-no-files-found: warn
+          retention-days: 14
