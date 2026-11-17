@@ -1927,14 +1927,14 @@ def run_build_or_dev(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="GitManager native dependency, runtime and installer build script"
+        description="GitManager local dependency, architecture and installer build script"
     )
     parser.add_argument(
         "mode",
         nargs="?",
         default="build",
         choices=["deps", "check", "dev", "build", "frontend-build", "frontend-dev", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node", "setup-packaging-tools"],
-        help="Action: deps, check, dev, build, frontend-build, frontend-dev, prepare-runtime, prepare-sidecar, or prepare-cloud-node.",
+        help="Action: deps, check, dev, build, frontend-build, frontend-dev, prepare-runtime, prepare-sidecar, prepare-cloud-node, or setup-packaging-tools.",
     )
     parser.add_argument(
         "--release",
@@ -1950,18 +1950,18 @@ def main() -> int:
     parser.add_argument(
         "--install-tauri-cli",
         action="store_true",
-        help="Install the Rust `tauri-cli` crate via `cargo install tauri-cli` if not already present.",
+        help="Install the Rust tauri-cli crate if it is not already present.",
     )
     parser.add_argument(
         "--install-packaging-tools",
         action="store_true",
-        help="Install WiX v3, NSIS and Master Packager Dev through WinGet before a Windows build.",
+        help="Install the required Windows MPDEV packager and NSIS fallback through WinGet.",
     )
     parser.add_argument(
         "-build", "--build",
         dest="build_target",
-        default="all",
-        help="Build target: all, windows, linux, macos, or windows(10,x64), windows(11,x86), linux(arm64), linux(armv7), macos(x64). Default: all (GitHub Actions matrix).",
+        default=None,
+        help="Local target: all architectures supported by this host (default), windows, linux, macos, or an exact target such as windows(10,x64), windows(11,arm64), linux(arm64), or macos(x64). No GitHub Actions dispatch is performed.",
     )
     parser.add_argument(
         "-type", "--type",
@@ -1973,61 +1973,33 @@ def main() -> int:
     parser.add_argument(
         "--master-packager",
         action="store_true",
-        help="Build the additional experimental Master Packager Dev MSI (Windows only).",
+        help="Deprecated compatibility flag. MPDEV is now automatic and mandatory for Windows installer builds.",
     )
     parser.add_argument(
         "-store", "--store",
         dest="store_target",
         choices=["flatpak", "msix", "all"],
-        help="Build a separate store-distribution package: flatpak, msix, or all.",
+        help="Build a store package locally: flatpak on Linux or msix on Windows. 'all' requires separate native Linux and Windows builds.",
     )
 
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parent
-    if args.store_target:
-        if args.mode != "build":
-            log_err("--store can only be used with the build action.")
-            return 2
-        return dispatch_store_build(args.store_target)
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
 
-    if args.mode == "build":
-        try:
-            selection_kind, selected_targets = parse_build_selection(args.build_target)
-        except ValueError as error:
-            log_err(str(error))
-            return 2
-        if selection_kind in ("all", "group"):
-            return dispatch_build_matrix(args.build_target.lower(), args.build_type)
-        target = selected_targets[0]
-        can_build, reason = can_build_locally(target)
-        if not can_build:
-            allow_ci_cross_compile = (
-                os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
-                and os.environ.get("GITMANAGER_ALLOW_CROSS_COMPILE") == "1"
-            )
-            if not allow_ci_cross_compile:
-                log_warn(reason)
-                log_info(f"Dispatching exact target to its native GitHub Actions runner: {target.selector}")
-                return dispatch_build_matrix(args.build_target.lower(), args.build_type)
-            log_warn(reason)
-            log_info("Using the explicitly configured GitHub Actions cross-compilation toolchain for this target.")
-        os.environ["CARGO_BUILD_TARGET"] = target.triple
-        os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
-        os.environ["GITMANAGER_BUILD_SELECTOR"] = args.build_target.lower()
-        log_info(f"Selected target: {target.selector} ({target.triple})")
-        log_info(f"Rust build cache: {os.environ['CARGO_TARGET_DIR']}")
-        log_info(f"Artifacts: {project_root / 'build' / 'dist' / target.output_name}")
-
-    print("=" * 72)
-    print(" GitManager — Pure-Rust Tauri v2 Dependency & Toolchain Manager")
-    print("=" * 72)
+    if args.store_target and args.mode != "build":
+        log_err("--store can only be used with the build action.")
+        return 2
+    if args.store_target == "all":
+        log_err(
+            "--store=all cannot build both store formats from one operating system. "
+            "Run --store=flatpak on Linux and --store=msix on Windows; both build locally."
+        )
+        return 2
 
     if args.mode == "setup-packaging-tools":
         return setup_windows_packaging_tools()
     if args.mode == "prepare-runtime":
         return prepare_windows_python_runtime(project_root)
-
     if args.install_packaging_tools:
         packaging_setup_result = setup_windows_packaging_tools()
         if packaging_setup_result != 0:
@@ -2045,6 +2017,35 @@ def main() -> int:
             str(project_root),
         ])
 
+    selected_targets = []
+    if args.mode == "build":
+        try:
+            selection = args.build_target or prompt_build_selection()
+            selected_targets = resolve_local_build_targets(selection)
+        except (RuntimeError, ValueError) as error:
+            log_err(str(error))
+            return 2
+
+        if args.store_target:
+            expected_platform = "linux" if args.store_target == "flatpak" else "windows"
+            if host_platform() != expected_platform:
+                log_err(
+                    f"--store={args.store_target} must be built locally on {expected_platform}; "
+                    f"this computer is {host_platform()}. The build script will not dispatch a remote build."
+                )
+                return 2
+            wrong_targets = [target.selector for target in selected_targets if target.platform != expected_platform]
+            if wrong_targets:
+                log_err(
+                    f"--store={args.store_target} cannot package target(s) for another operating system: "
+                    + ", ".join(wrong_targets)
+                )
+                return 2
+
+    print("=" * 72)
+    print(" GitManager — Local Tauri v2 Dependency & Toolchain Manager")
+    print("=" * 72)
+
     check_os_system_dependencies()
     sanitize_tauri_v2_config(project_root)
 
@@ -2054,7 +2055,7 @@ def main() -> int:
 
     report_dependency_count(project_root, toolchain_arg)
     log_info(
-        "Cargo's later n/N progress meter counts compilation units (including build scripts and "
+        "Cargo's n/N progress meter counts compilation units (including build scripts and "
         "host/target variants), not unique crates; use the package-scoped dependency graph counts above."
     )
 
@@ -2071,13 +2072,50 @@ def main() -> int:
     if args.mode == "prepare-sidecar":
         return build_gitm_sidecar(project_root, toolchain_arg, is_release)
 
+    if args.mode == "build":
+        results = []
+        for target in selected_targets:
+            configure_local_target(project_root, target)
+            if args.store_target:
+                result = build_local_store_package(
+                    project_root=project_root,
+                    store=args.store_target,
+                    target=target,
+                    toolchain_arg=toolchain_arg,
+                    has_cargo_tauri=has_cargo_tauri,
+                    release=is_release,
+                )
+            else:
+                result = run_build_or_dev(
+                    project_root=project_root,
+                    mode="build",
+                    toolchain_arg=toolchain_arg,
+                    has_cargo_tauri=has_cargo_tauri,
+                    release=is_release,
+                    bundle=args.build_type == "installer",
+                )
+            results.append((target, result))
+            if result == 0:
+                log_ok(f"Completed local build: {target.selector}")
+            else:
+                log_err(f"Local build failed for {target.selector} (exit code {result}).")
+
+        failed = [(target, result) for target, result in results if result != 0]
+        if failed:
+            log_err(
+                f"{len(failed)} of {len(results)} selected local target(s) failed: "
+                + ", ".join(target.selector for target, _ in failed)
+            )
+            return failed[0][1] or 1
+        log_ok(f"Completed {len(results)} local build target(s).")
+        return 0
+
     return run_build_or_dev(
         project_root=project_root,
         mode=args.mode,
         toolchain_arg=toolchain_arg,
         has_cargo_tauri=has_cargo_tauri,
         release=is_release,
-        build_master_packager=args.master_packager,
         bundle=args.build_type == "installer",
     )
 
