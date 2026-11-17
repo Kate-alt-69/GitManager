@@ -82,7 +82,7 @@ py build.py --store=flatpak
 py build.py --store=msix
 ```
 
-Flatpak requires the local Linux Flatpak SDK, `flatpak-builder` and `dpkg-deb`. The Microsoft Store path requires Windows and MPDEV. `--store=all` is intentionally rejected because Flatpak and Microsoft Store MSIX require different native operating systems; run the two commands on their respective machines. Homebrew/Linuxbrew remains deferred.
+Flatpak requires `flatpak`, `flatpak-builder` and `dpkg-deb`; its packaging script installs the GNOME 51 runtime and SDK for the current user. The Microsoft Store path requires Windows and MPDEV. `--store=all` is intentionally rejected because Flatpak and Microsoft Store MSIX require different native operating systems; run the two commands on their respective machines. Homebrew/Linuxbrew remains deferred.
 
 ## Output layout
 
