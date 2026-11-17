@@ -241,15 +241,12 @@ pub fn save_conflict_resolution(
     }
     let parent = file.parent()
         .ok_or_else(|| "The selected conflict file has no parent directory.".to_string())?;
-    let file_name = file.file_name()
-        .ok_or_else(|| "The selected conflict file has no file name.".to_string())?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     let temporary = parent.join(format!(
-        ".{}.gitmanager-{}-{nonce}.tmp",
-        file_name.to_string_lossy(),
+        ".gitmanager-conflict-{}-{nonce}.tmp",
         std::process::id(),
     ));
 
@@ -269,8 +266,7 @@ pub fn save_conflict_resolution(
     #[cfg(windows)]
     {
         let backup = parent.join(format!(
-            ".{}.gitmanager-{}-{nonce}.previous",
-            file_name.to_string_lossy(),
+            ".gitmanager-conflict-{}-{nonce}.previous",
             std::process::id(),
         ));
         fs::rename(&file, &backup)
