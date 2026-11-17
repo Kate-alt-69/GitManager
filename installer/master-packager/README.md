@@ -6,11 +6,11 @@ Master Packager Dev (MPDEV) creates an additional Windows **MSI** from GitManage
 
 - Tauri NSIS: `GitManager-Setup.exe`
 - Tauri WiX: `*.msi`
-- MPDEV comparison MSI: `GitManager_1.0.0.0_x64.msi`
+- MPDEV comparison MSI: `GitManager_<version>_x64.msi`
 
 The separate Microsoft Store MSIX is built only by `py build.py --store=msix` through `.github/workflows/store-build.yml`. It uses `installer/store/msix/package.json` and is deliberately not emitted by this desktop installer workflow.
 
-The MPDEV package definition is `package.json`. It packages the Tauri app bundle, including the desktop executable, crash supervisor, background service, CLI/setup sidecars, cleaner, and bundled CPython runtime.
+The MPDEV package definition is `package.json`. The build overrides its four-part MSI version from `src-tauri/tauri.conf.json` so the installer version stays aligned with the desktop application. It packages the Tauri app bundle, including the desktop executable, crash supervisor, background service, CLI/setup sidecars, cleaner, and bundled CPython runtime.
 
 ## Install the build tool
 
