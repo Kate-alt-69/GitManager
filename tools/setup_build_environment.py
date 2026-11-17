@@ -17,6 +17,11 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
+try:
+    from tools.build_targets import BuildTarget, can_build_locally, host_platform, parse_build_selection
+except ModuleNotFoundError:
+    from build_targets import BuildTarget, can_build_locally, host_platform, parse_build_selection
+
 
 WINDOWS_VS_COMPONENTS = (
     "Microsoft.VisualStudio.Workload.VCTools",
@@ -24,11 +29,9 @@ WINDOWS_VS_COMPONENTS = (
 )
 
 WINDOWS_WINGET_PACKAGES = (
-    ("Rustup", "Rustlang.Rustup"),
     ("Node.js 22", "OpenJS.NodeJS.22"),
     ("Master Packager Dev", "MasterPackager.MasterPackagerDev"),
     ("NSIS", "NSIS.NSIS"),
-    ("Microsoft Edge WebView2 Runtime", "Microsoft.EdgeWebView2Runtime"),
 )
 
 WINDOWS_RUST_TARGETS = (
@@ -107,6 +110,45 @@ def _find_rustup() -> Optional[str]:
     return None
 
 
+def _find_executable(name: str) -> Optional[str]:
+    found = shutil.which(name)
+    if found:
+        return found
+    if platform.system() == "Windows":
+        profile = os.environ.get("USERPROFILE")
+        if profile:
+            for candidate in (
+                Path(profile) / ".cargo" / "bin" / (name + ".exe"),
+                Path(profile) / ".cargo" / "bin" / name,
+            ):
+                if candidate.is_file():
+                    return str(candidate)
+    else:
+        candidate = Path.home() / ".cargo" / "bin" / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _confirm_install(component: str, target: str, *, default_yes: bool) -> bool:
+    """Ask before changing the machine; explicitly requested targets default to Yes."""
+    answer_label = "Y/n" if default_yes else "y/N"
+    while True:
+        try:
+            answer = input(
+                f"Do you want to install {component} to build {target}? [{answer_label}] "
+            ).strip().casefold()
+        except (EOFError, OSError):
+            answer = ""
+        if not answer:
+            return default_yes
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("Please answer yes or no.", flush=True)
+
+
 def _install_rustup_unix() -> int:
     curl = shutil.which("curl")
     shell = shutil.which("sh")
@@ -147,8 +189,8 @@ def _ensure_rustup_toolchain() -> int:
             return result
         active = "stable"
 
-    cargo = shutil.which("cargo")
-    rustc = shutil.which("rustc")
+    cargo = _find_executable("cargo")
+    rustc = _find_executable("rustc")
     if not cargo or not rustc:
         _log("Rustup has an active toolchain but cargo/rustc are not visible. Reopen the terminal and rerun setup-build-tools.")
         return 2
@@ -171,6 +213,17 @@ def _node_major(command: str = "node") -> Optional[int]:
         return None
     match = re.search(r"v?(\d+)", output)
     return int(match.group(1)) if match else None
+
+
+def _winget_is_installed(package_id: str) -> bool:
+    winget = shutil.which("winget.exe") or shutil.which("winget")
+    if not winget:
+        return False
+    code, output, _ = _run([
+        winget, "list", "--id", package_id, "--exact",
+        "--accept-source-agreements",
+    ], capture=True)
+    return code == 0 and package_id.casefold() in output.casefold()
 
 
 def _winget_install(package_id: str, *, override: Optional[str] = None) -> int:
@@ -286,42 +339,84 @@ def _setup_visual_studio_build_tools() -> int:
     return 2
 
 
-def _ubuntu_build_setup_script() -> str:
-    """Return the idempotent Ubuntu 24.04/WSL build-prerequisite installer."""
-    packages = " ".join(UBUNTU_BUILD_PACKAGES)
+def _ubuntu_environment_probe_script(include_flatpak: bool) -> str:
+    """Return a non-mutating probe for required Ubuntu packages and SDKs."""
+    packages = list(UBUNTU_BUILD_PACKAGES)
+    if include_flatpak:
+        packages.extend(("flatpak", "flatpak-builder"))
+    required = " ".join(packages)
+    flatpak_probe = ""
+    if include_flatpak:
+        flatpak_probe = r"""
+command -v flatpak >/dev/null 2>&1 || missing+=(flatpak)
+command -v flatpak-builder >/dev/null 2>&1 || missing+=(flatpak-builder)
+flatpak info --user org.gnome.Platform//51 >/dev/null 2>&1 || missing+=(org.gnome.Platform//51)
+flatpak info --user org.gnome.Sdk//51 >/dev/null 2>&1 || missing+=(org.gnome.Sdk//51)
+command -v bwrap >/dev/null 2>&1 || missing+=(bubblewrap)
+"""
     return r"""
-set -euo pipefail
-
-sudo apt-get update
-if apt-cache show libfuse2t64 >/dev/null 2>&1; then
-  FUSE_PACKAGE=libfuse2t64
-else
-  FUSE_PACKAGE=libfuse2
+set -u
+missing=()
+for package in REQUIRED_PACKAGES; do
+  dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' || missing+=("$package")
+done
+node_major=0
+if command -v node >/dev/null 2>&1; then
+  node_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
 fi
-sudo apt-get install -y BUILD_PACKAGES_PLACEHOLDER "$FUSE_PACKAGE"
-
-curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/gitmanager-nodesource-setup.sh
-sudo bash /tmp/gitmanager-nodesource-setup.sh
-sudo apt-get install -y nodejs
-
-if ! command -v rustup >/dev/null 2>&1; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/gitmanager-rustup-init.sh
-  sh /tmp/gitmanager-rustup-init.sh -y --profile minimal
+if [ "$node_major" -lt 22 ]; then missing+=(Node.js-22); fi
+if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+  missing+=(Rust-toolchain)
 fi
-. "$HOME/.cargo/env"
-if ! rustup show active-toolchain >/dev/null 2>&1; then
-  rustup toolchain install stable --profile minimal
-  rustup default stable
+FLATPAK_PROBE
+if [ "${#missing[@]}" -gt 0 ]; then
+  printf 'MISSING_BUILD_TOOLS=%s\n' "$(IFS=,; echo "${missing[*]}")"
+  exit 1
 fi
-case "$(uname -m)" in
-  aarch64|arm64) RUST_TARGET=aarch64-unknown-linux-gnu ;;
-  armv7l) RUST_TARGET=armv7-unknown-linux-gnueabihf ;;
-  *) RUST_TARGET=x86_64-unknown-linux-gnu ;;
-esac
-rustup target add "$RUST_TARGET"
+echo "BUILD_TOOLS_READY=1"
+""".replace("REQUIRED_PACKAGES", required).replace("FLATPAK_PROBE", flatpak_probe)
 
-# Keep the user-level background worker testable in WSL without overwriting
-# unrelated distro settings.
+
+def _ubuntu_build_setup_script(*, include_flatpak: bool, configure_wsl: bool) -> str:
+    """Return an idempotent Ubuntu build-prerequisite installer."""
+    packages = list(UBUNTU_BUILD_PACKAGES)
+    if include_flatpak:
+        packages.extend(("flatpak", "flatpak-builder"))
+    package_args = " ".join(packages)
+
+    node_setup = r"""
+node_major=0
+if command -v node >/dev/null 2>&1; then
+  node_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
+fi
+if [ "$node_major" -lt 22 ]; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/gitmanager-nodesource-setup.sh
+  sudo bash /tmp/gitmanager-nodesource-setup.sh
+  sudo apt-get install -y nodejs
+fi
+"""
+    rust_setup = r"""
+# Preserve an existing working compiler. Only install Rustup when no usable
+# cargo/rustc pair exists on the machine.
+if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+  if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/gitmanager-rustup-init.sh
+    sh /tmp/gitmanager-rustup-init.sh -y --profile minimal
+    . "$HOME/.cargo/env"
+  fi
+  if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+    rustup toolchain install stable --profile minimal
+    rustup default stable
+  fi
+fi
+if command -v rustc >/dev/null 2>&1; then
+  echo "Using existing Rust toolchain: $(rustc --version)"
+fi
+"""
+    wsl_config = ""
+    if configure_wsl:
+        wsl_config = r"""
+# Enable WSL systemd while preserving unrelated settings.
 sudo python3 - <<'PY'
 from pathlib import Path
 
@@ -351,173 +446,437 @@ else:
 path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 print("GITMANAGER_WSL_SYSTEMD_CONFIG=READY")
 PY
-
+"""
+    flatpak_setup = ""
+    if include_flatpak:
+        flatpak_setup = r"""
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak install --user --noninteractive --assumeyes flathub org.gnome.Platform//51 org.gnome.Sdk//51
-
-echo "GitManager SDK setup: Node $(node --version); Rust $(rustc --version); Flatpak $(flatpak --version)"
-if bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev /usr/bin/true >/dev/null 2>&1; then
-  echo "GITMANAGER_BWRAP_CHECK=PASS"
-else
-  echo "GITMANAGER_BWRAP_CHECK=FAIL"
-  echo "WARNING: this Linux environment cannot create the Bubblewrap namespaces required by flatpak-builder."
-  echo "Use a native Linux installation or VM for the Flatpak build if the sandbox test continues to fail."
+if ! bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev /usr/bin/true >/dev/null 2>&1; then
+  echo "Flatpak Builder cannot create the user namespaces required by Bubblewrap in this environment." >&2
+  echo "Use a native Linux installation or a VM for Flatpak packaging." >&2
+  exit 3
 fi
-""".replace("BUILD_PACKAGES_PLACEHOLDER", packages)
+"""
+    return (
+        "set -euo pipefail\n"
+        "sudo apt-get update\n"
+        "if apt-cache show libfuse2t64 >/dev/null 2>&1; then FUSE_PACKAGE=libfuse2t64; else FUSE_PACKAGE=libfuse2; fi\n"
+        f"sudo apt-get install -y {package_args} \"$FUSE_PACKAGE\"\n"
+        + node_setup
+        + rust_setup
+        + wsl_config
+        + flatpak_setup
+        + 'echo "GitManager build prerequisites: Node $(node --version 2>/dev/null || echo missing); Rust $(rustc --version 2>/dev/null || echo missing)"\n'
+    )
 
 
-def _setup_wsl_linux() -> int:
+def _ubuntu_environment_ready(
+    command_prefix: Sequence[str],
+    *,
+    include_flatpak: bool,
+) -> bool:
+    script = _ubuntu_environment_probe_script(include_flatpak)
+    code, output, error = _run(
+        [*command_prefix, "bash", "-lc", script],
+        capture=True,
+    )
+    if code == 0 and "BUILD_TOOLS_READY=1" in output:
+        return True
+    if output:
+        _log(output)
+    elif error:
+        _log(error)
+    return False
+
+
+def _setup_wsl_linux(*, include_flatpak: bool, default_yes: bool) -> int:
     wsl = shutil.which("wsl.exe") or shutil.which("wsl")
     if not wsl:
-        _log("WSL is not installed. Run PowerShell as Administrator and execute: wsl --install --distribution Ubuntu-24.04")
-        return 2
+        _log("WSL was not found. It is required to build Linux from this Windows host.")
+        if not _confirm_install(
+            "WSL2 and Ubuntu 24.04",
+            "Linux" + ("/Flatpak" if include_flatpak else ""),
+            default_yes=default_yes,
+        ):
+            _log("Skipped WSL2 installation; the existing Windows Rust toolchain has been left unchanged.")
+            return 2
+        _log("Run PowerShell as Administrator if Windows requests elevation.")
+        result = _run([
+            "wsl", "--install", "--distribution", UBUNTU_WSL_DISTRIBUTION, "--no-launch",
+        ])[0]
+        if result == 0:
+            _log("WSL/Ubuntu installation has started. Restart Windows if requested, launch Ubuntu once to create its Linux user, then rerun setup-build-tools.")
+        return result or 2
 
     _, output, _ = _run([wsl, "--list", "--quiet"], capture=True)
     normalized = output.replace("\x00", "").replace("\r", "")
     distributions = [line.strip() for line in normalized.splitlines() if line.strip()]
-    distro = next((name for name in distributions if name.casefold() == UBUNTU_WSL_DISTRIBUTION.casefold()), None)
+    distro = next(
+        (name for name in distributions if name.casefold() == UBUNTU_WSL_DISTRIBUTION.casefold()),
+        None,
+    )
     if not distro:
-        _log("Installing Ubuntu 24.04 under WSL2 for native Linux/Flatpak builds.")
-        install = _run([
+        if not _confirm_install(
+            "Ubuntu 24.04 under WSL2",
+            "Linux" + ("/Flatpak" if include_flatpak else ""),
+            default_yes=default_yes,
+        ):
+            _log("Skipped Ubuntu installation; the existing Windows Rust toolchain has been left unchanged.")
+            return 2
+        result = _run([
             wsl, "--install", "--distribution", UBUNTU_WSL_DISTRIBUTION, "--no-launch",
         ])[0]
-        if install != 0:
-            _log("WSL installation needs an elevated terminal or a Windows restart. Complete the Ubuntu 24.04 WSL installation, launch Ubuntu once to create its Linux user, then rerun setup-build-tools.")
-            return install
-        _log("Ubuntu 24.04 is being installed. Restart Windows if requested, launch Ubuntu once from the Start menu to create your Linux username/password, then rerun setup-build-tools.")
-        return 2
+        if result == 0:
+            _log("Ubuntu 24.04 is installing. Restart Windows if requested, launch Ubuntu once to create your Linux username/password, then rerun setup-build-tools.")
+        return result or 2
 
+    prefix = [wsl, "--distribution", distro, "--"]
     probe = _run([
-        wsl, "--distribution", distro, "--", "bash", "-lc",
+        *prefix, "bash", "-lc",
         'test -f /etc/os-release && . /etc/os-release && test "$ID" = ubuntu',
     ])[0]
     if probe != 0:
         _log("Ubuntu is installed but its first-run account setup is incomplete. Launch Ubuntu from the Start menu, create its Linux username/password, then rerun setup-build-tools.")
         return 2
 
-    script = _ubuntu_build_setup_script()
-    result = _run([
-        wsl, "--distribution", distro, "--", "bash", "-lc", script,
-    ])[0]
+    if _ubuntu_environment_ready(prefix, include_flatpak=include_flatpak):
+        _log("Linux prerequisites are already installed. Reusing the existing Rust toolchain; no compiler reinstall is needed.")
+        return 0
+
+    package_description = (
+        "Tauri Linux libraries, Node.js 22, and Flatpak Builder with GNOME 51 runtime/SDK"
+        if include_flatpak
+        else "Tauri GTK/WebKitGTK libraries, Node.js 22, and Linux build prerequisites"
+    )
+    target = "Linux/Flatpak" if include_flatpak else "Linux"
+    if not _confirm_install(package_description, target, default_yes=default_yes):
+        _log("Installation declined. Existing Rust and SDK components were left untouched.")
+        return 2
+
+    script = _ubuntu_build_setup_script(
+        include_flatpak=include_flatpak,
+        configure_wsl=True,
+    )
+    result = _run([*prefix, "bash", "-lc", script])[0]
     if result == 0:
-        _log("Ubuntu/WSL build tools and GNOME 51 Flatpak runtime/SDK are installed.")
-        _log("systemd is enabled in /etc/wsl.conf. After closing WSL work, run 'wsl --terminate Ubuntu-24.04' once, then reopen Ubuntu to apply it.")
+        _log("Ubuntu/WSL build tools are ready.")
+        if include_flatpak:
+            _log("GNOME 51 Flatpak runtime/SDK installed and Bubblewrap namespace probe passed.")
+        _log("systemd is enabled in /etc/wsl.conf. Run 'wsl --terminate Ubuntu-24.04' after closing WSL work, then reopen Ubuntu to apply it.")
+    elif result == 3:
+        _log("Linux desktop builds may work, but Flatpak packaging is not supported by this WSL namespace configuration. Use native Linux or a VM for Flatpak.")
     return result
 
 
-def _setup_windows() -> int:
-    if not (shutil.which("winget.exe") or shutil.which("winget")):
+def _visual_studio_ready() -> bool:
+    vswhere = _vswhere()
+    if not vswhere:
+        return False
+    code, output, _ = _run([
+        vswhere, "-latest", "-products", "*",
+        "-requires", *WINDOWS_VS_COMPONENTS,
+        "-property", "installationPath",
+    ], capture=True)
+    return code == 0 and bool(output.strip())
+
+
+def _ensure_windows_rust(targets: Sequence[BuildTarget], *, default_yes: bool) -> int:
+    cargo = _find_executable("cargo")
+    rustc = _find_executable("rustc")
+    if not cargo or not rustc:
+        if not _confirm_install("Rustup and the Rust stable toolchain", "Windows", default_yes=default_yes):
+            _log("Rust installation skipped. No existing cargo/rustc compiler was found.")
+            return 2
+        result = _winget_install("Rustlang.Rustup")
+        if result != 0:
+            return result
+        cargo = _find_executable("cargo")
+        rustc = _find_executable("rustc")
+        if not cargo or not rustc:
+            _log("Rustup was installed but cargo/rustc are not yet visible. Reopen PowerShell and rerun setup-build-tools.")
+            return 2
+
+    code, version, _ = _run([rustc, "--version"], capture=True)
+    if code != 0:
+        return 2
+    _log(f"Using existing Rust compiler: {version}. No Rust reinstall will be performed.")
+
+    rustup = _find_rustup()
+    if not rustup:
+        _log("rustup is not managing the existing compiler; preserving it without changing the toolchain.")
+        return 0
+
+    code, installed_output, _ = _run([rustup, "target", "list", "--installed"], capture=True)
+    if code != 0:
+        return 0
+    installed = set(installed_output.splitlines())
+    missing = sorted({target.triple for target in targets if target.triple not in installed})
+    if not missing:
+        _log("All requested Windows Rust target components are already installed.")
+        return 0
+    if not _confirm_install(
+        "Rust target component(s) " + ", ".join(missing),
+        "Windows",
+        default_yes=default_yes,
+    ):
+        _log("Rust targets were not installed; the current Rust toolchain was left unchanged.")
+        return 2
+    return _run([rustup, "target", "add", *missing])[0]
+
+
+def _setup_windows(
+    targets: Sequence[BuildTarget],
+    *,
+    default_yes: bool,
+) -> int:
+    winget = shutil.which("winget.exe") or shutil.which("winget")
+    if not winget:
         _log("WinGet was not found. Install or update Microsoft's App Installer, then rerun setup-build-tools.")
         return 1
 
     failures = []
-    vs_result = _setup_visual_studio_build_tools()
-    if vs_result != 0:
-        failures.append(("Visual Studio C++ Build Tools", vs_result))
+    target_description = "Windows MSI/MSIX and NSIS installers"
+
+    if not _visual_studio_ready():
+        if _confirm_install(
+            "Visual Studio C++ Build Tools and the Windows SDK",
+            target_description,
+            default_yes=default_yes,
+        ):
+            result = _setup_visual_studio_build_tools()
+            if result != 0:
+                failures.append(("Visual Studio C++ Build Tools", result))
+        else:
+            failures.append(("Visual Studio C++ Build Tools (declined)", 2))
+    else:
+        _log("Visual Studio C++ Build Tools and the required Windows SDK are already installed.")
 
     if _node_major() is None or _node_major() < 22:
-        result = _winget_install("OpenJS.NodeJS.22")
-        if result != 0:
-            failures.append(("Node.js 22", result))
+        if _confirm_install("Node.js 22", "the GitManager frontend for Windows", default_yes=default_yes):
+            result = _winget_install("OpenJS.NodeJS.22")
+            if result != 0:
+                failures.append(("Node.js 22", result))
+        else:
+            failures.append(("Node.js 22 (declined)", 2))
     else:
         _log("Node.js 22+ is already available.")
 
     for display_name, package_id in WINDOWS_WINGET_PACKAGES:
-        result = _winget_install(package_id)
-        if result != 0:
-            failures.append((display_name, result))
+        if _winget_is_installed(package_id):
+            _log(display_name + " is already installed.")
+            continue
+        if _confirm_install(display_name, target_description, default_yes=default_yes):
+            result = _winget_install(package_id)
+            if result != 0:
+                failures.append((display_name, result))
+        else:
+            failures.append((display_name + " (declined)", 2))
 
-    rust_result = _ensure_rustup_toolchain()
-    rustup = _find_rustup()
-    if rust_result == 0 and rustup:
-        targets = list(WINDOWS_RUST_TARGETS)
-        if platform.machine().lower() in ("arm64", "aarch64"):
-            targets.append("aarch64-pc-windows-msvc")
-        result = _run([rustup, "target", "add", *targets])[0]
-        if result != 0:
-            failures.append(("Windows Rust targets", result))
-    else:
-        failures.append(("Rustup toolchain verification", rust_result or 2))
-        _log("Reopen PowerShell if Rustup was just installed, then rerun setup-build-tools.")
+    rust_result = _ensure_windows_rust(targets, default_yes=default_yes)
+    if rust_result != 0:
+        failures.append(("Windows Rust toolchain/targets", rust_result))
 
-    _log("WebView2 is supplied by supported Windows 10/11 installations; verify it on older/custom Windows images.")
-
-    wsl_result = _setup_wsl_linux()
-    if wsl_result != 0:
-        failures.append(("Ubuntu 24.04 WSL2 Linux/Flatpak environment", wsl_result))
-
-    for name, result in failures:
-        _log(f"{name} did not finish successfully (exit code {result}).")
+    _log("WebView2 is supplied by supported Windows 10/11 installations (Windows 10 version 1803+).")
     if failures:
+        for name, result in failures:
+            _log(f"{name} was not prepared (exit code {result}).")
         return max(result for _, result in failures)
-    _log("Windows x64/x86 toolchain and Ubuntu/WSL2 Linux/Flatpak toolchain are ready.")
-    _log("Windows ARM64 app builds still require a native Windows ARM64 host in this build matrix.")
-    _log("macOS builds still require a real Mac with Apple's Xcode SDK.")
+
+    _log("Windows build prerequisites are ready. Existing Rust was reused.")
     return 0
 
 
-def _setup_native_linux() -> int:
+def _setup_native_linux(
+    *,
+    targets: Sequence[BuildTarget],
+    include_flatpak: bool,
+    default_yes: bool,
+) -> int:
     if not shutil.which("apt-get"):
         _log("Automatic Linux setup currently targets Debian/Ubuntu. Install the Tauri WebKitGTK dependencies and Flatpak Builder SDK using your distribution's package manager.")
         return 2
-    result = _run(["bash", "-lc", _ubuntu_build_setup_script()])[0]
+
+    if _ubuntu_environment_ready([], include_flatpak=include_flatpak):
+        _log("Linux prerequisites are already installed. Reusing the existing Rust toolchain; no compiler reinstall is needed.")
+        return 0
+
+    package_description = (
+        "Tauri GTK/WebKitGTK libraries, Node.js 22, Rust, and GNOME 51 Flatpak runtime/SDK"
+        if include_flatpak
+        else "Tauri GTK/WebKitGTK libraries, Node.js 22, and Linux build prerequisites"
+    )
+    target_name = "Linux/Flatpak" if include_flatpak else "Linux"
+    if not _confirm_install(package_description, target_name, default_yes=default_yes):
+        _log("Installation declined. Existing Rust and system packages were left untouched.")
+        return 2
+
+    result = _run([
+        "bash", "-lc",
+        _ubuntu_build_setup_script(include_flatpak=include_flatpak, configure_wsl=False),
+    ])[0]
     if result == 0:
-        _log("Linux Tauri dependencies, Node.js 22, Rust target and GNOME 51 Flatpak runtime/SDK are ready.")
+        _log("Native Linux build prerequisites are ready.")
+    elif result == 3:
+        _log("Flatpak Builder requires Bubblewrap user namespaces. Use a Linux kernel/configuration that supports unprivileged user namespaces.")
     return result
 
 
-def _setup_macos() -> int:
+def _setup_macos(
+    targets: Sequence[BuildTarget],
+    *,
+    default_yes: bool,
+) -> int:
     code, _, _ = _run(["xcode-select", "-p"], capture=True)
     if code != 0:
-        _log("Installing Xcode Command Line Tools. Complete the Apple installer dialog, then rerun setup-build-tools.")
+        if not _confirm_install("Apple Xcode Command Line Tools", "macOS", default_yes=default_yes):
+            _log("Xcode Command Line Tools were not installed.")
+            return 2
+        _log("Starting Apple's official Command Line Tools installer. Complete its dialog, then rerun setup-build-tools.")
         _run(["xcode-select", "--install"])
         return 2
 
     brew = shutil.which("brew")
-    if brew:
-        result = _run([brew, "install", "node@22", "pkg-config"])[0]
+    if _node_major() is None or _node_major() < 22:
+        if not brew:
+            _log("Node.js 22 is missing. Install it from https://nodejs.org/en/download/ and rerun setup-build-tools.")
+            return 2
+        if _confirm_install("Node.js 22 and pkg-config through Homebrew", "the GitManager frontend for macOS", default_yes=default_yes):
+            result = _run([brew, "install", "node@22", "pkg-config"])[0]
+            if result != 0:
+                return result
+            _run([brew, "link", "--overwrite", "--force", "node@22"])
+        else:
+            return 2
+    elif not shutil.which("pkg-config"):
+        if not brew or not _confirm_install("pkg-config through Homebrew", "Tauri on macOS", default_yes=default_yes):
+            return 2
+        result = _run([brew, "install", "pkg-config"])[0]
         if result != 0:
             return result
-        _run([brew, "link", "--overwrite", "--force", "node@22"])
-    elif _node_major() is None or _node_major() < 22:
-        _log("Homebrew is not installed. Install Node.js 22 from https://nodejs.org/en/download/ and rerun setup.")
-        return 2
 
+    cargo = _find_executable("cargo")
+    rustc = _find_executable("rustc")
     rustup = _find_rustup()
-    if not rustup:
+    if not cargo or not rustc:
+        if not _confirm_install("Rustup and the Rust stable toolchain", "macOS", default_yes=default_yes):
+            return 2
         result = _install_rustup_unix()
         if result != 0:
             return result
-    result = _ensure_rustup_toolchain()
-    rustup = _find_rustup()
-    if result != 0 or not rustup:
-        return result or 2
+        result = _ensure_rustup_toolchain()
+        if result != 0:
+            return result
+        rustup = _find_rustup()
+    else:
+        _log("Using existing Rust compiler: " + _run([rustc, "--version"], capture=True)[1] + ".")
 
-    result = _run([
-        rustup, "target", "add",
-        "x86_64-apple-darwin",
-        "aarch64-apple-darwin",
-    ])[0]
-    if result != 0:
-        return result
+    if not rustup:
+        _log("The existing Rust installation is not managed by rustup. Its native host target will be used unchanged.")
+        return 0
 
-    _log("Xcode Command Line Tools, Node.js 22 and both macOS Rust targets are ready.")
+    code, output, _ = _run([rustup, "target", "list", "--installed"], capture=True)
+    if code != 0:
+        return 0
+    installed = set(output.splitlines())
+    missing = sorted({target.triple for target in targets if target.triple not in installed})
+    if missing:
+        if not _confirm_install(
+            "Rust target component(s) " + ", ".join(missing),
+            "macOS",
+            default_yes=default_yes,
+        ):
+            _log("The current Rust toolchain was preserved; extra architecture targets were not installed.")
+            return 2
+        result = _run([rustup, "target", "add", *missing])[0]
+        if result != 0:
+            return result
+
+    _log("macOS build prerequisites are ready. Use the Mac's native Xcode SDK for packaging.")
     _log("Code signing/notarization still requires the appropriate Apple Developer credentials.")
     return 0
 
 
-def setup_build_environment() -> int:
-    """Prepare the current host's toolchain and, on Windows, Ubuntu under WSL2."""
+def setup_build_environment(
+    target_selection: Optional[str] = None,
+    store_target: Optional[str] = None,
+) -> int:
+    """Prepare only requested target SDKs; reuse installed Rust/toolchains."""
     system = platform.system()
-    _log("Preparing build prerequisites for " + system + " (" + platform.machine() + ").")
-    if system == "Windows":
-        return _setup_windows()
-    if system == "Linux":
-        return _setup_native_linux()
-    if system == "Darwin":
-        return _setup_macos()
-    _log("Unsupported build host: " + system)
-    return 2
+    host = host_platform()
+    explicit_request = target_selection is not None or store_target is not None
+
+    if store_target == "flatpak":
+        selected_platforms = {"linux"}
+    elif store_target == "msix":
+        selected_platforms = {"windows"}
+    elif store_target == "all":
+        selected_platforms = {"linux", "windows"}
+    elif target_selection:
+        _, parsed = parse_build_selection(target_selection)
+        selected_platforms = {target.platform for target in parsed}
+    else:
+        selected_platforms = {host}
+
+    if target_selection:
+        _, targets = parse_build_selection(target_selection)
+    elif store_target == "flatpak":
+        _, targets = parse_build_selection("linux")
+    elif store_target == "msix":
+        _, targets = parse_build_selection("windows")
+    elif store_target == "all":
+        _, targets = parse_build_selection("all")
+    else:
+        _, targets = parse_build_selection(host)
+
+    local_targets = []
+    for target in targets:
+        allowed, reason = can_build_locally(target)
+        if allowed:
+            local_targets.append(target)
+        elif target.platform in selected_platforms:
+            _log("Target architecture is not available on this machine: " + reason)
+
+    _log("Requested build platforms: " + ", ".join(sorted(selected_platforms)))
+    _log("Preparing prerequisites on " + system + " (" + platform.machine() + ").")
+
+    outcomes = []
+    if "windows" in selected_platforms:
+        if host == "windows":
+            windows_targets = [target for target in local_targets if target.platform == "windows"]
+            if not windows_targets:
+                windows_targets = [target for target in targets if target.platform == "windows"]
+            outcomes.append(_setup_windows(windows_targets, default_yes=True))
+        else:
+            _log("Windows SDK/MSVC/MPDEV installs require a native Windows host. Run setup-build-tools on Windows.")
+            outcomes.append(2)
+
+    if "linux" in selected_platforms:
+        include_flatpak = store_target in ("flatpak", "all")
+        if host == "windows":
+            outcomes.append(_setup_wsl_linux(include_flatpak=include_flatpak, default_yes=explicit_request))
+        elif host == "linux":
+            outcomes.append(_setup_native_linux(
+                targets=[target for target in targets if target.platform == "linux"],
+                include_flatpak=include_flatpak,
+                default_yes=True,
+            ))
+        else:
+            _log("Linux/Flatpak packaging needs a native Linux host or an Ubuntu WSL2 environment on Windows.")
+            outcomes.append(2)
+
+    if "macos" in selected_platforms:
+        mac_targets = [target for target in targets if target.platform == "macos"]
+        if host == "macos":
+            outcomes.append(_setup_macos(mac_targets, default_yes=True))
+        else:
+            _log("Apple's macOS SDK cannot be installed on this host. Build macOS packages on a real Mac with Xcode Command Line Tools.")
+            outcomes.append(2)
+
+    if outcomes and any(result != 0 for result in outcomes):
+        return max(result for result in outcomes)
+    _log("All requested host-supported build prerequisites are ready. Existing Rust toolchains were preserved.")
+    return 0
 
 
 def main() -> int:
