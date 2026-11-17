@@ -786,3 +786,473 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 		transition-duration: .01ms !important;
 	}
 }
+
+/* Square Visual Studio / VS Code inspired controls and navigation. */
+.gm-app-shell,
+.gm-app-shell * {
+	border-radius: 0 !important;
+}
+
+/* Keep genuinely circular status indicators and avatars circular. */
+.gm-app-shell .gm-user-avatar,
+.gm-app-shell .gm-online-dot,
+.gm-app-shell .gm-status-dot,
+.gm-app-shell .gm-footer i,
+.gm-app-shell .gm-connected-pill i,
+.gm-app-shell .gm-ci-indicator i,
+.gm-app-shell .gm-dirty-meta i,
+.gm-app-shell .gm-clean-meta i,
+.gm-app-shell .gm-commit-node,
+.gm-app-shell .gm-switch-track i {
+	border-radius: 50% !important;
+}
+
+/* Use a flat tab strip with a square hit area and a bottom active marker. */
+.gm-nav {
+	gap: 0;
+}
+
+.gm-nav-item {
+	min-height: 42px;
+	padding: 0 14px;
+	border: 0;
+	border-bottom: 2px solid transparent;
+	background: transparent;
+}
+
+.gm-nav-item:hover {
+	background: #151b23;
+}
+
+.gm-nav-item.active {
+	background: #161b22;
+	border: 0;
+	border-bottom: 2px solid #2f81f7;
+	box-shadow: none;
+	color: #e6edf3;
+}
+
+@media (max-width: 820px) {
+	.gm-nav-item {
+		min-height: 36px;
+		padding: 0 9px;
+	}
+}
+
+@media (max-width: 560px) {
+	.gm-nav-item {
+		padding: 0 7px;
+	}
+}
+
+/* Dense IDE workbench layout: Source Control | Explorer | Editor. */
+.gm-main {
+	max-width: 1800px;
+	padding: clamp(14px, 1.7vw, 26px) clamp(14px, 1.9vw, 30px) 34px;
+}
+
+.gm-detail-view {
+	width: 100%;
+	gap: 15px;
+}
+
+.gm-detail-heading {
+	align-items: center;
+}
+
+.gm-detail-stats {
+	border-radius: 0;
+}
+
+.gm-workspace-panel {
+	container-name: gm-workbench;
+	container-type: inline-size;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	padding: 0;
+	overflow: hidden;
+	border: 1px solid #303b48;
+	border-radius: 0;
+	background: #101720;
+	box-shadow: none;
+}
+
+.gm-workspace-heading {
+	min-height: 76px;
+	align-items: center;
+	padding: 13px 17px;
+	background: #151d27;
+}
+
+.gm-workspace-heading h2 {
+	font-size: 18px;
+	letter-spacing: -.025em;
+}
+
+.gm-workspace-heading p {
+	margin-top: 4px;
+	color: #91a0af;
+	font-size: 11px;
+}
+
+.gm-workspace-summary span {
+	min-width: 82px;
+	padding: 6px 9px;
+	border-radius: 0;
+	background: #101720;
+	font-size: 10px;
+	text-align: center;
+}
+
+.gm-workspace-toolbar {
+	min-height: 52px;
+	flex-wrap: wrap;
+	padding: 7px 10px;
+	border: 0;
+	border-top: 1px solid #2a3542;
+	border-bottom: 1px solid #2a3542;
+	border-radius: 0;
+	background: #0d141c;
+}
+
+.gm-workspace-source {
+	padding: 0;
+	border: 0;
+	border-right: 1px solid #303b48;
+	border-radius: 0;
+	background: transparent;
+}
+
+.gm-workspace-source button {
+	min-height: 34px;
+	padding: 0 14px;
+	border-radius: 0;
+}
+
+.gm-workspace-source button.active {
+	background: #1b2a3a;
+	box-shadow: inset 0 -2px #58a6ff;
+	color: #e6f2ff;
+}
+
+.gm-workspace-select {
+	height: 34px;
+	border-radius: 0;
+	background: #151d27;
+	font-size: 11px;
+}
+
+.gm-workspace-toolbar .gm-button {
+	min-height: 34px;
+	border-radius: 0;
+	font-size: 10px;
+}
+
+.gm-workspace-layout.gm-workbench-layout {
+	display: grid;
+	grid-template-columns: minmax(220px, .76fr) minmax(285px, .98fr) minmax(0, 2.15fr);
+	align-items: stretch;
+	gap: 0;
+	min-width: 0;
+	min-height: clamp(470px, 61vh, 700px);
+	border: 0;
+	background: #0d141c;
+}
+
+.gm-workbench-layout > .gm-workspace-card {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+	height: 100%;
+	border: 0;
+	border-right: 1px solid #303b48;
+	border-radius: 0;
+	background: #141c26;
+	box-shadow: none;
+}
+
+.gm-workbench-layout > .gm-workspace-card:last-child {
+	border-right: 0;
+}
+
+.gm-workbench-layout .gm-workspace-card-heading {
+	flex: 0 0 auto;
+	min-height: 58px;
+	padding: 10px 13px;
+	border-bottom: 1px solid #2d3946;
+	background: #182330;
+}
+
+.gm-workbench-layout .gm-workspace-card-heading h3 {
+	color: #e1eaf3;
+	font-size: 11px;
+	letter-spacing: .01em;
+}
+
+.gm-workbench-layout .gm-workspace-card-heading span {
+	color: #91a2b3;
+	font-size: 9px;
+}
+
+.gm-workbench-layout .gm-workspace-card-heading .gm-workspace-card-hint {
+	padding-left: 8px;
+	color: #9aabba;
+	font: 9px "JetBrains Mono", Consolas, monospace;
+	text-align: right;
+}
+
+.gm-workspace-clean {
+	color: #81c995 !important;
+}
+
+.gm-workbench-layout .gm-workspace-change-list,
+.gm-workbench-layout .gm-workspace-file-list {
+	flex: 1 1 auto;
+	min-height: 0;
+	max-height: none;
+	overflow: auto;
+	overscroll-behavior: contain;
+}
+
+.gm-workbench-layout .gm-workspace-change {
+	min-height: 38px;
+	gap: 7px;
+	padding: 4px 9px;
+}
+
+.gm-workbench-layout .gm-workspace-change:hover,
+.gm-workbench-layout .gm-workspace-file:hover {
+	background: #1b2938;
+}
+
+.gm-workbench-layout .gm-workspace-change-path strong,
+.gm-workbench-layout .gm-workspace-file-open strong {
+	font-size: 10px;
+}
+
+.gm-workbench-layout .gm-workspace-change-path small,
+.gm-workbench-layout .gm-workspace-file-open small {
+	font-size: 9px;
+}
+
+.gm-workbench-layout .gm-workspace-state {
+	padding: 2px 5px;
+	font-size: 8px;
+}
+
+.gm-workbench-layout .gm-workspace-mini {
+	padding: 4px 7px;
+	border-radius: 0;
+	font-size: 9px;
+}
+
+.gm-workbench-layout .gm-workspace-empty {
+	color: #8999aa;
+	font-size: 10px;
+}
+.gm-workbench-layout .gm-workspace-files > .gm-workspace-empty,
+.gm-workbench-layout .gm-workspace-changes > .gm-workspace-empty:not(.gm-workspace-source-empty) {
+	display: grid;
+	flex: 1 1 auto;
+	place-items: center;
+	padding: 22px;
+	text-align: center;
+}
+
+.gm-workbench-layout .gm-workspace-source-empty {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 7px;
+	padding: 24px 18px;
+	text-align: center;
+}
+
+.gm-workspace-source-empty strong,
+.gm-workspace-editor-empty strong {
+	color: #cbd8e5;
+	font-size: 12px;
+	font-weight: 650;
+}
+
+.gm-workspace-source-empty span,
+.gm-workspace-editor-empty span {
+	max-width: 34ch;
+	color: #77889a;
+	font-size: 10px;
+	line-height: 1.6;
+}
+
+.gm-workbench-layout .gm-workspace-actions {
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+	gap: 5px;
+	margin-top: auto;
+	padding: 9px;
+	border-top: 1px solid #2d3946;
+	background: #111922;
+}
+
+.gm-workbench-layout .gm-workspace-actions .gm-button {
+	flex: 1 1 auto;
+	min-height: 30px;
+	padding: 0 8px;
+	border-radius: 0;
+	font-size: 9px;
+}
+
+.gm-workbench-layout .gm-workspace-breadcrumbs {
+	flex: 0 0 auto;
+	min-height: 36px;
+	gap: 4px;
+	padding: 4px 9px;
+	border-bottom: 1px solid #2d3946;
+	background: #111922;
+}
+
+.gm-workbench-layout .gm-workspace-breadcrumbs button {
+	font-size: 9px;
+}
+
+.gm-workbench-layout .gm-workspace-file {
+	min-height: 33px;
+	padding: 2px 7px;
+}
+
+.gm-workbench-layout .gm-workspace-file-open {
+	grid-template-columns: 17px minmax(0, 1fr) auto;
+	gap: 6px;
+	padding: 3px;
+}
+
+.gm-workbench-layout .gm-workspace-delete {
+	padding: 3px 5px;
+	border-radius: 0;
+	font-size: 8px;
+	opacity: .45;
+}
+
+.gm-workbench-layout .gm-workspace-file:hover .gm-workspace-delete,
+.gm-workbench-layout .gm-workspace-delete:focus-visible {
+	opacity: 1;
+}
+
+.gm-workbench-layout .gm-workspace-preview {
+	position: static;
+	min-width: 0;
+	min-height: 0;
+}
+
+.gm-workbench-layout .gm-workspace-preview .gm-workspace-card-heading {
+	align-items: center;
+}
+
+.gm-workbench-layout .gm-workspace-preview .gm-workspace-card-heading > div {
+	min-width: 0;
+}
+
+.gm-workbench-layout .gm-workspace-preview .gm-workspace-card-heading span {
+	max-width: none;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gm-workbench-layout .gm-workspace-preview-text {
+	flex: 1 1 auto;
+	width: 100%;
+	min-height: 0;
+	max-height: none;
+	overflow: auto;
+	padding: 16px;
+	background: #0c1219;
+	color: #c7d4e1;
+	font-size: 11px;
+	line-height: 1.65;
+}
+
+.gm-workbench-layout .gm-workspace-editor-empty {
+	display: grid;
+	flex: 1 1 auto;
+	min-height: 0;
+	place-items: center;
+	padding: 32px;
+	background:
+		linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px),
+		#0c1219;
+	background-size: 24px 24px;
+	text-align: center;
+}
+
+.gm-workspace-editor-empty > div {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	max-width: 360px;
+	padding: 20px;
+	border: 1px solid #263646;
+	background: rgba(13, 20, 28, .94);
+}
+
+.gm-workspace-editor-empty span {
+	max-width: 38ch;
+}
+
+.gm-workbench-layout .gm-workspace-preview-meta {
+	flex: 0 0 auto;
+	padding: 8px 12px;
+	border-top: 1px solid #2d3946;
+	background: #111922;
+}
+
+/* Keep the workbench usable in narrower desktop windows and tablet layouts. */
+@container gm-workbench (max-width: 1080px) {
+	.gm-workspace-layout.gm-workbench-layout {
+		grid-template-columns: minmax(210px, .78fr) minmax(0, 1.45fr);
+		grid-template-rows: minmax(380px, 1fr) minmax(340px, .9fr);
+	}
+	.gm-workbench-layout > .gm-workspace-preview {
+		grid-column: 1 / -1;
+		min-height: 0;
+		border-top: 1px solid #303b48;
+		border-right: 0;
+	}
+}
+
+@container gm-workbench (max-width: 700px) {
+	.gm-workspace-layout.gm-workbench-layout {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: minmax(260px, 42vh) minmax(340px, 52vh) minmax(360px, 55vh);
+	}
+	.gm-workbench-layout > .gm-workspace-card {
+		border-right: 0;
+		border-bottom: 1px solid #303b48;
+	}
+	.gm-workbench-layout > .gm-workspace-preview {
+		grid-column: auto;
+		border-top: 0;
+		border-bottom: 0;
+	}
+}
+
+@media (max-width: 720px) {
+	.gm-detail-stats > div {
+		padding: 10px;
+	}
+	.gm-workspace-heading {
+		align-items: flex-start;
+		flex-direction: column;
+	}
+	.gm-workspace-summary {
+		width: 100%;
+	}
+	.gm-workspace-summary span {
+		flex: 1;
+	}
+}
