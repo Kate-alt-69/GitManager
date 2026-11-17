@@ -150,9 +150,9 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 On Windows, `py build.py build` prepares the architecture-matched private CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It produces the Tauri NSIS setup executable and WiX MSI, plus an additional comparison MSI from Master Packager Dev (MPDEV):
 
-    target/release/bundle/nsis/GitManager-Setup.exe
-    target/release/bundle/msi/*.msi
-    target/windows-installers/*.msi
+    build/.rcache/release/bundle/nsis/GitManager-Setup.exe
+    build/.rcache/release/bundle/msi/*.msi
+    build/.rcache/windows-installers/*.msi
 
 The Tauri WiX MSI and MPDEV MSI are separate packaging outputs so their install, repair and uninstall behavior can be compared. The Microsoft Store MSIX is not part of this ordinary desktop build; use `py build.py --store=msix` for the dedicated Store package stream.
 
