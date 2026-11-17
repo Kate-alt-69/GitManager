@@ -226,6 +226,86 @@ def cargo_target_root(project_root: Path) -> Path:
     return value if value.is_absolute() else project_root / value
 
 
+def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str) -> int:
+    """Stage the raw Windows app and every runtime/sidecar for MPDEV packaging."""
+    if platform.system() != "Windows":
+        return 0
+
+    target_dir = cargo_target_root(project_root)
+    profile_dir = target_dir / "release"
+    main_exe = profile_dir / "git-manager.exe"
+    if not main_exe.is_file():
+        log_err(f"Windows desktop executable is missing: {main_exe}")
+        return 1
+
+    try:
+        triple = resolve_rust_target_triple(toolchain_arg)
+    except RuntimeError as error:
+        log_err(str(error))
+        return 1
+
+    sidecar_dir = project_root / "src-tauri" / "binaries"
+    sidecars = {
+        "gitm.exe": sidecar_dir / f"gitm-{triple}.exe",
+        "gitmanager-setup.exe": sidecar_dir / f"gitmanager-setup-{triple}.exe",
+        "crash_helper.exe": sidecar_dir / f"crash_helper-{triple}.exe",
+        "git-manager-service.exe": sidecar_dir / f"git-manager-service-{triple}.exe",
+    }
+    missing = [name for name, source in sidecars.items() if not source.is_file()]
+    if missing:
+        log_err("Windows sidecar staging is incomplete; missing: " + ", ".join(missing))
+        return 1
+
+    staging = target_dir / "windows-package" / "source"
+    try:
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(main_exe, staging / "git-manager.exe")
+        resources = staging / "resources"
+        resources.mkdir(parents=True, exist_ok=True)
+        # Tauri's shell plugin resolves externalBin sidecars from the app
+        # resource directory. crash_helper also searches this exact location.
+        for name, source in sidecars.items():
+            shutil.copy2(source, resources / name)
+        (resources / "tools").mkdir(parents=True, exist_ok=True)
+        cleaner = project_root / "tools" / "gitmanager_cleaner.py"
+        if not cleaner.is_file():
+            raise FileNotFoundError(f"GitManager cleaner resource is missing: {cleaner}")
+        shutil.copy2(cleaner, resources / "tools" / cleaner.name)
+
+        python_source = project_root / "tools" / "runtime" / "python"
+        python_exe = python_source / "python.exe"
+        required_python = (python_exe, python_source / "python314.zip", python_source / "python314._pth")
+        missing_python = [path.name for path in required_python if not path.is_file()]
+        if missing_python:
+            raise FileNotFoundError("Bundled CPython runtime is incomplete: " + ", ".join(missing_python))
+        shutil.copytree(python_source, resources / "python", dirs_exist_ok=True)
+
+        # Fail closed before MPDEV if any packaged executable or the private
+        # interpreter is missing or empty. No machine-wide Python is used.
+        required = [
+            "git-manager.exe",
+            *(f"resources/{name}" for name in sidecars),
+            "resources/python/python.exe",
+            "resources/tools/gitmanager_cleaner.py",
+        ]
+        empty = [
+            relative for relative in required
+            if not (staging / relative).is_file() or (staging / relative).stat().st_size == 0
+        ]
+        if empty:
+            raise FileNotFoundError("Windows package staging is incomplete: " + ", ".join(empty))
+    except OSError as error:
+        log_err(f"Could not stage the Windows application for Master Packager Dev: {error}")
+        return 1
+
+    log_ok(f"Staged complete Windows app payload for MPDEV: {staging}")
+    log_info("Included git-manager.exe, crash_helper.exe, background service, gitm, setup helper, cleaner and private CPython.")
+    return 0
+
+
+
 def target_profile_dir(project_root: Path, release: bool = True) -> Path:
     root = cargo_target_root(project_root)
     triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
@@ -1809,6 +1889,9 @@ def run_build_or_dev(
 
         # App-only builds skip installer validation and bundler output checks.
         if bundle and platform.system() == "Windows":
+            stage_result = stage_windows_mpdev_package(project_root, toolchain_arg)
+            if stage_result != 0:
+                return stage_result
             if name_windows_setup_installer(project_root, release) is None:
                 return 1
             if name_windows_msi_installer(project_root, release) is None:
