@@ -29,8 +29,6 @@ function LoadingLogo({ size = 76 }: { size?: number }) {
 		</span>
 	);
 }
-import { invoke, openDialog } from "../lib/tauri";
-import { Button, EmptyState, Field, Glyph, ProviderMark, RepoAvatar, Switch } from "./shared-ui";
 
 const RepositoryWorkspace = dynamic(
 	() => import("./repository-workspace").then((module) => module.RepositoryWorkspace),
@@ -48,20 +46,6 @@ const CleanerPage = dynamic(
 	() => import("./cleaner-page").then((module) => module.CleanerPage),
 	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Developer Cleaner…</div> },
 );
-import {
-	parseInternalRoute,
-	repositoryRouteForItem,
-	routeLabel,
-	sectionRoute,
-} from "../lib/internal-routing";
-import type {
-	AppPreferences,
-	ArchiveSnapshot,
-	AppNotification,
-	BranchInfo,
-	GitRepository,
-	UpdateAlert,
-} from "../lib/types";
 
 type PageKey = "repositories" | "accounts" | "settings" | "cleaner";
 type RepoFilter = "all" | "remote" | "local";
