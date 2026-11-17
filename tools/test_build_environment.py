@@ -13,6 +13,18 @@ class BuildEnvironmentSetupPlanTests(unittest.TestCase):
         self.assertNotIn("Rustlang.Rustup", packages)
         self.assertNotIn("Microsoft.EdgeWebView2Runtime", packages)
 
+    def test_manually_installed_packagers_are_detected_without_winget(self):
+        with patch.object(SETUP, "_winget_is_installed", return_value=False), patch.object(
+            SETUP.shutil, "which",
+            side_effect=lambda name: "C:/Tools/mpdev.exe" if name in ("mpdev", "mpdev.exe") else None,
+        ):
+            self.assertTrue(SETUP._windows_package_available("MasterPackager.MasterPackagerDev"))
+        with patch.object(SETUP, "_winget_is_installed", return_value=False), patch.object(
+            SETUP.shutil, "which",
+            side_effect=lambda name: "C:/Tools/makensis.exe" if name in ("makensis", "makensis.exe") else None,
+        ):
+            self.assertTrue(SETUP._windows_package_available("NSIS.NSIS"))
+
     def test_visual_studio_setup_uses_native_cpp_workload_and_windows_sdk(self):
         self.assertIn("Microsoft.VisualStudio.Workload.VCTools", SETUP.WINDOWS_VS_COMPONENTS)
         self.assertIn("Microsoft.VisualStudio.Component.Windows11SDK.26100", SETUP.WINDOWS_VS_COMPONENTS)
