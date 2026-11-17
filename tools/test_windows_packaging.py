@@ -78,6 +78,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
             (ROOT / "installer" / "store" / "msix" / "package.json").read_text(encoding="utf-8")
         )
         self.assertEqual(desktop["outputTypes"], ["msi"])
+        self.assertNotIn("msix", desktop)
         self.assertEqual(store["outputTypes"], ["msix"])
 
     def test_mpdev_comparison_is_documented_as_an_additional_desktop_installer(self):
