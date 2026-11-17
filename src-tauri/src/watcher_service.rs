@@ -438,6 +438,22 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
+    // The UI is isolated in its own process group on Unix and a kill-on-close
+    // Job Object on Windows. Break away so the long-lived data engine does not
+    // inherit the UI's crash/exit termination boundary.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
     let mut child = command.spawn().map_err(|error| {
         format!(
             "Could not start required GitManager core service at {}: {error}",
