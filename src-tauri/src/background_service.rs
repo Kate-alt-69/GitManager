@@ -107,17 +107,20 @@ pub fn run() -> ! {
 
         match load_background_preferences() {
             Ok(preferences) => {
-                let _ = archive_watcher::restart_archive_watchers(&preferences);
-
                 let scan_settings = serde_json::to_string(&(
                     &preferences.scan_roots,
                     preferences.max_scan_depth,
                     preferences.include_hidden_dirs,
                     preferences.index_dependency_repositories,
                 )).unwrap_or_default();
-                let index_missing = load_persisted_repository_index()
-                    .map(|index| index.is_none())
-                    .unwrap_or(true);
+                let mut indexed_repositories = match load_persisted_repository_index() {
+                    Ok(index) => index.map(|index| index.repositories),
+                    Err(error) => {
+                        eprintln!("GitManager core service: repository index could not be loaded and will be rebuilt: {error}");
+                        None
+                    }
+                };
+                let index_missing = indexed_repositories.is_none();
                 let scan_requested = service_control.take_scan_request();
                 if scan_requested || index_missing || scan_settings != last_scan_settings {
                     eprintln!("GitManager core service: refreshing the repository index.");
@@ -135,6 +138,7 @@ pub fn run() -> ! {
                                     index.repositories.len(),
                                     if index.truncated { " (safety limit reached)" } else { "" },
                                 );
+                                indexed_repositories = Some(index.repositories);
                                 last_scan_settings = scan_settings;
                             }
                             Err(error) => {
@@ -145,6 +149,17 @@ pub fn run() -> ! {
                             eprintln!("GitManager core service: repository indexing failed: {error}");
                         }
                     }
+                }
+
+                // Archive watches consume the service's saved repository inventory.
+                // They never launch a second discovery walk over the configured roots.
+                if let Some(repositories) = indexed_repositories {
+                    let _ = archive_watcher::restart_archive_watchers_with_repositories(
+                        &preferences,
+                        repositories,
+                    );
+                } else {
+                    archive_watcher::stop_archive_watchers();
                 }
 
                 if last_cloud_archive_sync.elapsed() >= CLOUD_ARCHIVE_SYNC_INTERVAL {
