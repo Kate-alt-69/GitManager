@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import signal
 import socketserver
 import subprocess
 import sys
@@ -122,6 +123,7 @@ def main() -> int:
                 env=environment,
                 stdout=application_log,
                 stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
             print(f"Started GitManager UI (pid={process.pid}); observing for {args.duration}s.")
             deadline = time.monotonic() + args.duration
@@ -157,10 +159,26 @@ def main() -> int:
     except OSError as error:
         print(f"Could not launch GitManager: {error}", file=sys.stderr)
         if process and process.poll() is None:
-            process.kill()
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             process.wait()
         return 1
     finally:
+        if process and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=2)
