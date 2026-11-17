@@ -226,6 +226,48 @@ def _winget_is_installed(package_id: str) -> bool:
     return code == 0 and package_id.casefold() in output.casefold()
 
 
+def _windows_package_available(package_id: str) -> bool:
+    """Detect required native tools even when they were installed outside WinGet."""
+    if _winget_is_installed(package_id):
+        return True
+    if package_id == "OpenJS.NodeJS.22":
+        return (_node_major() or 0) >= 22
+
+    roots = []
+    for env_name in ("ProgramFiles(x86)", "ProgramFiles"):
+        value = os.environ.get(env_name)
+        if value:
+            roots.append(Path(value))
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        roots.extend([
+            Path(local_app_data) / "Programs",
+            Path(local_app_data) / "Microsoft" / "WinGet" / "Links",
+        ])
+
+    candidates = []
+    if package_id == "MasterPackager.MasterPackagerDev":
+        for root in roots:
+            candidates.extend([
+                root / "Master Packager Ltd" / "Master Packager Dev" / "mpdev.exe",
+                root / "Master Packager" / "Master Packager Dev" / "mpdev.exe",
+                root / "Master Packager Dev" / "mpdev.exe",
+                root / "mpdev.exe",
+            ])
+        return bool(shutil.which("mpdev") or shutil.which("mpdev.exe") or any(p.is_file() for p in candidates))
+
+    if package_id == "NSIS.NSIS":
+        for root in roots:
+            candidates.extend([
+                root / "NSIS" / "makensis.exe",
+                root / "NSIS" / "Bin" / "makensis.exe",
+                root / "makensis.exe",
+            ])
+        return bool(shutil.which("makensis") or shutil.which("makensis.exe") or any(p.is_file() for p in candidates))
+
+    return False
+
+
 def _winget_install(package_id: str, *, override: Optional[str] = None) -> int:
     winget = shutil.which("winget.exe") or shutil.which("winget")
     if not winget:
@@ -640,10 +682,6 @@ def _setup_windows(
     default_yes: bool,
 ) -> int:
     winget = shutil.which("winget.exe") or shutil.which("winget")
-    if not winget:
-        _log("WinGet was not found. Install or update Microsoft's App Installer, then rerun setup-build-tools.")
-        return 1
-
     failures = []
     target_description = "Windows MSI/MSIX and NSIS installers"
 
@@ -672,15 +710,19 @@ def _setup_windows(
         _log("Node.js 22+ is already available.")
 
     for display_name, package_id in WINDOWS_WINGET_PACKAGES:
-        if _winget_is_installed(package_id):
-            _log(display_name + " is already installed.")
+        if _windows_package_available(package_id):
+            _log(display_name + " is already installed and discoverable.")
             continue
-        if _confirm_install(display_name, target_description, default_yes=default_yes):
-            result = _winget_install(package_id)
-            if result != 0:
-                failures.append((display_name, result))
-        else:
+        if not _confirm_install(display_name, target_description, default_yes=default_yes):
             failures.append((display_name + " (declined)", 2))
+            continue
+        if not winget:
+            _log("WinGet is unavailable, so " + display_name + " cannot be installed automatically. Install Microsoft's App Installer or install the package manually.")
+            failures.append((display_name + " (WinGet unavailable)", 1))
+            continue
+        result = _winget_install(package_id)
+        if result != 0:
+            failures.append((display_name, result))
 
     rust_result = _ensure_windows_rust(targets, default_yes=default_yes)
     if rust_result != 0:
