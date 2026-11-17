@@ -30,6 +30,7 @@ py build.py --build=all --type=installer
 py build.py --build='windows(10,x64)' --type=installer
 py build.py --build='windows(11,x86)' --type=app
 py build.py --build='linux(x64)' --type=app
+py build.py --build='linux(armv7)' --type=installer
 
 # Prepare the isolated CPython runtime for the current Windows target
 py build.py prepare-runtime
