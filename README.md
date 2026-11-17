@@ -154,7 +154,7 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 On Windows, `py build.py --build='windows(10,x64)' --type=installer` prepares the architecture-matched isolated CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion, then creates both Tauri-native installers:
 
     build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/GitManager-Setup.exe
-    build/.rcache/x86_64-pc-windows-msvc/release/bundle/msi/GitManager.msi
+    build/.rcache/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
 
 The build also creates a separate first-run helper alongside the native binaries:
 
