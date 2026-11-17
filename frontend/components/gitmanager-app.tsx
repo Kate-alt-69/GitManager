@@ -165,11 +165,10 @@ function TopBar({
 	const label = routeLabel(currentRoute);
 
 	useEffect(() => {
-		if (openPanel !== "notifications" || !inAppNotificationsEnabled) return;
-		void onRefreshNotifications();
-		const timer = window.setInterval(() => void onRefreshNotifications(), 30000);
-		return () => window.clearInterval(timer);
-	}, [openPanel, onRefreshNotifications]);
+		if (openPanel === "notifications" && inAppNotificationsEnabled) {
+			void onRefreshNotifications();
+		}
+	}, [openPanel, inAppNotificationsEnabled, onRefreshNotifications]);
 
 	return (
 		<header className="gm-topbar">
