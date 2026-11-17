@@ -57,11 +57,11 @@ The Windows release workflow builds the additional MPDEV MSI from `installer/mas
 
 The MPDEV payload includes:
 
-- `GitManager.exe`
-- `crash_helper.exe`
-- `git-manager-service.exe`
-- `gitm.exe`
-- `GitManager-Setup.exe`
+- `git-manager.exe`
+- `resources/crash_helper.exe`
+- `resources/git-manager-service.exe`
+- `resources/gitm.exe`
+- `resources/gitmanager-setup.exe`
 - `resources/python/` (the private CPython embeddable runtime)
 - `resources/tools/gitmanager_cleaner.py`
 
