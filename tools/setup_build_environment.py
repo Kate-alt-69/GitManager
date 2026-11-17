@@ -28,6 +28,7 @@ WINDOWS_WINGET_PACKAGES = (
     ("Node.js 22", "OpenJS.NodeJS.22"),
     ("Master Packager Dev", "MasterPackager.MasterPackagerDev"),
     ("NSIS", "NSIS.NSIS"),
+    ("Microsoft Edge WebView2 Runtime", "Microsoft.EdgeWebView2Runtime"),
 )
 
 WINDOWS_RUST_TARGETS = (
@@ -128,6 +129,39 @@ def _install_rustup_unix() -> int:
         return _run([shell, str(installer), "-y", "--profile", "minimal"])[0]
 
 
+def _ensure_rustup_toolchain() -> int:
+    """Ensure rustup has an active compiler/toolchain before adding target stdlibs."""
+    rustup = _find_rustup()
+    if not rustup:
+        _log("rustup is not visible in this terminal. Reopen it after installation, then rerun setup-build-tools.")
+        return 2
+
+    code, active, _ = _run([rustup, "show", "active-toolchain"], capture=True)
+    if code != 0 or not active:
+        _log("No active Rust toolchain is configured; installing the minimal stable toolchain.")
+        result = _run([rustup, "toolchain", "install", "stable", "--profile", "minimal"])[0]
+        if result != 0:
+            return result
+        result = _run([rustup, "default", "stable"])[0]
+        if result != 0:
+            return result
+        active = "stable"
+
+    cargo = shutil.which("cargo")
+    rustc = shutil.which("rustc")
+    if not cargo or not rustc:
+        _log("Rustup has an active toolchain but cargo/rustc are not visible. Reopen the terminal and rerun setup-build-tools.")
+        return 2
+
+    cargo_code, cargo_version, _ = _run([cargo, "--version"], capture=True)
+    rustc_code, rustc_version, _ = _run([rustc, "--version"], capture=True)
+    if cargo_code != 0 or rustc_code != 0:
+        _log("The active Rust toolchain is incomplete. Run rustup toolchain install stable --profile minimal and retry.")
+        return 2
+    _log(f"Active Rust toolchain verified ({active.strip()}): {rustc_version}; {cargo_version}.")
+    return 0
+
+
 def _node_major(command: str = "node") -> Optional[int]:
     executable = shutil.which(command)
     if not executable:
@@ -186,7 +220,7 @@ def _setup_visual_studio_build_tools() -> int:
     if vswhere:
         code, output, _ = _run([
             vswhere, "-latest", "-products", "*",
-            "-requires", "Microsoft.VisualStudio.Workload.VCTools",
+            "-requires", *WINDOWS_VS_COMPONENTS,
             "-property", "installationPath",
         ], capture=True)
         if code == 0 and output:
@@ -215,9 +249,10 @@ def _setup_visual_studio_build_tools() -> int:
         "--quiet",
         "--wait",
         "--norestart",
-        "--add", "Microsoft.VisualStudio.Workload.VCTools",
         "--includeRecommended",
     ]
+    for component in WINDOWS_VS_COMPONENTS:
+        override_components.extend(["--add", component])
     if platform.machine().lower() in ("arm64", "aarch64"):
         override_components.extend([
             "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
@@ -240,7 +275,7 @@ def _setup_visual_studio_build_tools() -> int:
     if vswhere:
         code, output, _ = _run([
             vswhere, "-latest", "-products", "*",
-            "-requires", "Microsoft.VisualStudio.Workload.VCTools",
+            "-requires", *WINDOWS_VS_COMPONENTS,
             "-property", "installationPath",
         ], capture=True)
         if code == 0 and output:
@@ -274,12 +309,48 @@ if ! command -v rustup >/dev/null 2>&1; then
   sh /tmp/gitmanager-rustup-init.sh -y --profile minimal
 fi
 . "$HOME/.cargo/env"
+if ! rustup show active-toolchain >/dev/null 2>&1; then
+  rustup toolchain install stable --profile minimal
+  rustup default stable
+fi
 case "$(uname -m)" in
   aarch64|arm64) RUST_TARGET=aarch64-unknown-linux-gnu ;;
   armv7l) RUST_TARGET=armv7-unknown-linux-gnueabihf ;;
   *) RUST_TARGET=x86_64-unknown-linux-gnu ;;
 esac
 rustup target add "$RUST_TARGET"
+
+# Keep the user-level background worker testable in WSL without overwriting
+# unrelated distro settings.
+sudo python3 - <<'PY'
+from pathlib import Path
+
+path = Path("/etc/wsl.conf")
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+boot_index = next(
+    (i for i, line in enumerate(lines) if line.strip().casefold() == "[boot]"),
+    None,
+)
+if boot_index is None:
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.extend(["[boot]", "systemd=true"])
+else:
+    next_section = next(
+        (i for i in range(boot_index + 1, len(lines)) if lines[i].strip().startswith("[") and lines[i].strip().endswith("]")),
+        len(lines),
+    )
+    setting = next(
+        (i for i in range(boot_index + 1, next_section) if lines[i].split("=", 1)[0].strip().casefold() == "systemd"),
+        None,
+    )
+    if setting is None:
+        lines.insert(next_section, "systemd=true")
+    else:
+        lines[setting] = "systemd=true"
+path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+print("GITMANAGER_WSL_SYSTEMD_CONFIG=READY")
+PY
 
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak install --user --noninteractive --assumeyes flathub org.gnome.Platform//51 org.gnome.Sdk//51
@@ -330,6 +401,7 @@ def _setup_wsl_linux() -> int:
     ])[0]
     if result == 0:
         _log("Ubuntu/WSL build tools and GNOME 51 Flatpak runtime/SDK are installed.")
+        _log("systemd is enabled in /etc/wsl.conf. After closing WSL work, run 'wsl --terminate Ubuntu-24.04' once, then reopen Ubuntu to apply it.")
     return result
 
 
@@ -355,8 +427,9 @@ def _setup_windows() -> int:
         if result != 0:
             failures.append((display_name, result))
 
+    rust_result = _ensure_rustup_toolchain()
     rustup = _find_rustup()
-    if rustup:
+    if rust_result == 0 and rustup:
         targets = list(WINDOWS_RUST_TARGETS)
         if platform.machine().lower() in ("arm64", "aarch64"):
             targets.append("aarch64-pc-windows-msvc")
@@ -364,8 +437,8 @@ def _setup_windows() -> int:
         if result != 0:
             failures.append(("Windows Rust targets", result))
     else:
-        _log("Rustup was installed or updated. Reopen PowerShell so PATH refreshes, then rerun setup-build-tools.")
-        failures.append(("Rustup PATH refresh", 2))
+        failures.append(("Rustup toolchain verification", rust_result or 2))
+        _log("Reopen PowerShell if Rustup was just installed, then rerun setup-build-tools.")
 
     _log("WebView2 is supplied by supported Windows 10/11 installations; verify it on older/custom Windows images.")
 
@@ -415,10 +488,10 @@ def _setup_macos() -> int:
         result = _install_rustup_unix()
         if result != 0:
             return result
-        rustup = _find_rustup()
-    if not rustup:
-        _log("rustup was installed but is not visible yet. Restart Terminal and rerun setup.")
-        return 2
+    result = _ensure_rustup_toolchain()
+    rustup = _find_rustup()
+    if result != 0 or not rustup:
+        return result or 2
 
     result = _run([
         rustup, "target", "add",
