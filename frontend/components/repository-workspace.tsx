@@ -13,6 +13,7 @@ import type {
 
 type WorkspaceSource = "local" | "remote";
 type PullMode = "" | "none" | "stash" | "commit";
+type WorkspaceFocus = "all" | "conflicts";
 
 function messageOf(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -40,11 +41,13 @@ export function RepositoryWorkspace({
 	onRepositoryUpdated,
 	onPullCompleted,
 	onOpenCleaner,
+	focus = "all",
 }: {
 	repo: GitRepository;
 	onRepositoryUpdated: (repo: GitRepository) => void;
 	onPullCompleted: (repoPath: string) => void;
 	onOpenCleaner: () => void;
+	focus?: WorkspaceFocus;
 }) {
 	const remoteBranches = useMemo(
 		() => (repo.branches ?? []).filter((branch) => branch.is_remote),
@@ -440,6 +443,9 @@ export function RepositoryWorkspace({
 	const selectedUnstagedCount = changes.filter((change) => selectedChangeSet.has(change.path) && (!change.staged || change.worktreeStatus !== "Clean")).length;
 	const stagedCount = changes.filter((change) => change.staged).length;
 	const unstagedCount = changes.filter((change) => !change.staged || change.worktreeStatus !== "Clean").length;
+	const visibleChanges = focus === "conflicts"
+		? changes.filter((change) => change.indexStatus === "Conflict" || change.worktreeStatus === "Conflict")
+		: changes;
 	const pathParts = currentPath.split("/").filter(Boolean);
 
 	return (
@@ -447,12 +453,15 @@ export function RepositoryWorkspace({
 			<div className="gm-workspace-heading">
 				<div>
 					<div className="gm-eyebrow">WORKING COPY</div>
-					<h2>Code &amp; Changes</h2>
-					<p>Browse files, review changes, stage selected paths and commit locally.</p>
+					<h2>{focus === "conflicts" ? "Conflict Resolver" : "Code &amp; Changes"}</h2>
+					<p>{focus === "conflicts"
+						? "Inspect unresolved paths, edit them in your local editor, then stage the resolved files."
+						: "Browse files, review changes, stage selected paths and commit locally."}</p>
 				</div>
 				<div className="gm-workspace-summary">
 					<span><strong>{stagedCount}</strong> staged</span>
 					<span><strong>{unstagedCount}</strong> unstaged</span>
+					{focus === "conflicts" && <span><strong>{visibleChanges.length}</strong> conflicts</span>}
 				</div>
 			</div>
 
@@ -484,19 +493,21 @@ export function RepositoryWorkspace({
 			<div className="gm-workspace-layout gm-workbench-layout">
 				<section className="gm-workspace-card gm-workspace-changes" aria-label="Source control">
 					<div className="gm-workspace-card-heading">
-						<div><h3>Source Control</h3><span>{changes.length === 0 ? "No pending changes" : `${changes.length} changed paths`}</span></div>
-						<span className={changes.length === 0 ? "gm-workspace-card-hint gm-workspace-clean" : "gm-workspace-card-hint"}>{changes.length === 0 ? "Clean" : "Changes"}</span>
+						<div><h3>{focus === "conflicts" ? "Unresolved Files" : "Source Control"}</h3><span>{visibleChanges.length === 0 ? "No matching paths" : `${visibleChanges.length} changed paths`}</span></div>
+						<span className={visibleChanges.length === 0 ? "gm-workspace-card-hint gm-workspace-clean" : "gm-workspace-card-hint"}>{visibleChanges.length === 0 ? "Clean" : focus === "conflicts" ? "Conflicts" : "Changes"}</span>
 					</div>
 					{loadingChanges ? (
 						<div className="gm-workspace-empty">Reading Git status…</div>
-					) : changes.length === 0 ? (
+					) : visibleChanges.length === 0 ? (
 						<div className="gm-workspace-empty gm-workspace-source-empty">
-							<strong>Working tree clean</strong>
-							<span>Changed files will appear here. Select a file to inspect its diff, then stage and commit it.</span>
+							<strong>{focus === "conflicts" ? "No unresolved conflicts" : "Working tree clean"}</strong>
+							<span>{focus === "conflicts"
+								? "GitManager has not detected any unmerged paths in this working tree."
+								: "Changed files will appear here. Select a file to inspect its diff, then stage and commit it."}</span>
 						</div>
 					) : (
 						<div className="gm-workspace-change-list">
-							{changes.map((change) => (
+							{visibleChanges.map((change) => (
 								<div className="gm-workspace-change" key={change.path}>
 									<label className="gm-workspace-check">
 										<input type="checkbox" checked={selectedChangeSet.has(change.path)} onChange={(event) => toggleSelectedPath(change.path, event.target.checked)} />
@@ -515,7 +526,7 @@ export function RepositoryWorkspace({
 					<div className="gm-workspace-actions">
 						<button type="button" className="gm-button gm-button-secondary" onClick={() => void runPathOperation("stage_repository_paths")} disabled={busy || selectedUnstagedCount === 0}>Stage</button>
 						<button type="button" className="gm-button gm-button-secondary" onClick={() => void runPathOperation("unstage_repository_paths")} disabled={busy || selectedStagedCount === 0}>Unstage</button>
-						<button type="button" className="gm-button gm-button-primary" onClick={() => void openCommitDialog()} disabled={busy || stagedCount === 0}>Commit</button>
+						{focus !== "conflicts" && <button type="button" className="gm-button gm-button-primary" onClick={() => void openCommitDialog()} disabled={busy || stagedCount === 0}>Commit</button>}
 					</div>
 				</section>
 
