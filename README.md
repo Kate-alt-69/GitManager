@@ -212,7 +212,7 @@ GitManager's desktop application does **not** embed the standalone RBE runtime. 
 
 ## 7. Portable RBE node deployment
 
-A local target-specific desktop build also prepares the small bootstrap ZIP under `build/dist/deployment/`. The all-platform GitHub Actions matrix skips this duplicate packaging step; the release workflow builds and validates the ZIP independently:
+A local desktop build also prepares the small bootstrap ZIP under `build/dist/deployment/`. The release workflow validates the bootstrap ZIP independently:
 
 ```text
 GitManager-Cloud-Node-Setup.zip
