@@ -139,6 +139,7 @@ function TopBar({
 	onRefreshNotifications,
 	onMarkNotificationRead,
 	onDismissNotification,
+	onOpenNotification,
 	onScan,
 	onRetryService,
 }: {
@@ -156,6 +157,7 @@ function TopBar({
 	onRefreshNotifications: () => Promise<unknown>;
 	onMarkNotificationRead: (id: string) => Promise<void>;
 	onDismissNotification: (id: string) => Promise<void>;
+	onOpenNotification: (item: AppNotification) => void;
 	onScan: () => void;
 	onRetryService: () => void;
 }) {
@@ -277,6 +279,7 @@ function TopBar({
 											<p>{item.body}</p>
 										</div>
 										<div className="gm-notification-actions">
+											{item.repositoryPath && <button type="button" onClick={() => onOpenNotification(item)}>Open repository</button>}
 											{!item.read && <button type="button" onClick={() => void onMarkNotificationRead(item.id)}>Mark read</button>}
 											<button type="button" onClick={() => void onDismissNotification(item.id)}>Dismiss</button>
 										</div>
@@ -1077,6 +1080,26 @@ export function GitManagerApp() {
 		setInternalRoute(repo ? repositoryRouteForItem(repo) : "/r");
 	}
 
+	async function openNotificationRepository(item: AppNotification) {
+		if (!item.repositoryPath) return;
+		let repository = git.repositories.find((candidate) => candidate.path === item.repositoryPath) ?? null;
+		if (!repository) {
+			const refreshed = await git.scan();
+			repository = refreshed.find((candidate) => candidate.path === item.repositoryPath) ?? null;
+		}
+		if (repository) {
+			setPage("repositories");
+			selectRepository(repository);
+		} else {
+			setPage("repositories");
+			setInternalRoute("/r");
+			setError("The repository from this notification is not currently in the saved index. Refresh its scan roots and try again.");
+		}
+		if (!item.read) await git.markNotificationRead(item.id).catch((cause) => {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		});
+	}
+
 	if (git.loading) {
 		return (
 			<div className="gm-boot-screen" role="status" aria-live="polite">
@@ -1117,6 +1140,7 @@ export function GitManagerApp() {
 					onRefreshNotifications={git.refreshNotifications}
 					onMarkNotificationRead={git.markNotificationRead}
 					onDismissNotification={git.dismissNotification}
+					onOpenNotification={(item) => void openNotificationRepository(item)}
 					onScan={() => void git.scan()}
 					onRetryService={() => void git.retryService()}
 				/>
