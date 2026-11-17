@@ -62,7 +62,7 @@ All Cargo build output is redirected away from the repository-root `target/` dir
 build/
   .rcache/                 # Cargo/Rust compilation cache and intermediate files
   dist/
-    windows-10-x64/
+    windows-x64/
       installer/           # NSIS setup.exe and WiX MSI
       build-manifest.json
     linux-x64/
