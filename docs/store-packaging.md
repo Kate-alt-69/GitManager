@@ -13,7 +13,7 @@ py build.py --store=all
 # Flatpak bundles for Linux x64 and ARM64
 py build.py --store=flatpak
 
-# Microsoft Store MSIX only (Windows x64)
+# Microsoft Store MSIX for Windows x64, x86 and ARM64
 py build.py --store=msix
 \`\`\`
 
@@ -41,7 +41,7 @@ The current workflow produces a testable Flatpak bundle. A Flathub submission st
 
 ## Microsoft Store MSIX
 
-The MSIX stream builds the Windows app-only payload and invokes Master Packager Dev using the isolated definition at \`installer/store/msix/package.json\`. It does not produce the ordinary NSIS/WiX installers.
+The MSIX stream builds Windows x64, x86 and ARM64 app-only payloads on matching hosted runners, then invokes Master Packager Dev using the isolated definition at \`installer/store/msix/package.json\`. It does not produce the ordinary NSIS/WiX installers.
 
 The package currently uses the project's development/test signing mode. Microsoft Store submissions are re-signed by Microsoft after certification, but the package identity and publisher must match the identity reserved in Partner Center. Set the repository Actions variables `MSIX_PUBLISHER` and `MSIX_IDENTITY_NAME` to the exact publisher and identity name reserved in Partner Center before treating a generated artifact as a submission-ready package. The build derives the four-part MSIX version from `src-tauri/tauri.conf.json`. A test-signed MSIX is for local validation, not direct public distribution.
 
