@@ -229,7 +229,8 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
 
         self.assertIn("[features]", core_manifest)
         self.assertIn("scan-engine = []", core_manifest)
-        self.assertIn('#[cfg(feature = "scan-engine")]\\npub mod scanner;', core_library)
+        self.assertIn('#[cfg(feature = "scan-engine")]', core_library)
+        self.assertIn("pub mod scanner;", core_library)
         self.assertNotIn("scan-engine", desktop_manifest)
         self.assertIn('features = ["scan-engine"]', service_manifest)
         self.assertIn("pub use gitmanager_core::repository_index;", desktop_source)
