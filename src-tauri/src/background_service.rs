@@ -17,6 +17,7 @@ use crate::scanner::{
     load_persisted_repository_index, save_persisted_repository_index,
     scan_repositories_with_report, ScanOptions,
 };
+use crate::notification_center::publish_repository_update;
 
 use crash_helper::start_service_control_server;
 
@@ -182,6 +183,13 @@ pub fn run() -> ! {
 
                         let key = format!("{}::{}", update.repo_path, update.remote_oid);
                         if notified_commits.insert(key) {
+                            let _ = publish_repository_update(
+                                &update.repo_id,
+                                &update.repo_name,
+                                &update.repo_path,
+                                &update.remote_oid,
+                                &update.prompt_message,
+                            );
                             send_os_desktop_notification(&update);
                         }
                     }
