@@ -10,7 +10,7 @@ Run these from the repository root:
 # Build both store package streams
 py build.py --store=all
 
-# Flatpak bundle only (Linux x64 for the first implementation)
+# Flatpak bundles for Linux x64 and ARM64
 py build.py --store=flatpak
 
 # Microsoft Store MSIX only (Windows x64)
@@ -24,7 +24,7 @@ The command dispatches \`.github/workflows/store-build.yml\` through GitHub CLI 
 The Flatpak stream first creates GitManager's normal Linux DEB package, then extracts its application payload and builds a Flatpak bundle from it. This preserves Tauri's packaged resource and sidecar layout instead of trying to rebuild a second copy of the app inside the Flatpak manifest.
 
 - Application ID: \`com.gitmanager.desktop\`
-- Runtime: \`org.gnome.Platform//48\`
+- Runtime: \`org.gnome.Platform//51\`
 - First targets: Linux x64 and Linux ARM64 (the ARMv7 target remains DEB/RPM only)
 - Output: \`build/dist/store/flatpak/GitManager-x86_64.flatpak\`
 
@@ -52,4 +52,4 @@ Official Microsoft guidance:
 
 ## Future package managers
 
-Homebrew on Linux (Linuxbrew) is deliberately not part of this implementation. It can be added as a separate package-manager distribution after Flatpak's install, update, and CLI integration behavior is tested.
+Homebrew on Linux (Linuxbrew) is deliberately deferred. Once Flatpak install, update, sandbox permissions and CLI integration are tested, Linuxbrew can be added as a separate package-manager stream rather than being mixed into the Flatpak bundle.
