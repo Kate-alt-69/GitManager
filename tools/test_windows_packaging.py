@@ -15,13 +15,12 @@ SPEC.loader.exec_module(BUILD)
 
 
 class WindowsPackagingConfigurationTests(unittest.TestCase):
-    def test_exact_winget_package_ids_are_used(self):
+    def test_only_mpdev_and_nsis_are_installed_for_windows_packaging(self):
         self.assertEqual(
             BUILD.WINDOWS_PACKAGING_WINGET_PACKAGES,
             (
-                ("WiX Toolset v3", "WiXToolset.WiXToolset"),
-                ("NSIS", "NSIS.NSIS"),
-                ("Master Packager Dev", "MasterPackager.MasterPackagerDev"),
+                ("NSIS fallback installer", "NSIS.NSIS"),
+                ("Master Packager Dev (required MSI/MSIX packager)", "MasterPackager.MasterPackagerDev"),
             ),
         )
 
@@ -29,9 +28,9 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         directories = [str(path).replace("\\", "/") for path in BUILD.windows_packaging_search_directories()]
         self.assertTrue(any(path.endswith("/NSIS/Bin") for path in directories))
 
-    def test_tauri_builds_both_nsis_and_wix_installers(self):
+    def test_tauri_keeps_nsis_only_as_the_windows_fallback(self):
         config = json.loads((ROOT / "src-tauri" / "tauri.windows.conf.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(config["bundle"]["targets"]), {"nsis", "msi"})
+        self.assertEqual(config["bundle"]["targets"], ["nsis"])
 
     def test_sidecar_staging_uses_the_selected_cross_compile_target(self):
         with patch.dict(os.environ, {"CARGO_BUILD_TARGET": "i686-pc-windows-msvc"}):
@@ -62,11 +61,11 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn(r"$INSTDIR\resources\python\python.exe", hooks)
         self.assertIn("NSIS_HOOK_POSTINSTALL", hooks)
 
-    def test_master_packager_project_is_x64_msi_and_uses_the_shared_stage(self):
+    def test_mpdev_desktop_manifest_builds_both_msi_and_msix(self):
         config = json.loads(
             (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(config["outputTypes"], ["msi"])
+        self.assertEqual(config["outputTypes"], ["msi", "msix"])
         self.assertEqual(config["platform"], "x64")
         self.assertEqual(config["outputDirectory"], "build/.rcache/windows-installers")
         self.assertEqual(
@@ -75,21 +74,29 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(config["fileSystemEntries"][0]["sourcePath"], "%GITMANAGER_APP_SOURCE%")
         self.assertEqual(config["fileSystemEntries"][0]["targetPath"], "$.installDir")
+        self.assertEqual(config["msix"]["digitalSignature"]["signWith"], "GenerateTestCertificate")
 
-    def test_store_msix_is_not_emitted_by_the_desktop_mpdev_manifest(self):
+    def test_store_msix_has_its_own_identity_manifest(self):
         desktop = json.loads(
             (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
         )
         store = json.loads(
             (ROOT / "installer" / "store" / "msix" / "package.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(desktop["outputTypes"], ["msi"])
-        self.assertNotIn("msix", desktop)
+        self.assertEqual(desktop["outputTypes"], ["msi", "msix"])
         self.assertEqual(store["outputTypes"], ["msix"])
+        self.assertNotEqual(desktop["outputDirectory"], store["outputDirectory"])
 
-    def test_mpdev_comparison_is_documented_as_an_additional_desktop_installer(self):
+    def test_windows_installer_build_invokes_mpdev_for_both_formats(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        self.assertIn("build_master_packager_installers(project_root, release)", source)
+        self.assertIn('package_config["outputTypes"] = ["msi", "msix"]', source)
+        self.assertIn("MPDEV is the required", source)
+
+    def test_docs_describe_mpdev_as_mandatory_and_nsis_as_fallback(self):
         docs = (ROOT / "docs" / "windows-packaging.md").read_text(encoding="utf-8")
-        self.assertIn("Additional comparison MSI", docs)
+        self.assertIn("required Windows MSI and MSIX packager", docs)
+        self.assertIn("NSIS fallback", docs)
         self.assertIn("--master-packager", docs)
 
 
