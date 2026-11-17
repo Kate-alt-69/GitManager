@@ -70,6 +70,8 @@ export interface AppPreferences {
 	archiveTrigger: string;
 	archiveQuietMs: number;
 	cloudNodeAddress: string;
+	inAppNotificationsEnabled: boolean;
+	osNotificationsEnabled: boolean;
 	repositorySettings?: Record<string, unknown>;
 }
 
