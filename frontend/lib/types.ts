@@ -78,6 +78,13 @@ export interface ApplicationDirectories {
 	installDir: string;
 	configDir: string;
 	dataDir: string;
+	repoMetadataDir: string;
+	gitDataDir: string;
+	accountMetadataDir: string;
+	accountGitDataDir: string;
+	remoteRepoMetadataDir: string;
+	remoteRepoGitDataDir: string;
+	cacheDir: string;
 }
 
 export interface ConnectedAccount {
