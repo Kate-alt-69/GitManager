@@ -1085,6 +1085,54 @@ function SettingsPage({
 	const [installerPath, setInstallerPath] = useState("");
 	const [signingStatus, setSigningStatus] = useState("Windows Authenticode signing is available when a valid CurrentUser Code Signing certificate is installed.");
 	const [signingBusy, setSigningBusy] = useState(false);
+	const [flatpakCli, setFlatpakCli] = useState<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>({ isFlatpak: false, installed: false, wrapperPath: null });
+	const [flatpakCliBusy, setFlatpakCliBusy] = useState(false);
+	const [flatpakCliMessage, setFlatpakCliMessage] = useState("");
+
+	async function refreshFlatpakCli() {
+		try {
+			const status = await invoke<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>("get_flatpak_cli_integration_status");
+			setFlatpakCli(status);
+		} catch {
+			setFlatpakCli({ isFlatpak: false, installed: false, wrapperPath: null });
+		}
+	}
+
+	useEffect(() => {
+		let active = true;
+		void invoke<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>("get_flatpak_cli_integration_status")
+			.then((status) => { if (active) setFlatpakCli(status); })
+			.catch(() => undefined);
+		return () => { active = false; };
+	}, []);
+
+	async function installFlatpakCli() {
+		setFlatpakCliBusy(true);
+		setFlatpakCliMessage("");
+		try {
+			const path = await invoke<string>("install_flatpak_gitm_cli");
+			await refreshFlatpakCli();
+			setFlatpakCliMessage("The gitm terminal command was installed at " + path + ". Make sure ~/.local/bin is in your PATH.");
+		} catch (cause) {
+			setFlatpakCliMessage(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setFlatpakCliBusy(false);
+		}
+	}
+
+	async function removeFlatpakCli() {
+		setFlatpakCliBusy(true);
+		setFlatpakCliMessage("");
+		try {
+			await invoke("remove_flatpak_gitm_cli");
+			await refreshFlatpakCli();
+			setFlatpakCliMessage("The GitManager-managed gitm wrapper was removed.");
+		} catch (cause) {
+			setFlatpakCliMessage(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setFlatpakCliBusy(false);
+		}
+	}
 
 	function patch(values: Partial<AppPreferences>) {
 		setDraft((current) => ({ ...current, ...values }));
@@ -1279,6 +1327,18 @@ function SettingsPage({
 
 			{tab === "general" && (
 				<div className="gm-settings-grid">
+					{flatpakCli.isFlatpak && (
+						<section className="gm-panel gm-settings-card">
+							<div className="gm-panel-heading"><div><h2>Terminal integration</h2><p>Optionally expose GitManager's bundled gitm command to your Linux terminal.</p></div><span className="gm-panel-icon">⌘</span></div>
+							<p className="gm-muted-copy">GitManager creates or removes only its own ~/.local/bin/gitm wrapper. It never edits .bashrc, .zshrc or your shell PATH. Ensure ~/.local/bin is already on your PATH.</p>
+							{flatpakCli.wrapperPath && <p className="gm-muted-copy">Wrapper: {flatpakCli.wrapperPath}</p>}
+							<div className="gm-add-root">
+								<Button variant="primary" onClick={() => void installFlatpakCli()} disabled={flatpakCliBusy}>{flatpakCliBusy ? "Working…" : flatpakCli.installed ? "Refresh gitm command" : "Install gitm command"}</Button>
+								{flatpakCli.installed && <Button variant="danger" onClick={() => void removeFlatpakCli()} disabled={flatpakCliBusy}>Remove wrapper</Button>}
+							</div>
+							{flatpakCliMessage && <p className="gm-muted-copy" role="status">{flatpakCliMessage}</p>}
+						</section>
+					)}
 					<section className="gm-panel gm-settings-card">
 						<div className="gm-panel-heading"><div><h2>Repository discovery</h2><p>Choose which directories GitManager scans for local repositories.</p></div><span className="gm-panel-icon">⌕</span></div>
 						<div className="gm-root-list">
