@@ -93,6 +93,17 @@ class BuildEnvironmentSetupPlanTests(unittest.TestCase):
             self.assertEqual(result, 0)
             wsl_setup.assert_called_once_with(include_flatpak=True, default_yes=True)
 
+    def test_all_setup_on_windows_prepares_windows_and_wsl_but_skips_macos(self):
+        with patch.object(SETUP.platform, "system", return_value="Windows"), patch.object(
+            SETUP.platform, "machine", return_value="AMD64"
+        ), patch.object(SETUP, "_setup_windows", return_value=0) as windows_setup, patch.object(
+            SETUP, "_setup_wsl_linux", return_value=0
+        ) as wsl_setup:
+            result = SETUP.setup_build_environment("all")
+            self.assertEqual(result, 0)
+            windows_setup.assert_called_once()
+            wsl_setup.assert_called_once_with(include_flatpak=False, default_yes=True)
+
     def test_macos_sdk_is_not_claimed_available_on_windows(self):
         with patch.object(SETUP.platform, "system", return_value="Windows"), patch.object(
             SETUP, "_setup_windows", return_value=0
