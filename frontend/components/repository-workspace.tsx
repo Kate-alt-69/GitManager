@@ -616,13 +616,14 @@ export function RepositoryWorkspace({
 								className="gm-workspace-preview-text gm-workspace-conflict-textarea"
 								value={editorDraft}
 								onChange={(event) => { setEditorDraft(event.target.value); setEditorDirty(true); }}
+								disabled={previewText === "Loading file…" || savingResolution}
 								spellCheck={false}
 								aria-label="Resolved conflict file contents"
 								maxLength={1024 * 1024}
 							/>
 							<div className="gm-workspace-conflict-editor-actions">
 								<span>{editorDraft.length.toLocaleString()} characters{editorDirty ? " · unsaved" : ""}</span>
-								<button type="button" className="gm-button gm-button-primary" onClick={() => void saveConflictResolution()} disabled={!editorDirty || savingResolution || loadingFiles}>
+								<button type="button" className="gm-button gm-button-primary" onClick={() => void saveConflictResolution()} disabled={!editorDirty || savingResolution || loadingFiles || previewText === "Loading file…"}>
 									{savingResolution ? "Saving…" : "Save resolved file"}
 								</button>
 							</div>
