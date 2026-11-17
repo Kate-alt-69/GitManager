@@ -20,9 +20,11 @@
 - **OS Native Library Check**:
   - Checks WebView2/Win32 on Windows 10/11, `webkit2gtk-4.1` / `gtk+-3.0` / `openssl` via `pkg-config` on Linux, and Xcode Command Line Tools on macOS.
 
-Install the current machine's compiler, SDK and packaging prerequisites (Windows also prepares Ubuntu under WSL2):
+Install missing prerequisites for the selected target. Setup asks before installing; explicitly requested targets default to Yes, already-installed tools are reused, and the existing Rust toolchain is preserved:
 
     py build.py setup-build-tools
+    py build.py setup-build-tools --build='linux(x64)'
+    py build.py setup-build-tools --store=flatpak
 
 See [Build environment setup](docs/build-environment-setup.md) for the native/WSL build workflow and the macOS host requirement.
 
