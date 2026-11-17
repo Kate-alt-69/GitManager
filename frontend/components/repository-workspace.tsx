@@ -481,89 +481,95 @@ export function RepositoryWorkspace({
 			{error && <div className="gm-workspace-error" role="alert">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div>}
 			{notice && <div className="gm-workspace-notice" role="status">{notice}</div>}
 
-			<div className="gm-workspace-layout">
-				<div className="gm-workspace-main">
-					<section className="gm-workspace-card gm-workspace-changes">
-						<div className="gm-workspace-card-heading">
-							<div><h3>Local changes</h3><span>{changes.length} changed paths</span></div>
-							<span className="gm-workspace-card-hint">Local working tree only</span>
-						</div>
-						{loadingChanges ? (
-							<div className="gm-workspace-empty">Reading Git status…</div>
-						) : changes.length === 0 ? (
-							<div className="gm-workspace-empty">No local changes. Your working tree is clean.</div>
-						) : (
-							<div className="gm-workspace-change-list">
-								{changes.map((change) => (
-									<div className="gm-workspace-change" key={change.path}>
-										<label className="gm-workspace-check">
-											<input type="checkbox" checked={selectedChangeSet.has(change.path)} onChange={(event) => toggleSelectedPath(change.path, event.target.checked)} />
-											<span />
-										</label>
-										<button type="button" className="gm-workspace-change-path" onClick={() => void previewDiff(change)} title="Preview this file's diff">
-											<strong>{change.path}</strong>
-											<small>{statusLabel(change)}</small>
-										</button>
-										<span className={change.staged ? "gm-workspace-state staged" : "gm-workspace-state"}>{change.staged ? "Staged" : "Unstaged"}</span>
-										<button type="button" className="gm-workspace-mini" onClick={() => void previewDiff(change)}>Diff</button>
-									</div>
-								))}
-							</div>
-						)}
-						<div className="gm-workspace-actions">
-							<button type="button" className="gm-button gm-button-secondary" onClick={() => void runPathOperation("stage_repository_paths")} disabled={busy || selectedUnstagedCount === 0}>Stage selected</button>
-							<button type="button" className="gm-button gm-button-secondary" onClick={() => void runPathOperation("unstage_repository_paths")} disabled={busy || selectedStagedCount === 0}>Unstage selected</button>
-							<button type="button" className="gm-button gm-button-primary" onClick={() => void openCommitDialog()} disabled={busy || stagedCount === 0}>Commit staged</button>
-						</div>
-					</section>
-
-					<section className="gm-workspace-card gm-workspace-files">
-						<div className="gm-workspace-card-heading">
-							<div><h3>{source === "local" ? "Local files" : "Remote files"}</h3><span>{source === "local" ? "Files on disk" : (remoteBranch || "No remote branch selected")}</span></div>
-							<span className="gm-workspace-card-hint">{entries.length} items</span>
-						</div>
-						<div className="gm-workspace-breadcrumbs">
-							<button type="button" onClick={() => openDirectory("")}>/</button>
-							{pathParts.map((part, index) => (
-								<span key={part + index}>
-									<span className="gm-workspace-crumb-separator">/</span>
-									<button type="button" onClick={() => openDirectory(pathParts.slice(0, index + 1).join("/"))}>{part}</button>
-								</span>
-							))}
-							{currentPath && <button type="button" className="gm-workspace-up" onClick={openParentDirectory}>↑ Up</button>}
-						</div>
-						{loadingFiles ? (
-							<div className="gm-workspace-empty">Loading {source} files…</div>
-						) : entries.length === 0 ? (
-							<div className="gm-workspace-empty">This folder is empty, or could not be listed.</div>
-						) : (
-							<div className="gm-workspace-file-list">
-								{entries.map((entry) => (
-									<div className={selectedFile?.path === entry.path ? "gm-workspace-file selected" : "gm-workspace-file"} key={entry.path}>
-										<button type="button" className="gm-workspace-file-open" onClick={() => void previewFile(entry)} disabled={entry.isSymlink}>
-											<span className={entry.isDir ? "gm-workspace-file-icon folder" : "gm-workspace-file-icon"}>{entry.isDir ? "▰" : entry.isSymlink ? "↗" : "▤"}</span>
-											<strong>{entry.name}</strong>
-											<small>{entry.isDir ? "Folder" : entry.isSymlink ? "Symbolic link" : formatBytes(entry.sizeBytes)}</small>
-										</button>
-										{source === "local" && (
-											<button type="button" className="gm-workspace-delete" onClick={() => void deleteEntry(entry)} disabled={busy} title={"Delete " + entry.path}>Delete</button>
-										)}
-									</div>
-								))}
-							</div>
-						)}
-					</section>
-				</div>
-
-				<aside className="gm-workspace-card gm-workspace-preview">
+			<div className="gm-workspace-layout gm-workbench-layout">
+				<section className="gm-workspace-card gm-workspace-changes" aria-label="Source control">
 					<div className="gm-workspace-card-heading">
-						<div><h3>{previewKind === "diff" ? "Diff preview" : "File preview"}</h3><span>{previewTitle || "Select a file or changed path"}</span></div>
+						<div><h3>Source Control</h3><span>{changes.length === 0 ? "No pending changes" : `${changes.length} changed paths`}</span></div>
+						<span className={changes.length === 0 ? "gm-workspace-card-hint gm-workspace-clean" : "gm-workspace-card-hint"}>{changes.length === 0 ? "Clean" : "Changes"}</span>
+					</div>
+					{loadingChanges ? (
+						<div className="gm-workspace-empty">Reading Git status…</div>
+					) : changes.length === 0 ? (
+						<div className="gm-workspace-empty gm-workspace-source-empty">
+							<strong>Working tree clean</strong>
+							<span>Changed files will appear here. Select a file to inspect its diff, then stage and commit it.</span>
+						</div>
+					) : (
+						<div className="gm-workspace-change-list">
+							{changes.map((change) => (
+								<div className="gm-workspace-change" key={change.path}>
+									<label className="gm-workspace-check">
+										<input type="checkbox" checked={selectedChangeSet.has(change.path)} onChange={(event) => toggleSelectedPath(change.path, event.target.checked)} />
+										<span />
+									</label>
+									<button type="button" className="gm-workspace-change-path" onClick={() => void previewDiff(change)} title="Preview this file's diff">
+										<strong>{change.path}</strong>
+										<small>{statusLabel(change)}</small>
+									</button>
+									<span className={change.staged ? "gm-workspace-state staged" : "gm-workspace-state"}>{change.staged ? "Staged" : "Unstaged"}</span>
+									<button type="button" className="gm-workspace-mini" onClick={() => void previewDiff(change)}>Diff</button>
+								</div>
+							))}
+						</div>
+					)}
+					<div className="gm-workspace-actions">
+						<button type="button" className="gm-button gm-button-secondary" onClick={() => void runPathOperation("stage_repository_paths")} disabled={busy || selectedUnstagedCount === 0}>Stage</button>
+						<button type="button" className="gm-button gm-button-secondary" onClick={() => void runPathOperation("unstage_repository_paths")} disabled={busy || selectedStagedCount === 0}>Unstage</button>
+						<button type="button" className="gm-button gm-button-primary" onClick={() => void openCommitDialog()} disabled={busy || stagedCount === 0}>Commit</button>
+					</div>
+				</section>
+
+				<section className="gm-workspace-card gm-workspace-files" aria-label="Repository explorer">
+					<div className="gm-workspace-card-heading">
+						<div><h3>Explorer</h3><span>{source === "local" ? "Local working copy" : (remoteBranch || "Remote branch")}</span></div>
+						<span className="gm-workspace-card-hint">{entries.length} items</span>
+					</div>
+					<div className="gm-workspace-breadcrumbs">
+						<button type="button" onClick={() => openDirectory("")}>/</button>
+						{pathParts.map((part, index) => (
+							<span key={part + index}>
+								<span className="gm-workspace-crumb-separator">/</span>
+								<button type="button" onClick={() => openDirectory(pathParts.slice(0, index + 1).join("/"))}>{part}</button>
+							</span>
+						))}
+						{currentPath && <button type="button" className="gm-workspace-up" onClick={openParentDirectory}>↑ Up</button>}
+					</div>
+					{loadingFiles ? (
+						<div className="gm-workspace-empty">Loading {source} files…</div>
+					) : entries.length === 0 ? (
+						<div className="gm-workspace-empty">This folder is empty, or could not be listed.</div>
+					) : (
+						<div className="gm-workspace-file-list">
+							{entries.map((entry) => (
+								<div className={selectedFile?.path === entry.path ? "gm-workspace-file selected" : "gm-workspace-file"} key={entry.path}>
+									<button type="button" className="gm-workspace-file-open" onClick={() => void previewFile(entry)} disabled={entry.isSymlink}>
+										<span className={entry.isDir ? "gm-workspace-file-icon folder" : "gm-workspace-file-icon"}>{entry.isDir ? "▰" : entry.isSymlink ? "↗" : "▤"}</span>
+										<strong>{entry.name}</strong>
+										<small>{entry.isDir ? "Folder" : entry.isSymlink ? "Symbolic link" : formatBytes(entry.sizeBytes)}</small>
+									</button>
+									{source === "local" && (
+										<button type="button" className="gm-workspace-delete" onClick={() => void deleteEntry(entry)} disabled={busy} title={"Delete " + entry.path}>Delete</button>
+									)}
+								</div>
+							))}
+						</div>
+					)}
+				</section>
+
+				<aside className="gm-workspace-card gm-workspace-preview" aria-label="File editor and preview">
+					<div className="gm-workspace-card-heading">
+						<div><h3>{previewKind === "diff" ? "Diff Editor" : "Editor"}</h3><span>{previewTitle || "No file selected"}</span></div>
 						<button type="button" className="gm-workspace-mini" onClick={() => { previewRequestId.current += 1; setPreviewTitle(""); setPreviewText(""); setSelectedFile(null); }}>Clear</button>
 					</div>
 					{previewText ? (
 						<pre className="gm-workspace-preview-text">{previewText}</pre>
 					) : (
-						<div className="gm-workspace-empty">Choose a file to read its UTF-8 contents, or choose a changed path to inspect its Git diff.</div>
+						<div className="gm-workspace-empty gm-workspace-editor-empty">
+							<div>
+								<strong>Select a file to open it</strong>
+								<span>Choose a file in Explorer to read its UTF-8 contents, or select a changed path in Source Control to inspect its Git diff.</span>
+							</div>
+						</div>
 					)}
 					{selectedFile && <div className="gm-workspace-preview-meta">{formatBytes(selectedFile.sizeBytes)} · {source === "local" ? "Local disk" : "Remote branch"}</div>}
 				</aside>
