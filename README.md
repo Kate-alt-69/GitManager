@@ -20,19 +20,37 @@
 - **OS Native Library Check**:
   - Checks WebView2/Win32 on Windows 10/11, `webkit2gtk-4.1` / `gtk+-3.0` / `openssl` via `pkg-config` on Linux, and Xcode Command Line Tools on macOS.
 
-```bash
+```powershell
 # Check installed Rust/Tauri/OS dependencies only
-python3 build.py deps
+py build.py deps
 
-# Run in development mode (uses your already-installed Rust toolchain)
-python3 build.py dev
+# Run in development mode
+py build.py dev
 
-# Build optimized native release binaries (GitManager GUI with built-in headless background mode, plus CLI/setup sidecars)
-python3 build.py build
+# Build all eight supported desktop targets (requires authenticated GitHub CLI)
+py build.py --build=all --type=installer
 
-# Prepare the isolated CPython runtime used by Windows installers
-python3 build.py prepare-runtime
+# Build one exact target locally
+py build.py --build='windows(10,x64)' --type=installer
+py build.py --build='windows(11,x86)' --type=app
+py build.py --build='linux(x64)' --type=app
+py build.py --build='linux(armv7)' --type=installer
+
+# Prepare the isolated CPython runtime for the current Windows target
+py build.py prepare-runtime
 ```
+
+Build target selection, supported architectures, GitHub Actions dispatch, Linux runtime testing and the `build/.rcache` / `build/dist` layout are documented in [docs/build-matrix.md](docs/build-matrix.md).
+
+Store distribution is a separate workflow and does not replace the normal desktop installers:
+
+```powershell
+py build.py --store=flatpak
+py build.py --store=msix
+py build.py --store=all
+```
+
+See [docs/store-packaging.md](docs/store-packaging.md) for Flatpak sandbox permissions, MSIX signing/identity requirements and the future Linux Homebrew plan.
 
 ---
 
@@ -148,17 +166,17 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 ## 6. Windows production installer and signing
 
-On Windows, `py build.py build` prepares the architecture-matched private CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It produces the Tauri NSIS setup executable and WiX MSI, plus an additional comparison MSI from Master Packager Dev (MPDEV):
+On Windows, `py build.py --build='windows(10,x64)' --type=installer` prepares the architecture-matched private CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It produces the Tauri NSIS setup executable and WiX MSI, plus an additional comparison MSI from Master Packager Dev (MPDEV):
 
-    build/.rcache/release/bundle/nsis/GitManager-Setup.exe
-    build/.rcache/release/bundle/msi/*.msi
+    build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/GitManager-Setup.exe
+    build/.rcache/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
     build/.rcache/windows-installers/*.msi
 
 The Tauri WiX MSI and MPDEV MSI are separate packaging outputs so their install, repair and uninstall behavior can be compared. The Microsoft Store MSIX is not part of this ordinary desktop build; use `py build.py --store=msix` for the dedicated Store package stream.
 
 The build also creates a separate first-run helper alongside the native binaries:
 
-    target/release/GitManager-Setup.exe
+    build/.rcache/x86_64-pc-windows-msvc/release/GitManager-Setup.exe
 
 That helper is bundled into the installed app as a Tauri sidecar. It is a tiny, dependency-free Rust launcher; it does not replace or duplicate Tauri. On first launch, the main Tauri app hands its executable path to the helper. The helper relaunches that same Tauri app with `--setup`, so the actual workspace wizard is still rendered by GitManager's Tauri UI/runtime. The helper is built for every supported OS: `GitManager-Setup.exe` on Windows and `GitManager-Setup` on Linux/macOS. The same first-run flow asks for the main repository folder, supports additional scan roots, and then continues into GitManager. If the sidecar is unavailable in a development build, the in-process wizard remains as a fallback.
 
@@ -199,7 +217,7 @@ GitManager's desktop application does **not** embed the standalone RBE runtime. 
 
 ## 7. Portable RBE node deployment
 
-Every normal `py build.py` / `python build.py build` run also creates a small bootstrap ZIP under `target/deployment/`:
+A local target-specific desktop build also prepares the small bootstrap ZIP under `build/dist/deployment/`. The all-platform GitHub Actions matrix skips this duplicate packaging step; the release workflow builds and validates the ZIP independently:
 
 ```text
 GitManager-Cloud-Node-Setup.zip
