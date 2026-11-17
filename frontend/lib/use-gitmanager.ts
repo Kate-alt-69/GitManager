@@ -127,6 +127,15 @@ export function useGitManager() {
 		}
 	}, []);
 
+	// The independent service cannot emit through this Tauri process. Refresh
+	// the small bounded store periodically so the unread badge stays current.
+	useEffect(() => {
+		if (!serviceReady || preferences.inAppNotificationsEnabled === false) return;
+		const timer = window.setInterval(() => void refreshNotifications(), 15000);
+		return () => window.clearInterval(timer);
+	}, [serviceReady, preferences.inAppNotificationsEnabled, refreshNotifications]);
+
+
 	const markNotificationRead = useCallback(async (id: string) => {
 		await invoke("mark_app_notification_read", { id });
 		setNotifications((current) => current.map((item) => item.id === id ? { ...item, read: true } : item));
@@ -221,6 +230,7 @@ export function useGitManager() {
 		let active = true;
 		let unlistenUpdate: (() => void) | undefined;
 		let unlistenState: (() => void) | undefined;
+		let unlistenNotifications: (() => void) | undefined;
 
 		async function initialize() {
 			setAvailable(isTauriRuntime());
@@ -326,11 +336,15 @@ export function useGitManager() {
 		void listen<{ checking?: boolean; status?: string }>("gitmanager://update-check-state", (payload) => {
 			if (active && payload.status) setStatus(payload.status);
 		}).then((unlisten) => { unlistenState = unlisten; });
+		void listen("gitmanager://notifications-updated", () => {
+			if (active) void refreshNotifications();
+		}).then((unlisten) => { unlistenNotifications = unlisten; });
 
 		return () => {
 			active = false;
 			unlistenUpdate?.();
 			unlistenState?.();
+			unlistenNotifications?.();
 		};
 	}, [scan]);
 
