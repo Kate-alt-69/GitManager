@@ -16,6 +16,7 @@ const PROCESS_TERMINATE: Dword = 0x0001;
 const PROCESS_SET_QUOTA: Dword = 0x0100;
 const THREAD_SUSPEND_RESUME: Dword = 0x0002;
 const TH32CS_SNAPTHREAD: Dword = 0x0004;
+const JOB_OBJECT_LIMIT_BREAKAWAY_OK: Dword = 0x0000_0800;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: Dword = 0x0000_2000;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
 const INVALID_RESUME_COUNT: Dword = Dword::MAX;
@@ -125,7 +126,10 @@ pub(super) fn attach_and_resume(process_id: u32) -> Result<ProcessContainment, S
     )?;
 
     let mut limits: JobExtendedLimitInformation = unsafe { zeroed() };
-    limits.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // The UI remains kill-on-close contained, but explicitly permits the
+    // required data service to break away into its own process lifetime.
+    limits.basic_limit_information.limit_flags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     let configured = unsafe {
         SetInformationJobObject(
             job.0,
@@ -193,6 +197,14 @@ mod tests {
         size_of, IoCounters, JobBasicLimitInformation, JobExtendedLimitInformation,
         ThreadEntry32,
     };
+
+    #[test]
+    fn service_processes_can_break_away_while_ui_remains_kill_on_close() {
+        use super::{JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
+        let flags = JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        assert_ne!(flags & JOB_OBJECT_LIMIT_BREAKAWAY_OK, 0);
+        assert_ne!(flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, 0);
+    }
 
     #[test]
     fn win32_process_structures_match_the_x64_abi() {
