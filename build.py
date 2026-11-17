@@ -67,35 +67,89 @@ def log_err(msg: str) -> None:
 
 
 PYTHON_EMBED_VERSION = "3.14.10"
-PYTHON_EMBED_URL = (
-    "https://www.python.org/ftp/python/3.14.10/"
-    "python-3.14.10-embed-amd64.zip"
-)
-PYTHON_EMBED_SHA256 = "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159"
+PYTHON_EMBED_BASE_URL = "https://www.python.org/ftp/python/3.14.10/"
+PYTHON_EMBED_PACKAGES = {
+    "x86_64": ("python-3.14.10-embed-amd64.zip", "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159", 0x8664),
+    "x86": ("python-3.14.10-embed-win32.zip", "11a28e8c00a6d8f56b0a6164d52546133a9ed015a5b33e04536917e4fd6e306c", 0x014C),
+    "aarch64": ("python-3.14.10-embed-arm64.zip", "bbe116bb1248820359cbf25127ac5c7794ea161869d83686cfbc9a45203ff836", 0xAA64),
+}
+
+
+def windows_target_architecture() -> str:
+    triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+    if "aarch64" in triple:
+        return "aarch64"
+    if triple.startswith(("i686-", "i586-")):
+        return "x86"
+    if triple.startswith("x86_64-"):
+        return "x86_64"
+    machine = platform.machine().lower()
+    return {
+        "amd64": "x86_64", "x86_64": "x86_64",
+        "x86": "x86", "i386": "x86", "i686": "x86",
+        "arm64": "aarch64", "aarch64": "aarch64",
+    }.get(machine, "x86_64")
+
+
+def windows_pe_machine(path: Path) -> Optional[int]:
+    """Read the PE machine field without executing a foreign-architecture binary."""
+    try:
+        with path.open("rb") as stream:
+            if stream.read(2) != b"MZ":
+                return None
+            stream.seek(0x3C)
+            offset_bytes = stream.read(4)
+            if len(offset_bytes) != 4:
+                return None
+            stream.seek(int.from_bytes(offset_bytes, "little"))
+            if stream.read(4) != b"PE\0\0":
+                return None
+            machine = stream.read(2)
+            return int.from_bytes(machine, "little") if len(machine) == 2 else None
+    except OSError:
+        return None
 
 
 def prepare_windows_python_runtime(project_root: Path) -> int:
-    """Fetch and verify the isolated CPython runtime used by the bundled cleaner."""
+    """Fetch and verify the isolated CPython runtime matching the Windows app architecture."""
     if platform.system() != "Windows":
-        log_info("Private Windows Python runtime is only bundled on Windows; skipping.")
+        log_info("Windows CPython runtime preparation runs only on a Windows build runner; skipping.")
         return 0
 
+    target_arch = windows_target_architecture()
+    package = PYTHON_EMBED_PACKAGES.get(target_arch)
+    if package is None:
+        log_err(f"No pinned Windows Python runtime is available for target architecture {target_arch}.")
+        return 1
+    archive_name, expected_sha256, expected_machine = package
     runtime_dir = project_root / "tools" / "runtime" / "python"
     python_exe = runtime_dir / "python.exe"
-    if python_exe.is_file():
-        code, out, err = run_capture([
-            str(python_exe), "-I", "-c",
-            "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
-        ])
-        if code == 0 and out.startswith(PYTHON_EMBED_VERSION):
-            log_ok(f"Private CPython {out} runtime is already prepared.")
+
+    machine = platform.machine().lower()
+    host_arch = {
+        "amd64": "x86_64", "x86_64": "x86_64",
+        "x86": "x86", "i386": "x86", "i686": "x86",
+        "arm64": "aarch64", "aarch64": "aarch64",
+    }.get(machine, "")
+
+    if python_exe.is_file() and windows_pe_machine(python_exe) == expected_machine:
+        if host_arch == target_arch or (host_arch == "x86_64" and target_arch == "x86"):
+            code, out, err = run_capture([
+                str(python_exe), "-I", "-c",
+                "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
+            ])
+            if code == 0 and out.startswith(PYTHON_EMBED_VERSION):
+                log_ok(f"Private CPython {out} ({target_arch}) runtime is already prepared.")
+                return 0
+        elif all((runtime_dir / name).is_file() for name in ("python314.zip", "python314._pth")):
+            log_ok(f"Verified existing CPython {PYTHON_EMBED_VERSION} PE runtime for {target_arch} without executing a foreign-architecture binary.")
             return 0
 
-    log_info(f"Preparing isolated CPython {PYTHON_EMBED_VERSION} runtime for the Windows installer...")
+    log_info(f"Preparing isolated CPython {PYTHON_EMBED_VERSION} ({target_arch}) runtime for the Windows installer...")
     with tempfile.TemporaryDirectory(prefix="gitmanager-python-") as temporary:
         archive_path = Path(temporary) / "python-embed.zip"
         request = urllib.request.Request(
-            PYTHON_EMBED_URL,
+            PYTHON_EMBED_BASE_URL + archive_name,
             headers={"User-Agent": "GitManager-Build/1.0"},
         )
         try:
@@ -106,10 +160,10 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
             return 1
 
         digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-        if digest.lower() != PYTHON_EMBED_SHA256:
+        if digest.lower() != expected_sha256:
             log_err(
                 "Python embeddable package checksum did not match the pinned python.org SHA-256. "
-                f"Expected {PYTHON_EMBED_SHA256}, received {digest}."
+                f"Expected {expected_sha256}, received {digest}."
             )
             return 1
 
@@ -124,7 +178,6 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
                         log_err(f"Python runtime archive contains an unsafe path: {member.filename}")
                         return 1
                 runtime_dir.mkdir(parents=True, exist_ok=True)
-                # Keep the tracked directory marker so later repository status remains clean.
                 for existing in runtime_dir.iterdir():
                     if existing.name == ".keep":
                         continue
@@ -142,17 +195,25 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
     if missing:
         log_err("Python runtime is incomplete; missing: " + ", ".join(missing))
         return 1
-
-    code, out, err = run_capture([
-        str(python_exe), "-I", "-c",
-        "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
-    ])
-    if code != 0 or not out.startswith(PYTHON_EMBED_VERSION):
-        log_err(f"Bundled Python failed its isolated startup check: {err or out or code}")
+    if windows_pe_machine(python_exe) != expected_machine:
+        log_err(f"The bundled Python executable is not the expected {target_arch} PE architecture.")
         return 1
 
+    if host_arch == target_arch or (host_arch == "x86_64" and target_arch == "x86"):
+        code, out, err = run_capture([
+            str(python_exe), "-I", "-c",
+            "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
+        ])
+        if code != 0 or not out.startswith(PYTHON_EMBED_VERSION):
+            log_err(f"Bundled Python failed its isolated startup check: {err or out or code}")
+            return 1
+        version_label = out
+    else:
+        log_info("The target Python runtime is foreign to this build host; archive checksum and PE architecture were verified without executing it.")
+        version_label = PYTHON_EMBED_VERSION
+
     runtime_bytes = sum(path.stat().st_size for path in runtime_dir.iterdir() if path.is_file())
-    log_ok(f"Verified python.org CPython {out} embeddable runtime ({runtime_bytes:,} bytes extracted).")
+    log_ok(f"Verified python.org CPython {version_label} ({target_arch}) embeddable runtime ({runtime_bytes:,} bytes extracted).")
     return 0
 
 
@@ -372,6 +433,11 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
     if expected_install_dir not in hooks:
         log_err("The NSIS pre-install hook does not force GitManager's expected per-user install directory.")
         return 1
+    expected_python_machine = PYTHON_EMBED_PACKAGES[windows_target_architecture()][2]
+    if windows_pe_machine(runtime_dir / "python.exe") != expected_python_machine:
+        log_err("The bundled Python runtime architecture does not match the selected Windows target.")
+        return 1
+
     if "resources\\python\\python.exe" not in hooks:
         log_err("The NSIS post-install hook does not verify the bundled Python runtime.")
         return 1
@@ -1433,7 +1499,7 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool) -> in
     try:
         output_root.mkdir(parents=True, exist_ok=True)
         marker.write_text(
-            "Generated by GitManager build.py. Safe to recreate through the build script.\\n",
+            "Generated by GitManager build.py. Safe to recreate through the build script.\n",
             encoding="utf-8",
         )
         if bundle:
@@ -1474,7 +1540,7 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool) -> in
             "profile": "release" if release else "debug",
         }
         (output_root / "build-manifest.json").write_text(
-            json.dumps(manifest, indent=2) + "\\n",
+            json.dumps(manifest, indent=2) + "\n",
             encoding="utf-8",
         )
     except OSError as error:
