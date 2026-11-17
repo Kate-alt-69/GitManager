@@ -77,11 +77,13 @@ The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padde
 
 ## Install locations and runtime files
 
-The MSI targets the current user's Local AppData location:
+The MSI is authored as a per-user package with `ALLUSERS=2` and `MSIINSTALLPERUSER=1`. Its MPDEV manifest uses the supported Program Files directory root; Windows Installer redirects that folder to the current user's per-user Programs location:
 
 ```text
-%LOCALAPPDATA%\kastrick's_software\GitManager
+%LOCALAPPDATA%\Programs\Kastrick's Software\GitManager
 ```
+
+This keeps the MSI install per-user without hard-coding the build machine's user profile into the package.
 
 The package includes the main executable, `gitm`, first-run setup helper, crash supervisor, background service, Developer Cleaner and the private architecture-matched CPython embeddable runtime.
 
