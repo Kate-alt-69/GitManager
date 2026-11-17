@@ -136,6 +136,7 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}\build\.rcache
       GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
       MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+      MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
     steps:
       - name: Check out GitManager
         uses: actions/checkout@v4
