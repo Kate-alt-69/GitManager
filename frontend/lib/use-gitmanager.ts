@@ -188,6 +188,19 @@ export function useGitManager() {
 				return;
 			}
 			try {
+				const cliTools = await invoke<{ git: boolean; github: boolean }>("check_cli_tools");
+				if (!cliTools.git && !cliTools.github) {
+					const proceed = window.confirm(
+						"Git CLI and GitHub CLI were not detected.\\n\\n" +
+						"GitManager has its own built-in Git engine, so it can still scan local repositories. " +
+						"However, features that launch Git commands and GitHub CLI account integration will be unavailable.\\n\\n" +
+						"Would you like to continue with the repository scan?"
+					);
+					if (!proceed) {
+						await invoke("exit_application");
+						return;
+					}
+				}
 				const [appVersion, paths, saved] = await Promise.all([
 					invoke<string>("get_app_version"),
 					invoke<ApplicationDirectories>("get_application_directories"),
