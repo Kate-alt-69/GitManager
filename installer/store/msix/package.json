@@ -1,0 +1,41 @@
+{
+  "$schema": "https://www.masterpackager.com/support-master-packager-dev/mpdev-schema.json",
+  "outputTypes": [
+    "msix"
+  ],
+  "outputDirectory": "build/dist/store/msix",
+  "outputFileName": "GitManager_$.version_$.platform",
+  "compressionLevel": "Normal",
+  "packageName": "GitManager",
+  "publisher": "Kastrick",
+  "version": "1.0.0.0",
+  "platform": "x64",
+  "installDir": "%ProgramFiles%\\Kastrick's Software\\GitManager",
+  "icon": "src-tauri/icons/icon.ico",
+  "fileSystemEntries": [
+    {
+      "sourcePath": "%GITMANAGER_APP_SOURCE%",
+      "targetPath": "$.installDir"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "GitManager",
+      "description": "Git workspace manager by Kastrick",
+      "target": "$.installDir\\git-manager.exe",
+      "icon": "src-tauri/icons/icon.ico"
+    }
+  ],
+  "msix": {
+    "capabilities": [
+      "runFullTrust",
+      "internetClient",
+      "privateNetworkClientServer"
+    ],
+    "packageDescription": "GitManager — a native Git workspace manager by Kastrick.",
+    "digitalSignature": {
+      "signWith": "GenerateTestCertificate",
+      "timestampServer": "http://timestamp.sectigo.com"
+    }
+  }
+}

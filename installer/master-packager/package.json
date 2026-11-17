@@ -1,7 +1,8 @@
 {
   "$schema": "https://www.masterpackager.com/support-master-packager-dev/mpdev-schema.json",
   "outputTypes": [
-    "msi"
+    "msi",
+    "msix"
   ],
   "outputDirectory": "build/.rcache/windows-installers",
   "outputFileName": "GitManager_$.version_$.platform",
@@ -10,7 +11,7 @@
   "publisher": "Kastrick",
   "version": "1.0.0.0",
   "platform": "x64",
-  "installDir": "%ProgramFiles%\\Kastrick's Software\\GitManager",
+  "installDir": "%LOCALAPPDATA%\\kastrick's_software\\GitManager",
   "icon": "frontend/static/image/git-managar-orange_default-black.png",
   "fileSystemEntries": [
     {
@@ -26,8 +27,19 @@
       "icon": "frontend/static/image/git-managar-orange_default-black.png"
     }
   ],
+  "msix": {
+    "capabilities": [
+      "runFullTrust",
+      "internetClient",
+      "privateNetworkClientServer"
+    ],
+    "packageDescription": "GitManager — a native Git workspace manager by Kastrick.",
+    "digitalSignature": {
+      "signWith": "GenerateTestCertificate",
+      "timestampServer": "http://timestamp.sectigo.com"
+    }
+  },
   "msi": {
-    "installDir": "[LocalAppDataFolder]kastrick's_software\\GitManager",
     "upgradeCode": "6B4A7D19-8E32-4C81-AF53-2D9B7E1C4065",
     "properties": [
       {
@@ -46,6 +58,7 @@
     ],
     "packageDependencies": [
       {
+        "displayName": "Microsoft Edge WebView2 Runtime",
         "namePattern": "Microsoft Edge WebView2 Runtime",
         "install": {
           "winGet": {
@@ -53,6 +66,18 @@
           }
         }
       }
-    ]
+    ],
+    "installDialog": {
+      "packageDescription": "A native Git workspace manager for local and remote repositories, built by Kastrick.",
+      "publisherUrl": "https://kastrick.vercel.app",
+      "releaseNotesUrl": "https://github.com/Kate-alt-69/GitManager/releases",
+      "primaryAccent": "#F97316",
+      "promptAppsAfterInstall": [
+        {
+          "displayName": "Launch GitManager",
+          "file": "$.installDir\\git-manager.exe"
+        }
+      ]
+    }
   }
 }

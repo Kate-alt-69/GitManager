@@ -981,6 +981,8 @@ function AccountsPage({
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const [message, setMessage] = useState("");
+	const [backgroundServiceBusy, setBackgroundServiceBusy] = useState(false);
+	const [backgroundServiceMessage, setBackgroundServiceMessage] = useState("");
 
 	async function connect() {
 		setBusy(true);
@@ -1085,6 +1087,54 @@ function SettingsPage({
 	const [installerPath, setInstallerPath] = useState("");
 	const [signingStatus, setSigningStatus] = useState("Windows Authenticode signing is available when a valid CurrentUser Code Signing certificate is installed.");
 	const [signingBusy, setSigningBusy] = useState(false);
+	const [flatpakCli, setFlatpakCli] = useState<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>({ isFlatpak: false, installed: false, wrapperPath: null });
+	const [flatpakCliBusy, setFlatpakCliBusy] = useState(false);
+	const [flatpakCliMessage, setFlatpakCliMessage] = useState("");
+
+	async function refreshFlatpakCli() {
+		try {
+			const status = await invoke<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>("get_flatpak_cli_integration_status");
+			setFlatpakCli(status);
+		} catch {
+			setFlatpakCli({ isFlatpak: false, installed: false, wrapperPath: null });
+		}
+	}
+
+	useEffect(() => {
+		let active = true;
+		void invoke<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>("get_flatpak_cli_integration_status")
+			.then((status) => { if (active) setFlatpakCli(status); })
+			.catch(() => undefined);
+		return () => { active = false; };
+	}, []);
+
+	async function installFlatpakCli() {
+		setFlatpakCliBusy(true);
+		setFlatpakCliMessage("");
+		try {
+			const path = await invoke<string>("install_flatpak_gitm_cli");
+			await refreshFlatpakCli();
+			setFlatpakCliMessage("The gitm terminal command was installed at " + path + ". Make sure ~/.local/bin is in your PATH.");
+		} catch (cause) {
+			setFlatpakCliMessage(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setFlatpakCliBusy(false);
+		}
+	}
+
+	async function removeFlatpakCli() {
+		setFlatpakCliBusy(true);
+		setFlatpakCliMessage("");
+		try {
+			await invoke("remove_flatpak_gitm_cli");
+			await refreshFlatpakCli();
+			setFlatpakCliMessage("The GitManager-managed gitm wrapper was removed.");
+		} catch (cause) {
+			setFlatpakCliMessage(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setFlatpakCliBusy(false);
+		}
+	}
 
 	function patch(values: Partial<AppPreferences>) {
 		setDraft((current) => ({ ...current, ...values }));
@@ -1172,6 +1222,24 @@ function SettingsPage({
 			setSigningStatus("Signing failed: " + (cause instanceof Error ? cause.message : String(cause)));
 		} finally {
 			setSigningBusy(false);
+		}
+	}
+
+	async function enableBackgroundService() {
+		setBackgroundServiceBusy(true);
+		setBackgroundServiceMessage("");
+		try {
+			await invoke("control_background_service", { enableInApp: true, installOsService: true });
+			setBackgroundServiceMessage(
+				"Background worker registered and started for this user. On Windows, open Task Scheduler → Task Scheduler Library and look for 'GitManager Background Service'. The running process appears as git-manager-service.exe in Task Manager → Details."
+			);
+		} catch (cause) {
+			setBackgroundServiceMessage(
+				"Could not register or start the background worker: " +
+				(cause instanceof Error ? cause.message : String(cause))
+			);
+		} finally {
+			setBackgroundServiceBusy(false);
 		}
 	}
 
@@ -1279,6 +1347,18 @@ function SettingsPage({
 
 			{tab === "general" && (
 				<div className="gm-settings-grid">
+					{flatpakCli.isFlatpak && (
+						<section className="gm-panel gm-settings-card">
+							<div className="gm-panel-heading"><div><h2>Terminal integration</h2><p>Optionally expose GitManager's bundled gitm command to your Linux terminal.</p></div><span className="gm-panel-icon">⌘</span></div>
+							<p className="gm-muted-copy">GitManager creates or removes only its own ~/.local/bin/gitm wrapper. It never edits .bashrc, .zshrc or your shell PATH. Ensure ~/.local/bin is already on your PATH.</p>
+							{flatpakCli.wrapperPath && <p className="gm-muted-copy">Wrapper: {flatpakCli.wrapperPath}</p>}
+							<div className="gm-add-root">
+								<Button variant="primary" onClick={() => void installFlatpakCli()} disabled={flatpakCliBusy}>{flatpakCliBusy ? "Working…" : flatpakCli.installed ? "Refresh gitm command" : "Install gitm command"}</Button>
+								{flatpakCli.installed && <Button variant="danger" onClick={() => void removeFlatpakCli()} disabled={flatpakCliBusy}>Remove wrapper</Button>}
+							</div>
+							{flatpakCliMessage && <p className="gm-muted-copy" role="status">{flatpakCliMessage}</p>}
+						</section>
+					)}
 					<section className="gm-panel gm-settings-card">
 						<div className="gm-panel-heading"><div><h2>Repository discovery</h2><p>Choose which directories GitManager scans for local repositories.</p></div><span className="gm-panel-icon">⌕</span></div>
 						<div className="gm-root-list">
@@ -1324,10 +1404,12 @@ function SettingsPage({
 					<section className="gm-panel gm-settings-card">
 						<div className="gm-panel-heading"><div><h2>Background updates</h2><p>Check remote branches and register the per-user background worker.</p></div><span className="gm-panel-icon">↻</span></div>
 						<p className="gm-muted-copy">Updates use a safe fast-forward-only strategy. GitManager does not overwrite local commits or pull over a dirty working tree.</p>
+						<p className="gm-muted-copy">The worker is optional and starts only after you enable it. On Windows it runs as your user through Task Scheduler—not as a Windows Service—so it will not appear in Services.msc. The separate git-manager-service.exe process is visible in Task Manager only while the scheduled task is running.</p>
 						<div className="gm-panel-actions">
 							<Button onClick={() => void invoke("check_repo_updates_now", { rootPaths: draft.scanRoots })}>Check remotes</Button>
-							<Button variant="primary" onClick={() => void invoke("control_background_service", { enableInApp: true, installOsService: true })}>Enable background service</Button>
+							<Button variant="primary" onClick={() => void enableBackgroundService()} disabled={backgroundServiceBusy}>{backgroundServiceBusy ? "Registering…" : "Enable background service"}</Button>
 						</div>
+						{backgroundServiceMessage && <p className="gm-muted-copy" role="status">{backgroundServiceMessage}</p>}
 					</section>
 
 					<section className="gm-panel gm-settings-card">

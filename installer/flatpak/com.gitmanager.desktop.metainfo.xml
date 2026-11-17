@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.gitmanager.desktop</id>
+  <name>GitManager</name>
+  <summary>A native Git workspace manager</summary>
+  <developer id="com.kastrick">
+    <name>Kastrick</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <description>
+    <p>GitManager is a native desktop workspace for discovering and managing local Git repositories.</p>
+  </description>
+  <launchable type="desktop-id">com.gitmanager.desktop.desktop</launchable>
+  <url type="homepage">https://github.com/Kate-alt-69/GitManager</url>
+  <url type="bugtracker">https://github.com/Kate-alt-69/GitManager/issues</url>
+</component>

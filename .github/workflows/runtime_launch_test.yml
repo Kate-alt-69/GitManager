@@ -1,0 +1,152 @@
+name: Linux Runtime Launch Test
+
+on:
+  push:
+    branches: [main, master, "feature/**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-runtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-runtime-launch:
+    name: Build and launch GitManager on Linux x64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+      WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GDK_BACKEND: x11
+    steps:
+      - name: Check out GitManager
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux desktop and WebKit runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file pkg-config \
+            libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libfuse2 xvfb xauth dbus-x11 time
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate build-script syntax and target selectors
+        run: |
+          python -m py_compile build.py tools/build_targets.py tools/runtime_launch_probe.py
+          python tools/test_build_targets.py
+
+      - name: Build the Linux x64 app without creating installers
+        run: python build.py --build='linux(x64)' --type=app --debug
+
+      - name: Prepare a realistic local repository scan fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="build/runtime-test/scan-roots"
+          mkdir -p "$ROOT"
+          for index in $(seq 1 12); do
+            REPO="$ROOT/repository-$index"
+            mkdir -p "$REPO"
+            git -C "$REPO" init -q
+            git -C "$REPO" config user.name "GitManager Runtime Test"
+            git -C "$REPO" config user.email "runtime-test@example.invalid"
+            printf '# Runtime fixture %s\n\nGitManager scan smoke test.\n' "$index" > "$REPO/README.md"
+            git -C "$REPO" add README.md
+            git -C "$REPO" commit -q -m "test: seed runtime fixture"
+          done
+
+          XDG_DATA_HOME="$GITHUB_WORKSPACE/build/runtime-test/xdg-data"
+          PREFS_DIR="$XDG_DATA_HOME/kastrick's_software/config/GitManager"
+          mkdir -p "$PREFS_DIR"
+          cat > "$PREFS_DIR/preferences.json" <<EOF
+          {
+            "scanRoots": ["$GITHUB_WORKSPACE/$ROOT"],
+            "maxScanDepth": 4,
+            "includeHiddenDirs": false,
+            "indexDependencyRepositories": true,
+            "showDependencyRepositories": true,
+            "firstRunComplete": true,
+            "archiveRoot": "$GITHUB_WORKSPACE/build/runtime-test/archives",
+            "archiveLocalEnabled": false,
+            "archiveRemoteEnabled": false,
+            "archiveTrigger": "manual",
+            "archiveQuietMs": 1500,
+            "cloudNodeAddress": ""
+          }
+          EOF
+
+      - name: Verify the expected executable exists
+        shell: bash
+        run: |
+          APP="build/.rcache/x86_64-unknown-linux-gnu/debug/git-manager"
+          test -x "$APP"
+          file "$APP"
+          ldd "$APP" | tee build/linux-runtime-ldd.txt
+          if grep -q "not found" build/linux-runtime-ldd.txt; then
+            echo "The Linux executable has unresolved shared-library dependencies."
+            exit 1
+          fi
+
+      - name: Launch the actual Tauri UI under a virtual X display
+        shell: bash
+        run: |
+          set +e
+          APP="build/.rcache/x86_64-unknown-linux-gnu/debug/git-manager"
+          mkdir -p build/runtime-test
+          dbus-run-session -- xvfb-run -a \
+            timeout --signal=TERM --kill-after=10s 60s \
+            env XDG_DATA_HOME="$GITHUB_WORKSPACE/build/runtime-test/xdg-data" GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
+            python tools/runtime_launch_probe.py --app "$APP" --duration 45 --log build/runtime-test/app.log \
+            2>&1 | tee build/runtime-test/linux-launch.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$status" -ne 0 ]; then
+            echo "GitManager Linux runtime launch failed with exit code $status."
+            exit "$status"
+          fi
+
+          MAX_RSS_KB=$(grep -o 'GITMANAGER_PEAK_RSS_KB=[0-9]*' build/runtime-test/linux-launch.log | tail -n 1 | cut -d= -f2)
+          if [ -z "$MAX_RSS_KB" ]; then
+            echo "GitManager process-tree RSS was not reported by the runtime probe."
+            exit 1
+          fi
+          if [ "$MAX_RSS_KB" -gt 1572864 ]; then
+            echo "GitManager and its WebKit child processes exceeded the 1.5 GiB startup/scan memory budget: $MAX_RSS_KB KiB"
+            exit 1
+          fi
+          echo "Peak GitManager process-tree RSS: $MAX_RSS_KB KiB"
+
+      - name: Upload runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitmanager-linux-runtime-diagnostics
+          path: |
+            build/runtime-test/
+            build/linux-runtime-ldd.txt
+          if-no-files-found: warn
+          retention-days: 14

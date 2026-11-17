@@ -1,0 +1,49 @@
+name: Store Package Definition Validation
+
+on:
+  pull_request:
+    paths:
+      - "build.py"
+      - "tools/build_targets.py"
+      - "tools/setup_build_environment.py"
+      - "tools/test_build_environment.py"
+      - "tools/package_flatpak.py"
+      - "tools/package_windows_store.py"
+      - "installer/flatpak/**"
+      - "installer/store/**"
+      - "installer/master-packager/**"
+      - ".github/workflows/store-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate local store packaging definitions
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out GitManager
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate Python, JSON and AppStream metadata
+        run: |
+          python -m py_compile build.py tools/build_targets.py tools/setup_build_environment.py tools/test_build_environment.py tools/package_flatpak.py tools/package_windows_store.py
+          python -m json.tool installer/master-packager/package.json > /dev/null
+          python -m json.tool installer/store/msix/package.json > /dev/null
+          python -c "import xml.etree.ElementTree as ET; ET.parse('installer/flatpak/com.gitmanager.desktop.metainfo.xml')"
+          python build.py --help > /dev/null
+
+      - name: Validate local package workflow and manifest YAML
+        run: |
+          ruby -e "require 'yaml'; %w[.github/workflows/store-build.yml .github/workflows/release.yml installer/flatpak/com.gitmanager.desktop.yml].each { |path| YAML.load_file(path, aliases: true) }"
+
+      - name: Run architecture and Windows packaging tests
+        run: |
+          python tools/test_build_targets.py
+          python tools/test_windows_packaging.py
+          python tools/test_build_environment.py

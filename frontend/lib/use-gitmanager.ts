@@ -188,6 +188,26 @@ export function useGitManager() {
 				return;
 			}
 			try {
+				const cliTools = await invoke<{ git: boolean; github: boolean }>("check_cli_tools");
+				if (!cliTools.git && !cliTools.github) {
+					const flatpak = await invoke<{ isFlatpak: boolean }>("get_flatpak_cli_integration_status")
+						.catch(() => ({ isFlatpak: false }));
+					const environmentNote = flatpak.isFlatpak
+						? "Flatpak isolates host executables, so Git or GitHub CLI installed outside this sandbox may not be visible here. "
+						: "";
+					const proceed = window.confirm(
+						"Git CLI and GitHub CLI were not detected.\n\n" +
+						environmentNote +
+						"GitManager has its own built-in Git engine, so it can still scan and manage local repositories. " +
+						"However, features that launch external Git commands and GitHub CLI account integration will be unavailable. " +
+						(flatpak.isFlatpak ? "The optional gitm terminal command can be enabled later in Settings.\n\n" : "\n\n") +
+						"Would you like to continue with the repository scan?\n\nChoose OK to continue scanning or Cancel to close GitManager."
+					);
+					if (!proceed) {
+						await invoke("exit_application");
+						return;
+					}
+				}
 				const [appVersion, paths, saved] = await Promise.all([
 					invoke<string>("get_app_version"),
 					invoke<ApplicationDirectories>("get_application_directories"),
