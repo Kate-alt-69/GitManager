@@ -1,7 +1,7 @@
 //! Cross-platform GitManager UI supervision and background-service control.
 //!
 //! crash_helper supervises the desktop UI only. The independent
-//! git-manager-service process is controlled over a loopback-only authenticated
+//! gitmanager.service process is controlled over a loopback-only authenticated
 //! endpoint and is never placed in the UI's process tree or termination scope.
 
 use fs2::FileExt;
