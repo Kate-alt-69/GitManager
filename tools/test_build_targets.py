@@ -30,8 +30,8 @@ class BuildTargetSelectionTests(unittest.TestCase):
         _, win10 = parse_build_selection("windows(10,x64)")
         _, win11 = parse_build_selection("windows(11,x64)")
         self.assertEqual(win10[0].triple, win11[0].triple)
-        self.assertEqual(win10[0].output_name, "windows-10-x64")
-        self.assertEqual(win11[0].output_name, "windows-11-x64")
+        self.assertEqual(win10[0].output_name, "windows-x64")
+        self.assertEqual(win11[0].output_name, "windows-x64")
 
     def test_architecture_only_selectors_are_supported(self):
         _, linux = parse_build_selection("linux(arm64)")
