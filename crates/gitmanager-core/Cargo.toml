@@ -5,6 +5,10 @@ edition = "2021"
 license = "Apache-2.0"
 description = "Shared native Git repository discovery, metadata and indexing core"
 
+[features]
+default = []
+scan-engine = []
+
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
