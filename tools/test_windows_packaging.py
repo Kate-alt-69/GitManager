@@ -57,9 +57,20 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertLessEqual(window["minWidth"], 720)
         self.assertLessEqual(window["minHeight"], 520)
 
-    def test_nsis_hook_forces_the_expected_path_and_checks_python(self):
+    def test_nsis_installer_uses_the_kastrick_default_and_loads_hooks(self):
+        config = json.loads((ROOT / "src-tauri" / "tauri.windows.conf.json").read_text(encoding="utf-8"))
+        nsis = config["bundle"]["windows"]["nsis"]
+        self.assertEqual(nsis["installMode"], "currentUser")
+        self.assertEqual(nsis["template"], "windows/installer.nsi")
+        self.assertEqual(nsis["installerHooks"], "windows/hooks.nsh")
+        template = (ROOT / "src-tauri" / "windows" / "installer.nsi").read_text(encoding="utf-8")
+        self.assertIn(r"$LOCALAPPDATA\kastrick's_software", template)
+        self.assertNotIn("$LOCALAPPDATA\\${PRODUCTNAME}", template)
+
+    def test_nsis_preinstall_respects_browse_selection_and_verifies_python(self):
         hooks = (ROOT / "src-tauri" / "windows" / "hooks.nsh").read_text(encoding="utf-8")
-        self.assertIn(r"$LOCALAPPDATA\kastrick's_software\GitManager", hooks)
+        self.assertNotIn("StrCpy $INSTDIR", hooks)
+        self.assertNotIn("install_directory_invalid", hooks)
         self.assertIn(r"$INSTDIR\resources\python\python.exe", hooks)
         self.assertIn("NSIS_HOOK_POSTINSTALL", hooks)
 
@@ -83,6 +94,11 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertEqual(config["fileSystemEntries"][0]["sourcePath"], "%GITMANAGER_APP_SOURCE%")
         self.assertEqual(config["fileSystemEntries"][0]["targetPath"], "$.installDir")
         self.assertEqual(config["msix"]["digitalSignature"]["signWith"], "GenerateTestCertificate")
+        dialog = config["msi"]["installDialog"]
+        self.assertIn("Git workspace manager", dialog["packageDescription"])
+        self.assertEqual(dialog["publisherUrl"], "https://kastrick.vercel.app")
+        self.assertEqual(dialog["primaryAccent"], "#F97316")
+        self.assertEqual(dialog["promptAppsAfterInstall"][0]["file"], "$.installDir\\git-manager.exe")
 
     def test_store_msix_requires_both_partner_center_identity_values(self):
         package = {"msix": {"digitalSignature": {"signWith": "GenerateTestCertificate"}}}
