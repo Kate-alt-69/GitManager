@@ -2,7 +2,7 @@ use git2::{Direction, FetchOptions, Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use crate::process_utils::hidden_command;
-use crate::scanner::load_persisted_repository_index;
+use crate::repository_index::load_persisted_repository_index;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoUpdateNotification {
