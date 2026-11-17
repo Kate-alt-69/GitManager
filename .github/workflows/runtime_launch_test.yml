@@ -61,6 +61,43 @@ jobs:
       - name: Build the Linux x64 app without creating installers
         run: python build.py --build='linux(x64)' --type=app --debug
 
+      - name: Prepare a realistic local repository scan fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="build/runtime-test/scan-roots"
+          mkdir -p "$ROOT"
+          for index in $(seq 1 12); do
+            REPO="$ROOT/repository-$index"
+            mkdir -p "$REPO"
+            git -C "$REPO" init -q
+            git -C "$REPO" config user.name "GitManager Runtime Test"
+            git -C "$REPO" config user.email "runtime-test@example.invalid"
+            printf '# Runtime fixture %s\n\nGitManager scan smoke test.\n' "$index" > "$REPO/README.md"
+            git -C "$REPO" add README.md
+            git -C "$REPO" commit -q -m "test: seed runtime fixture"
+          done
+
+          XDG_DATA_HOME="$GITHUB_WORKSPACE/build/runtime-test/xdg-data"
+          PREFS_DIR="$XDG_DATA_HOME/kastrick's_software/config/GitManager"
+          mkdir -p "$PREFS_DIR"
+          cat > "$PREFS_DIR/preferences.json" <<EOF
+          {
+            "scanRoots": ["$GITHUB_WORKSPACE/$ROOT"],
+            "maxScanDepth": 4,
+            "includeHiddenDirs": false,
+            "indexDependencyRepositories": true,
+            "showDependencyRepositories": true,
+            "firstRunComplete": true,
+            "archiveRoot": "$GITHUB_WORKSPACE/build/runtime-test/archives",
+            "archiveLocalEnabled": false,
+            "archiveRemoteEnabled": false,
+            "archiveTrigger": "manual",
+            "archiveQuietMs": 1500,
+            "cloudNodeAddress": ""
+          }
+          EOF
+
       - name: Verify the expected executable exists
         shell: bash
         run: |
@@ -82,10 +119,10 @@ jobs:
           dbus-run-session -- xvfb-run -a \
             /usr/bin/time -v \
             timeout --signal=TERM --kill-after=10s 45s \
-            env GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
+            env XDG_DATA_HOME="$GITHUB_WORKSPACE/build/runtime-test/xdg-data" GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
             "$APP" --crash-helper-child \
             2>&1 | tee build/runtime-test/linux-launch.log
-          status=\${PIPESTATUS[0]}
+          status=${PIPESTATUS[0]}
           set -e
 
           if [ "$status" -eq 124 ]; then
@@ -97,6 +134,13 @@ jobs:
             echo "GitManager launch failed with exit code $status."
             exit "$status"
           fi
+
+          MAX_RSS_KB=$(awk '/Maximum resident set size/ {print $6}' build/runtime-test/linux-launch.log)
+          if [ -n "$MAX_RSS_KB" ] && [ "$MAX_RSS_KB" -gt 1572864 ]; then
+            echo "GitManager exceeded the 1.5 GiB startup/scan memory budget: $MAX_RSS_KB KiB"
+            exit 1
+          fi
+          echo "Peak resident memory: $MAX_RSS_KB KiB"
 
       - name: Upload runtime diagnostics
         if: always()
