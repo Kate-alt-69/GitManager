@@ -29,7 +29,8 @@ use remote_providers::{
     fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
 };
 use scanner::{
-    build_indexed_summary_with_scan_status, default_scan_roots, scan_repositories_with_report, IndexedRepoSummary, ScanOptions,
+    build_indexed_summary_with_scan_status, default_scan_roots, load_persisted_repository_index,
+    IndexedRepoSummary, ScanReport,
 };
 use watcher_service::{
     apply_repository_update, check_all_repos_for_updates, register_os_background_service,
@@ -846,40 +847,88 @@ fn get_default_scan_directories() -> Vec<String> {
 }
 
 #[tauri::command]
+async fn load_indexed_repositories(
+    filter_mode: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<IndexedRepoSummary, String> {
+    let index = tokio::task::spawn_blocking(load_persisted_repository_index)
+        .await
+        .map_err(|error| format!("Repository index read task failed: {error}"))??;
+    let report = index.map(|index| ScanReport {
+        repositories: index.repositories,
+        truncated: index.truncated,
+    }).unwrap_or(ScanReport {
+        repositories: Vec::new(),
+        truncated: false,
+    });
+    if let Ok(mut cache) = state.cached_repos.lock() {
+        *cache = report.repositories.clone();
+    }
+    let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
+    Ok(build_indexed_summary_with_scan_status(report.repositories, &requested, report.truncated))
+}
+
+#[tauri::command]
 async fn scan_machine_repositories(
     root_paths: Vec<String>, max_depth: Option<usize>, include_hidden_dirs: Option<bool>,
     filter_mode: Option<String>, index_dependency_repositories: Option<bool>, state: State<'_, AppState>,
 ) -> Result<IndexedRepoSummary, String> {
-    let options = ScanOptions {
-        root_paths: root_paths.clone(),
-        max_depth,
-        include_hidden_dirs,
-        index_dependency_repositories,
-    };
-    // Directory walking and libgit2 inspection can be slow on large workspaces.
-    // Keep this work off the webview command thread so the desktop UI remains responsive.
-    let report = tokio::task::spawn_blocking(move || scan_repositories_with_report(options))
-        .await.map_err(|error| format!("Repository scan task failed: {error}"))??;
-    if let Ok(mut cache) = state.cached_repos.lock() { *cache = report.repositories.clone(); }
+    // Keep the legacy command contract while moving the actual directory walk
+    // into gitmanager.service. Preferences are saved separately before a scan
+    // is requested; the service reads those persisted scan settings.
+    let _requested_settings = (root_paths, max_depth, include_hidden_dirs, index_dependency_repositories);
+    let previous_indexed_at = tokio::task::spawn_blocking(load_persisted_repository_index)
+        .await
+        .map_err(|error| format!("Repository index read task failed: {error}"))??
+        .map(|index| index.indexed_at_unix_ms)
+        .unwrap_or(0);
 
-    // Reuse discovery for archive watcher setup only when it exactly matches the
-    // saved preferences. Custom one-off scans do not replace configured watch roots.
-    if let Ok(preferences) = load_background_preferences() {
-        let scan_matches_preferences = root_paths == preferences.scan_roots
-            && max_depth.unwrap_or(8) == preferences.max_scan_depth
-            && include_hidden_dirs.unwrap_or(false) == preferences.include_hidden_dirs
-            && index_dependency_repositories.unwrap_or(true) == preferences.index_dependency_repositories;
-        if scan_matches_preferences {
-            archive_watcher::restart_archive_watchers_with_repositories(
-                &preferences,
-                report.repositories.clone(),
+    crash_helper::request_service_scan()
+        .map_err(|error| format!("Could not request repository indexing from gitmanager.service: {error}"))?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let report = loop {
+        let index = tokio::task::spawn_blocking(load_persisted_repository_index)
+            .await
+            .map_err(|error| format!("Repository index read task failed: {error}"))??;
+        if let Some(index) = index {
+            if index.indexed_at_unix_ms > previous_indexed_at {
+                break ScanReport {
+                    repositories: index.repositories,
+                    truncated: index.truncated,
+                };
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "gitmanager.service has not published a refreshed repository index yet. The existing index is preserved; check Task Center → Service for diagnostics."
+                    .to_string(),
             );
         }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+
+    if let Ok(mut cache) = state.cached_repos.lock() {
+        *cache = report.repositories.clone();
+    }
+
+    // Reuse the service's authoritative result for archive watcher registration.
+    if let Ok(preferences) = load_background_preferences() {
+        archive_watcher::restart_archive_watchers_with_repositories(
+            &preferences,
+            report.repositories.clone(),
+        );
     }
 
     let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
     Ok(build_indexed_summary_with_scan_status(report.repositories, &requested, report.truncated))
 }
+
+#[tauri::command]
+fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> {
+    watcher_service::ensure_required_service(app_handle)
+}
+
 #[tauri::command]
 async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {
     tokio::task::spawn_blocking(move || {
@@ -1690,7 +1739,9 @@ pub fn run() {
             get_commit_details,
             list_windows_signing_certificates,
             sign_windows_installer,
+            load_indexed_repositories,
             scan_machine_repositories,
+            ensure_required_service,
             inspect_repository,
             list_repository_files,
             read_repository_file,
