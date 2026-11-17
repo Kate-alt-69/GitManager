@@ -122,6 +122,25 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Master Packager Dev MSI toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          winget install --id MasterPackager.MasterPackagerDev --exact --silent --accept-package-agreements --accept-source-agreements
+          $candidates = @(
+            (Get-Command mpdev.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
+            "$env:ProgramFiles\Master Packager Ltd\Master Packager Dev\mpdev.exe",
+            "$env:ProgramFiles\Master Packager Dev\mpdev.exe"
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+          if (-not $candidates) {
+            $found = Get-ChildItem -Path "$env:ProgramFiles" -Filter mpdev.exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $candidates = @($found.FullName) }
+          }
+          if (-not $candidates) { throw "Master Packager Dev was installed by WinGet but mpdev.exe could not be located." }
+          "MPDEV_EXE=$($candidates[0])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & "$($candidates[0])" version
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev CLI failed its version check." }
+
       - name: Import optional Windows production signing certificate
         if: runner.os == 'Windows'
         shell: pwsh
@@ -169,7 +188,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $setupHelper)) { throw "GitManager-Setup.exe first-run helper was not created beside gitm.exe." }
           if (-not $wixInstaller) { throw "The Tauri WiX MSI installer was not created." }
 
-          $signTargets = @("build/.rcache/x86_64-pc-windows-msvc/release/git-manager.exe", "build/.rcache/x86_64-pc-windows-msvc/release/git-manager-service.exe", "build/.rcache/x86_64-pc-windows-msvc/release/crash_helper.exe", "build/.rcache/x86_64-pc-windows-msvc/release/gitm.exe", $installer, $wixInstaller.FullName)
+          $signTargets = @("build/.rcache/x86_64-pc-windows-msvc/release/git-manager.exe", "build/.rcache/x86_64-pc-windows-msvc/release/git-manager-service.exe", "build/.rcache/x86_64-pc-windows-msvc/release/crash_helper.exe", "build/.rcache/x86_64-pc-windows-msvc/release/gitm.exe", $installer, $wixInstaller.FullName, "build/.rcache/windows-package/source/git-manager.exe", "build/.rcache/windows-package/source/resources/git-manager-service.exe", "build/.rcache/windows-package/source/resources/crash_helper.exe", "build/.rcache/windows-package/source/resources/gitm.exe", "build/.rcache/windows-package/source/resources/gitmanager-setup.exe")
           $verifyTargets = $signTargets + @("build/.rcache/x86_64-pc-windows-msvc/release/gitm.exe", $setupHelper)
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
             Write-Host "::notice::No Windows signing certificate configured. Keeping all release files unsigned; signature verification is skipped."
@@ -193,6 +212,29 @@ jobs:
             }
           }
 
+      - name: Build the additional MSI with Master Packager Dev
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
+        run: |
+          $appRoot = Resolve-Path "build/.rcache/windows-package/source"
+          if (-not (Test-Path (Join-Path $appRoot "git-manager.exe"))) { throw "The staged GitManager executable is missing." }
+          $env:GITMANAGER_APP_SOURCE = $appRoot.Path
+          & $env:MPDEV_EXE build "installer/master-packager/package.json" --working-dir "$PWD" --use-msbuild-message-format true
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev failed to build the GitManager MSI." }
+          $outputs = @(Get-ChildItem "build/.rcache/windows-installers" -File -ErrorAction SilentlyContinue)
+          $msi = @($outputs | Where-Object { $_.Extension -eq ".msi" })
+          $msix = @($outputs | Where-Object { $_.Extension -eq ".msix" })
+          if ($msi.Count -ne 1 -or $msix.Count -ne 0) {
+            throw "Expected exactly one MPDEV MSI and no MSIX in the desktop installer stream; found MSI=$($msi.Count), MSIX=$($msix.Count)."
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
+            & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $msi[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signing failed for $($msi[0].FullName)." }
+          }
+          Write-Host "Created MPDEV comparison MSI: $($msi[0].FullName)"
+
       - name: Remove imported signing certificate
         if: runner.os == 'Windows' && always()
         shell: pwsh
@@ -213,6 +255,7 @@ jobs:
           $distDir = "build/dist/windows-x64"
           New-Item -ItemType Directory -Force -Path "$distDir/installer", "$distDir/app" | Out-Null
           Copy-Item -Path "$profileDir/bundle/*" -Destination "$distDir/installer" -Recurse -Force
+          Copy-Item -Path "build/.rcache/windows-installers/*.msi" -Destination "$distDir/installer" -Force
           foreach ($name in @("git-manager.exe", "git-manager-service.exe", "crash_helper.exe", "gitm.exe", "gitmanager-setup.exe", "GitManager-Setup.exe")) {
             $source = Join-Path $profileDir $name
             if (Test-Path -LiteralPath $source) {
