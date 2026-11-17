@@ -8,7 +8,7 @@ import { invoke, openDialog } from "../lib/tauri";
 import { Button, EmptyState, Field, Glyph, ProviderMark, RepoAvatar, Switch } from "./shared-ui";
 import { parseInternalRoute, repositoryRouteForItem, repositorySubroute, routeLabel, sectionRoute } from "../lib/internal-routing";
 import type { RepositoryDestination } from "../lib/internal-routing";
-import type { AppPreferences, AppNotification, BranchInfo, GitRepository, UpdateAlert } from "../lib/types";
+import type { AppPreferences, ArchiveSnapshot, AppNotification, BranchInfo, GitRepository, UpdateAlert } from "../lib/types";
 
 const BRAND_LOGO = "/image/git-managar-orange_default-white.png";
 const BRAND_RING = "/image/git-managar-orange-ring_default-white.png";
@@ -51,6 +51,19 @@ const CleanerPage = dynamic(
 type PageKey = "repositories" | "accounts" | "settings" | "cleaner";
 type RepoFilter = "all" | "remote" | "local";
 type RepoKind = "projects" | "dependencies" | "all";
+
+function relativeDate(timestamp: number): string {
+	if (!timestamp) return "No commit date";
+	const elapsed = Math.max(0, Date.now() - timestamp * 1000);
+	const minutes = Math.floor(elapsed / 60000);
+	if (minutes < 60) return `${Math.max(1, minutes)}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	if (days < 30) return `${days}d ago`;
+	return new Date(timestamp * 1000).toLocaleDateString();
+}
+
 
 
 function Sidebar({
