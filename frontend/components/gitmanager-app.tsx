@@ -1085,7 +1085,13 @@ function SettingsPage({
 		}
 	}
 
-	useEffect(() => { void refreshFlatpakCli(); }, []);
+	useEffect(() => {
+		let active = true;
+		void invoke<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>("get_flatpak_cli_integration_status")
+			.then((status) => { if (active) setFlatpakCli(status); })
+			.catch(() => undefined);
+		return () => { active = false; };
+	}, []);
 
 	async function installFlatpakCli() {
 		setFlatpakCliBusy(true);
