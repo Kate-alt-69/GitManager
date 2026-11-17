@@ -111,12 +111,15 @@ def main() -> int:
         package_config["version"] = ".".join(version_parts)
         package_config["platform"] = args.platform
         publisher = os.environ.get("MSIX_PUBLISHER", "").strip()
+        identity_name = os.environ.get("MSIX_IDENTITY_NAME", "").strip()
         if publisher:
             package_config["publisher"] = publisher
-        else:
+        if identity_name:
+            package_config["packageName"] = identity_name
+        if not publisher or not identity_name:
             print(
-                "Warning: MSIX_PUBLISHER is not configured. The package will use the development "
-                "publisher from the manifest and is not ready for Partner Center submission."
+                "Warning: configure both MSIX_PUBLISHER and MSIX_IDENTITY_NAME from Partner Center "
+                "before treating this test package as submission-ready."
             )
         generated_manifest = output.parent / "package.json"
         generated_manifest.write_text(
