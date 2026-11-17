@@ -229,11 +229,11 @@ def target_profile_dir(project_root: Path, release: bool = True) -> Path:
     return root / triple / profile if triple else root / profile
 
 
-def name_windows_setup_installer(project_root: Path) -> Optional[Path]:
+def name_windows_setup_installer(project_root: Path, release: bool = True) -> Optional[Path]:
     """Expose a stable, predictable setup.exe name after Tauri has bundled NSIS."""
     if platform.system() != "Windows":
         return None
-    output_dir = target_profile_dir(project_root) / "bundle" / "nsis"
+    output_dir = target_profile_dir(project_root, release) / "bundle" / "nsis"
     if not output_dir.is_dir():
         log_err(f"NSIS installer output directory does not exist: {output_dir}")
         return None
@@ -446,11 +446,11 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
     return 0
 
 
-def name_windows_msi_installer(project_root: Path) -> Optional[Path]:
+def name_windows_msi_installer(project_root: Path, release: bool = True) -> Optional[Path]:
     """Verify the MSI produced by Tauri's existing WiX bundler."""
     if platform.system() != "Windows":
         return None
-    output_dir = target_profile_dir(project_root) / "bundle" / "msi"
+    output_dir = target_profile_dir(project_root, release) / "bundle" / "msi"
     candidates = sorted(output_dir.glob("*.msi")) if output_dir.is_dir() else []
     if len(candidates) != 1:
         log_err(f"Expected one Tauri WiX MSI, found {len(candidates)} in {output_dir}.")
@@ -1674,9 +1674,9 @@ def run_build_or_dev(
 
         # App-only builds skip installer validation and bundler output checks.
         if bundle and platform.system() == "Windows":
-            if name_windows_setup_installer(project_root) is None:
+            if name_windows_setup_installer(project_root, release) is None:
                 return 1
-            if name_windows_msi_installer(project_root) is None:
+            if name_windows_msi_installer(project_root, release) is None:
                 return 1
             if build_master_packager and os.environ.get("CARGO_BUILD_TARGET", "").startswith("x86_64-"):
                 mpdev_result, _ = build_master_packager_dev_msi(project_root)
