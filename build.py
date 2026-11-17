@@ -1694,6 +1694,7 @@ def build_local_store_package(
             has_cargo_tauri=has_cargo_tauri,
             release=release,
             bundle=True,
+            bundle_formats="deb",
         )
         if result != 0:
             return result
@@ -1770,7 +1771,13 @@ def build_local_store_package(
     return 2
 
 
-def publish_build_outputs(project_root: Path, release: bool, bundle: bool, include_mpdev: bool = False) -> int:
+def publish_build_outputs(
+    project_root: Path,
+    release: bool,
+    bundle: bool,
+    include_mpdev: bool = False,
+    bundle_formats: Optional[str] = None,
+) -> int:
     """Copy target outputs out of Cargo's cache into a stable build/dist layout."""
     selector = os.environ.get("GITMANAGER_BUILD_SELECTOR", "").strip()
     try:
@@ -1808,11 +1815,16 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool, inclu
             if not bundle_files:
                 log_err(f"Tauri created an empty installer bundle directory: {bundle_source}")
                 return 1
-            required_extensions = (
-                {".deb", ".rpm"} if target.platform == "linux"
-                else {".dmg"} if target.platform == "macos"
-                else set()
-            )
+            if target.platform == "linux":
+                required_extensions = (
+                    {f".{item.strip().lower()}" for item in bundle_formats.split(",") if item.strip()}
+                    if bundle_formats
+                    else {".deb", ".rpm"}
+                )
+            elif target.platform == "macos":
+                required_extensions = {".dmg"}
+            else:
+                required_extensions = set()
             missing_extensions = sorted(
                 extension for extension in required_extensions
                 if not any(path.suffix.lower() == extension for path in bundle_files)
@@ -1908,6 +1920,7 @@ def run_build_or_dev(
     has_cargo_tauri: bool,
     release: bool,
     bundle: bool = True,
+    bundle_formats: Optional[str] = None,
 ) -> int:
     src_tauri_dir = project_root / "src-tauri"
 
@@ -1954,6 +1967,8 @@ def run_build_or_dev(
                 cmd.extend(["--target", target_triple])
             if not bundle:
                 cmd.append("--no-bundle")
+            elif bundle_formats:
+                cmd.extend(["--bundles", bundle_formats])
             elif target_triple == "armv7-unknown-linux-gnueabihf":
                 # Cross-built ARMv7 AppImages need a QEMU runtime; ship native
                 # Debian/RPM packages for this target in the first matrix pass.
@@ -1996,7 +2011,13 @@ def run_build_or_dev(
                 if mpdev_result != 0 or not mpdev_packages:
                     return mpdev_result or 1
                 include_mpdev = True
-        if publish_build_outputs(project_root, release, bundle, include_mpdev) != 0:
+        if publish_build_outputs(
+            project_root,
+            release,
+            bundle,
+            include_mpdev,
+            bundle_formats=bundle_formats,
+        ) != 0:
             return 1
         return 0
 
