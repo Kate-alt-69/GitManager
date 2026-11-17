@@ -1531,8 +1531,8 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
         time.sleep(2)
 
     if not run_id:
-        log_warn("The workflow was dispatched, but its run ID could not be resolved yet. Check the GitHub Actions tab.")
-        return 0
+        log_err("The workflow was dispatched, but its new run ID could not be resolved. Verify that the current branch is pushed and check the GitHub Actions tab.")
+        return 1
 
     log_info(f"Watching GitHub Actions build run {run_id}...")
     watch_result = subprocess.call([gh, "run", "watch", str(run_id), "--exit-status"])
