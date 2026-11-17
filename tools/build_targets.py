@@ -2,8 +2,8 @@
 
 The desktop support matrix follows the targets supported by the Tauri/Rust
 application, not every architecture on which the Git command-line tool runs.
-Platform-wide selections are delegated to build-matrix.yml so each target is
-built on an appropriate GitHub Actions runner.
+The build script filters selections to architectures that the current host
+can compile and package with its native operating system SDK and toolchain.
 """
 from __future__ import annotations
 
