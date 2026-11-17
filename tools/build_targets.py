@@ -23,7 +23,7 @@ class BuildTarget:
     @property
     def selector(self) -> str:
         if self.platform == "windows":
-            version = self.windows_version or "10"
+            version = self.windows_version or ("11" if self.architecture == "arm64" else "10")
             return f"windows({version},{self.architecture})"
         return f"{self.platform}({self.architecture})"
 
@@ -112,8 +112,8 @@ def can_build_locally(target: BuildTarget) -> tuple[bool, str]:
     host = host_platform()
     if host != target.platform:
         return False, (
-            f"{target.selector} requires a {target.platform} build runner; "
-            f"this machine is {host}. Use --build={target.platform} to dispatch the platform group."
+            f"{target.selector} cannot be built locally on {host}; "
+            f"this target requires a {target.platform} host and its native SDK/toolchain."
         )
 
     machine = platform.machine().lower()
@@ -126,19 +126,19 @@ def can_build_locally(target: BuildTarget) -> tuple[bool, str]:
     if target.platform == "linux" and target.architecture != host_arch:
         return False, (
             f"Cross-compiling Linux {target.architecture} from {host_arch} needs a matching "
-            "native linker and WebKitGTK development sysroot. Use the matching Linux architecture workflow runner."
+            "native linker and WebKitGTK development sysroot. Build it on a matching Linux machine."
         )
     if target.platform == "macos" and target.architecture not in ("x64", "arm64"):
         return False, f"Unsupported macOS host architecture: {host_arch}."
     if target.platform == "windows" and target.architecture == "arm64" and host_arch != "arm64":
         return False, (
             "Windows ARM64 requires the Visual Studio ARM64 C++ toolchain. "
-            "Use the Windows ARM64 workflow runner or install that toolchain first."
+            "Install the ARM64 build tools or build on a Windows ARM64 machine."
         )
     if target.platform == "windows" and host_arch == "arm64" and target.architecture != "arm64":
         return False, (
-            "The Windows ARM64 runner is configured for native ARM64 builds. "
-            "Use the Windows x64 runner for x64 and x86 application targets."
+            "A Windows ARM64 host does not currently cross-build x64/x86 in this script. "
+            "Use a Windows x64 host for those application targets."
         )
     return True, ""
 
