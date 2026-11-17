@@ -1770,8 +1770,9 @@ def main() -> int:
         target = selected_targets[0]
         can_build, reason = can_build_locally(target)
         if not can_build:
-            log_err(reason)
-            return 2
+            log_warn(reason)
+            log_info(f"Dispatching exact target to its native GitHub Actions runner: {target.selector}")
+            return dispatch_build_matrix(args.build_target.lower(), args.build_type)
         os.environ["CARGO_BUILD_TARGET"] = target.triple
         os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
         os.environ["GITMANAGER_BUILD_SELECTOR"] = args.build_target.lower()
