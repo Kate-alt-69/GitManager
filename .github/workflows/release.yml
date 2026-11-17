@@ -221,7 +221,109 @@ jobs:
           $appRoot = Resolve-Path "build/.rcache/windows-package/source"
           if (-not (Test-Path (Join-Path $appRoot "git-manager.exe"))) { throw "The staged GitManager executable is missing." }
           $env:GITMANAGER_APP_SOURCE = $appRoot.Path
-          & $env:MPDEV_EXE build "installer/master-packager/package.json" --working-dir "$PWD" --use-msbuild-message-format true
+          $tauriVersion = (Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
+          $versionParts = @("$tauriVersion" -split '\.')
+          if ($versionParts.Count -lt 1 -or $versionParts.Count -gt 4 -or ($versionParts | Where-Object { $_ -notmatch '^\d+          $outputs = @(Get-ChildItem "build/.rcache/windows-installers" -File -ErrorAction SilentlyContinue)
+          $msi = @($outputs | Where-Object { $_.Extension -eq ".msi" })
+          $msix = @($outputs | Where-Object { $_.Extension -eq ".msix" })
+          if ($msi.Count -ne 1 -or $msix.Count -ne 0) {
+            throw "Expected exactly one MPDEV MSI and no MSIX in the desktop installer stream; found MSI=$($msi.Count), MSIX=$($msix.Count)."
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_THUMBPRINT)) {
+            & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools/sign_windows_file.ps1" -FilePath $msi[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signing failed for $($msi[0].FullName)." }
+          }
+          Write-Host "Created MPDEV comparison MSI: $($msi[0].FullName)"
+
+      - name: Remove imported signing certificate
+        if: runner.os == 'Windows' && always()
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
+        run: |
+          $thumbprint = ($env:WINDOWS_SIGNING_THUMBPRINT -replace '\s', '').ToUpperInvariant()
+          if ($thumbprint) {
+            Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $thumbprint } |
+              Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Refresh published Windows artifacts after signing
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $profileDir = "build/.rcache/x86_64-pc-windows-msvc/release"
+          $distDir = "build/dist/windows-x64"
+          New-Item -ItemType Directory -Force -Path "$distDir/installer", "$distDir/app" | Out-Null
+          Copy-Item -Path "$profileDir/bundle/*" -Destination "$distDir/installer" -Recurse -Force
+          Copy-Item -Path "build/.rcache/windows-installers/*.msi" -Destination "$distDir/installer" -Force
+          foreach ($name in @("git-manager.exe", "git-manager-service.exe", "crash_helper.exe", "gitm.exe", "gitmanager-setup.exe", "GitManager-Setup.exe")) {
+            $source = Join-Path $profileDir $name
+            if (Test-Path -LiteralPath $source) {
+              Copy-Item -LiteralPath $source -Destination "$distDir/app" -Force
+            }
+          }
+
+      - name: Upload platform installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitmanager-installers-${{ matrix.platform }}
+          path: build/dist/${{ matrix.output }}/
+          if-no-files-found: error
+          compression-level: 9
+
+  publish-cloud-node:
+    name: Publish RBE node bootstrap package
+    if: >-
+      ${{ github.event_name == 'push' &&
+          (github.ref == 'refs/heads/main' ||
+           github.ref == 'refs/heads/master' ||
+           startsWith(github.ref, 'refs/tags/v')) }}
+    needs: cloud-node-deployment
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified RBE bootstrap ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: gitmanager-cloud-node-deployment
+          path: release-assets
+
+      - name: Check stable download filename and create checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find release-assets -maxdepth 1 -type f -name 'GitManager-Cloud-Node-Setup.zip' -print)
+          if [ "${#archives[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one RBE node bootstrap ZIP; found ${#archives[@]}."
+            exit 1
+          fi
+          (cd release-assets && sha256sum GitManager-Cloud-Node-Setup.zip > GitManager-Cloud-Node-Setup.zip.sha256)
+
+      - name: Publish the moving Cloud Node download release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cloud-node-setup-latest
+          target_commitish: ${{ github.sha }}
+          name: GitManager Cloud Node Setup
+          body: |
+            Standalone, cross-platform RBE Cloud Node deployment package for NAS devices and other computers.
+
+            This ZIP is separate from the GitManager desktop application. It contains RBE API route files, backend and Cloud Node configuration templates, the Python bootstrap installer, licenses and deployment instructions. setup.py downloads and checksum-verifies only the matching full RBE runtime for the host machine when run. It contains no binaries, machine-specific node key or credentials.
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/GitManager-Cloud-Node-Setup.zip
+            release-assets/GitManager-Cloud-Node-Setup.zip.sha256
+ })) {
+            throw "Tauri version '$tauriVersion' cannot be converted to a four-part MSI version."
+          }
+          while ($versionParts.Count -lt 4) { $versionParts += "0" }
+          if ($versionParts | Where-Object { [int]$_ -gt 65535 }) { throw "MSI version components cannot exceed 65535." }
+          $packageVersion = $versionParts -join "."
+          & $env:MPDEV_EXE build "installer/master-packager/package.json" --working-dir "$PWD" --properties "$.version=$packageVersion" --use-msbuild-message-format true
           if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev failed to build the GitManager MSI." }
           $outputs = @(Get-ChildItem "build/.rcache/windows-installers" -File -ErrorAction SilentlyContinue)
           $msi = @($outputs | Where-Object { $_.Extension -eq ".msi" })
