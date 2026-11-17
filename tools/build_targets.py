@@ -132,8 +132,8 @@ def can_build_locally(target: BuildTarget) -> tuple[bool, str]:
         return False, f"Unsupported macOS host architecture: {host_arch}."
     if target.platform == "windows" and target.architecture == "arm64" and host_arch != "arm64":
         return False, (
-            "Windows ARM64 requires the Visual Studio ARM64 C++ toolchain. "
-            "Install the ARM64 build tools or build on a Windows ARM64 machine."
+            "Windows ARM64 packaging is currently supported only on a native Windows ARM64 host. "
+            "This script does not cross-build ARM64 Windows packages from an x64 host."
         )
     if target.platform == "windows" and host_arch == "arm64" and target.architecture != "arm64":
         return False, (
