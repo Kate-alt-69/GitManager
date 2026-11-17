@@ -867,8 +867,10 @@ def setup_build_environment(
         if host == "windows":
             windows_targets = [target for target in local_targets if target.platform == "windows"]
             if not windows_targets:
-                windows_targets = [target for target in targets if target.platform == "windows"]
-            outcomes.append(_setup_windows(windows_targets, default_yes=True))
+                _log("No selected Windows architecture can be built on this host. Use native Windows ARM64 for ARM64 packages or Windows x64 for x64/x86.")
+                outcomes.append(2)
+            else:
+                outcomes.append(_setup_windows(windows_targets, default_yes=True))
         else:
             _log("Windows SDK/MSVC/MPDEV installs require a native Windows host. Run setup-build-tools on Windows.")
             outcomes.append(2)
