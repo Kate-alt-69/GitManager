@@ -753,15 +753,60 @@ function RepositoryDetail({
 				<div><span>Remotes</span><strong>{displayRepo.remotes?.length ?? 0}</strong></div>
 			</div>
 
-			<RepositoryWorkspace
-				key={repo.path}
-				repo={displayRepo}
-				onRepositoryUpdated={onRepositoryLoaded}
-				onPullCompleted={onPullCompleted}
-				onOpenCleaner={onOpenCleaner}
-			/>
+			<nav className="gm-repository-route-nav" aria-label="Repository views">
+				{repositoryRouteTabs.map((item) => (
+					<button
+						key={item.destination.kind}
+						type="button"
+						className={activeDestination === item.destination.kind ? "active" : ""}
+						aria-current={activeDestination === item.destination.kind ? "page" : undefined}
+						onClick={() => onNavigateDestination(item.destination)}
+					>
+						{item.label}
+					</button>
+				))}
+			</nav>
 
-			<div className="gm-detail-columns">
+			{destination.kind === "conflicts" && (
+				<div className="gm-route-notice">
+					<strong>Local conflict workspace</strong>
+					<span>Only paths marked unmerged by Git are shown. Open a file in your editor, resolve its contents, then return here and stage the resolved file.</span>
+				</div>
+			)}
+			{destination.kind === "pull-conflicts" && (
+				<div className="gm-route-notice">
+					<strong>Pull conflict resolver</strong>
+					<span>These are local Git conflicts, not a GitHub or GitLab web view. Resolve the working-copy files, stage them, then review the Pull again.</span>
+				</div>
+			)}
+			{destination.kind === "pull-browser" && (
+				<div className="gm-route-notice">
+					<strong>Remote pull requests</strong>
+					<span>Pull requests are provider metadata. GitManager keeps branch and commit navigation local; open the provider to browse its pull-request list.</span>
+					{repo.web_url && <Button onClick={() => onOpenWebsite(pullRequestListUrl(displayRepo) ?? repo.web_url!)}>Open pull requests</Button>}
+				</div>
+			)}
+			{destination.kind === "pull-request" && (
+				<div className="gm-route-notice">
+					<strong>Pull request #{destination.number}</strong>
+					<span>GitManager treats pull requests as remote decorations. The branch and commit history remain the local Git data shown below.</span>
+					{remotePullRequestUrl
+						? <Button onClick={() => onOpenWebsite(remotePullRequestUrl)}>Open pull request</Button>
+						: <span>This local repository does not expose a supported provider URL for pull request #{destination.number}.</span>}
+				</div>
+			)}
+			{showWorkspace && (
+				<RepositoryWorkspace
+					key={repo.path}
+					repo={displayRepo}
+					focus={destination.kind === "conflicts" || destination.kind === "pull-conflicts" ? "conflicts" : "all"}
+					onRepositoryUpdated={onRepositoryLoaded}
+					onPullCompleted={onPullCompleted}
+					onOpenCleaner={onOpenCleaner}
+				/>
+			)}
+
+			{showCommitHistory && <div className="gm-detail-columns">
 				<div className="gm-panel gm-commit-panel">
 					<div className="gm-panel-heading">
 						<div><h2>Commit history</h2><p>Recent commits across local and remote branches.</p></div>
@@ -773,7 +818,11 @@ function RepositoryDetail({
 								<button
 									key={commit.oid}
 									className={selectedCommit === commit.oid ? "gm-commit-row selected" : "gm-commit-row"}
-									onClick={() => void showCommit(commit.oid)}
+									onClick={() => onNavigateDestination({
+										kind: "commit-details",
+										branch: commit.branches?.[0] || displayRepo.current_branch,
+										sha: commit.oid,
+									})}
 									type="button"
 								>
 									<span className={index === 0 ? "gm-commit-node head" : "gm-commit-node"} />
@@ -791,7 +840,7 @@ function RepositoryDetail({
 						<div className="gm-commit-inspector">
 							<div className="gm-commit-inspector-heading">
 								<strong>Commit details</strong>
-								<button onClick={() => { setSelectedCommit(null); setCommitDetail(null); }} type="button">×</button>
+								<button onClick={() => onNavigateDestination({ kind: "commit-browser" })} type="button">×</button>
 							</div>
 							<pre>{commitDetail ? JSON.stringify(commitDetail, null, 2) : "Loading commit details…"}</pre>
 						</div>
@@ -800,7 +849,7 @@ function RepositoryDetail({
 
 				<div className="gm-detail-side">
 					<div className="gm-panel">
-						<div className="gm-panel-heading"><div><h2>Branches</h2><p>Local branch references</p></div><span className="gm-count-chip">{branches.length}</span></div>
+						<div className="gm-panel-heading"><div><h2>{isPullRoute ? "Remote branches" : "Local branches"}</h2><p>{isPullRoute ? "Fetched remote refs associated with this repository" : "Local branch references"}</p></div><span className="gm-count-chip">{branches.length}</span></div>
 						<div className="gm-branch-list">
 							{branches.slice(0, 12).map((branch) => (
 								<div className="gm-branch-row" key={branch.name}>
@@ -810,7 +859,7 @@ function RepositoryDetail({
 									{branch.is_default && <span className="gm-default-chip">Default</span>}
 								</div>
 							))}
-							{branches.length === 0 && <p className="gm-muted-copy">No local branches reported.</p>}
+							{branches.length === 0 && <p className="gm-muted-copy">{isPullRoute ? "No fetched remote branches reported." : "No local branches reported."}</p>}
 						</div>
 					</div>
 
@@ -839,9 +888,8 @@ function RepositoryDetail({
 						</div>
 						<small className="gm-archive-root">Archive folder: {archiveRoot || "Resolving…"}</small>
 					</div>
-				</div>
-			</div>
-		</section>
+				</div>}
+			</section>
 	);
 }
 
