@@ -7,7 +7,7 @@ import { Button, Field, Glyph, Switch } from "./shared-ui";
 
 type SettingsTab = "general" | "cloud" | "about";
 
-function SettingsPage({
+export function SettingsPage({
 	preferences,
 	directories,
 	onSave,
