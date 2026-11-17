@@ -264,6 +264,7 @@ function TopBar({
 	repositoryCount,
 	scanTruncated,
 	notifications,
+	inAppNotificationsEnabled,
 	onRefreshNotifications,
 	onMarkNotificationRead,
 	onDismissNotification,
@@ -280,6 +281,7 @@ function TopBar({
 	repositoryCount: number;
 	scanTruncated: boolean;
 	notifications: AppNotification[];
+	inAppNotificationsEnabled: boolean;
 	onRefreshNotifications: () => Promise<unknown>;
 	onMarkNotificationRead: (id: string) => Promise<void>;
 	onDismissNotification: (id: string) => Promise<void>;
@@ -287,12 +289,12 @@ function TopBar({
 	onRetryService: () => void;
 }) {
 	const [openPanel, setOpenPanel] = useState<"tasks" | "notifications" | null>(null);
-	const unreadCount = notifications.filter((item) => !item.read).length;
+	const unreadCount = inAppNotificationsEnabled ? notifications.filter((item) => !item.read).length : 0;
 	const currentRoute = parseInternalRoute(internalRoute);
 	const label = routeLabel(currentRoute);
 
 	useEffect(() => {
-		if (openPanel !== "notifications") return;
+		if (openPanel !== "notifications" || !inAppNotificationsEnabled) return;
 		void onRefreshNotifications();
 		const timer = window.setInterval(() => void onRefreshNotifications(), 30000);
 		return () => window.clearInterval(timer);
@@ -375,7 +377,9 @@ function TopBar({
 								<button type="button" onClick={() => setOpenPanel(null)} aria-label="Close Notifications">×</button>
 							</div>
 							<div className="gm-notification-list">
-								{notifications.length === 0 ? (
+								{!inAppNotificationsEnabled ? (
+									<div className="gm-notification-empty"><strong>In-app notifications are disabled</strong><span>Enable them in Settings to show GitManager activity here. OS notifications can be configured separately.</span></div>
+								) : notifications.length === 0 ? (
 									<div className="gm-notification-empty"><strong>You're all caught up</strong><span>Repository updates and GitManager activity will appear here.</span></div>
 								) : notifications.map((item) => (
 									<article className={item.read ? "gm-notification-item read" : "gm-notification-item unread"} key={item.id}>
@@ -391,7 +395,7 @@ function TopBar({
 								))}
 							</div>
 							<div className="gm-popover-actions">
-								<button type="button" onClick={() => void onRefreshNotifications()}>Refresh notifications</button>
+								<button type="button" onClick={() => void onRefreshNotifications()} disabled={!inAppNotificationsEnabled}>Refresh notifications</button>
 							</div>
 						</section>
 					)}
@@ -1340,9 +1344,9 @@ function SettingsPage({
 		setBackgroundServiceBusy(true);
 		setBackgroundServiceMessage("");
 		try {
-			await invoke("control_background_service", { enableInApp: true, installOsService: true });
+			await invoke("control_background_service", { installOsService: true });
 			setBackgroundServiceMessage(
-				"Background worker registered and started for this user. On Windows, open Task Scheduler → Task Scheduler Library and look for 'GitManager Background Service'. The running process appears as git-manager-service.exe in Task Manager → Details."
+				"GitManager Core Service is registered to start at sign-in. GitManager will also launch it on demand whenever the desktop app starts. On Windows, find gitmanager.service.exe in Task Manager → Details."
 			);
 		} catch (cause) {
 			setBackgroundServiceMessage(
@@ -1513,14 +1517,19 @@ function SettingsPage({
 					</section>
 
 					<section className="gm-panel gm-settings-card">
-						<div className="gm-panel-heading"><div><h2>Background updates</h2><p>Check remote branches and register the per-user background worker.</p></div><span className="gm-panel-icon">↻</span></div>
-						<p className="gm-muted-copy">Updates use a safe fast-forward-only strategy. GitManager does not overwrite local commits or pull over a dirty working tree.</p>
-						<p className="gm-muted-copy">The worker is optional and starts only after you enable it. On Windows it runs as your user through Task Scheduler—not as a Windows Service—so it will not appear in Services.msc. The separate git-manager-service.exe process is visible in Task Manager only while the scheduled task is running.</p>
+						<div className="gm-panel-heading"><div><h2>GitManager Core Service</h2><p>The required data engine for repository discovery, indexing and remote checks.</p></div><span className="gm-panel-icon">⚙</span></div>
+						<p className="gm-muted-copy">The core service starts automatically when GitManager launches. Registering it here also starts it when you sign in, so indexing and background checks can continue before opening the desktop UI.</p>
+						<p className="gm-muted-copy">The service runs as your current user. On Windows it uses Task Scheduler, not the machine-wide Services manager. Its process is named gitmanager.service.exe.</p>
 						<div className="gm-panel-actions">
 							<Button onClick={() => void invoke("check_repo_updates_now", { rootPaths: draft.scanRoots })}>Check remotes</Button>
-							<Button variant="primary" onClick={() => void enableBackgroundService()} disabled={backgroundServiceBusy}>{backgroundServiceBusy ? "Registering…" : "Enable background service"}</Button>
+							<Button variant="primary" onClick={() => void enableBackgroundService()} disabled={backgroundServiceBusy}>{backgroundServiceBusy ? "Registering…" : "Start service at sign-in"}</Button>
 						</div>
 						{backgroundServiceMessage && <p className="gm-muted-copy" role="status">{backgroundServiceMessage}</p>}
+					</section>
+					<section className="gm-panel gm-settings-card">
+						<div className="gm-panel-heading"><div><h2>Notifications</h2><p>Configure where GitManager reports repository activity.</p></div><span className="gm-panel-icon">♢</span></div>
+						<Switch label="In-app notifications" checked={draft.inAppNotificationsEnabled !== false} onChange={(value) => patch({ inAppNotificationsEnabled: value })} description="Keep activity in the top-right Notifications panel." />
+						<Switch label="Operating system notifications" checked={draft.osNotificationsEnabled !== false} onChange={(value) => patch({ osNotificationsEnabled: value })} description="Show native desktop notifications when repository updates are found." />
 					</section>
 
 					<section className="gm-panel gm-settings-card">
@@ -1854,6 +1863,7 @@ export function GitManagerApp() {
 					repositoryCount={git.repositories.length}
 					scanTruncated={git.scanTruncated}
 					notifications={git.notifications}
+					inAppNotificationsEnabled={git.preferences.inAppNotificationsEnabled !== false}
 					onRefreshNotifications={git.refreshNotifications}
 					onMarkNotificationRead={git.markNotificationRead}
 					onDismissNotification={git.dismissNotification}
