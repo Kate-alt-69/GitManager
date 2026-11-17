@@ -573,13 +573,24 @@ def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[
         package_config["version"] = ".".join(version_parts)
         package_config["platform"] = package_arch
         package_config["outputTypes"] = ["msi", "msix"]
-        package_config.setdefault("msix", {}).setdefault(
-            "digitalSignature",
-            {
-                "signWith": "GenerateTestCertificate",
-                "timestampServer": "http://timestamp.sectigo.com",
-            },
-        )
+        store_publisher = os.environ.get("MSIX_PUBLISHER", "").strip()
+        store_identity = os.environ.get("MSIX_IDENTITY_NAME", "").strip()
+        if bool(store_publisher) != bool(store_identity):
+            raise ValueError("Set both MSIX_PUBLISHER and MSIX_IDENTITY_NAME, or leave both unset.")
+        if store_publisher and store_identity:
+            package_config["publisher"] = store_publisher
+            package_config["packageName"] = store_identity
+            package_config.setdefault("msix", {}).pop("digitalSignature", None)
+            log_info("Partner Center identity detected; MPDEV will create an unsigned Store-ready MSIX.")
+        else:
+            package_config.setdefault("msix", {}).setdefault(
+                "digitalSignature",
+                {
+                    "signWith": "GenerateTestCertificate",
+                    "timestampServer": "http://timestamp.sectigo.com",
+                },
+            )
+            log_warn("MPDEV MSIX will use its development certificate; configure Partner Center identity for Store submission.")
         generated_manifest = cargo_target_root(project_root) / "windows-package" / "mpdev-package.json"
         generated_manifest.parent.mkdir(parents=True, exist_ok=True)
         generated_manifest.write_text(
@@ -1936,6 +1947,27 @@ def run_build_or_dev(
         cloud_node_result = prepare_cloud_node_deployment(project_root)
         if cloud_node_result != 0:
             return cloud_node_result
+
+    if mode == "build" and platform.system() == "Windows" and bundle:
+        refresh_windows_packaging_path()
+        mpdev_cli = find_master_packager_dev_cli()
+        if mpdev_cli is None:
+            log_err(
+                "Master Packager Dev is mandatory for Windows MSI/MSIX builds. "
+                "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
+            )
+            return 1
+        nsis_available = bool(shutil.which("makensis")) or any(
+            (directory / "makensis.exe").is_file()
+            for directory in windows_packaging_search_directories()
+        )
+        if not nsis_available:
+            log_err(
+                "NSIS is required as the fallback Windows setup installer. "
+                "Install it with 'winget install --id NSIS.NSIS --exact' "
+                "or run 'py build.py setup-packaging-tools'."
+            )
+            return 1
 
     if mode == "build" and platform.system() == "Windows":
         runtime_result = prepare_windows_python_runtime(project_root)
