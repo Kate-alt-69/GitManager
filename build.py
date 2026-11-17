@@ -1739,9 +1739,10 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool, inclu
             shutil.copytree(bundle_source, installer_dir)
             if target.platform == "windows" and include_mpdev:
                 mpdev_outputs = cargo_target_root(project_root) / "windows-installers"
-                for package in sorted(mpdev_outputs.glob("*.msi")):
-                    if package.is_file() and package.stat().st_size > 0:
-                        shutil.copy2(package, installer_dir / package.name)
+                for pattern in ("*.msi", "*.msix"):
+                    for package in sorted(mpdev_outputs.glob(pattern)):
+                        if package.is_file() and package.stat().st_size > 0:
+                            shutil.copy2(package, installer_dir / package.name)
             log_ok(f"Published installer bundles: {installer_dir}")
 
         suffix = ".exe" if target.platform == "windows" else ""
