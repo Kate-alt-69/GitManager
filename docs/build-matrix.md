@@ -31,7 +31,7 @@ py build.py
 
 It detects the current operating system and lists the architectures available on that machine. Press Enter to select all locally supported architectures, or enter a number to select one. A non-interactive invocation also defaults to all locally supported architectures.
 
-On Windows x64, for example, the menu can offer x64 and x86 builds. ARM64 appears as unavailable unless the machine has the required ARM64 build toolchain.
+On Windows x64, the menu offers x64 and x86 builds. ARM64 appears as unavailable because this script currently requires a native Windows ARM64 host; it does not cross-build Windows ARM64 from x64.
 
 ## Explicit build commands
 
