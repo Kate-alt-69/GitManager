@@ -1219,8 +1219,8 @@ async fn check_repo_updates_now(
         *pending = updates.clone();
     }
 
+    let preferences = load_background_preferences().unwrap_or_default();
     for upd in &updates {
-        let preferences = load_background_preferences().unwrap_or_default();
         let created = notification_center::publish_repository_update(
             &upd.repo_id,
             &upd.repo_name,
@@ -1234,6 +1234,7 @@ async fn check_repo_updates_now(
         }
         let _ = app_handle.emit("gitmanager://repo-update-available", upd);
     }
+    let _ = app_handle.emit("gitmanager://notifications-updated", ());
 
     Ok(updates)
 }
