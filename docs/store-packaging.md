@@ -41,7 +41,7 @@ The current workflow produces a testable Flatpak bundle. A Flathub submission st
 
 The MSIX stream builds the Windows app-only payload and invokes Master Packager Dev using the isolated definition at \`installer/store/msix/package.json\`. It does not produce the ordinary NSIS/WiX installers.
 
-The package currently uses the project's development/test signing mode. Microsoft Store submissions are re-signed by Microsoft after certification, but the package identity and publisher must match the identity reserved in Partner Center. Set the repository Actions variable `MSIX_PUBLISHER` to the exact publisher string reserved in Partner Center before treating a generated artifact as a submission-ready package. The build derives the four-part MSIX version from `src-tauri/tauri.conf.json`. A test-signed MSIX is for local validation, not direct public distribution.
+The package currently uses the project's development/test signing mode. Microsoft Store submissions are re-signed by Microsoft after certification, but the package identity and publisher must match the identity reserved in Partner Center. Set the repository Actions variables `MSIX_PUBLISHER` and `MSIX_IDENTITY_NAME` to the exact publisher and identity name reserved in Partner Center before treating a generated artifact as a submission-ready package. The build derives the four-part MSIX version from `src-tauri/tauri.conf.json`. A test-signed MSIX is for local validation, not direct public distribution.
 
 - First target: Windows x64
 - Output: \`build/dist/store/msix/\`
