@@ -21,6 +21,10 @@ Windows 10 and Windows 11 are compatibility labels, not different CPU targets. F
 
 Linux ARMv7 is limited to DEB/RPM packaging in this build stream; AppImage is not produced for that target. Cross-architecture Linux builds need a native linker and matching WebKitGTK sysroot, so the script does not pretend a generic x64 Linux host can package ARM builds.
 
+## Toolchain setup
+
+Run the setup-build-tools action on each native build machine. Windows installs the MSVC/Windows SDK, Node.js 22, Rust targets, MPDEV and NSIS, then provisions Ubuntu 24.04 under WSL2 for Linux/Flatpak builds. macOS prepares Xcode Command Line Tools, Node.js 22, Homebrew dependencies and both macOS Rust targets. See [Build environment setup](build-environment-setup.md) for prerequisites, WSL first-run steps and platform limits.
+
 ## Interactive selection
 
 Run the build script without a target:
