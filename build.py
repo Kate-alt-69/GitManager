@@ -47,6 +47,11 @@ try:
 except ModuleNotFoundError:
     from build_targets import BuildTarget, can_build_locally, host_platform, parse_build_selection, mpdev_platform_name
 
+try:
+    from tools.setup_build_environment import setup_build_environment
+except ModuleNotFoundError:
+    from setup_build_environment import setup_build_environment
+
 RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
 
@@ -2107,8 +2112,8 @@ def main() -> int:
         "mode",
         nargs="?",
         default="build",
-        choices=["deps", "check", "dev", "build", "frontend-build", "frontend-dev", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node", "setup-packaging-tools"],
-        help="Action: deps, check, dev, build, frontend-build, frontend-dev, prepare-runtime, prepare-sidecar, prepare-cloud-node, or setup-packaging-tools.",
+        choices=["deps", "check", "dev", "build", "frontend-build", "frontend-dev", "prepare-runtime", "prepare-sidecar", "prepare-cloud-node", "setup-packaging-tools", "setup-build-tools"],
+        help="Action: deps, check, dev, build, frontend-build, frontend-dev, prepare-runtime, prepare-sidecar, prepare-cloud-node, setup-packaging-tools, or setup-build-tools.",
     )
     parser.add_argument(
         "--release",
@@ -2172,6 +2177,8 @@ def main() -> int:
 
     if args.mode == "setup-packaging-tools":
         return setup_windows_packaging_tools()
+    if args.mode == "setup-build-tools":
+        return setup_build_environment()
     if args.mode == "prepare-runtime":
         return prepare_windows_python_runtime(project_root)
     if args.install_packaging_tools:
