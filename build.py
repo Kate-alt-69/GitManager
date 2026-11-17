@@ -1698,6 +1698,12 @@ def build_local_store_package(
         if target.platform != "linux":
             log_err("Flatpak packaging is supported only from a native Linux build host.")
             return 2
+        if target.architecture not in ("x64", "arm64"):
+            log_err(
+                "The current GNOME 51 Flatpak runtime supports Linux x64 and ARM64 only; "
+                f"{target.architecture} is available as a DEB/RPM desktop build, not a Flatpak target."
+            )
+            return 2
         result = run_build_or_dev(
             project_root=project_root,
             mode="build",
