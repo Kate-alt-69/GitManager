@@ -60,6 +60,11 @@ fn lock_file(path: &PathBuf) -> Result<File, String> {
 }
 
 fn read_store(path: &PathBuf) -> Result<NotificationStore, String> {
+    let backup = path.with_extension("json.previous");
+    if !path.is_file() && backup.is_file() {
+        fs::rename(&backup, path)
+            .map_err(|error| format!("Could not recover the previous notification history: {error}"))?;
+    }
     if !path.is_file() {
         return Ok(NotificationStore { schema_version: 1, notifications: Vec::new() });
     }
