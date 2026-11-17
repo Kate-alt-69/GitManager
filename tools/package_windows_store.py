@@ -116,10 +116,15 @@ def main() -> int:
             package_config["publisher"] = publisher
         if identity_name:
             package_config["packageName"] = identity_name
-        if not publisher or not identity_name:
+        if publisher and identity_name:
+            # Store packages are signed by Microsoft after certification. Do not
+            # ship MPDEV's development certificate in the Partner Center package.
+            package_config.setdefault("msix", {}).pop("digitalSignature", None)
+            print("Partner Center identity configured; generating an unsigned Store-upload MSIX.")
+        else:
             print(
-                "Warning: configure both MSIX_PUBLISHER and MSIX_IDENTITY_NAME from Partner Center "
-                "before treating this test package as submission-ready."
+                "Warning: configure both MSIX_PUBLISHER and MSIX_IDENTITY_NAME from Partner Center. "
+                "This build will retain the development test certificate."
             )
         generated_manifest = output.parent / "package.json"
         generated_manifest.write_text(
