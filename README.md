@@ -16,23 +16,36 @@
   - Checks if `rustc` and `cargo` are installed in `PATH` or `~/.cargo/bin`.
   - Compares the installed version against the workspace baseline (`1.88.0`, required by the filesystem watcher). If a **different version is already installed** on your machine (newer, custom/nightly, or older), `build.py` **automatically uses the version you already have installed** (or picks the best already-installed `rustup` toolchain if multiple exist locally) instead of failing or forcing a toolchain re-download.
 - **Pure-Rust `tauri-cli` (`cargo tauri`) Detection**:
-  - Uses the Rust `cargo-tauri` crate binary if already installed, or builds/runs the Rust crate directly with `cargo build --release` / `cargo run` (pass `--install-tauri-cli` if you want `cargo install tauri-cli` run automatically).
+  - Uses the Rust `cargo-tauri` crate binary if already installed, or installs it when needed for a build.
 - **OS Native Library Check**:
   - Checks WebView2/Win32 on Windows 10/11, `webkit2gtk-4.1` / `gtk+-3.0` / `openssl` via `pkg-config` on Linux, and Xcode Command Line Tools on macOS.
 
-```bash
+Run the interactive target selector and press Enter to build every architecture the current machine can build:
+
+```powershell
+# Interactive local architecture selection; Enter = all locally supported architectures
+py build.py
+
 # Check installed Rust/Tauri/OS dependencies only
-python3 build.py deps
+py build.py deps
 
-# Run in development mode (uses your already-installed Rust toolchain)
-python3 build.py dev
+# Run in development mode
+py build.py dev
 
-# Build optimized native release binaries (GitManager GUI with built-in headless background mode, plus CLI/setup sidecars)
-python3 build.py build
+# Build an exact local target
+py build.py --build='windows(10,x64)' --type=installer
+py build.py --build='windows(11,x86)' --type=app
+py build.py --build='linux(x64)' --type=app
+py build.py --build='linux(armv7)' --type=installer
 
-# Prepare the isolated CPython runtime used by Windows installers
-python3 build.py prepare-runtime
+# Build store packages locally on their native OS
+py build.py --store=flatpak  # Linux
+py build.py --store=msix     # Windows
 ```
+
+The `all` selection means all architectures supported by the current host OS. A Windows machine will not attempt to compile a macOS app or Linux package. The build script does not dispatch builds to GitHub Actions. See [docs/build-matrix.md](docs/build-matrix.md) for supported architectures and local toolchain requirements.
+
+Windows installer builds automatically use MPDEV for both MSI and MSIX; Tauri's NSIS setup remains the fallback. See [docs/windows-packaging.md](docs/windows-packaging.md). Flatpak and Microsoft Store packaging are separate local streams; Linux Homebrew remains deferred. See [docs/store-packaging.md](docs/store-packaging.md).
 
 ---
 
@@ -148,17 +161,17 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 ## 6. Windows production installer and signing
 
-On Windows, `py build.py build` prepares the architecture-matched private CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It produces the Tauri NSIS setup executable and WiX MSI, plus an additional comparison MSI from Master Packager Dev (MPDEV):
+On Windows, `py build.py --build='windows(10,x64)' --type=installer` prepares the architecture-matched private CPython runtime, builds GitManager and its sidecars, then uses **Master Packager Dev (MPDEV) as the required MSI/MSIX packager**. Tauri creates the NSIS setup executable as the fallback:
 
-    build/.rcache/release/bundle/nsis/GitManager-Setup.exe
-    build/.rcache/release/bundle/msi/*.msi
+    build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/GitManager-Setup.exe
     build/.rcache/windows-installers/*.msi
+    build/.rcache/windows-installers/*.msix
 
-The Tauri WiX MSI and MPDEV MSI are separate packaging outputs so their install, repair and uninstall behavior can be compared. The Microsoft Store MSIX is not part of this ordinary desktop build; use `py build.py --store=msix` for the dedicated Store package stream.
+MPDEV runs automatically for every Windows installer target. The Windows build does not create a WiX MSI. The separate `py build.py --store=msix` command builds a Microsoft Store identity MSIX locally using the Partner Center identity configured in the environment.
 
 The build also creates a separate first-run helper alongside the native binaries:
 
-    target/release/GitManager-Setup.exe
+    build/.rcache/x86_64-pc-windows-msvc/release/GitManager-Setup.exe
 
 That helper is bundled into the installed app as a Tauri sidecar. It is a tiny, dependency-free Rust launcher; it does not replace or duplicate Tauri. On first launch, the main Tauri app hands its executable path to the helper. The helper relaunches that same Tauri app with `--setup`, so the actual workspace wizard is still rendered by GitManager's Tauri UI/runtime. The helper is built for every supported OS: `GitManager-Setup.exe` on Windows and `GitManager-Setup` on Linux/macOS. The same first-run flow asks for the main repository folder, supports additional scan roots, and then continues into GitManager. If the sidecar is unavailable in a development build, the in-process wizard remains as a fallback.
 
@@ -199,7 +212,7 @@ GitManager's desktop application does **not** embed the standalone RBE runtime. 
 
 ## 7. Portable RBE node deployment
 
-Every normal `py build.py` / `python build.py build` run also creates a small bootstrap ZIP under `target/deployment/`:
+A local target-specific desktop build also prepares the small bootstrap ZIP under `build/dist/deployment/`. The all-platform GitHub Actions matrix skips this duplicate packaging step; the release workflow builds and validates the ZIP independently:
 
 ```text
 GitManager-Cloud-Node-Setup.zip
