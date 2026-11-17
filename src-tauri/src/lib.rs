@@ -917,14 +917,8 @@ async fn scan_machine_repositories(
         *cache = report.repositories.clone();
     }
 
-    // Reuse the service's authoritative result for archive watcher registration.
-    if let Ok(preferences) = load_background_preferences() {
-        archive_watcher::restart_archive_watchers_with_repositories(
-            &preferences,
-            report.repositories.clone(),
-        );
-    }
-
+    // The required service owns archive watcher registration. The UI only
+    // consumes its persisted repository inventory.
     let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
     Ok(build_indexed_summary_with_scan_status(report.repositories, &requested, report.truncated))
 }
