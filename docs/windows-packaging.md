@@ -6,7 +6,7 @@ GitManager keeps three Windows installer paths available:
 | --- | --- | --- |
 | `GitManager-Setup.exe` | Tauri + NSIS | Interactive setup |
 | Tauri `*.msi` | Tauri + WiX | Standard MSI fallback |
-| `GitManager_1.0.0.0_x64.msi` | Master Packager Dev | Additional comparison MSI (CI and opt-in local) |
+| `GitManager_<version>_x64.msi` | Master Packager Dev | Additional comparison MSI (CI and opt-in local) |
 
 Master Packager Dev is additive. It does not replace WiX or NSIS.
 
@@ -67,7 +67,7 @@ The MPDEV payload includes:
 
 ### Important: compare the MPDEV MSI before making it the default
 
-The MPDEV MSI currently targets the per-user Local AppData location. Compare install, upgrade and uninstall behavior against the Tauri NSIS/WiX outputs before deciding whether it should replace either baseline. Do not treat a CI test artifact as a production release until its signing, identity and clean-machine install behavior have been verified.
+The MPDEV MSI version is derived from `src-tauri/tauri.conf.json` and padded to four numeric components. It currently targets the per-user Local AppData location. Compare install, upgrade and uninstall behavior against the Tauri NSIS/WiX outputs before deciding whether it should replace either baseline. Do not treat a CI test artifact as a production release until its signing, identity and clean-machine install behavior have been verified.
 
 The MPDEV MSI uses its own stable upgrade code. Do not change it between test builds of the same product; changing it causes Windows Installer to treat the package as a different product.
 
