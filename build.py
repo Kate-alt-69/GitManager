@@ -232,7 +232,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str) -> int:
         return 0
 
     target_dir = cargo_target_root(project_root)
-    profile_dir = target_dir / "release"
+    profile_dir = target_profile_dir(project_root, release=True)
     main_exe = profile_dir / "git-manager.exe"
     if not main_exe.is_file():
         log_err(f"Windows desktop executable is missing: {main_exe}")
