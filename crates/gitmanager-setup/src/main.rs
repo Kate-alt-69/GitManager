@@ -56,7 +56,7 @@ fn application_candidates(helper_dir: &Path) -> Vec<PathBuf> {
     }
 
     #[cfg(windows)]
-    let executable_names = ["git-manager.exe", "GitManager.exe"];
+    let executable_names = ["gitmanager.exe", "GitManager.exe"];
     #[cfg(target_os = "macos")]
     let executable_names = [
         "git-manager",
