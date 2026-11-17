@@ -125,8 +125,8 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
     restart_archive_watchers_with_scan(preferences, None)
 }
 
-/// Starts archive watchers from the repository list the UI has already discovered.
-/// This prevents a second full directory scan during desktop startup.
+/// Starts archive watchers from the repository list published by gitmanager.service.
+/// This prevents a second full directory scan over the configured roots.
 pub fn restart_archive_watchers_with_repositories(
     preferences: &AppPreferences,
     repositories: Vec<GitRepositoryInfo>,
