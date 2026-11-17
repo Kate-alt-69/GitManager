@@ -1768,13 +1768,20 @@ def build_local_store_package(
         output_dir.mkdir(parents=True, exist_ok=True)
         for existing in output_dir.glob(f"*_{platform_name}.msix"):
             existing.unlink()
+        environment = os.environ.copy()
+        environment["GITMANAGER_APP_SOURCE"] = str(
+            (cargo_target_root(project_root) / "windows-store" / "source").resolve()
+        )
+        if not (Path(environment["GITMANAGER_APP_SOURCE"]) / "git-manager.exe").is_file():
+            log_err("The staged Microsoft Store app payload is missing git-manager.exe.")
+            return 1
         command = [
             str(mpdev), "build", str(manifest),
             "--working-dir", str(project_root),
             "--use-msbuild-message-format", "true",
         ]
         log_info(f"Building the Microsoft Store {platform_name} MSIX locally with MPDEV...")
-        result = subprocess.call(command, cwd=str(project_root))
+        result = subprocess.run(command, cwd=str(project_root), env=environment, check=False).returncode
         if result != 0:
             return result
         packages = sorted(
