@@ -13,11 +13,8 @@ pub mod archive {
     pub use gitmanager_archive::*;
 }
 
-#[path = "../../../src-tauri/src/process_utils.rs"]
 pub mod process_utils;
-#[path = "../../../src-tauri/src/archive_watcher.rs"]
 pub mod archive_watcher;
-#[path = "../../../src-tauri/src/background_service.rs"]
 pub mod background_service;
 
 pub mod watcher_service;
