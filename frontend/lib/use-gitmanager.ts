@@ -6,6 +6,7 @@ import type {
 	AppPreferences,
 	ApplicationDirectories,
 	ConnectedAccount,
+	AppNotification,
 	GitRepository,
 	ScanSummary,
 	UpdateAlert,
@@ -40,6 +41,7 @@ export function useGitManager() {
 	const [dependencies, setDependencies] = useState<string[]>([]);
 	const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
 	const [updates, setUpdates] = useState<UpdateAlert[]>([]);
+	const [notifications, setNotifications] = useState<AppNotification[]>([]);
 	const [setupOpen, setSetupOpen] = useState(false);
 	const [status, setStatus] = useState("Ready");
 	const [error, setError] = useState("");
@@ -110,6 +112,27 @@ export function useGitManager() {
 
 	const clearUpdate = useCallback((repoPath: string) => {
 		setUpdates((current) => current.filter((item) => item.repo_path !== repoPath));
+	}, []);
+
+	const refreshNotifications = useCallback(async () => {
+		if (!isTauriRuntime()) return [];
+		try {
+			const current = await invoke<AppNotification[]>("list_app_notifications");
+			setNotifications(current ?? []);
+			return current ?? [];
+		} catch {
+			return [];
+		}
+	}, []);
+
+	const markNotificationRead = useCallback(async (id: string) => {
+		await invoke("mark_app_notification_read", { id });
+		setNotifications((current) => current.map((item) => item.id === id ? { ...item, read: true } : item));
+	}, []);
+
+	const dismissNotification = useCallback(async (id: string) => {
+		await invoke("dismiss_app_notification", { id });
+		setNotifications((current) => current.filter((item) => item.id !== id));
 	}, []);
 
 
@@ -210,6 +233,7 @@ export function useGitManager() {
 				if (!active) return;
 				setServiceReady(true);
 				setStatus("Core service connected");
+				void refreshNotifications();
 
 				const cliTools = await invoke<{ git: boolean; github: boolean }>("check_cli_tools");
 				if (!cliTools.git && !cliTools.github) {
@@ -310,7 +334,8 @@ export function useGitManager() {
 
 	return {
 		available, serviceReady, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
-		repositories, dependencies, accounts, updates, setupOpen, setSetupOpen,
+		repositories, dependencies, accounts, updates, notifications, setupOpen, setSetupOpen,
 		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
+		refreshNotifications, markNotificationRead, dismissNotification,
 	};
 }
