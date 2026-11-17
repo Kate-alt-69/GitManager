@@ -126,6 +126,11 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("Master Packager Dev is mandatory for Windows MSI/MSIX builds.", source)
         self.assertIn("NSIS is required as the fallback Windows setup installer.", source)
 
+    def test_flatpak_builder_exports_the_branch_used_by_the_bundle(self):
+        source = (ROOT / "tools" / "package_flatpak.py").read_text(encoding="utf-8")
+        self.assertIn('"--default-branch=stable"', source)
+        self.assertIn('str(repo), str(bundle), APP_ID, "stable"', source)
+
     def test_flatpak_stream_builds_only_the_deb_bundle(self):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
         self.assertIn('bundle_formats="deb"', source)

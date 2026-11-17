@@ -171,8 +171,8 @@ def main() -> int:
         if repo.exists():
             shutil.rmtree(repo)
         run([
-            "flatpak-builder", "--user", "--force-clean", f"--repo={repo}",
-            str(build_dir), str(generated_manifest),
+            "flatpak-builder", "--user", "--force-clean", "--default-branch=stable",
+            f"--repo={repo}", str(build_dir), str(generated_manifest),
         ], cwd=CACHE)
 
         # The Linux Developer Cleaner requires Python 3.10+ inside the runtime;
