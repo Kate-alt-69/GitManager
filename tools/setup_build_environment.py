@@ -877,11 +877,15 @@ def setup_build_environment(
 
     if "linux" in selected_platforms:
         include_flatpak = store_target in ("flatpak", "all")
-        if host == "windows":
+        linux_targets = [target for target in local_targets if target.platform == "linux"]
+        if not linux_targets:
+            _log("No selected Linux architecture matches this host/WSL architecture. Use a matching native Linux machine for that target.")
+            outcomes.append(2)
+        elif host == "windows":
             outcomes.append(_setup_wsl_linux(include_flatpak=include_flatpak, default_yes=explicit_request))
         elif host == "linux":
             outcomes.append(_setup_native_linux(
-                targets=[target for target in targets if target.platform == "linux"],
+                targets=linux_targets,
                 include_flatpak=include_flatpak,
                 default_yes=True,
             ))
