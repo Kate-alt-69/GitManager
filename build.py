@@ -525,93 +525,115 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
     return 0
 
 
-def name_windows_msi_installer(project_root: Path, release: bool = True) -> Optional[Path]:
-    """Verify the MSI produced by Tauri's existing WiX bundler."""
-    if platform.system() != "Windows":
-        return None
-    output_dir = target_profile_dir(project_root, release) / "bundle" / "msi"
-    candidates = sorted(output_dir.glob("*.msi")) if output_dir.is_dir() else []
-    if len(candidates) != 1:
-        log_err(f"Expected one Tauri WiX MSI, found {len(candidates)} in {output_dir}.")
-        return None
-    installer = candidates[0]
-    if installer.stat().st_size < 1024 * 1024:
-        log_err(f"The Tauri WiX MSI is unexpectedly small: {installer}")
-        return None
-    log_ok(f"Created Tauri WiX MSI: {installer} ({installer.stat().st_size:,} bytes)")
-    return installer
-
-
-def build_master_packager_dev_msi(project_root: Path, release: bool) -> Tuple[int, Optional[Path]]:
-    """Build the local MPDEV comparison MSI from the same staged payload as CI."""
+def build_master_packager_installers(project_root: Path, release: bool) -> Tuple[int, Optional[Dict[str, Path]]]:
+    """Build both mandatory Windows MSI and MSIX packages with Master Packager Dev."""
     if platform.system() != "Windows":
         return 0, None
+
     mpdev = find_master_packager_dev_cli()
     if mpdev is None:
-        log_err("Master Packager Dev is not installed. Run py build.py setup-packaging-tools first.")
+        log_err(
+            "Master Packager Dev is required for Windows MSI/MSIX installers and was not found. "
+            "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact', "
+            "then reopen PowerShell and retry."
+        )
+        return 1, None
+
+    target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+    if target_triple.startswith("x86_64-"):
+        package_arch = "x64"
+    elif target_triple.startswith(("i686-", "i586-")):
+        package_arch = "x86"
+    elif target_triple.startswith("aarch64-"):
+        package_arch = "arm64"
+    else:
+        log_err(f"Cannot determine the MPDEV package architecture from Rust target '{target_triple}'.")
         return 1, None
 
     staging = cargo_target_root(project_root) / "windows-package" / "source"
     if not (staging / "git-manager.exe").is_file():
-        stage_result = stage_windows_mpdev_package(project_root, "", release)
-        if stage_result != 0:
-            return stage_result, None
+        log_err(f"Windows app payload was not staged for MPDEV: {staging}")
+        return 1, None
 
-    manifest = project_root / "installer" / "master-packager" / "package.json"
-    if not manifest.is_file():
-        log_err(f"Master Packager Dev package definition is missing: {manifest}")
+    source_manifest = project_root / "installer" / "master-packager" / "package.json"
+    if not source_manifest.is_file():
+        log_err(f"Master Packager Dev package definition is missing: {source_manifest}")
         return 1, None
 
     try:
+        package_config = json.loads(source_manifest.read_text(encoding="utf-8"))
         tauri_config = json.loads(
             (project_root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
         )
         version_parts = str(tauri_config.get("version", "")).split(".")
         if not version_parts or len(version_parts) > 4 or any(not part.isdigit() for part in version_parts):
-            raise ValueError("Tauri version must contain one to four numeric components for the MSI.")
+            raise ValueError("Tauri version must contain one to four numeric components for MSI/MSIX.")
         version_parts.extend(["0"] * (4 - len(version_parts)))
         if any(int(part) > 65535 for part in version_parts):
-            raise ValueError("MSI version components cannot exceed 65535.")
-        package_version = ".".join(version_parts)
+            raise ValueError("Windows Installer version components cannot exceed 65535.")
+
+        package_config["version"] = ".".join(version_parts)
+        package_config["platform"] = package_arch
+        package_config["outputTypes"] = ["msi", "msix"]
+        package_config.setdefault("msix", {}).setdefault(
+            "digitalSignature",
+            {
+                "signWith": "GenerateTestCertificate",
+                "timestampServer": "http://timestamp.sectigo.com",
+            },
+        )
+        generated_manifest = cargo_target_root(project_root) / "windows-package" / "mpdev-package.json"
+        generated_manifest.parent.mkdir(parents=True, exist_ok=True)
+        generated_manifest.write_text(
+            json.dumps(package_config, indent=2) + "\n",
+            encoding="utf-8",
+        )
     except (OSError, json.JSONDecodeError, ValueError) as error:
-        log_err(f"Could not resolve the MPDEV MSI version from tauri.conf.json: {error}")
+        log_err(f"Could not prepare the MPDEV MSI/MSIX definition: {error}")
         return 1, None
 
-    output_dir = cargo_target_root(project_root) / "windows-installers"
-    if output_dir.exists():
-        try:
-            for existing in output_dir.glob("*.msi"):
+    output_dir = project_root / "build" / ".rcache" / "windows-installers"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        for pattern in ("*.msi", "*.msix"):
+            for existing in output_dir.glob(pattern):
                 existing.unlink()
-            for existing in output_dir.glob("*.msix"):
-                existing.unlink()
-        except OSError as error:
-            log_err(f"Could not clear previous MPDEV installer outputs: {error}")
-            return 1, None
+    except OSError as error:
+        log_err(f"Could not clear previous MPDEV installer outputs: {error}")
+        return 1, None
 
     environment = os.environ.copy()
     environment["GITMANAGER_APP_SOURCE"] = str(staging.resolve())
     command = [
-        str(mpdev), "build", str(manifest),
+        str(mpdev), "build", str(generated_manifest),
         "--working-dir", str(project_root),
-        "--properties", f"$.version={package_version}",
         "--use-msbuild-message-format", "true",
     ]
-    log_info("Building the optional MPDEV comparison MSI from the staged Windows app payload...")
+    log_info(
+        f"Master Packager Dev is building the required {package_arch} MSI and MSIX "
+        "from the staged Windows application payload..."
+    )
     result = subprocess.run(command, cwd=str(project_root), env=environment, check=False)
     if result.returncode != 0:
-        log_err(f"Master Packager Dev failed to build the comparison MSI (exit code {result.returncode}).")
+        log_err(f"Master Packager Dev failed to build Windows MSI/MSIX (exit code {result.returncode}).")
         return result.returncode, None
 
-    packages = sorted(path for path in output_dir.glob("*.msi") if path.is_file() and path.stat().st_size > 0)
-    unexpected_msix = list(output_dir.glob("*.msix"))
-    if len(packages) != 1 or unexpected_msix:
-        log_err(
-            "MPDEV must produce exactly one desktop MSI and no MSIX; "
-            f"found MSI={len(packages)}, MSIX={len(unexpected_msix)}."
+    packages: Dict[str, Path] = {}
+    for extension in ("msi", "msix"):
+        candidates = sorted(
+            path for path in output_dir.glob(f"*.{extension}")
+            if path.is_file() and path.stat().st_size >= 1024 * 1024
         )
-        return 1, None
-    log_ok(f"Created MPDEV comparison MSI: {packages[0]} ({packages[0].stat().st_size:,} bytes)")
-    return 0, packages[0]
+        if len(candidates) != 1:
+            log_err(
+                f"MPDEV must produce exactly one non-empty .{extension.upper()} package; "
+                f"found {len(candidates)} in {output_dir}."
+            )
+            return 1, None
+        packages[extension] = candidates[0]
+        log_ok(f"Created MPDEV {extension.upper()}: {candidates[0]} ({candidates[0].stat().st_size:,} bytes)")
+
+    return 0, packages
 
 
 def ensure_cargo_in_path() -> None:
