@@ -16,7 +16,7 @@ modules:
   - name: gitmanager
     buildsystem: simple
     build-commands:
-      - install -d /app/bin
+      - install -d /app/bin /app/lib /app/share
       - cp -a bin/. /app/bin/
       - if [ -d lib ]; then cp -a lib/. /app/lib/; fi
       - if [ -d share ]; then cp -a share/. /app/share/; fi
