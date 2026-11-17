@@ -400,7 +400,7 @@ def find_master_packager_dev_cli() -> Optional[Path]:
 
 
 def setup_windows_packaging_tools() -> int:
-    """Install the three optional Windows packagers using exact WinGet package IDs."""
+    """Install the required MPDEV packager and NSIS fallback using exact WinGet package IDs."""
     if platform.system() != "Windows":
         log_err("Windows packaging tools can only be installed on Windows.")
         return 1
