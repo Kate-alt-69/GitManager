@@ -1,7 +1,9 @@
 import importlib.util
 import json
+import os
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -30,6 +32,10 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
     def test_tauri_builds_both_nsis_and_wix_installers(self):
         config = json.loads((ROOT / "src-tauri" / "tauri.windows.conf.json").read_text(encoding="utf-8"))
         self.assertEqual(set(config["bundle"]["targets"]), {"nsis", "msi"})
+
+    def test_sidecar_staging_uses_the_selected_cross_compile_target(self):
+        with patch.dict(os.environ, {"CARGO_BUILD_TARGET": "i686-pc-windows-msvc"}):
+            self.assertEqual(BUILD.resolve_rust_target_triple(""), "i686-pc-windows-msvc")
 
     def test_python_runtime_is_mapped_as_a_recursive_directory(self):
         config = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
