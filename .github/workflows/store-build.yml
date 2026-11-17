@@ -58,6 +58,9 @@ jobs:
           sudo flatpak install --system --noninteractive flathub \
             org.gnome.Platform//48 org.gnome.Sdk//48
 
+      - name: Validate store packaging scripts
+        run: python -m py_compile build.py tools/build_targets.py tools/package_flatpak.py tools/package_windows_store.py
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
