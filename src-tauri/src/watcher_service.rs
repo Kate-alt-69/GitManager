@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::scanner::{default_scan_roots, scan_repositories, ScanOptions};
+use crate::scanner::load_persisted_repository_index;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoUpdateNotification {
@@ -223,32 +223,18 @@ pub fn check_single_repo_for_remote_update(repo_path: &Path) -> Option<RepoUpdat
     })
 }
 
-/// Scans all local repositories that have remotes and checks if any have upstream updates available.
-pub fn check_all_repos_for_updates(root_paths: Vec<String>) -> Vec<RepoUpdateNotification> {
-    let roots = if root_paths.is_empty() {
-        default_scan_roots()
-            .into_iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect()
-    } else {
-        root_paths
-    };
-
-    let repos = match scan_repositories(ScanOptions {
-        root_paths: roots,
-        max_depth: Some(5),
-        include_hidden_dirs: Some(false),
-        // Background update polling is limited to primary project repositories.
-        index_dependency_repositories: Some(false),
-    }) {
-        Ok(list) => list,
-        Err(_) => return Vec::new(),
+/// Checks the service-owned repository index for upstream updates.
+/// This path deliberately never walks scan roots; repository discovery belongs
+/// to gitmanager.service and is refreshed independently of the UI.
+pub fn check_all_repos_for_updates(_root_paths: Vec<String>) -> Vec<RepoUpdateNotification> {
+    let repositories = match load_persisted_repository_index() {
+        Ok(Some(index)) => index.repositories,
+        Ok(None) | Err(_) => return Vec::new(),
     };
 
     let mut updates = Vec::new();
-    for repo in repos.into_iter().filter(|r| r.has_remote) {
-        let p = Path::new(&repo.path);
-        if let Some(notification) = check_single_repo_for_remote_update(p) {
+    for repo in repositories.into_iter().filter(|repository| repository.has_remote) {
+        if let Some(notification) = check_single_repo_for_remote_update(Path::new(&repo.path)) {
             updates.push(notification);
         }
     }
