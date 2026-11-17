@@ -1216,6 +1216,13 @@ async fn check_repo_updates_now(
     }
 
     for upd in &updates {
+        let _ = notification_center::publish_repository_update(
+            &upd.repo_id,
+            &upd.repo_name,
+            &upd.repo_path,
+            &upd.remote_oid,
+            &upd.prompt_message,
+        );
         send_os_desktop_notification(upd);
         let _ = app_handle.emit("gitmanager://repo-update-available", upd);
     }
@@ -1238,6 +1245,27 @@ async fn pull_repository_update(
     }
 
     Ok(result)
+}
+
+#[tauri::command]
+async fn list_app_notifications() -> Result<Vec<notification_center::AppNotification>, String> {
+    tokio::task::spawn_blocking(notification_center::list_notifications)
+        .await
+        .map_err(|error| format!("Notification history read task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn mark_app_notification_read(id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || notification_center::mark_notification_read(&id))
+        .await
+        .map_err(|error| format!("Notification update task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn dismiss_app_notification(id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || notification_center::dismiss_notification(&id))
+        .await
+        .map_err(|error| format!("Notification dismissal task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1766,6 +1794,9 @@ pub fn run() {
             connect_git_account,
             check_repo_updates_now,
             pull_repository_update,
+            list_app_notifications,
+            mark_app_notification_read,
+            dismiss_app_notification,
             control_background_service,
             report_ui_heartbeat,
             resume_background_service,
