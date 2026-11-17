@@ -1,0 +1,155 @@
+name: Store Distribution Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      store:
+        description: Store package stream to build
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - flatpak
+          - msix
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitmanager-store-${{ github.ref }}-${{ inputs.store }}
+  cancel-in-progress: false
+
+jobs:
+  flatpak:
+    name: Linux Flatpak bundle
+    if: ${{ inputs.store == 'all' || inputs.store == 'flatpak' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out GitManager
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux and Flatpak build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file pkg-config \
+            libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            flatpak flatpak-builder
+
+      - name: Install Flatpak GNOME runtime and SDK
+        run: |
+          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install --system --noninteractive flathub \
+            org.gnome.Platform//48 org.gnome.Sdk//48
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build native Linux DEB payload
+        run: python build.py --build='linux(x64)' --type=installer
+
+      - name: Build Flatpak bundle
+        run: |
+          DEB="$(find build/dist/linux-x64/installer -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "$DEB"
+          python tools/package_flatpak.py --deb "$DEB"
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitmanager-flatpak-x86_64
+          path: build/dist/store/flatpak/*.flatpak
+          if-no-files-found: error
+          retention-days: 30
+
+  msix:
+    name: Windows Microsoft Store MSIX
+    if: ${{ inputs.store == 'all' || inputs.store == 'msix' }}
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}\build\.rcache
+    steps:
+      - name: Check out GitManager
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Master Packager Dev
+        shell: pwsh
+        run: |
+          winget install --id MasterPackager.MasterPackagerDev --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+          $candidates = @(
+            (Get-Command mpdev.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
+            "$env:ProgramFiles\Master Packager Ltd\Master Packager Dev\mpdev.exe",
+            "$env:ProgramFiles\Master Packager Dev\mpdev.exe"
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+          if (-not $candidates) {
+            $found = Get-ChildItem -Path "$env:ProgramFiles" -Filter mpdev.exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $candidates = @($found.FullName) }
+          }
+          if (-not $candidates) { throw "Master Packager Dev was installed, but mpdev.exe could not be located." }
+          "MPDEV_EXE=$($candidates[0])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & "$($candidates[0])" version
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev version check failed." }
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Windows app-only payload
+        shell: pwsh
+        run: python build.py --build='windows(10,x64)' --type=app
+
+      - name: Stage Windows Store package payload
+        shell: pwsh
+        run: |
+          python tools/package_windows_store.py
+          $source = (Resolve-Path "build/.rcache/windows-store/source").Path
+          "GITMANAGER_APP_SOURCE=$source" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build MSIX with Master Packager Dev
+        shell: pwsh
+        run: |
+          & $env:MPDEV_EXE build "installer/store/msix/package.json" --working-dir "$PWD" --use-msbuild-message-format true
+          if ($LASTEXITCODE -ne 0) { throw "Master Packager Dev failed to build the Microsoft Store MSIX." }
+          $packages = @(Get-ChildItem "build/dist/store/msix" -Filter "*.msix" -File -ErrorAction SilentlyContinue)
+          if ($packages.Count -ne 1 -or $packages[0].Length -lt 1MB) {
+            throw "Expected exactly one non-empty MSIX package; found $($packages.Count)."
+          }
+          Write-Host "Created Store MSIX: $($packages[0].FullName)"
+
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitmanager-microsoft-store-msix-x64
+          path: build/dist/store/msix/*
+          if-no-files-found: error
+          retention-days: 30
