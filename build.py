@@ -39,8 +39,11 @@ import urllib.parse
 import urllib.request
 import zipfile
 import stat
+import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
+
+from tools.build_targets import BuildTarget, can_build_locally, parse_build_selection
 
 RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
@@ -153,12 +156,23 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
     return 0
 
 
+def cargo_target_root(project_root: Path) -> Path:
+    value = Path(os.environ.get("CARGO_TARGET_DIR", project_root / "build" / ".rcache"))
+    return value if value.is_absolute() else project_root / value
+
+
+def target_profile_dir(project_root: Path, release: bool = True) -> Path:
+    root = cargo_target_root(project_root)
+    triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+    profile = "release" if release else "debug"
+    return root / triple / profile if triple else root / profile
+
+
 def name_windows_setup_installer(project_root: Path) -> Optional[Path]:
     """Expose a stable, predictable setup.exe name after Tauri has bundled NSIS."""
     if platform.system() != "Windows":
         return None
-    # Tauri inherits the Cargo workspace target directory at the repository root.
-    output_dir = project_root / "target" / "release" / "bundle" / "nsis"
+    output_dir = target_profile_dir(project_root) / "bundle" / "nsis"
     if not output_dir.is_dir():
         log_err(f"NSIS installer output directory does not exist: {output_dir}")
         return None
@@ -370,7 +384,7 @@ def name_windows_msi_installer(project_root: Path) -> Optional[Path]:
     """Verify the MSI produced by Tauri's existing WiX bundler."""
     if platform.system() != "Windows":
         return None
-    output_dir = project_root / "target" / "release" / "bundle" / "msi"
+    output_dir = target_profile_dir(project_root) / "bundle" / "msi"
     candidates = sorted(output_dir.glob("*.msi")) if output_dir.is_dir() else []
     if len(candidates) != 1:
         log_err(f"Expected one Tauri WiX MSI, found {len(candidates)} in {output_dir}.")
@@ -392,8 +406,8 @@ def build_master_packager_dev_msi(project_root: Path) -> Tuple[int, Optional[Pat
         log_err("Master Packager Dev is not installed. Run py build.py setup-packaging-tools first.")
         return 1, None
 
-    target_root = project_root / "target"
-    release_dir = target_root / "release"
+    target_root = cargo_target_root(project_root)
+    release_dir = target_profile_dir(project_root)
     stage_root = target_root / "packaging" / "master-packager-dev"
     marker = stage_root / ".gitmanager-generated"
     if stage_root.exists():
@@ -839,8 +853,7 @@ def prepare_cloud_node_deployment(project_root: Path) -> int:
             if not route.resolve().is_relative_to(route_root.resolve()):
                 raise ValueError(f"RBE API route escapes its template directory: {route}")
 
-        target_dir = project_root / "target"
-        output_dir = target_dir / "deployment"
+        output_dir = project_root / "build" / "dist" / "deployment"
         output_dir.mkdir(parents=True, exist_ok=True)
         archive_name = "GitManager-Cloud-Node-Setup.zip"
         final_archive = output_dir / archive_name
@@ -942,7 +955,7 @@ def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
     else:
         log_info("No Windows signing certificate configured; explicitly disabling Tauri signing for this unsigned build.")
 
-    config_path = project_root / "target" / "build-config" / "tauri.windows.signing.conf.json"
+    config_path = cargo_target_root(project_root) / "build-config" / "tauri.windows.signing.conf.json"
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(signing_config, indent=2) + "\n", encoding="utf-8")
@@ -1247,7 +1260,7 @@ def build_gitm_sidecar(
         log_err(str(error))
         return 1
 
-    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", project_root / "target"))
+    target_dir = cargo_target_root(project_root)
     if not target_dir.is_absolute():
         target_dir = project_root / target_dir
     target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
@@ -1362,6 +1375,113 @@ def build_gitm_sidecar(
     log_ok(f"Created standalone setup helper: {setup_artifact} ({setup_artifact.stat().st_size:,} bytes)")
     return 0
 
+
+
+def dispatch_build_matrix(selection: str, build_type: str) -> int:
+    """Dispatch multi-platform builds to native GitHub-hosted runners."""
+    gh = shutil.which("gh")
+    if not gh:
+        log_err(
+            "The all/platform-group build needs the GitHub CLI. Install it and authenticate with gh auth login, "
+            "or run .github/workflows/build-matrix.yml from the GitHub Actions tab."
+        )
+        return 2
+
+    branch = os.environ.get("GITHUB_REF_NAME", "").strip()
+    if not branch and shutil.which("git"):
+        code, branch, _ = run_capture(["git", "branch", "--show-current"])
+        if code != 0:
+            branch = ""
+    command = [gh, "workflow", "run", "build-matrix.yml"]
+    if branch:
+        command.extend(["--ref", branch])
+    command.extend(["-f", f"build={selection}", "-f", f"type={build_type}"])
+    log_info(f"Dispatching GitHub Actions build matrix: build={selection}, type={build_type}")
+    result = subprocess.call(command, cwd=str(Path(__file__).resolve().parent))
+    if result != 0:
+        log_err("GitHub Actions workflow dispatch failed. Check gh auth status and workflow permissions.")
+        return result
+
+    log_ok("Build matrix dispatched. Open the Actions run to follow each native platform build.")
+    log_info("Artifacts are uploaded separately for Windows, Linux and macOS targets.")
+    return 0
+
+
+def publish_build_outputs(project_root: Path, release: bool, bundle: bool) -> int:
+    """Copy target outputs out of Cargo's cache into a stable build/dist layout."""
+    selector = os.environ.get("GITMANAGER_BUILD_SELECTOR", "").strip()
+    try:
+        _, targets = parse_build_selection(selector)
+        target = targets[0]
+    except (ValueError, IndexError):
+        log_err("Could not resolve the selected target while publishing build outputs.")
+        return 1
+
+    profile_dir = target_profile_dir(project_root, release)
+    output_root = project_root / "build" / "dist" / target.output_name
+    marker = output_root / ".gitmanager-generated"
+    if output_root.exists():
+        if not marker.is_file():
+            log_err(f"Refusing to replace an output directory without GitManager's marker: {output_root}")
+            return 1
+        try:
+            shutil.rmtree(output_root)
+        except OSError as error:
+            log_err(f"Could not clear previous GitManager build outputs: {error}")
+            return 1
+
+    try:
+        output_root.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            "Generated by GitManager build.py. Safe to recreate through the build script.\\n",
+            encoding="utf-8",
+        )
+        if bundle:
+            bundle_source = profile_dir / "bundle"
+            if not bundle_source.is_dir():
+                log_err(f"Tauri completed without producing the expected bundle directory: {bundle_source}")
+                return 1
+            shutil.copytree(bundle_source, output_root / "installer")
+            log_ok(f"Published installer bundles: {output_root / 'installer'}")
+        else:
+            suffix = ".exe" if target.platform == "windows" else ""
+            names = (
+                f"git-manager{suffix}",
+                f"gitm{suffix}",
+                f"gitmanager-setup{suffix}",
+                f"crash_helper{suffix}",
+                f"git-manager-service{suffix}",
+            )
+            app_dir = output_root / "app"
+            app_dir.mkdir(parents=True, exist_ok=True)
+            missing = []
+            for name in names:
+                source = profile_dir / name
+                if not source.is_file() or source.stat().st_size == 0:
+                    missing.append(name)
+                    continue
+                shutil.copy2(source, app_dir / name)
+            if missing:
+                log_err("App-only build is missing target executables: " + ", ".join(missing))
+                return 1
+            log_ok(f"Published app binaries: {app_dir}")
+
+        manifest = {
+            "product": "GitManager",
+            "target": target.triple,
+            "selector": target.selector,
+            "type": "installer" if bundle else "app",
+            "profile": "release" if release else "debug",
+        }
+        (output_root / "build-manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\\n",
+            encoding="utf-8",
+        )
+    except OSError as error:
+        log_err(f"Could not publish GitManager build outputs: {error}")
+        return 1
+    return 0
+
 def run_build_or_dev(
     project_root: Path,
     mode: str,
@@ -1369,6 +1489,7 @@ def run_build_or_dev(
     has_cargo_tauri: bool,
     release: bool,
     build_master_packager: bool = False,
+    bundle: bool = True,
 ) -> int:
     src_tauri_dir = project_root / "src-tauri"
 
@@ -1410,6 +1531,11 @@ def run_build_or_dev(
             cmd.extend(["tauri", "dev"])
         else:
             cmd.extend(["tauri", "build"])
+            target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+            if target_triple:
+                cmd.extend(["--target", target_triple])
+            if not bundle:
+                cmd.append("--no-bundle")
             if not release:
                 cmd.append("--debug")
             elif platform.system() == "Windows":
@@ -1423,17 +1549,18 @@ def run_build_or_dev(
         if rc != 0 or mode != "build":
             return rc
 
-        # Keep Tauri's native NSIS and WiX paths. MPDEV is an explicit,
-        # independently testable comparison build; it never replaces either output.
-        if platform.system() == "Windows":
+        # App-only builds skip installer validation and bundler output checks.
+        if bundle and platform.system() == "Windows":
             if name_windows_setup_installer(project_root) is None:
                 return 1
             if name_windows_msi_installer(project_root) is None:
                 return 1
-            if build_master_packager:
+            if build_master_packager and os.environ.get("CARGO_BUILD_TARGET", "").startswith("x86_64-"):
                 mpdev_result, _ = build_master_packager_dev_msi(project_root)
                 if mpdev_result != 0:
                     return mpdev_result
+        if publish_build_outputs(project_root, release, bundle) != 0:
+            return 1
         return 0
 
     # Fallback direct Cargo execution
@@ -1485,6 +1612,19 @@ def main() -> int:
         help="Install WiX v3, NSIS and Master Packager Dev through WinGet before a Windows build.",
     )
     parser.add_argument(
+        "-build", "--build",
+        dest="build_target",
+        default="all",
+        help="Build target: all, windows, linux, macos, or windows(10,x64), windows(11,x86), linux(arm64), macos(x64). Default: all (GitHub Actions matrix).",
+    )
+    parser.add_argument(
+        "-type", "--type",
+        dest="build_type",
+        choices=["installer", "app"],
+        default="installer",
+        help="Output type: installer (default) or app (no installer bundle).",
+    )
+    parser.add_argument(
         "--master-packager",
         action="store_true",
         help="Build the additional experimental Master Packager Dev MSI (Windows only).",
@@ -1492,6 +1632,26 @@ def main() -> int:
 
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parent
+
+    if args.mode == "build":
+        try:
+            selection_kind, selected_targets = parse_build_selection(args.build_target)
+        except ValueError as error:
+            log_err(str(error))
+            return 2
+        if selection_kind in ("all", "group"):
+            return dispatch_build_matrix(args.build_target.lower(), args.build_type)
+        target = selected_targets[0]
+        can_build, reason = can_build_locally(target)
+        if not can_build:
+            log_err(reason)
+            return 2
+        os.environ["CARGO_BUILD_TARGET"] = target.triple
+        os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
+        os.environ["GITMANAGER_BUILD_SELECTOR"] = args.build_target.lower()
+        log_info(f"Selected target: {target.selector} ({target.triple})")
+        log_info(f"Rust build cache: {os.environ['CARGO_TARGET_DIR']}")
+        log_info(f"Artifacts: {project_root / 'build' / 'dist' / target.output_name}")
 
     print("=" * 72)
     print(" GitManager — Pure-Rust Tauri v2 Dependency & Toolchain Manager")
@@ -1552,6 +1712,7 @@ def main() -> int:
         has_cargo_tauri=has_cargo_tauri,
         release=is_release,
         build_master_packager=args.master_packager,
+        bundle=args.build_type == "installer",
     )
 
 
