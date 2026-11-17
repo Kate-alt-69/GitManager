@@ -1664,6 +1664,9 @@ def build_local_store_package(
             return 1
         manifest = cargo_target_root(project_root) / "windows-store" / "package.json"
         output_dir = project_root / "build" / "dist" / "store" / "msix"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for existing in output_dir.glob(f"*_{platform_name}.msix"):
+            existing.unlink()
         command = [
             str(mpdev), "build", str(manifest),
             "--working-dir", str(project_root),
@@ -1674,7 +1677,7 @@ def build_local_store_package(
         if result != 0:
             return result
         packages = sorted(
-            path for path in output_dir.glob("*.msix")
+            path for path in output_dir.glob(f"*_{platform_name}.msix")
             if path.is_file() and path.stat().st_size > 1024 * 1024
         )
         if len(packages) != 1:
