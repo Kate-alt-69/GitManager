@@ -1221,7 +1221,14 @@ def check_tauri_rust_cli(toolchain_arg: str, auto_install: bool = False) -> bool
         if toolchain_arg:
             install_cmd.append(toolchain_arg)
         install_cmd.extend(["install", "tauri-cli", "--locked"])
-        rc = subprocess.call(install_cmd)
+        # tauri-cli is a host-side developer tool. Do not cross-compile the
+        # CLI itself just because CARGO_BUILD_TARGET selects the app target.
+        build_target = os.environ.pop("CARGO_BUILD_TARGET", None)
+        try:
+            rc = subprocess.call(install_cmd)
+        finally:
+            if build_target is not None:
+                os.environ["CARGO_BUILD_TARGET"] = build_target
         if rc == 0:
             log_ok("Successfully installed Rust `tauri-cli` (`cargo tauri`).")
             return True
