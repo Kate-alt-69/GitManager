@@ -111,7 +111,7 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Master Packager Dev (optional MSI comparison toolchain)
+      - name: Install Master Packager Dev MSI toolchain
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -235,7 +235,6 @@ jobs:
             target/release/crash_helper*.exe
             target/release/gitmanager-setup*.exe
             target/windows-installers/*.msi
-            target/windows-installers/*.pfx
           if-no-files-found: error
           compression-level: 9
 
