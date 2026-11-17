@@ -185,6 +185,28 @@ export function useGitManager() {
 		};
 	}, [serviceReady, preferences.firstRunComplete, indexReady]);
 
+	// Check the authenticated local endpoint rather than trusting the UI's
+	// original startup result forever. A crashed service must show as offline.
+	useEffect(() => {
+		if (!available || !serviceReady || !isTauriRuntime()) return;
+		let active = true;
+		const checkServiceHealth = async () => {
+			try {
+				await invoke("get_core_service_status");
+			} catch (cause) {
+				if (!active) return;
+				setServiceReady(false);
+				setStatus("GitManager Core Service connection lost");
+				setError(cause instanceof Error ? cause.message : String(cause));
+			}
+		};
+		const timer = window.setInterval(() => void checkServiceHealth(), 10000);
+		return () => {
+			active = false;
+			window.clearInterval(timer);
+		};
+	}, [available, serviceReady]);
+
 	// Report only after the desktop hook is ready. The independent crash_helper
 	// treats a missing heartbeat as an unresponsive UI.
 	useEffect(() => {
