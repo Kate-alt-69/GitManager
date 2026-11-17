@@ -500,6 +500,11 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
         log_err(f"Could not verify Windows installer configuration: {error}")
         return 1
 
+    main_resources = main_config.get("bundle", {}).get("resources", {})
+    if main_resources.get("../tools/gitmanager_cleaner.py") != "tools/gitmanager_cleaner.py":
+        log_err("The shared Tauri configuration must map the GitManager Cleaner resource.")
+        return 1
+
     resources = windows_config.get("bundle", {}).get("resources", {})
     if resources.get("../tools/runtime/python/") != "python/":
         log_err(
