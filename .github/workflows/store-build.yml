@@ -59,6 +59,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
       CARGO_TERM_COLOR: always
+      GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
     steps:
       - name: Check out GitManager
         uses: actions/checkout@v4
@@ -85,7 +86,7 @@ jobs:
       - name: Install Flatpak GNOME runtime and SDK
         run: |
           sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install --system --noninteractive flathub \
+          sudo flatpak install --system --noninteractive --assumeyes flathub \
             org.gnome.Platform//48 org.gnome.Sdk//48
 
       - name: Validate store packaging scripts
@@ -121,6 +122,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}\build\.rcache
+      GITMANAGER_SKIP_CLOUD_NODE_BUNDLE: "1"
     steps:
       - name: Check out GitManager
         uses: actions/checkout@v4
