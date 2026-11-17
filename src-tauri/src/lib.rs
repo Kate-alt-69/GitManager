@@ -1,6 +1,5 @@
 mod process_utils;
 pub mod archive;
-pub mod archive_watcher;
 pub use gitmanager_core::notification_center;
 pub use gitmanager_core::{load_background_preferences, AppPreferences, RepositoryPreferences};
 mod repository_workspace;
