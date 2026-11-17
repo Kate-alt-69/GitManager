@@ -66,7 +66,7 @@ function relativeDate(timestamp: number): string {
 
 function pullRequestUrl(repository: GitRepository, number: number): string | null {
 	const remote = repository.remotes.find((item) => item.name === "origin") ?? repository.remotes[0];
-	const base = (repository.web_url ?? remote?.web_url ?? "").replace(/\\/+$/, "");
+	const base = (repository.web_url ?? remote?.web_url ?? "").replace(/\/+$/, "");
 	const provider = (repository.primary_provider || remote?.provider || "").toLowerCase();
 	if (!base) return null;
 	if (provider.includes("github")) return `${base}/pull/${number}`;
@@ -77,7 +77,7 @@ function pullRequestUrl(repository: GitRepository, number: number): string | nul
 
 function pullRequestListUrl(repository: GitRepository): string | null {
 	const remote = repository.remotes.find((item) => item.name === "origin") ?? repository.remotes[0];
-	const base = (repository.web_url ?? remote?.web_url ?? "").replace(/\\/+$/, "");
+	const base = (repository.web_url ?? remote?.web_url ?? "").replace(/\/+$/, "");
 	const provider = (repository.primary_provider || remote?.provider || "").toLowerCase();
 	if (!base) return null;
 	if (provider.includes("github")) return base + "/pulls";
