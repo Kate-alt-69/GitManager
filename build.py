@@ -1729,6 +1729,13 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool, inclu
 
         suffix = ".exe" if target.platform == "windows" else ""
         setup_alias = "GitManager-Setup" + suffix
+        sidecar_dir = project_root / "src-tauri" / "binaries"
+        sidecar_sources = {
+            f"gitm{suffix}": sidecar_dir / f"gitm-{target.triple}{suffix}",
+            f"gitmanager-setup{suffix}": sidecar_dir / f"gitmanager-setup-{target.triple}{suffix}",
+            f"crash_helper{suffix}": sidecar_dir / f"crash_helper-{target.triple}{suffix}",
+            f"git-manager-service{suffix}": sidecar_dir / f"git-manager-service-{target.triple}{suffix}",
+        }
         names = (
             f"git-manager{suffix}",
             f"gitm{suffix}",
@@ -1742,6 +1749,8 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool, inclu
         missing = []
         for name in names:
             source = profile_dir / name
+            if not source.is_file() and name in sidecar_sources:
+                source = sidecar_sources[name]
             if not source.is_file() or source.stat().st_size == 0:
                 missing.append(name)
                 continue
@@ -1749,7 +1758,26 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool, inclu
         if missing:
             log_err("Build output is missing required app executables: " + ", ".join(missing))
             return 1
-        log_ok(f"Published app binaries: {app_dir}")
+
+        resources_dir = app_dir / "resources"
+        if target.platform == "windows":
+            staged_resources = cargo_target_root(project_root) / "windows-package" / "source" / "resources"
+            if not staged_resources.is_dir():
+                log_err(f"Windows app resources were not staged: {staged_resources}")
+                return 1
+            shutil.copytree(staged_resources, resources_dir)
+        else:
+            resources_dir.mkdir(parents=True, exist_ok=True)
+            for name in names[1:5]:
+                shutil.copy2(app_dir / name, resources_dir / name)
+            cleaner = project_root / "tools" / "gitmanager_cleaner.py"
+            if not cleaner.is_file():
+                log_err(f"Cleaner resource is missing: {cleaner}")
+                return 1
+            tools_dir = resources_dir / "tools"
+            tools_dir.mkdir()
+            shutil.copy2(cleaner, tools_dir / cleaner.name)
+        log_ok(f"Published complete app payload: {app_dir}")
 
         manifest = {
             "product": "GitManager",
@@ -1838,11 +1866,14 @@ def run_build_or_dev(
         if rc != 0 or mode != "build":
             return rc
 
-        # App-only builds skip installer validation and bundler output checks.
-        if bundle and platform.system() == "Windows":
+        # Stage the Windows app resources for both app-only and installer outputs.
+        if platform.system() == "Windows":
             stage_result = stage_windows_mpdev_package(project_root, toolchain_arg, release)
             if stage_result != 0:
                 return stage_result
+
+        # App-only builds skip installer validation and bundler output checks.
+        if bundle and platform.system() == "Windows":
             if name_windows_setup_installer(project_root, release) is None:
                 return 1
             if name_windows_msi_installer(project_root, release) is None:
