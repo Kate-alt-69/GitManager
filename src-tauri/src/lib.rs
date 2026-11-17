@@ -403,7 +403,7 @@ fn install_flatpak_gitm_cli() -> Result<String, String> {
     fs::create_dir_all(parent)
         .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
     let wrapper = format!(
-        "{marker}\n#!/bin/sh\nexec flatpak run --command=gitm --filesystem=home com.gitmanager.desktop \"$@\"\n",
+        "#!/bin/sh\n{marker}\nexec flatpak run --command=gitm --filesystem=home com.gitmanager.desktop \"$@\"\n",
         marker = FLATPAK_GITM_WRAPPER_MARKER
     );
     fs::write(&path, wrapper)
@@ -426,7 +426,7 @@ fn remove_flatpak_gitm_cli() -> Result<(), String> {
     }
     let existing = fs::read_to_string(&path)
         .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
-    if !existing.starts_with(FLATPAK_GITM_WRAPPER_MARKER) {
+    if existing.lines().nth(1) != Some(FLATPAK_GITM_WRAPPER_MARKER) {
         return Err(format!(
             "The file at {} is not managed by GitManager and was not removed.",
             path.display()
