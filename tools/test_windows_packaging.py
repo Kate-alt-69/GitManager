@@ -87,6 +87,12 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertEqual(store["outputTypes"], ["msix"])
         self.assertNotEqual(desktop["outputDirectory"], store["outputDirectory"])
 
+    def test_local_store_msix_passes_staged_source_to_mpdev(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        self.assertIn('environment["GITMANAGER_APP_SOURCE"] = str(', source)
+        self.assertIn('str(mpdev), "build", str(manifest)', source)
+        self.assertIn('env=environment, check=False', source)
+
     def test_windows_installer_preflights_mpdev_and_nsis_before_compiling(self):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
         self.assertIn("mpdev_cli = find_master_packager_dev_cli()", source)
