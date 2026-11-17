@@ -5,6 +5,8 @@
 
 pub mod app_preferences;
 pub mod git_info;
+pub mod repository_index;
+#[cfg(feature = "scan-engine")]
 pub mod scanner;
 pub mod storage;
 pub mod notification_center;
