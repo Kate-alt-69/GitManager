@@ -64,6 +64,17 @@ function relativeDate(timestamp: number): string {
 	return new Date(timestamp * 1000).toLocaleDateString();
 }
 
+function pullRequestUrl(repository: GitRepository, number: number): string | null {
+	const remote = repository.remotes.find((item) => item.name === "origin") ?? repository.remotes[0];
+	const base = (repository.web_url ?? remote?.web_url ?? "").replace(/\\/+$/, "");
+	const provider = (repository.primary_provider || remote?.provider || "").toLowerCase();
+	if (!base) return null;
+	if (provider.includes("github")) return `${base}/pull/${number}`;
+	if (provider.includes("gitlab")) return `${base}/-/merge_requests/${number}`;
+	if (provider.includes("bitbucket")) return `${base}/pull-requests/${number}`;
+	return null;
+}
+
 function Sidebar({
 	page,
 	setPage,
@@ -577,6 +588,7 @@ function RepositoryDetail({
 	const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
 	const [commitDetail, setCommitDetail] = useState<unknown>(null);
 	const [busy, setBusy] = useState(false);
+	const commitRouteSha = destination.kind === "commit-details" ? destination.sha : null;
 
 	async function refreshArchives() {
 		if (!archiveRoot) {
@@ -644,17 +656,6 @@ function RepositoryDetail({
 		}
 	}
 
-	async function showCommit(oid: string) {
-		setSelectedCommit(oid);
-		setCommitDetail(null);
-		try {
-			const details = await invoke("get_commit_details", { repoPath: repo.path, oid });
-			setCommitDetail(details);
-		} catch (error) {
-			setCommitDetail({ error: String(error) });
-		}
-	}
-
 	useEffect(() => {
 		void refreshArchives();
 		// Repository path defines the archive index scope.
@@ -699,7 +700,6 @@ function RepositoryDetail({
 		return () => { active = false; };
 	}, [repo.path, repo.details_loaded, onRepositoryLoaded]);
 
-	const commitRouteSha = destination.kind === "commit-details" ? destination.sha : null;
 	const displayRepo = repositoryDetails ?? repo;
 	const isPullRoute = destination.kind === "pull-browser" || destination.kind === "pull-request";
 	const branches = (displayRepo.branches ?? []).filter((branch) => isPullRoute ? branch.is_remote : !branch.is_remote);
@@ -718,6 +718,13 @@ function RepositoryDetail({
 	const remotePullRequestUrl = destination.kind === "pull-request"
 		? pullRequestUrl(displayRepo, destination.number)
 		: null;
+	const repositoryRouteTabs: Array<{ label: string; destination: RepositoryDestination }> = [
+		{ label: "Overview", destination: { kind: "overview" } },
+		{ label: "Conflicts", destination: { kind: "conflicts" } },
+		{ label: "Commits", destination: { kind: "commit-browser" } },
+		{ label: "Pull requests", destination: { kind: "pull-browser" } },
+		{ label: "Pull conflicts", destination: { kind: "pull-conflicts" } },
+	];
 
 	return (
 		<section className="gm-detail-view">
