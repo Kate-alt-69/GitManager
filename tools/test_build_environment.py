@@ -115,6 +115,14 @@ class BuildEnvironmentSetupPlanTests(unittest.TestCase):
             mac_setup.assert_called_once()
             linux_setup.assert_not_called()
 
+    def test_explicit_linux_target_on_macos_is_rejected(self):
+        with patch.object(SETUP.platform, "system", return_value="Darwin"), patch.object(
+            SETUP.platform, "machine", return_value="arm64"
+        ), patch.object(SETUP, "_setup_native_linux") as linux_setup:
+            result = SETUP.setup_build_environment("linux(x64)")
+            self.assertEqual(result, 2)
+            linux_setup.assert_not_called()
+
     def test_macos_sdk_is_not_claimed_available_on_windows(self):
         with patch.object(SETUP.platform, "system", return_value="Windows"), patch.object(
             SETUP, "_setup_windows", return_value=0
