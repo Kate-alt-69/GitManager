@@ -7,12 +7,12 @@ description = "Shared native Git repository discovery, metadata and indexing cor
 
 [features]
 default = []
-scan-engine = ["dep:fs2"]
+scan-engine = []
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
-fs2 = { version = "0.4", optional = true }
+fs2 = "0.4"
 git2 = { version = "0.20.4", default-features = false, features = ["https", "ssh"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
