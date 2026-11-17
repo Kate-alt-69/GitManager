@@ -1,45 +1,65 @@
 # GitManager Windows packaging (Master Packager Dev)
 
-Master Packager Dev (MPDEV) creates an additional Windows **MSI** from GitManager's staged Tauri application payload. It is an additional packaging path, not a replacement for Tauri's native NSIS setup executable or WiX MSI.
+**Master Packager Dev (MPDEV) is the required Windows MSI/MSIX packager.** Tauri creates the application and sidecar binaries; Tauri's NSIS package remains the fallback setup executable.
 
 ## Outputs
 
-- Tauri NSIS: `GitManager-Setup.exe`
-- Tauri WiX: `*.msi`
-- MPDEV comparison MSI: `GitManager_<version>_x64.msi`
+- NSIS fallback: `GitManager-Setup.exe`
+- MPDEV MSI: `GitManager_<version>_<architecture>.msi`
+- MPDEV MSIX: `GitManager_<version>_<architecture>.msix`
 
-The separate Microsoft Store MSIX is built only by `py build.py --store=msix` through `.github/workflows/store-build.yml`. It uses `installer/store/msix/package.json` and is deliberately not emitted by this desktop installer workflow.
-
-The MPDEV package definition is `package.json`. The build overrides its four-part MSI version from `src-tauri/tauri.conf.json` so the installer version stays aligned with the desktop application. It packages the Tauri app bundle, including the desktop executable, crash supervisor, background service, CLI/setup sidecars, cleaner, and bundled CPython runtime.
+Tauri's WiX MSI target is disabled. The desktop MPDEV manifest at `package.json` creates **both** MSI and MSIX from the same staged application payload. The separate Microsoft Store identity MSIX uses `installer/store/msix/package.json` and the `py build.py --store=msix` command.
 
 ## Install the build tool
 
+Install the required MPDEV package and the NSIS fallback:
+
 ```powershell
 winget install --id MasterPackager.MasterPackagerDev --exact
+winget install --id NSIS.NSIS --exact
 ```
 
-MPDEV is a standalone command-line packager:
+Verify MPDEV is available:
 
 ```powershell
 mpdev version
-mpdev build installer/master-packager/package.json --working-dir .
 ```
 
-The repository workflow installs MPDEV through WinGet and verifies that its MSI exists. MPDEV is free for non-commercial and open-source projects; commercial use requires the appropriate license.
+MPDEV is invoked automatically for every Windows `--type=installer` build. The deprecated `--master-packager` option is still accepted for compatibility but is no longer needed to enable it. If MPDEV is missing, the Windows installer build stops with an actionable error rather than falling back to WiX or silently skipping MSI/MSIX.
 
-## Install location
+## Local build
 
-The MSI targets the current user's Local AppData location:
+```powershell
+# Interactive local architecture selection; Enter builds all locally supported architectures
+py build.py
+
+# Exact Windows targets
+py build.py --build='windows(10,x64)' --type=installer
+py build.py --build='windows(11,x86)' --type=installer
+
+# Application binaries without installer packaging
+py build.py --build='windows(10,x64)' --type=app
+```
+
+MPDEV consumes the generated architecture-specific manifest at `build/.rcache/windows-package/mpdev-package.json`. It packages the staged Tauri executable, background service, crash supervisor, `gitm` CLI, first-run helper, Developer Cleaner and private CPython runtime. Cargo outputs and installer files stay under the ignored `build/` directory.
+
+## Install and signing behavior
+
+The MSI manifest uses the current user's Local AppData install directory:
 
 ```text
-%LOCALAPPDATA%\\kastrick's_software\\GitManager\\
+%LOCALAPPDATA%\kastrick's_software\GitManager
 ```
 
-User configuration and data remain separate:
+User configuration and data stay separate:
 
-- `%LOCALAPPDATA%\\kastrick's_software\\config\\GitManager\\`
-- `%LOCALAPPDATA%\\kastrick's_software\\data\\GitManager\\`
+- `%LOCALAPPDATA%\kastrick's_software\config\GitManager\`
+- `%LOCALAPPDATA%\kastrick's_software\data\GitManager\`
 
-## Store packaging
+MSIX is installed and managed inside the Windows package container. It must not be described as using the MSI's Local AppData path.
 
-MSIX is intentionally isolated in the Store stream. Store package identity, publisher identity, four-part versioning, signing and Partner Center validation are managed by `installer/store/msix/package.json` and `docs/store-packaging.md`. Do not distribute a development/test-signed MSIX as a trusted production package.
+The desktop MSIX currently uses MPDEV's generated development/test certificate for local installation validation. A test certificate is not a trusted public release identity. For Microsoft Store submission, use the separate Store stream with the exact Partner Center publisher and package identity. Microsoft signs the package after certification.
+
+## Comparison and fallback
+
+NSIS remains available if an MSI/MSIX installation path needs fallback or diagnosis. Before selecting MPDEV as the only release installer, test install, upgrade, repair and uninstall on a clean Windows 10/11 machine and confirm that user configuration/data directories are preserved.
