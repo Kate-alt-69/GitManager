@@ -523,8 +523,8 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
     return 0
 
 
-def build_master_packager_installers(project_root: Path, release: bool) -> Tuple[int, Optional[Dict[str, Path]]]:
-    """Build both mandatory Windows MSI and MSIX packages with Master Packager Dev."""
+def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[Path]]:
+    """Generate the architecture-specific MPDEV manifest from the staged Windows payload."""
     if platform.system() != "Windows":
         return 0, None
 
@@ -590,7 +590,40 @@ def build_master_packager_installers(project_root: Path, release: bool) -> Tuple
         log_err(f"Could not prepare the MPDEV MSI/MSIX definition: {error}")
         return 1, None
 
+    log_ok(f"Prepared MPDEV {package_arch} MSI/MSIX manifest: {generated_manifest}")
+    return 0, generated_manifest
+
+
+def build_master_packager_installers(
+    project_root: Path,
+    generated_manifest: Path,
+) -> Tuple[int, Optional[Dict[str, Path]]]:
+    """Build both mandatory Windows MSI and MSIX packages with Master Packager Dev."""
+    if platform.system() != "Windows":
+        return 0, None
+
+    mpdev = find_master_packager_dev_cli()
+    if mpdev is None:
+        log_err("Master Packager Dev is required but mpdev.exe could not be found.")
+        return 1, None
+
+    target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+    if target_triple.startswith("x86_64-"):
+        package_arch = "x64"
+    elif target_triple.startswith(("i686-", "i586-")):
+        package_arch = "x86"
+    elif target_triple.startswith("aarch64-"):
+        package_arch = "arm64"
+    else:
+        log_err(f"Cannot determine the MPDEV package architecture from Rust target '{target_triple}'.")
+        return 1, None
+
+    staging = cargo_target_root(project_root) / "windows-package" / "source"
     output_dir = project_root / "build" / ".rcache" / "windows-installers"
+    if not generated_manifest.is_file() or not (staging / "git-manager.exe").is_file():
+        log_err("MPDEV manifest or staged Windows app payload is missing.")
+        return 1, None
+
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
         for pattern in ("*.msi", "*.msix"):
@@ -632,6 +665,7 @@ def build_master_packager_installers(project_root: Path, release: bool) -> Tuple
         log_ok(f"Created MPDEV {extension.upper()}: {candidates[0]} ({candidates[0].stat().st_size:,} bytes)")
 
     return 0, packages
+
 
 
 def ensure_cargo_in_path() -> None:
@@ -1903,13 +1937,15 @@ def run_build_or_dev(
         if bundle and platform.system() == "Windows":
             if name_windows_setup_installer(project_root, release) is None:
                 return 1
+            manifest_result, mpdev_manifest = prepare_master_packager_manifest(project_root)
+            if manifest_result != 0 or mpdev_manifest is None:
+                return manifest_result or 1
             if os.environ.get("GITMANAGER_DEFER_MPDEV_PACKAGING") == "1":
-                # Release CI signs the staged binaries first, then runs the same
-                # generated MPDEV manifest as a final packaging step. Ordinary
-                # local builds never set this override and always package MSI/MSIX.
-                log_info("Deferring MPDEV MSI/MSIX generation to the release signing step.")
+                # Release CI signs the staged binaries before it invokes MPDEV.
+                # Ordinary local builds always package MSI/MSIX immediately.
+                log_info("MPDEV manifest is ready; release signing runs before MSI/MSIX generation.")
             else:
-                mpdev_result, mpdev_packages = build_master_packager_installers(project_root, release)
+                mpdev_result, mpdev_packages = build_master_packager_installers(project_root, mpdev_manifest)
                 if mpdev_result != 0 or not mpdev_packages:
                     return mpdev_result or 1
                 include_mpdev = True
