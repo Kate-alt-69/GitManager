@@ -24,7 +24,7 @@ From the GitManager repository:
 
     py build.py prepare-cloud-node
 
-The command uses Python 3.9+ and does not need Rust, Cargo or network access. The normal py build.py desktop build also creates the bootstrap ZIP. The release workflow builds and validates the ZIP independently.
+The command uses Python 3.9+ and does not need Rust, Cargo or network access. A local target-specific desktop build also prepares this ZIP; the all-platform GitHub Actions matrix skips duplicate packaging, while the release workflow builds and validates the ZIP independently.
 
 ## Install on the NAS / target machine
 
