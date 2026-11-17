@@ -73,6 +73,17 @@ def _log(message: str) -> None:
     print("[SETUP] " + message, flush=True)
 
 
+def _log_wsl_first_run_instructions() -> None:
+    """Explain Ubuntu's interactive first-launch account setup to Windows users."""
+    _log("Finish Ubuntu's first-run setup before retrying the Linux build:")
+    _log("  1. Open 'Ubuntu 24.04 LTS' from the Windows Start menu, or run: wsl --distribution Ubuntu-24.04")
+    _log("  2. At 'Enter new UNIX username', type a Linux username and press Enter. It is separate from your Windows account.")
+    _log("  3. At 'New password', type a password and press Enter. Nothing appears while typing (no dots or asterisks); that is normal.")
+    _log("  4. Type the same password again at 'Retype new password' and press Enter.")
+    _log("  5. Wait for the Ubuntu shell prompt, then type 'exit' to return to PowerShell.")
+    _log("  6. Rerun this setup command with the same target, for example: py build.py setup-build-tools --build=all")
+
+
 def _run(command: Sequence[str], *, capture: bool = False) -> tuple[int, str, str]:
     rendered = " ".join(str(part) for part in command)
     _log("$ " + rendered)
@@ -549,7 +560,8 @@ def _setup_wsl_linux(*, include_flatpak: bool, default_yes: bool) -> int:
             "wsl", "--install", "--distribution", UBUNTU_WSL_DISTRIBUTION, "--no-launch",
         ])[0]
         if result == 0:
-            _log("WSL/Ubuntu installation has started. Restart Windows if requested, launch Ubuntu once to create its Linux user, then rerun setup-build-tools.")
+            _log("WSL/Ubuntu installation has started. Restart Windows if requested.")
+            _log_wsl_first_run_instructions()
         return result or 2
 
     _, output, _ = _run([wsl, "--list", "--quiet"], capture=True)
@@ -571,7 +583,8 @@ def _setup_wsl_linux(*, include_flatpak: bool, default_yes: bool) -> int:
             wsl, "--install", "--distribution", UBUNTU_WSL_DISTRIBUTION, "--no-launch",
         ])[0]
         if result == 0:
-            _log("Ubuntu 24.04 is installing. Restart Windows if requested, launch Ubuntu once to create your Linux username/password, then rerun setup-build-tools.")
+            _log("Ubuntu 24.04 is installing. Restart Windows if requested.")
+            _log_wsl_first_run_instructions()
         return result or 2
 
     prefix = [wsl, "--distribution", distro, "--"]
@@ -580,7 +593,8 @@ def _setup_wsl_linux(*, include_flatpak: bool, default_yes: bool) -> int:
         'test -f /etc/os-release && . /etc/os-release && test "$ID" = ubuntu',
     ])[0]
     if probe != 0:
-        _log("Ubuntu is installed but its first-run account setup is incomplete. Launch Ubuntu from the Start menu, create its Linux username/password, then rerun setup-build-tools.")
+        _log("Ubuntu is installed but its first-run account setup is incomplete.")
+        _log_wsl_first_run_instructions()
         return 2
 
     if _ubuntu_environment_ready(prefix, include_flatpak=include_flatpak):
