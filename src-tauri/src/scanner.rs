@@ -72,8 +72,25 @@ pub fn repository_index_path() -> Result<PathBuf, String> {
         .join("index.json"))
 }
 
+pub fn repository_index_modified_unix_nanos() -> Result<u128, String> {
+    let path = repository_index_path()?;
+    if !path.is_file() {
+        return Ok(0);
+    }
+    let modified = fs::metadata(&path)
+        .map_err(|error| format!("Could not inspect repository index {}: {error}", path.display()))?
+        .modified()
+        .map_err(|error| format!("Could not read repository index timestamp {}: {error}", path.display()))?;
+    Ok(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())
+}
+
 pub fn load_persisted_repository_index() -> Result<Option<PersistedRepositoryIndex>, String> {
     let path = repository_index_path()?;
+    let backup = path.with_extension("json.previous");
+    if !path.is_file() && backup.is_file() {
+        fs::rename(&backup, &path)
+            .map_err(|error| format!("Could not recover the previous repository index: {error}"))?;
+    }
     if !path.is_file() {
         return Ok(None);
     }
@@ -107,11 +124,17 @@ pub fn save_persisted_repository_index(report: &ScanReport) -> Result<PersistedR
     fs::create_dir_all(parent)
         .map_err(|error| format!("Could not create repository metadata directory: {error}"))?;
 
-    let indexed_at_unix_ms = SystemTime::now()
+    let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
         .min(u64::MAX as u128) as u64;
+    // Keep the generation strictly increasing even when two refreshes happen
+    // within the same system-clock millisecond.
+    let previous_time = load_persisted_repository_index()?
+        .map(|previous| previous.indexed_at_unix_ms.saturating_add(1))
+        .unwrap_or(0);
+    let indexed_at_unix_ms = current_time.max(previous_time);
     let index = PersistedRepositoryIndex {
         schema_version: REPOSITORY_INDEX_VERSION,
         indexed_at_unix_ms,
@@ -138,8 +161,25 @@ pub fn save_persisted_repository_index(report: &ScanReport) -> Result<PersistedR
         file.sync_all()
             .map_err(|error| format!("Could not flush temporary repository index: {error}"))?;
     }
-    fs::rename(&temporary, &path)
-        .map_err(|error| format!("Could not publish repository index {}: {error}", path.display()))?;
+    let backup = path.with_extension("json.previous");
+    let had_previous = path.is_file();
+    if had_previous {
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|error| format!("Could not clear previous repository index backup: {error}"))?;
+        }
+        fs::rename(&path, &backup)
+            .map_err(|error| format!("Could not stage the previous repository index: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&temporary, &path) {
+        if had_previous {
+            let _ = fs::rename(&backup, &path);
+        }
+        return Err(format!("Could not publish repository index {}: {error}", path.display()));
+    }
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
+    }
 
     Ok(index)
 }
