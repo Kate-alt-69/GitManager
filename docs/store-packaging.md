@@ -25,7 +25,7 @@ The Flatpak stream first creates GitManager's normal Linux DEB package, then ext
 
 - Application ID: \`com.gitmanager.desktop\`
 - Runtime: \`org.gnome.Platform//48\`
-- First target: Linux x64
+- First targets: Linux x64 and Linux ARM64 (the ARMv7 target remains DEB/RPM only)
 - Output: \`build/dist/store/flatpak/GitManager-x86_64.flatpak\`
 
 The manifest grants Wayland/X11, graphics, network, SSH-agent, home-directory and optional \`~/.local/bin\` creation access. Home access is currently required because GitManager scans and performs Git operations on user-selected local repositories. The \`~/.local/bin:create\` permission is reserved for a future explicit in-app action that installs a \`gitm\` wrapper; installation must never edit shell startup files or the host PATH automatically.
