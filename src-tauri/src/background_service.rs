@@ -183,14 +183,14 @@ pub fn run() -> ! {
 
                         let key = format!("{}::{}", update.repo_path, update.remote_oid);
                         if notified_commits.insert(key) {
-                            let should_notify_os = publish_repository_update(
+                            let _ = publish_repository_update(
                                 &update.repo_id,
                                 &update.repo_name,
                                 &update.repo_path,
                                 &update.remote_oid,
                                 &update.prompt_message,
-                            ).map(|(_, created)| created).unwrap_or(true);
-                            if should_notify_os {
+                            );
+                            if preferences.os_notifications_enabled {
                                 send_os_desktop_notification(&update);
                             }
                         }
