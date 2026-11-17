@@ -1718,8 +1718,14 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool) -> in
                     + ", ".join(missing_extensions)
                 )
                 return 1
-            shutil.copytree(bundle_source, output_root / "installer")
-            log_ok(f"Published installer bundles: {output_root / 'installer'}")
+            installer_dir = output_root / "installer"
+            shutil.copytree(bundle_source, installer_dir)
+            if target.platform == "windows":
+                mpdev_outputs = cargo_target_root(project_root) / "windows-installers"
+                for package in sorted(mpdev_outputs.glob("*.msi")):
+                    if package.is_file() and package.stat().st_size > 0:
+                        shutil.copy2(package, installer_dir / package.name)
+            log_ok(f"Published installer bundles: {installer_dir}")
 
         suffix = ".exe" if target.platform == "windows" else ""
         setup_alias = "GitManager-Setup" + suffix
