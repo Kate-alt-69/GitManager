@@ -1279,6 +1279,10 @@ def check_os_system_dependencies() -> None:
 
 def resolve_rust_target_triple(toolchain_arg: str) -> str:
     """Return the exact Rust target triple used for the GitManager sidecar."""
+    configured_target = os.environ.get("CARGO_BUILD_TARGET", "").strip()
+    if configured_target:
+        return configured_target
+
     commands: List[List[str]] = []
     if toolchain_arg.startswith("+") and shutil.which("rustup"):
         toolchain = toolchain_arg[1:]
