@@ -29,6 +29,7 @@ const DEFAULT_PREFERENCES: AppPreferences = {
 export function useGitManager() {
 	const scanInFlight = useRef(false);
 	const [available, setAvailable] = useState(false);
+	const [serviceReady, setServiceReady] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [scanning, setScanning] = useState(false);
 	const [scanTruncated, setScanTruncated] = useState(false);
@@ -86,6 +87,22 @@ export function useGitManager() {
 	}, []);
 
 	const scan = useCallback((customRoot?: string) => performScan(preferences, customRoot), [performScan, preferences]);
+
+	const retryService = useCallback(async () => {
+		setError("");
+		setStatus("Starting GitManager core service…");
+		try {
+			await invoke<string>("ensure_required_service");
+			setServiceReady(true);
+			setStatus("GitManager core service ready");
+			if (preferences.firstRunComplete) await performScan(preferences);
+		} catch (cause) {
+			const message = cause instanceof Error ? cause.message : String(cause);
+			setServiceReady(false);
+			setError(message);
+			setStatus("Core service unavailable");
+		}
+	}, [performScan, preferences]);
 
 	const updateRepository = useCallback((updated: GitRepository) => {
 		setRepositories((current) => current.map((repo) => repo.id === updated.id ? updated : repo));
@@ -188,6 +205,12 @@ export function useGitManager() {
 				return;
 			}
 			try {
+				setStatus("Connecting to GitManager core service…");
+				await invoke<string>("ensure_required_service");
+				if (!active) return;
+				setServiceReady(true);
+				setStatus("Core service connected");
+
 				const cliTools = await invoke<{ git: boolean; github: boolean }>("check_cli_tools");
 				if (!cliTools.git && !cliTools.github) {
 					const flatpak = await invoke<{ isFlatpak: boolean }>("get_flatpak_cli_integration_status")
@@ -222,6 +245,20 @@ export function useGitManager() {
 					resolved = { ...resolved, scanRoots: suggested ?? [] };
 				}
 				setPreferences(resolved);
+
+				// Hydrate the last published inventory before requesting any refresh.
+				// This is a read of the service-owned index, never a filesystem scan.
+				const cachedIndex = await invoke<ScanSummary>("load_indexed_repositories", {
+					filterMode: "grouped",
+				}).catch(() => null);
+				if (active && cachedIndex) {
+					const local = Array.isArray(cachedIndex.repositories)
+						? cachedIndex.repositories.filter((repo) => repo.source_kind === "local_scan")
+						: [];
+					setRepositories(local);
+					setDependencies(cachedIndex.dependency_repo_ids ?? []);
+					setScanTruncated(Boolean(cachedIndex.scan_truncated));
+				}
 
 				const setupMode = await invoke<boolean>("is_setup_mode").catch(() => false);
 				if (setupMode) {
@@ -272,8 +309,8 @@ export function useGitManager() {
 	}, [scan]);
 
 	return {
-		available, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
+		available, serviceReady, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, updates, setupOpen, setSetupOpen,
-		status, error, setError, scan, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
+		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
 	};
 }
