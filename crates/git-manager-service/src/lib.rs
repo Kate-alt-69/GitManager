@@ -5,8 +5,8 @@
 //! and notification delivery as a separate per-user process.
 
 pub use gitmanager_core::{
-    git_info, notification_center, scanner, AppPreferences, RepositoryPreferences,
-    load_background_preferences,
+    git_info, notification_center, repository_index, scanner, AppPreferences,
+    RepositoryPreferences, load_background_preferences,
 };
 
 pub mod archive {
