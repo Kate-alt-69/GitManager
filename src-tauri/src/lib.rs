@@ -1,6 +1,7 @@
 mod process_utils;
 pub mod archive;
 pub mod archive_watcher;
+pub mod notification_center;
 pub mod background_service;
 mod repository_workspace;
 pub mod git_info;
