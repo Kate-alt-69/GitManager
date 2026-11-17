@@ -1,4 +1,4 @@
-//! Headless background worker hosted by the standalone git-manager-service
+//! Headless background worker hosted by the standalone gitmanager.service
 //! workspace package. The OS service manager launches that separate executable
 //! directly; it is not a child of the desktop UI or crash_helper.
 
