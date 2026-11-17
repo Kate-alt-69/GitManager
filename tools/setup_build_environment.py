@@ -396,8 +396,9 @@ if [ "$node_major" -lt 22 ]; then
 fi
 """
     rust_setup = r"""
-# Preserve an existing working compiler. Only install Rustup when no usable
-# cargo/rustc pair exists on the machine.
+# Load rustup's normal user PATH only when it exists; preserve distro/system
+# Rust installations and never reset a working compiler's default toolchain.
+if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
   if ! command -v rustup >/dev/null 2>&1; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/gitmanager-rustup-init.sh
@@ -842,6 +843,19 @@ def setup_build_environment(
         allowed, reason = can_build_locally(target)
         if allowed:
             local_targets.append(target)
+        elif host == "windows" and target.platform == "linux":
+            windows_machine = platform.machine().lower()
+            wsl_arch = {
+                "amd64": "x64", "x86_64": "x64",
+                "arm64": "arm64", "aarch64": "arm64",
+            }.get(windows_machine, windows_machine)
+            if target.architecture == wsl_arch:
+                local_targets.append(target)
+            elif target.platform in selected_platforms:
+                _log(
+                    f"Linux {target.architecture} is not available through this WSL host ({wsl_arch}); "
+                    "use a matching native Linux machine for that architecture."
+                )
         elif target.platform in selected_platforms:
             _log("Target architecture is not available on this machine: " + reason)
 
