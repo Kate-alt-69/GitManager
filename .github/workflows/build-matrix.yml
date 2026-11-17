@@ -51,7 +51,7 @@ jobs:
             output: windows-arm64
             aliases: ["windows(11,arm64)"]
             target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
+            runner: windows-11-vs2026-arm
             label: Windows 11 ARM64
           - platform: linux
             selector: linux(x64)
