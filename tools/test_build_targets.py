@@ -1,6 +1,6 @@
 import unittest
 
-from tools.build_targets import all_targets, parse_build_selection
+from build_targets import parse_build_selection
 
 
 class BuildTargetSelectionTests(unittest.TestCase):
