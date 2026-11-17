@@ -172,6 +172,16 @@ pub fn publish_notification(
     Ok((notification, true))
 }
 
+fn repository_update_notification_id(repo_id: &str, remote_oid: &str) -> String {
+    // FNV-1a gives a deterministic identifier across the UI and service processes.
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in format!("{repo_id}\n{remote_oid}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("repo-update-{hash:016x}")
+}
+
 pub fn publish_repository_update(
     repo_id: &str,
     repo_name: &str,
@@ -179,13 +189,7 @@ pub fn publish_repository_update(
     remote_oid: &str,
     message: &str,
 ) -> Result<(AppNotification, bool), String> {
-    // FNV-1a gives a deterministic identifier across the UI and service processes.
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in format!("{repo_id}\n{remote_oid}").bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    let id = format!("repo-update-{hash:016x}");
+    let id = repository_update_notification_id(repo_id, remote_oid);
     publish_notification(
         id,
         "repository-update",
@@ -223,7 +227,21 @@ fn mutate_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::{AppNotification, NotificationStore, MAX_NOTIFICATION_COUNT};
+    use super::{
+        repository_update_notification_id, AppNotification, NotificationStore,
+        MAX_NOTIFICATION_COUNT,
+    };
+
+    #[test]
+    fn repository_update_ids_are_stable_per_repository_and_remote_commit() {
+        let first = repository_update_notification_id("local::repo-1", "abc123");
+        let repeated = repository_update_notification_id("local::repo-1", "abc123");
+        let different_commit = repository_update_notification_id("local::repo-1", "def456");
+        let different_repository = repository_update_notification_id("local::repo-2", "abc123");
+        assert_eq!(first, repeated);
+        assert_ne!(first, different_commit);
+        assert_ne!(first, different_repository);
+    }
 
     #[test]
     fn notification_store_schema_defaults_and_round_trips() {
