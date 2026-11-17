@@ -52,6 +52,7 @@ enum ServiceCommand {
     Status,
     Suspend { seconds: u64 },
     Resume,
+    RequestScan,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +201,7 @@ pub struct ServiceControlServer {
     running: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     endpoint_path: PathBuf,
+    scan_requested: Arc<AtomicBool>,
     _lock_file: File,
 }
 
@@ -211,7 +213,12 @@ impl ServiceControlServer {
     }
 
     pub fn status(&self) -> ServiceStatus {
-        self.state.status("Background service status")
+        self.state.status("GitManager core service status")
+    }
+
+    /// Returns true once per queued repository-index refresh request.
+    pub fn take_scan_request(&self) -> bool {
+        self.scan_requested.swap(false, Ordering::AcqRel)
     }
 }
 
@@ -258,8 +265,10 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
 
     let state = Arc::new(ServiceState::load(data_dir.join(SUSPENSION_FILE)));
     let running = Arc::new(AtomicBool::new(true));
+    let scan_requested = Arc::new(AtomicBool::new(false));
     let thread_state = Arc::clone(&state);
     let thread_running = Arc::clone(&running);
+    let thread_scan_requested = Arc::clone(&scan_requested);
     let token = endpoint.token.clone();
 
     let worker = thread::Builder::new()
@@ -267,7 +276,9 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         .spawn(move || {
             while thread_running.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((stream, _)) => handle_service_connection(stream, &token, &thread_state),
+                    Ok((stream, _)) => handle_service_connection(
+                        stream, &token, &thread_state, &thread_scan_requested,
+                    ),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(100));
                     }
@@ -282,11 +293,17 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         running,
         worker: Some(worker),
         endpoint_path,
+        scan_requested,
         _lock_file: lock_file,
     })
 }
 
-fn handle_service_connection(mut stream: TcpStream, token: &str, state: &ServiceState) {
+fn handle_service_connection(
+    mut stream: TcpStream,
+    token: &str,
+    state: &ServiceState,
+    scan_requested: &AtomicBool,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
@@ -315,6 +332,14 @@ fn handle_service_connection(mut stream: TcpStream, token: &str, state: &Service
                     ok: true,
                     status: state.resume(),
                     error: None,
+                },
+                ServiceCommand::RequestScan => {
+                    scan_requested.store(true, Ordering::Release);
+                    ServiceResponse {
+                        ok: true,
+                        status: state.status("Repository index refresh queued"),
+                        error: None,
+                    }
                 },
             },
             Ok(_) => ServiceResponse {
@@ -381,6 +406,12 @@ fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
     send_service_command(ServiceCommand::Status)
+}
+
+/// Asks the required service process to refresh the persisted repository index.
+/// The UI never performs the directory walk itself.
+pub fn request_service_scan() -> Result<ServiceStatus, String> {
+    send_service_command(ServiceCommand::RequestScan)
 }
 
 /// Persists the suspension request before attempting IPC. If the service is
