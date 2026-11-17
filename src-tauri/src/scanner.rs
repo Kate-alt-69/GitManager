@@ -133,7 +133,10 @@ pub fn save_persisted_repository_index(report: &ScanReport) -> Result<PersistedR
         .min(u64::MAX as u128) as u64;
     // Keep the generation strictly increasing even when two refreshes happen
     // within the same system-clock millisecond.
-    let previous_time = load_persisted_repository_index()?
+    // A corrupt prior index must not prevent the service from rebuilding it.
+    let previous_time = load_persisted_repository_index()
+        .ok()
+        .flatten()
         .map(|previous| previous.indexed_at_unix_ms.saturating_add(1))
         .unwrap_or(0);
     let indexed_at_unix_ms = current_time.max(previous_time);
