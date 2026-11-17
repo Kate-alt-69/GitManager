@@ -1764,3 +1764,63 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 		position: static;
 	}
 }
+
+/* Repository subroutes use compact, square editor-style tabs and route status. */
+.gm-repository-route-nav {
+	display: flex;
+	align-items: stretch;
+	gap: 0;
+	min-width: 0;
+	overflow-x: auto;
+	border: 1px solid #30363d;
+	border-bottom: 1px solid #30363d;
+	background: #111820;
+}
+.gm-repository-route-nav button {
+	min-height: 34px;
+	flex: 0 0 auto;
+	padding: 0 13px;
+	border: 0;
+	border-right: 1px solid #30363d;
+	border-bottom: 2px solid transparent;
+	background: transparent;
+	color: #8b98a6;
+	font-size: 10px;
+	cursor: pointer;
+}
+.gm-repository-route-nav button:hover {
+	background: #1a2633;
+	color: #dbe6f0;
+}
+.gm-repository-route-nav button.active {
+	border-bottom-color: #58a6ff;
+	background: #172433;
+	color: #dbeafe;
+}
+.gm-route-notice {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px 14px;
+	padding: 10px 12px;
+	border: 1px solid #303f4e;
+	background: #111a24;
+	color: #a8b6c4;
+	font-size: 10px;
+	line-height: 1.5;
+}
+.gm-route-notice > strong {
+	flex: 0 0 auto;
+	color: #dbe6f0;
+	font-size: 10px;
+}
+.gm-route-notice > span {
+	flex: 1 1 260px;
+	min-width: 0;
+}
+.gm-route-notice .gm-button {
+	min-height: 27px;
+	flex: 0 0 auto;
+	padding: 0 9px;
+	font-size: 9px;
+}
