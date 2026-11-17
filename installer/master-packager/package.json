@@ -40,7 +40,6 @@
     }
   },
   "msi": {
-    "installDir": "[LocalAppDataFolder]kastrick's_software\\GitManager",
     "upgradeCode": "6B4A7D19-8E32-4C81-AF53-2D9B7E1C4065",
     "properties": [
       {
@@ -59,6 +58,7 @@
     ],
     "packageDependencies": [
       {
+        "displayName": "Microsoft Edge WebView2 Runtime",
         "namePattern": "Microsoft Edge WebView2 Runtime",
         "install": {
           "winGet": {
