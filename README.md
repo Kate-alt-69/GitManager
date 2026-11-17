@@ -151,15 +151,14 @@ The hook requires Python 3.10 or newer. GitManager installs only into the reposi
 
 ## 6. Windows production installer and signing
 
-On Windows, `python build.py build` prepares the isolated CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion. It creates a current-user NSIS application installer:
+On Windows, `py build.py --build='windows(10,x64)' --type=installer` prepares the architecture-matched isolated CPython runtime, builds GitManager, its background service, the `gitm` CLI and the first-run companion, then creates both Tauri-native installers:
 
-    target/release/bundle/nsis/GitManager-Setup.exe
-
-The Windows MSI target is intentionally disabled for the per-user build. Tauri's generated MSI resource components currently use file key paths under the user profile, which fail Windows Installer ICE38/ICE64 validation. We do not suppress those checks: a valid per-user MSI needs HKCU registry key paths and explicit user-profile directory cleanup for every generated component. The NSIS installer already supports the required current-user install layout without elevation.
+    build/.rcache/x86_64-pc-windows-msvc/release/bundle/nsis/GitManager-Setup.exe
+    build/.rcache/x86_64-pc-windows-msvc/release/bundle/msi/GitManager.msi
 
 The build also creates a separate first-run helper alongside the native binaries:
 
-    target/release/GitManager-Setup.exe
+    build/.rcache/x86_64-pc-windows-msvc/release/GitManager-Setup.exe
 
 That helper is bundled into the installed app as a Tauri sidecar. It is a tiny, dependency-free Rust launcher; it does not replace or duplicate Tauri. On first launch, the main Tauri app hands its executable path to the helper. The helper relaunches that same Tauri app with `--setup`, so the actual workspace wizard is still rendered by GitManager's Tauri UI/runtime. The helper is built for every supported OS: `GitManager-Setup.exe` on Windows and `GitManager-Setup` on Linux/macOS. The same first-run flow asks for the main repository folder, supports additional scan roots, and then continues into GitManager. If the sidecar is unavailable in a development build, the in-process wizard remains as a fallback.
 
@@ -200,7 +199,7 @@ GitManager's desktop application does **not** embed the standalone RBE runtime. 
 
 ## 7. Portable RBE node deployment
 
-Every normal `py build.py` / `python build.py build` run also creates a small bootstrap ZIP under `target/deployment/`:
+A local target-specific desktop build also prepares the small bootstrap ZIP under `build/dist/deployment/`. The all-platform GitHub Actions matrix skips this duplicate packaging step; the release workflow builds and validates the ZIP independently:
 
 ```text
 GitManager-Cloud-Node-Setup.zip
