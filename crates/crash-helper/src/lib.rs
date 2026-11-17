@@ -1003,12 +1003,23 @@ pub fn run_helper_from_args() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServiceState, SuspensionRecord, DEFAULT_SUSPENSION_SECONDS,
-        MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS,
+        ServiceCommand, ServiceRequest, ServiceState, SuspensionRecord,
+        DEFAULT_SUSPENSION_SECONDS, MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS,
     };
     use super::Uuid;
     use std::fs;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn repository_scan_request_uses_the_authenticated_control_protocol() {
+        let request = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::RequestScan,
+        };
+        let encoded = serde_json::to_value(request).expect("encode scan request");
+        assert_eq!(encoded["token"], "test-token");
+        assert_eq!(encoded["command"]["action"], "request_scan");
+    }
 
     #[test]
     fn gpu_compatibility_switch_is_consumed_without_losing_other_arguments() {
