@@ -1608,3 +1608,159 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 }
+
+/* Visual Studio-style workspace surfaces: square edges and compact spacing. */
+.gm-app-shell :where(*) {
+	border-radius: 0 !important;
+}
+
+.gm-app-shell :where(
+	.gm-status-dot,
+	.gm-online-dot,
+	.gm-panel-indicator,
+	.gm-task-state,
+	.gm-footer i,
+	.gm-connected-pill i,
+	.gm-commit-node,
+	.gm-dirty-meta i,
+	.gm-clean-meta i,
+	.gm-status-pending i
+) {
+	border-radius: 50% !important;
+}
+
+.gm-app-shell {
+	border-radius: 0 !important;
+}
+.gm-sidebar {
+	border-right: 1px solid #30363d;
+}
+.gm-nav-item,
+.gm-topbar-panel-trigger,
+.gm-quick-link,
+.gm-global-search,
+.gm-search-field,
+.gm-repo-toolbar,
+.gm-filter-group,
+.gm-filter-group button,
+.gm-topbar-popover,
+.gm-topbar-popover button,
+.gm-version-pill,
+.gm-button,
+.gm-card-action,
+.gm-workspace-mini,
+.gm-workspace-toolbar,
+.gm-workspace-source,
+.gm-workspace-source button,
+.gm-workspace-select,
+.gm-workspace-card,
+.gm-workspace-panel,
+.gm-workspace-actions,
+.gm-workspace-summary span,
+.gm-workspace-state,
+.gm-workspace-file,
+.gm-workspace-change,
+.gm-workspace-modal,
+.gm-panel,
+.gm-stat-card,
+.gm-repo-card,
+.gm-detail-stats,
+.gm-commit-inspector,
+.gm-modal,
+.gm-modal-actions,
+.gm-settings-card,
+.gm-settings-section,
+.gm-account-card,
+.gm-cleaner-card {
+	border-radius: 0 !important;
+}
+
+.gm-detail-view {
+	gap: 10px;
+}
+.gm-detail-heading {
+	padding-bottom: 9px;
+}
+.gm-detail-stats {
+	overflow: hidden;
+}
+.gm-detail-columns {
+	grid-template-columns: minmax(0, 1.4fr) minmax(250px, .8fr);
+	gap: 10px;
+}
+.gm-workspace-panel {
+	gap: 9px;
+	padding: 10px;
+}
+.gm-workspace-layout {
+	grid-template-columns: minmax(0, 1.35fr) minmax(250px, .85fr);
+	gap: 8px;
+}
+.gm-workspace-main {
+	gap: 8px;
+}
+.gm-workspace-card-heading {
+	min-height: 38px;
+	padding: 7px 9px;
+}
+.gm-workspace-change-list {
+	max-height: 205px;
+}
+.gm-workspace-file-list {
+	max-height: 255px;
+}
+.gm-workspace-preview {
+	top: 8px;
+}
+.gm-workspace-preview-text {
+	max-height: 420px;
+	min-height: 130px;
+	padding: 9px;
+}
+.gm-detail-columns .gm-panel {
+	min-width: 0;
+}
+.gm-commit-list {
+	max-height: 380px;
+	overflow: auto;
+}
+.gm-topbar {
+	gap: 8px;
+}
+.gm-topbar-actions {
+	gap: 7px;
+}
+.gm-topbar-panel-triggers {
+	gap: 3px;
+}
+.gm-topbar-panel-trigger {
+	min-height: 30px;
+	padding: 0 9px;
+	border: 1px solid #30363d;
+	background: #161b22;
+}
+.gm-topbar-panel-trigger.active {
+	border-color: #47749e;
+	background: #1b2d40;
+}
+.gm-topbar-popover {
+	border: 1px solid #3a4653;
+	box-shadow: 0 12px 32px rgba(0, 0, 0, .36);
+}
+.gm-nav-item {
+	min-height: 34px;
+	border-left: 2px solid transparent;
+}
+.gm-nav-item.active {
+	border-left-color: #58a6ff;
+	background: #1a2633;
+}
+@media (max-width: 940px) {
+	.gm-workspace-layout,
+	.gm-detail-columns {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.gm-workspace-preview {
+		position: static;
+	}
+}
