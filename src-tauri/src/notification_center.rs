@@ -3,9 +3,7 @@
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, OpenOptions};
-use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -143,12 +141,12 @@ pub fn publish_notification(
     title: &str,
     body: &str,
     repository_path: Option<&str>,
-) -> Result<AppNotification, String> {
+) -> Result<(AppNotification, bool), String> {
     let path = notification_file()?;
     let _lock = lock_file(&path)?;
     let mut store = read_store(&path)?;
     if let Some(existing) = store.notifications.iter().find(|item| item.id == id) {
-        return Ok(existing.clone());
+        return Ok((existing.clone(), false));
     }
     let notification = AppNotification {
         id,
@@ -166,7 +164,7 @@ pub fn publish_notification(
         store.notifications.drain(0..excess);
     }
     write_store(&path, &store)?;
-    Ok(notification)
+    Ok((notification, true))
 }
 
 pub fn publish_repository_update(
@@ -175,11 +173,14 @@ pub fn publish_repository_update(
     repo_path: &str,
     remote_oid: &str,
     message: &str,
-) -> Result<AppNotification, String> {
-    let mut hasher = DefaultHasher::new();
-    repo_id.hash(&mut hasher);
-    remote_oid.hash(&mut hasher);
-    let id = format!("repo-update-{:016x}", hasher.finish());
+) -> Result<(AppNotification, bool), String> {
+    // FNV-1a gives a deterministic identifier across the UI and service processes.
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in format!("{repo_id}\n{remote_oid}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let id = format!("repo-update-{hash:016x}");
     publish_notification(
         id,
         "repository-update",
