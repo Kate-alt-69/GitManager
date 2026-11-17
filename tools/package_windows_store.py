@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -23,6 +25,7 @@ def main() -> int:
         type=Path,
         default=ROOT / "build" / ".rcache" / "windows-store" / "source",
     )
+    parser.add_argument("--platform", choices=("x64", "arm64", "x86"), default="x64")
     args = parser.parse_args()
     app_dir = args.app_dir.resolve()
     output = args.output.resolve()
@@ -92,7 +95,40 @@ def main() -> int:
         print(f"Could not stage Microsoft Store payload: {error}", file=sys.stderr)
         return 1
 
+    try:
+        package_config = json.loads(
+            (ROOT / "installer" / "store" / "msix" / "package.json").read_text(encoding="utf-8")
+        )
+        tauri_config = json.loads(
+            (ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+        )
+        version_parts = str(tauri_config.get("version", "")).split(".")
+        if not version_parts or len(version_parts) > 4 or any(not part.isdigit() for part in version_parts):
+            raise ValueError("Tauri version must contain one to four numeric components for MSIX.")
+        version_parts.extend(["0"] * (4 - len(version_parts)))
+        if any(int(part) > 65535 for part in version_parts):
+            raise ValueError("MSIX version components cannot exceed 65535.")
+        package_config["version"] = ".".join(version_parts)
+        package_config["platform"] = args.platform
+        publisher = os.environ.get("MSIX_PUBLISHER", "").strip()
+        if publisher:
+            package_config["publisher"] = publisher
+        else:
+            print(
+                "Warning: MSIX_PUBLISHER is not configured. The package will use the development "
+                "publisher from the manifest and is not ready for Partner Center submission."
+            )
+        generated_manifest = output.parent / "package.json"
+        generated_manifest.write_text(
+            json.dumps(package_config, indent=2) + "\\n",
+            encoding="utf-8",
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        print(f"Could not prepare the MSIX package definition: {error}", file=sys.stderr)
+        return 1
+
     print(f"Staged complete MSIX payload: {output}")
+    print(f"Generated MPDEV package definition: {generated_manifest}")
     return 0
 
 
