@@ -80,7 +80,6 @@ pub fn run() -> ! {
     };
     let mut was_suspended = false;
     let mut notified_commits: HashSet<String> = HashSet::new();
-    let mut last_scan_settings = String::new();
     // Keep the first remote update discovery out of application/service startup.
     let mut last_remote_check = Instant::now();
     let mut last_cloud_archive_sync = Instant::now() - CLOUD_ARCHIVE_SYNC_INTERVAL;
@@ -113,16 +112,28 @@ pub fn run() -> ! {
                     preferences.include_hidden_dirs,
                     preferences.index_dependency_repositories,
                 )).unwrap_or_default();
-                let mut indexed_repositories = match load_persisted_repository_index() {
-                    Ok(index) => index.map(|index| index.repositories),
+                // Persist only a stable digest; do not copy the preference paths
+                // into a second metadata file beside the repository inventory.
+                let mut scan_settings_hash = 0xcbf29ce484222325u64;
+                for byte in scan_settings.bytes() {
+                    scan_settings_hash ^= u64::from(byte);
+                    scan_settings_hash = scan_settings_hash.wrapping_mul(0x100000001b3);
+                }
+                let scan_settings_hash = format!("{scan_settings_hash:016x}");
+                let persisted_index = match load_persisted_repository_index() {
+                    Ok(index) => index,
                     Err(error) => {
                         eprintln!("GitManager core service: repository index could not be loaded and will be rebuilt: {error}");
                         None
                     }
                 };
-                let index_missing = indexed_repositories.is_none();
+                let index_missing = persisted_index.is_none();
+                let scan_settings_changed = persisted_index.as_ref()
+                    .map(|index| index.scan_settings_hash != scan_settings_hash)
+                    .unwrap_or(true);
+                let mut indexed_repositories = persisted_index.map(|index| index.repositories);
                 let scan_requested = service_control.take_scan_request();
-                if scan_requested || index_missing || scan_settings != last_scan_settings {
+                if scan_requested || index_missing || scan_settings_changed {
                     eprintln!("GitManager core service: refreshing the repository index.");
                     let report = scan_repositories_with_report(ScanOptions {
                         root_paths: preferences.scan_roots.clone(),
@@ -131,7 +142,7 @@ pub fn run() -> ! {
                         index_dependency_repositories: Some(preferences.index_dependency_repositories),
                     });
                     match report {
-                        Ok(report) => match save_persisted_repository_index(&report) {
+                        Ok(report) => match save_persisted_repository_index(&report, &scan_settings_hash) {
                             Ok(index) => {
                                 eprintln!(
                                     "GitManager core service: indexed {} repositories{}.",
@@ -139,7 +150,6 @@ pub fn run() -> ! {
                                     if index.truncated { " (safety limit reached)" } else { "" },
                                 );
                                 indexed_repositories = Some(index.repositories);
-                                last_scan_settings = scan_settings;
                             }
                             Err(error) => {
                                 eprintln!("GitManager core service: could not save repository index: {error}");
