@@ -143,12 +143,19 @@ def main() -> int:
         stage_deb(deb, staging)
         repo = CACHE / "repo"
         build_dir = CACHE / "build"
+        generated_manifest = CACHE / f"{APP_ID}.yml"
+        manifest_text = MANIFEST.read_text(encoding="utf-8")
+        manifest_text = manifest_text.replace(
+            "path: ../../build/.rcache/flatpak/staging",
+            "path: staging",
+        )
+        generated_manifest.write_text(manifest_text, encoding="utf-8")
         if repo.exists():
             shutil.rmtree(repo)
         run([
             "flatpak-builder", "--force-clean", f"--repo={repo}",
-            str(build_dir), str(MANIFEST),
-        ], cwd=ROOT)
+            str(build_dir), str(generated_manifest),
+        ], cwd=CACHE)
 
         arch = subprocess.check_output(
             ["flatpak", "--default-arch"], text=True
