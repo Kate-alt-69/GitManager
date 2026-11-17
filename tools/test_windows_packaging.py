@@ -59,7 +59,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertEqual(config["outputDirectory"], "build/.rcache/windows-installers")
         self.assertEqual(
             config["msi"]["installDir"],
-            "[LocalAppDataFolder]kastrick's_software\\\\GitManager",
+            "[LocalAppDataFolder]kastrick's_software\\GitManager",
         )
         self.assertEqual(config["fileSystemEntries"][0]["sourcePath"], "%GITMANAGER_APP_SOURCE%")
         self.assertEqual(config["fileSystemEntries"][0]["targetPath"], "$.installDir")
