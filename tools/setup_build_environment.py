@@ -53,8 +53,6 @@ UBUNTU_BUILD_PACKAGES = (
     "libxdo-dev",
     "rpm",
     "patchelf",
-    "flatpak",
-    "flatpak-builder",
     "dpkg-dev",
     "git",
     "python3",
@@ -62,6 +60,8 @@ UBUNTU_BUILD_PACKAGES = (
     "systemd",
     "systemd-sysv",
 )
+
+FLATPAK_BUILD_PACKAGES = ("flatpak", "flatpak-builder")
 
 FLATPAK_RUNTIME_REPOSITORY = "https://dl.flathub.org/repo/flathub.flatpakrepo"
 FLATPAK_RUNTIME_REF = "org.gnome.Platform//51"
@@ -593,6 +593,14 @@ def _ensure_windows_rust(targets: Sequence[BuildTarget], *, default_yes: bool) -
             return result
         cargo = _find_executable("cargo")
         rustc = _find_executable("rustc")
+        if not cargo or not rustc:
+            rustup = _find_rustup()
+            if rustup:
+                result = _ensure_rustup_toolchain()
+                if result != 0:
+                    return result
+                cargo = _find_executable("cargo")
+                rustc = _find_executable("rustc")
         if not cargo or not rustc:
             _log("Rustup was installed but cargo/rustc are not yet visible. Reopen PowerShell and rerun setup-build-tools.")
             return 2
