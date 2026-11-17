@@ -1131,7 +1131,7 @@ export function GitManagerApp() {
 					status={git.status}
 					query={query}
 					setQuery={setQuery}
-					scanning={git.scanning}
+					scanning={git.scanning || git.awaitingInitialIndex}
 					serviceReady={git.serviceReady}
 					repositoryCount={git.repositories.length}
 					scanTruncated={git.scanTruncated}
