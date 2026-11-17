@@ -100,6 +100,27 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertEqual(dialog["primaryAccent"], "#F97316")
         self.assertEqual(dialog["promptAppsAfterInstall"][0]["file"], "$.installDir\\git-manager.exe")
 
+    def test_service_worker_is_packaged_but_not_registered_as_a_machine_service(self):
+        desktop = json.loads(
+            (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
+        )
+        store = json.loads(
+            (ROOT / "installer" / "store" / "msix" / "package.json").read_text(encoding="utf-8")
+        )
+        build_source = (ROOT / "build.py").read_text(encoding="utf-8")
+        store_source = (ROOT / "tools" / "package_windows_store.py").read_text(encoding="utf-8")
+        watcher_source = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
+
+        self.assertNotIn("services", desktop)
+        self.assertNotIn("services", store)
+        self.assertIn('"git-manager-service.exe": sidecar_dir / f"git-manager-service-{triple}.exe"', build_source)
+        self.assertIn('"git-manager-service.exe"', store_source)
+        self.assertIn('"/SC", "ONLOGON"', watcher_source)
+        self.assertIn("Windows Task Scheduler (user logon)", watcher_source)
+        store_capabilities = store["msix"]["capabilities"]
+        self.assertNotIn("packagedServices", store_capabilities)
+        self.assertNotIn("localSystemServices", store_capabilities)
+
     def test_store_msix_requires_both_partner_center_identity_values(self):
         package = {"msix": {"digitalSignature": {"signWith": "GenerateTestCertificate"}}}
         with self.assertRaisesRegex(ValueError, "Set both MSIX_PUBLISHER"):
