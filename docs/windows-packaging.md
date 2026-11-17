@@ -77,6 +77,14 @@ build/
 
 The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padded to four numeric components. The custom NSIS template is based on Tauri CLI 2.11.4's upstream template; update the vendored template when upgrading the CLI, preserving the Kastrick default-directory change. GitManager's CLI selector stays lowercase (`arm64`), while the generated MPDEV manifest uses the documented `Arm64` platform enum for Windows ARM64. The generated desktop MSIX uses MPDEV's development/test signing certificate for local installation testing. Do not treat that certificate as a trusted public release identity.
 
+## Windows background worker
+
+Both the desktop MSI/MSIX payload and the separate Store MSIX payload include `resources\\git-manager-service.exe`. GitManager currently registers this executable as an **opt-in per-user logon worker** through Windows Task Scheduler; it reads the signed-in user's repository paths and preferences.
+
+This is deliberately not declared in MPDEV's `services[]` section. MPDEV's service feature creates a Windows Service Control Manager service. GitManager's worker is not currently an SCM service binary, and running it as `LocalSystem` or `LocalService` would move it out of the interactive user's profile and repository permissions. MSIX also does not support per-user Windows services; packaged services require restricted capabilities that Microsoft says are rarely approved for Store submissions. Do not add `packagedServices` or `localSystemServices` just to register this worker.
+
+The supported direction is to keep the worker in the package and launch it as the signed-in user. The current MSI/MSIX task-registration path still requires real-machine validation, especially for MSIX package identity and Store certification; packaging the executable alone does not prove that the scheduled launch succeeds.
+
 ## Install locations and runtime files
 
 The MPDEV MSI displays a branded install dialog with the GitManager description, Kastrick website/release links, an orange accent, and an optional `Launch GitManager` action after installation. The built-in layout and interaction model are provided by MPDEV; the project file customizes its supported branding fields rather than drawing arbitrary new dialogs.
