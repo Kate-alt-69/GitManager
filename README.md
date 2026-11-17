@@ -59,7 +59,7 @@ Windows installer builds automatically use MPDEV for both MSI and MSIX; Tauri's 
 
 ## 2. GitManager Core Service & Notifications
 
-Implemented in `src-tauri/src/background_service.rs`, `src-tauri/src/scanner.rs` and `src-tauri/src/notification_center.rs`. The required `gitmanager.service` process owns repository discovery, the persisted local repository index, scheduled remote checks, archive watchers and notification history. The desktop UI starts it on demand and waits for an authenticated readiness handshake before enabling the workspace.
+Implemented in `src-tauri/src/background_service.rs`, `crates/gitmanager-core/src/scanner.rs`, `crates/gitmanager-core/src/git_info.rs` and `src-tauri/src/notification_center.rs`. The required `gitmanager.service` process owns repository discovery, the persisted local repository index, scheduled remote checks, archive watchers and notification history. The desktop UI starts it on demand and waits for an authenticated readiness handshake before enabling the workspace.
 
 - **Service lifecycle**:
   - **Windows 10 & 11**: Runs as the signed-in user. Optional sign-in startup registers a current-user Task Scheduler task named `GitManager Core Service`; this is deliberately **not** a Windows Service Control Manager service and does not appear in Services.msc. The process is `gitmanager.service.exe`.
@@ -86,9 +86,9 @@ Implemented in `src-tauri/src/background_service.rs`, `src-tauri/src/scanner.rs`
 
 ## 3. Core GitManager Features
 
-1. **Machine-Wide `.git` Scanner & Folder Indexer (`src-tauri/src/scanner.rs`)**
+1. **Machine-Wide `.git` Scanner & Folder Indexer (`crates/gitmanager-core/src/scanner.rs`)**
    - Recursively scans your machine for `.git` directories and indexes repositories by **Parent Folder**, **`.git` Directory Location**, or **Remote Provider**.
-2. **Full Topological Git Commit Tree (`src-tauri/src/git_info.rs` & `ui/app.js`)**
+2. **Full Topological Git Commit Tree (`crates/gitmanager-core/src/git_info.rs` & `ui/app.js`)**
    - Walks `refs/heads/*`, `refs/remotes/*`, and tags in topological + chronological order and renders an interactive multi-lane SVG commit graph.
 3. **Repository Inspector & Remote Avatar Resolution**
    - Clicking any repository displays its **Git Name**, **Owner Name**, **Owner Email**, and **Repository Icon** (from `github.com/<owner>.png`, `gitlab.com/<owner>.png`, or fallback SVG badge).
