@@ -29,8 +29,7 @@ class BuildTarget:
 
     @property
     def output_name(self) -> str:
-        version = f"-{self.windows_version}" if self.platform == "windows" and self.windows_version else ""
-        return f"{self.platform}{version}-{self.architecture}"
+        return f"{self.platform}-{self.architecture}"
 
 
 TARGETS = {
