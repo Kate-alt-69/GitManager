@@ -1584,7 +1584,7 @@ def resolve_local_build_targets(selection: str) -> List[BuildTarget]:
     return local_targets
 
 
-def configure_local_target(project_root: Path, target: object) -> None:
+def configure_local_target(project_root: Path, target: BuildTarget) -> None:
     os.environ["CARGO_BUILD_TARGET"] = target.triple
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
     os.environ["GITMANAGER_BUILD_SELECTOR"] = target.selector
