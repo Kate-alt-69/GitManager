@@ -236,7 +236,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
 
     target_dir = cargo_target_root(project_root)
     profile_dir = target_profile_dir(project_root, release=release)
-    main_exe = profile_dir / "git-manager.exe"
+    main_exe = profile_dir / "gitmanager.exe"
     if not main_exe.is_file():
         log_err(f"Windows desktop executable is missing: {main_exe}")
         return 1
@@ -252,7 +252,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
         "gitm.exe": sidecar_dir / f"gitm-{triple}.exe",
         "gitmanager-setup.exe": sidecar_dir / f"gitmanager-setup-{triple}.exe",
         "crash_helper.exe": sidecar_dir / f"crash_helper-{triple}.exe",
-        "git-manager-service.exe": sidecar_dir / f"git-manager-service-{triple}.exe",
+        "gitmanager.service.exe": sidecar_dir / f"gitmanager.service-{triple}.exe",
     }
     missing = [name for name, source in sidecars.items() if not source.is_file()]
     if missing:
@@ -264,7 +264,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
         if staging.exists():
             shutil.rmtree(staging)
         staging.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(main_exe, staging / "git-manager.exe")
+        shutil.copy2(main_exe, staging / "gitmanager.exe")
         resources = staging / "resources"
         resources.mkdir(parents=True, exist_ok=True)
         # Tauri's shell plugin resolves externalBin sidecars from the app
@@ -288,7 +288,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
         # Fail closed before MPDEV if any packaged executable or the private
         # interpreter is missing or empty. No machine-wide Python is used.
         required = [
-            "git-manager.exe",
+            "gitmanager.exe",
             *(f"resources/{name}" for name in sidecars),
             "resources/python/python.exe",
             "resources/tools/gitmanager_cleaner.py",
@@ -564,7 +564,7 @@ def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[
         return 1, None
 
     staging = cargo_target_root(project_root) / "windows-package" / "source"
-    if not (staging / "git-manager.exe").is_file():
+    if not (staging / "gitmanager.exe").is_file():
         log_err(f"Windows app payload was not staged for MPDEV: {staging}")
         return 1, None
 
@@ -646,7 +646,7 @@ def build_master_packager_installers(
 
     staging = cargo_target_root(project_root) / "windows-package" / "source"
     output_dir = project_root / "build" / ".rcache" / "windows-installers"
-    if not generated_manifest.is_file() or not (staging / "git-manager.exe").is_file():
+    if not generated_manifest.is_file() or not (staging / "gitmanager.exe").is_file():
         log_err("MPDEV manifest or staged Windows app payload is missing.")
         return 1, None
 
@@ -749,7 +749,7 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
         command_prefix.append(toolchain_arg)
 
     package_graphs: Dict[str, set] = {}
-    for package in ("git-manager", "gitm-cli", "gitmanager-setup", "crash-helper", "git-manager-service"):
+    for package in ("git-manager", "gitm-cli", "gitmanager-setup", "crash-helper", "gitmanager-service"):
         command = command_prefix + [
             "tree",
             "--package", package,
@@ -776,7 +776,7 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
         package_graphs.get("gitm-cli", set())
         | package_graphs.get("gitmanager-setup", set())
         | package_graphs.get("crash-helper", set())
-        | package_graphs.get("git-manager-service", set())
+        | package_graphs.get("gitmanager-service", set())
     ) - package_graphs.get("git-manager", set())
     complete_build_packages = set().union(*package_graphs.values()) if package_graphs else set()
 
@@ -1473,9 +1473,9 @@ def build_gitm_sidecar(
         staged.append(destination)
         log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
 
-    service_filename = f"git-manager-service-{binary_triple}{executable_suffix}"
+    service_filename = f"gitmanager.service-{binary_triple}{executable_suffix}"
     service_sidecar = sidecar_dir / service_filename
-    service_source = binary_dir / f"git-manager-service{executable_suffix}"
+    service_source = binary_dir / f"gitmanager-service{executable_suffix}"
 
     # The service is a binary in the Tauri package, whose build script itself
     # requires every declared externalBin file to exist. Keep any previous
@@ -1493,7 +1493,7 @@ def build_gitm_sidecar(
         log_err(f"Could not prepare the service sidecar build placeholder: {error}")
         return 1
 
-    service_cmd = common_prefix + ["build", "--package", "git-manager-service", "--bin", "git-manager-service"] + target_args
+    service_cmd = common_prefix + ["build", "--package", "gitmanager-service", "--bin", "gitmanager-service"] + target_args
     if release:
         service_cmd.append("--release")
     log_info(f"Building independent GitManager background service: {' '.join(service_cmd)}")
@@ -1797,7 +1797,7 @@ def build_local_store_package(
         environment["GITMANAGER_APP_SOURCE"] = str(
             (cargo_target_root(project_root) / "windows-store" / "source").resolve()
         )
-        if not (Path(environment["GITMANAGER_APP_SOURCE"]) / "git-manager.exe").is_file():
+        if not (Path(environment["GITMANAGER_APP_SOURCE"]) / "gitmanager.exe").is_file():
             log_err("The staged Microsoft Store app payload is missing git-manager.exe.")
             return 1
         command = [
@@ -1906,14 +1906,14 @@ def publish_build_outputs(
             f"gitm{suffix}": sidecar_dir / f"gitm-{target.triple}{suffix}",
             f"gitmanager-setup{suffix}": sidecar_dir / f"gitmanager-setup-{target.triple}{suffix}",
             f"crash_helper{suffix}": sidecar_dir / f"crash_helper-{target.triple}{suffix}",
-            f"git-manager-service{suffix}": sidecar_dir / f"git-manager-service-{target.triple}{suffix}",
+            f"gitmanager.service{suffix}": sidecar_dir / f"git-manager-service-{target.triple}{suffix}",
         }
         names = (
-            f"git-manager{suffix}",
+            f"gitmanager{suffix}",
             f"gitm{suffix}",
             f"gitmanager-setup{suffix}",
             f"crash_helper{suffix}",
-            f"git-manager-service{suffix}",
+            f"gitmanager.service{suffix}",
             setup_alias,
         )
         app_dir = output_root / "app"
