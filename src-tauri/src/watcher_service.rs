@@ -84,7 +84,7 @@ mod tests {
             ]
         );
         let exec_start = systemd_exec_start(&command);
-        assert!(exec_start.starts_with("\\"flatpak\\""));
+        assert!(exec_start.starts_with("\"flatpak\""));
         assert!(!exec_start.contains("/app/bin/git-manager-service"));
     }
 
