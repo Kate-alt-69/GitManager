@@ -1903,10 +1903,16 @@ def run_build_or_dev(
         if bundle and platform.system() == "Windows":
             if name_windows_setup_installer(project_root, release) is None:
                 return 1
-            mpdev_result, mpdev_packages = build_master_packager_installers(project_root, release)
-            if mpdev_result != 0 or not mpdev_packages:
-                return mpdev_result or 1
-            include_mpdev = True
+            if os.environ.get("GITMANAGER_DEFER_MPDEV_PACKAGING") == "1":
+                # Release CI signs the staged binaries first, then runs the same
+                # generated MPDEV manifest as a final packaging step. Ordinary
+                # local builds never set this override and always package MSI/MSIX.
+                log_info("Deferring MPDEV MSI/MSIX generation to the release signing step.")
+            else:
+                mpdev_result, mpdev_packages = build_master_packager_installers(project_root, release)
+                if mpdev_result != 0 or not mpdev_packages:
+                    return mpdev_result or 1
+                include_mpdev = True
         if publish_build_outputs(project_root, release, bundle, include_mpdev) != 0:
             return 1
         return 0
