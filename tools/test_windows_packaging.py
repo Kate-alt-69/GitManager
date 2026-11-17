@@ -87,6 +87,24 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertEqual(store["outputTypes"], ["msix"])
         self.assertNotEqual(desktop["outputDirectory"], store["outputDirectory"])
 
+    def test_windows_installer_preflights_mpdev_and_nsis_before_compiling(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        self.assertIn("mpdev_cli = find_master_packager_dev_cli()", source)
+        self.assertIn("nsis_available = bool(shutil.which(\"makensis\"))", source)
+        self.assertIn("Master Packager Dev is mandatory for Windows MSI/MSIX builds.", source)
+        self.assertIn("NSIS is required as the fallback Windows setup installer.", source)
+
+    def test_flatpak_stream_builds_only_the_deb_bundle(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        self.assertIn('bundle_formats="deb"', source)
+        self.assertIn('cmd.extend(["--bundles", bundle_formats])', source)
+
+    def test_local_build_script_never_dispatches_builds_to_github_actions(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8").lower()
+        self.assertNotIn("gh workflow run", source)
+        self.assertNotIn("dispatch_build_matrix", source)
+        self.assertNotIn("dispatch_store_build", source)
+
     def test_windows_installer_build_invokes_mpdev_for_both_formats(self):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
         self.assertIn("build_master_packager_installers(project_root, mpdev_manifest)", source)
