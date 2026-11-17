@@ -1889,17 +1889,18 @@ def run_build_or_dev(
             if stage_result != 0:
                 return stage_result
 
-        # App-only builds skip installer validation and bundler output checks.
+        # NSIS remains the fallback setup executable. MPDEV is the required
+        # producer of both Windows MSI and MSIX installers for every Windows
+        # architecture selected by the local build script.
+        include_mpdev = False
         if bundle and platform.system() == "Windows":
             if name_windows_setup_installer(project_root, release) is None:
                 return 1
-            if name_windows_msi_installer(project_root, release) is None:
-                return 1
-            if build_master_packager and os.environ.get("CARGO_BUILD_TARGET", "").startswith("x86_64-"):
-                mpdev_result, _ = build_master_packager_dev_msi(project_root, release)
-                if mpdev_result != 0:
-                    return mpdev_result
-        if publish_build_outputs(project_root, release, bundle, build_master_packager) != 0:
+            mpdev_result, mpdev_packages = build_master_packager_installers(project_root, release)
+            if mpdev_result != 0 or not mpdev_packages:
+                return mpdev_result or 1
+            include_mpdev = True
+        if publish_build_outputs(project_root, release, bundle, include_mpdev) != 0:
             return 1
         return 0
 
