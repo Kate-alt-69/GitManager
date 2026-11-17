@@ -388,7 +388,13 @@ fn install_flatpak_gitm_cli() -> Result<String, String> {
     }
     let path = flatpak_gitm_wrapper_path()
         .ok_or_else(|| "The user's home directory could not be resolved.".to_string())?;
-    if path.exists() {
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "The existing path at {} is not a regular GitManager wrapper file. It was not changed.",
+                path.display()
+            ));
+        }
         let existing = fs::read_to_string(&path)
             .map_err(|error| format!("Could not inspect the existing gitm command: {error}"))?;
         if existing.lines().nth(1) != Some(FLATPAK_GITM_WRAPPER_MARKER) {
