@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 
-from build_targets import parse_build_selection
+from build_targets import BuildTarget, can_build_locally, parse_build_selection
 
 
 class BuildTargetSelectionTests(unittest.TestCase):
@@ -52,6 +53,30 @@ class BuildTargetSelectionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     parse_build_selection(value)
 
+
+    def test_windows_arm64_selector_defaults_to_windows_11(self):
+        target = BuildTarget("windows", "arm64", "aarch64-pc-windows-msvc")
+        self.assertEqual(target.selector, "windows(11,arm64)")
+
+    def test_windows_x64_host_can_build_x64_and_x86_but_not_arm64_without_arm_toolchain(self):
+        with patch("build_targets.platform.system", return_value="Windows"), patch(
+            "build_targets.platform.machine", return_value="AMD64"
+        ):
+            x64 = BuildTarget("windows", "x64", "x86_64-pc-windows-msvc")
+            x86 = BuildTarget("windows", "x86", "i686-pc-windows-msvc")
+            arm64 = BuildTarget("windows", "arm64", "aarch64-pc-windows-msvc")
+            self.assertTrue(can_build_locally(x64)[0])
+            self.assertTrue(can_build_locally(x86)[0])
+            self.assertFalse(can_build_locally(arm64)[0])
+
+    def test_windows_host_does_not_dispatch_or_claim_linux_targets_are_local(self):
+        with patch("build_targets.platform.system", return_value="Windows"), patch(
+            "build_targets.platform.machine", return_value="AMD64"
+        ):
+            linux = BuildTarget("linux", "x64", "x86_64-unknown-linux-gnu")
+            allowed, reason = can_build_locally(linux)
+            self.assertFalse(allowed)
+            self.assertIn("requires a linux host", reason)
 
 if __name__ == "__main__":
     unittest.main()
