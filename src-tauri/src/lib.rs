@@ -35,7 +35,7 @@ use scanner::{
 };
 use watcher_service::{
     apply_repository_update, check_all_repos_for_updates, register_os_background_service,
-    send_os_desktop_notification, spawn_background_update_watcher, BackgroundWatcherControl,
+    send_os_desktop_notification, BackgroundWatcherControl,
     RepoUpdateNotification, ServiceStatusInfo,
 };
 
@@ -74,6 +74,8 @@ pub struct AppPreferences {
     pub archive_trigger: String,
     pub archive_quiet_ms: u64,
     pub cloud_node_address: String,
+    pub in_app_notifications_enabled: bool,
+    pub os_notifications_enabled: bool,
 }
 
 impl Default for AppPreferences {
@@ -97,6 +99,8 @@ impl Default for AppPreferences {
             archive_trigger: "manual".to_string(),
             archive_quiet_ms: 1500,
             cloud_node_address: String::new(),
+            in_app_notifications_enabled: true,
+            os_notifications_enabled: true,
         }
     }
 }
@@ -1216,14 +1220,16 @@ async fn check_repo_updates_now(
     }
 
     for upd in &updates {
-        let should_notify_os = notification_center::publish_repository_update(
+        let preferences = load_background_preferences().unwrap_or_default();
+        let _ = notification_center::publish_repository_update(
             &upd.repo_id,
             &upd.repo_name,
             &upd.repo_path,
             &upd.remote_oid,
             &upd.prompt_message,
-        ).map(|(_, created)| created).unwrap_or(true);
-        if should_notify_os {
+        );
+        if preferences.os_notifications_enabled {
+            // The shared notification event is persisted before OS delivery.
             send_os_desktop_notification(upd);
         }
         let _ = app_handle.emit("gitmanager://repo-update-available", upd);
@@ -1730,17 +1736,9 @@ async fn sign_windows_installer(installer_path: String, thumbprint: String) -> R
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .setup(|app| {
-            let state = app.state::<AppState>();
-            let preferences = load_app_preferences(app.handle().clone())
-                .unwrap_or_else(|_| AppPreferences::default());
-            // The next UI scan supplies discovered repositories to the archive watcher.
-            spawn_background_update_watcher(
-                app.handle().clone(),
-                state.watcher.enabled.clone(),
-                state.watcher.checking_now.clone(),
-                preferences.scan_roots,
-            );
+        .setup(|_app| {
+            // Repository discovery, remote polling and indexing are owned by
+            // the required gitmanager.service process, not this UI process.
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
