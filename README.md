@@ -59,12 +59,14 @@ Windows installer builds automatically use MPDEV for both MSI and MSIX; Tauri's 
 
 ## 2. Background Repository Update Service (User-Level OS Service + Loading Spinner)
 
-Implemented in `src-tauri/src/background_service.rs` and `src-tauri/src/watcher_service.rs`. The installed GitManager executable enters this worker with `--background-service`; the standalone `git-manager-service` Cargo target is only a thin development wrapper:
+Implemented in `src-tauri/src/background_service.rs` and `src-tauri/src/watcher_service.rs`. The independent `git-manager-service` executable runs the headless worker; it is bundled with the desktop app but **is not started until the user enables Background updates in Settings → General**.
 
-- **OS Service Registration & Background Worker**:
-  - **Windows 10 & 11**: Registers a current-user Task Scheduler task that launches the installed GitManager executable with `--background-service` at logon and starts it immediately. It no longer uses the experimental LocalSystem `GitManagerUpdateSvc`.
-  - **Linux**: Registers and starts `~/.config/systemd/user/gitmanager-updater.service` via `systemctl --user`, launching the same installed executable in headless mode.
-  - **macOS**: Registers and loads `~/Library/LaunchAgents/com.gitmanager.updater.plist` via `launchctl`, launching the same installed executable in headless mode.
+- **OS Registration & Background Worker**:
+  - **Windows 10 & 11**: Registers a current-user Task Scheduler task named `GitManager Background Service` and starts `git-manager-service.exe` immediately. This is deliberately **not** a Windows Service Control Manager service, so it does not appear in Services.msc. Find the registration under Task Scheduler → Task Scheduler Library; while it is running, find `git-manager-service.exe` in Task Manager → Details.
+  - **Linux**: Registers and starts `~/.config/systemd/user/gitmanager-updater.service` via `systemctl --user`, running the separate `git-manager-service` executable.
+  - **macOS**: Registers and loads `~/Library/LaunchAgents/com.gitmanager.updater.plist` via `launchctl`, running the separate `git-manager-service` executable.
+
+The background worker is optional. Its absence from Task Manager immediately after installing or launching GitManager does not by itself mean the MSI omitted it. The installer payload includes it under the app's `resources` directory; enabling the option registers and starts it.
 - **Automatic Update Notification Prompt**:
   - Periodically polls remote `origin` heads (`libgit2` fetch / `ls-remote`) across all indexed repositories.
   - Whenever a repository has new upstream commits, it triggers both an OS desktop notification and an in-app interactive banner asking:
