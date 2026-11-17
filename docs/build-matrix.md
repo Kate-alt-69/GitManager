@@ -63,17 +63,20 @@ build/
   .rcache/                 # Cargo/Rust compilation cache and intermediate files
   dist/
     windows-x64/
+      app/                 # GitManager, gitm, setup, crash-helper and service binaries
       installer/           # NSIS setup.exe and WiX MSI
       build-manifest.json
     linux-x64/
+      app/                 # Native app and sidecar binaries
       installer/           # deb, rpm, AppImage and app bundle outputs
       build-manifest.json
     macos-arm64/
+      app/                 # Native app and sidecar binaries
       installer/           # DMG and app bundle outputs
       build-manifest.json
 ```
 
-For app-only builds, the `installer/` directory is replaced by `app/`. The all-platform command downloads GitHub Actions artifacts into `build/dist/`; each downloaded artifact is kept in its own `gitmanager-<target>` directory.
+Installer builds publish both the app/sidecar binaries and installer bundles. App-only builds publish just the `app/` directory. The all-platform command downloads GitHub Actions artifacts into `build/dist/`; each downloaded artifact is kept in its own `gitmanager-<target>` directory.
 
 The generated `build/` directory is ignored by Git. It is safe to delete when no build is running; doing so removes cached compilation output and previously downloaded build artifacts.
 
