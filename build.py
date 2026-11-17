@@ -1587,6 +1587,25 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool) -> in
             if not bundle_source.is_dir():
                 log_err(f"Tauri completed without producing the expected bundle directory: {bundle_source}")
                 return 1
+            bundle_files = [path for path in bundle_source.rglob("*") if path.is_file()]
+            if not bundle_files:
+                log_err(f"Tauri created an empty installer bundle directory: {bundle_source}")
+                return 1
+            required_extensions = (
+                {".deb", ".rpm"} if target.platform == "linux"
+                else {".dmg"} if target.platform == "macos"
+                else set()
+            )
+            missing_extensions = sorted(
+                extension for extension in required_extensions
+                if not any(path.suffix.lower() == extension for path in bundle_files)
+            )
+            if missing_extensions:
+                log_err(
+                    "Tauri did not produce the expected installer formats: "
+                    + ", ".join(missing_extensions)
+                )
+                return 1
             shutil.copytree(bundle_source, output_root / "installer")
             log_ok(f"Published installer bundles: {output_root / 'installer'}")
 
