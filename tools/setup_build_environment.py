@@ -385,7 +385,7 @@ def _ubuntu_environment_probe_script(include_flatpak: bool) -> str:
     """Return a non-mutating probe for required Ubuntu packages and SDKs."""
     packages = list(UBUNTU_BUILD_PACKAGES)
     if include_flatpak:
-        packages.extend(("flatpak", "flatpak-builder"))
+        packages.extend(FLATPAK_BUILD_PACKAGES)
     required = " ".join(packages)
     flatpak_probe = ""
     if include_flatpak:
@@ -423,7 +423,7 @@ def _ubuntu_build_setup_script(*, include_flatpak: bool, configure_wsl: bool) ->
     """Return an idempotent Ubuntu build-prerequisite installer."""
     packages = list(UBUNTU_BUILD_PACKAGES)
     if include_flatpak:
-        packages.extend(("flatpak", "flatpak-builder"))
+        packages.extend(FLATPAK_BUILD_PACKAGES)
     package_args = " ".join(packages)
 
     node_setup = r"""
@@ -493,7 +493,7 @@ PY
     flatpak_setup = ""
     if include_flatpak:
         flatpak_setup = r"""
-flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak remote-add --user --if-not-exists flathub ${FLATPAK_RUNTIME_REPOSITORY}
 flatpak install --user --noninteractive --assumeyes flathub org.gnome.Platform//51 org.gnome.Sdk//51
 if ! bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev /usr/bin/true >/dev/null 2>&1; then
   echo "Flatpak Builder cannot create the user namespaces required by Bubblewrap in this environment." >&2
@@ -509,7 +509,7 @@ fi
         + node_setup
         + rust_setup
         + wsl_config
-        + flatpak_setup
+        + flatpak_setup.replace("${FLATPAK_RUNTIME_REPOSITORY}", FLATPAK_RUNTIME_REPOSITORY)
         + 'echo "GitManager build prerequisites: Node $(node --version 2>/dev/null || echo missing); Rust $(rustc --version 2>/dev/null || echo missing)"\n'
     )
 
