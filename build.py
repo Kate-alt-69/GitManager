@@ -1748,6 +1748,7 @@ def main() -> int:
 
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parent
+    os.environ.setdefault("CARGO_TARGET_DIR", str(project_root / "build" / ".rcache"))
 
     if args.mode == "build":
         try:
