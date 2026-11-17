@@ -1158,6 +1158,7 @@ def main() -> int:
 
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parent
+    os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
 
     print("=" * 72)
     print(" GitManager — Pure-Rust Tauri v2 Dependency & Toolchain Manager")
