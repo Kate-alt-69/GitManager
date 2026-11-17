@@ -1221,14 +1221,14 @@ async fn check_repo_updates_now(
 
     for upd in &updates {
         let preferences = load_background_preferences().unwrap_or_default();
-        let _ = notification_center::publish_repository_update(
+        let created = notification_center::publish_repository_update(
             &upd.repo_id,
             &upd.repo_name,
             &upd.repo_path,
             &upd.remote_oid,
             &upd.prompt_message,
-        );
-        if preferences.os_notifications_enabled {
+        ).map(|(_, created)| created).unwrap_or(true);
+        if preferences.os_notifications_enabled && created {
             // The shared notification event is persisted before OS delivery.
             send_os_desktop_notification(upd);
         }
