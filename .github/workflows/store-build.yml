@@ -52,9 +52,21 @@ jobs:
 
   flatpak:
     needs: validate
-    name: Linux Flatpak bundle
+    name: Linux Flatpak bundle (${{ matrix.arch }})
     if: ${{ inputs.store == 'all' || inputs.store == 'flatpak' }}
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux(x64)
+            output: linux-x64
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            target: linux(arm64)
+            output: linux-arm64
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/build/.rcache
@@ -95,21 +107,21 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 
       - name: Build native Linux DEB payload
-        run: python build.py --build='linux(x64)' --type=installer
+        run: python build.py --build='${{ matrix.target }}' --type=installer
 
       - name: Build Flatpak bundle
         run: |
-          DEB="$(find build/dist/linux-x64/installer -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          DEB="$(find "build/dist/${{ matrix.output }}/installer" -maxdepth 1 -type f -name '*.deb' -print -quit)"
           test -n "$DEB"
           python tools/package_flatpak.py --deb "$DEB"
 
       - name: Upload Flatpak artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gitmanager-flatpak-x86_64
+          name: gitmanager-flatpak-${{ matrix.arch }}
           path: build/dist/store/flatpak/*.flatpak
           if-no-files-found: error
           retention-days: 30
