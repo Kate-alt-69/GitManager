@@ -40,6 +40,10 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
     def test_python_runtime_is_mapped_only_in_the_windows_bundle(self):
         main_config = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
         windows_config = json.loads((ROOT / "src-tauri" / "tauri.windows.conf.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            main_config["bundle"]["resources"].get("../tools/gitmanager_cleaner.py"),
+            "tools/gitmanager_cleaner.py",
+        )
         self.assertNotIn("../tools/runtime/python/", main_config["bundle"]["resources"])
         self.assertEqual(
             windows_config["bundle"]["resources"].get("../tools/runtime/python/"),
