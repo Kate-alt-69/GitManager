@@ -54,6 +54,15 @@ class BuildEnvironmentSetupPlanTests(unittest.TestCase):
         self.assertIn("rustup default stable", script)
         self.assertIn("if ! command -v cargo", script)
 
+    def test_wsl_first_run_instructions_explain_invisible_password_entry(self):
+        with patch.object(SETUP, "_log") as log:
+            SETUP._log_wsl_first_run_instructions()
+        instructions = " ".join(call.args[0] for call in log.call_args_list)
+        self.assertIn("Enter new UNIX username", instructions)
+        self.assertIn("Nothing appears while typing", instructions)
+        self.assertIn("Retype new password", instructions)
+        self.assertIn("py build.py setup-build-tools --build=all", instructions)
+
     def test_install_prompt_defaults_yes_for_requested_target_and_no_for_optional_target(self):
         with patch("builtins.input", return_value=""):
             self.assertTrue(SETUP._confirm_install("Ubuntu and WebKitGTK", "Linux", default_yes=True))
