@@ -9,5 +9,5 @@ description = "Independent GitManager background service process"
 git-manager = { path = "../../src-tauri" }
 
 [[bin]]
-name = "git-manager-service"
+name = "gitmanager-service"
 path = "src/main.rs"
