@@ -38,6 +38,16 @@ py build.py prepare-runtime
 
 Build target selection, supported architectures, GitHub Actions dispatch, Linux runtime testing and the `build/.rcache` / `build/dist` layout are documented in [docs/build-matrix.md](docs/build-matrix.md).
 
+Store distribution is a separate workflow and does not replace the normal desktop installers:
+
+```powershell
+py build.py --store=flatpak
+py build.py --store=msix
+py build.py --store=all
+```
+
+See [docs/store-packaging.md](docs/store-packaging.md) for Flatpak sandbox permissions, MSIX signing/identity requirements and the future Linux Homebrew plan.
+
 ---
 
 ## 2. Background Repository Update Service (User-Level OS Service + Loading Spinner)
