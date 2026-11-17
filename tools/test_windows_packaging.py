@@ -99,6 +99,13 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('bundle_formats="deb"', source)
         self.assertIn('cmd.extend(["--bundles", bundle_formats])', source)
 
+    def test_flatpak_is_limited_to_runtime_architectures_and_checks_deb_arch(self):
+        build_source = (ROOT / "build.py").read_text(encoding="utf-8")
+        flatpak_source = (ROOT / "tools" / "package_flatpak.py").read_text(encoding="utf-8")
+        self.assertIn('target.architecture not in ("x64", "arm64")', build_source)
+        self.assertIn('expected_flatpak_arch = {"amd64": "x86_64", "arm64": "aarch64"}', flatpak_source)
+        self.assertIn("if arch != expected_flatpak_arch:", flatpak_source)
+
     def test_local_build_script_never_dispatches_builds_to_github_actions(self):
         source = (ROOT / "build.py").read_text(encoding="utf-8").lower()
         self.assertNotIn("gh workflow run", source)
