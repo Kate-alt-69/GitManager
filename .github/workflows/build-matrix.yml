@@ -141,6 +141,7 @@ jobs:
           echo "AR_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/arm-linux-gnueabihf/" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Install Rust target
