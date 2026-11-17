@@ -56,7 +56,6 @@ class BuildEnvironmentSetupPlanTests(unittest.TestCase):
             wsl_setup.assert_called_once_with(include_flatpak=False, default_yes=True)
 
     def test_unqualified_windows_setup_does_not_install_unrequested_wsl_sdk(self):
-        windows_target = SETUP.parse_build_selection("windows")[1]
         with patch.object(SETUP.platform, "system", return_value="Windows"), patch.object(
             SETUP, "_setup_windows", return_value=0
         ) as windows_setup, patch.object(SETUP, "_setup_wsl_linux") as wsl_setup:
@@ -64,6 +63,14 @@ class BuildEnvironmentSetupPlanTests(unittest.TestCase):
             self.assertEqual(result, 0)
             windows_setup.assert_called_once()
             self.assertEqual(windows_setup.call_args.kwargs["default_yes"], True)
+            wsl_setup.assert_not_called()
+
+    def test_unmatched_linux_arm64_target_does_not_install_x64_wsl_sdk(self):
+        with patch.object(SETUP.platform, "system", return_value="Windows"), patch.object(
+            SETUP.platform, "machine", return_value="AMD64"
+        ), patch.object(SETUP, "_setup_wsl_linux") as wsl_setup:
+            result = SETUP.setup_build_environment("linux(arm64)")
+            self.assertEqual(result, 2)
             wsl_setup.assert_not_called()
 
     def test_flatpak_store_selection_requests_linux_plus_flatpak_sdk(self):
