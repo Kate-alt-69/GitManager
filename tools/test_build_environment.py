@@ -104,6 +104,17 @@ class BuildEnvironmentSetupPlanTests(unittest.TestCase):
             windows_setup.assert_called_once()
             wsl_setup.assert_called_once_with(include_flatpak=False, default_yes=True)
 
+    def test_all_setup_on_macos_prepares_macos_and_skips_foreign_sdk_installers(self):
+        with patch.object(SETUP.platform, "system", return_value="Darwin"), patch.object(
+            SETUP.platform, "machine", return_value="arm64"
+        ), patch.object(SETUP, "_setup_macos", return_value=0) as mac_setup, patch.object(
+            SETUP, "_setup_native_linux"
+        ) as linux_setup:
+            result = SETUP.setup_build_environment("all")
+            self.assertEqual(result, 0)
+            mac_setup.assert_called_once()
+            linux_setup.assert_not_called()
+
     def test_macos_sdk_is_not_claimed_available_on_windows(self):
         with patch.object(SETUP.platform, "system", return_value="Windows"), patch.object(
             SETUP, "_setup_windows", return_value=0
