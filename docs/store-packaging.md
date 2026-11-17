@@ -39,7 +39,7 @@ Flatpak documentation:
 - https://docs.flatpak.org/en/latest/manifests.html
 - https://v2.tauri.app/distribute/flatpak/
 
-A locally generated bundle is for testing. A Flathub submission still needs Flathub-specific source manifests (Cargo and npm source generators), linting and review; building a bundle does not publish it to Flathub.
+A locally generated bundle is for testing. A Flathub submission still needs Flathub-specific source manifests (Cargo and npm source generators), linting and review; building a bundle does not publish it to Flathub. The current `com.gitmanager.desktop` identifier is only a local-preview ID: Flathub's application-ID policy disallows generic suffixes such as `.desktop` and requires a compliant ID tied to a domain or code-hosting identity. Choose the permanent ID before submission and update the Tauri identifier, Flatpak manifest, AppStream metadata and desktop export together.
 
 ## Microsoft Store MSIX
 
@@ -55,8 +55,10 @@ py build.py --store=msix
 
 Both values must match Partner Center exactly. When both are set, the generated Store package omits MPDEV's development certificate so Microsoft can sign it after certification. Without both values, the script warns and leaves a development/test-signed package for local validation only.
 
-- Local architectures: Windows architectures the current host can compile and package
+- Local architectures: Windows architectures the current host can compile and package; the `arm64` selector is translated to MPDEV's documented `Arm64` platform value
 - Output: `build/dist/store/msix/`
+
+The Store identity is all-or-nothing: set both `MSIX_PUBLISHER` and `MSIX_IDENTITY_NAME` from Partner Center, or leave both unset for a development/test-signed local package. A half-configured identity is rejected before MPDEV runs.
 
 A generated Store MSIX is not automatically published. Submission and certification still happen through Partner Center.
 

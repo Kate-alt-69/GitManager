@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from build_targets import BuildTarget, can_build_locally, parse_build_selection
+from build_targets import BuildTarget, can_build_locally, parse_build_selection, mpdev_platform_name
 
 
 class BuildTargetSelectionTests(unittest.TestCase):
@@ -29,6 +29,14 @@ class BuildTargetSelectionTests(unittest.TestCase):
         self.assertEqual({target.architecture for target in windows}, {"x64", "x86", "arm64"})
         _, linux = parse_build_selection("linux")
         self.assertEqual({target.architecture for target in linux}, {"x64", "arm64", "armv7"})
+
+    def test_mpdev_uses_documented_platform_names(self):
+        self.assertEqual(mpdev_platform_name("x86"), "x86")
+        self.assertEqual(mpdev_platform_name("x64"), "x64")
+        self.assertEqual(mpdev_platform_name("arm64"), "Arm64")
+        self.assertEqual(mpdev_platform_name(" ARM64 "), "Arm64")
+        with self.assertRaises(ValueError):
+            mpdev_platform_name("armv7")
 
     def test_windows_version_is_metadata_not_a_different_binary_target(self):
         _, win10 = parse_build_selection("windows(10,x64)")

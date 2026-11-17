@@ -73,7 +73,7 @@ build/
         GitManager_1.0.0.0_x64.msix
 ```
 
-The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padded to four numeric components. The generated desktop MSIX uses MPDEV's development/test signing certificate for local installation testing. Do not treat that certificate as a trusted public release identity.
+The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padded to four numeric components. GitManager's CLI selector stays lowercase (`arm64`), while the generated MPDEV manifest uses the documented `Arm64` platform enum for Windows ARM64. The generated desktop MSIX uses MPDEV's development/test signing certificate for local installation testing. Do not treat that certificate as a trusted public release identity.
 
 ## Install locations and runtime files
 

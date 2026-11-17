@@ -13,6 +13,8 @@ BUILD = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = BUILD
 SPEC.loader.exec_module(BUILD)
 
+from package_windows_store import configure_store_msix_identity
+
 
 class WindowsPackagingConfigurationTests(unittest.TestCase):
     def test_only_mpdev_and_nsis_are_installed_for_windows_packaging(self):
@@ -75,6 +77,30 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertEqual(config["fileSystemEntries"][0]["sourcePath"], "%GITMANAGER_APP_SOURCE%")
         self.assertEqual(config["fileSystemEntries"][0]["targetPath"], "$.installDir")
         self.assertEqual(config["msix"]["digitalSignature"]["signWith"], "GenerateTestCertificate")
+
+    def test_store_msix_requires_both_partner_center_identity_values(self):
+        package = {"msix": {"digitalSignature": {"signWith": "GenerateTestCertificate"}}}
+        with self.assertRaisesRegex(ValueError, "Set both MSIX_PUBLISHER"):
+            configure_store_msix_identity(package, "CN=Publisher", "")
+        with self.assertRaisesRegex(ValueError, "Set both MSIX_PUBLISHER"):
+            configure_store_msix_identity(package, "", "StoreIdentity")
+        self.assertEqual(
+            package["msix"]["digitalSignature"]["signWith"],
+            "GenerateTestCertificate",
+        )
+
+    def test_store_msix_only_removes_test_signing_when_identity_is_complete(self):
+        package = {"msix": {"digitalSignature": {"signWith": "GenerateTestCertificate"}}}
+        self.assertFalse(configure_store_msix_identity(package, "", ""))
+        self.assertIn("digitalSignature", package["msix"])
+        self.assertTrue(configure_store_msix_identity(package, "CN=Publisher", "StoreIdentity"))
+        self.assertEqual(package["publisher"], "CN=Publisher")
+        self.assertEqual(package["packageName"], "StoreIdentity")
+        self.assertNotIn("digitalSignature", package["msix"])
+
+    def test_store_packager_uses_mpdev_architecture_enum(self):
+        source = (ROOT / "tools" / "package_windows_store.py").read_text(encoding="utf-8")
+        self.assertIn('package_config["platform"] = mpdev_platform_name(args.platform)', source)
 
     def test_store_msix_has_its_own_identity_manifest(self):
         desktop = json.loads(

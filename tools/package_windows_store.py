@@ -10,7 +10,30 @@ from pathlib import Path
 import shutil
 import sys
 
+from build_targets import mpdev_platform_name
+
+
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def configure_store_msix_identity(
+    package_config: dict,
+    publisher: str,
+    identity_name: str,
+) -> bool:
+    """Apply Partner Center identity only when both required values are present."""
+    if bool(publisher) != bool(identity_name):
+        raise ValueError(
+            "Set both MSIX_PUBLISHER and MSIX_IDENTITY_NAME from Partner Center, "
+            "or leave both unset for a development/test-signed package."
+        )
+    if not publisher:
+        return False
+
+    package_config["publisher"] = publisher
+    package_config["packageName"] = identity_name
+    package_config.setdefault("msix", {}).pop("digitalSignature", None)
+    return True
 
 
 def main() -> int:
@@ -109,17 +132,12 @@ def main() -> int:
         if any(int(part) > 65535 for part in version_parts):
             raise ValueError("MSIX version components cannot exceed 65535.")
         package_config["version"] = ".".join(version_parts)
-        package_config["platform"] = args.platform
+        package_config["platform"] = mpdev_platform_name(args.platform)
         publisher = os.environ.get("MSIX_PUBLISHER", "").strip()
         identity_name = os.environ.get("MSIX_IDENTITY_NAME", "").strip()
-        if publisher:
-            package_config["publisher"] = publisher
-        if identity_name:
-            package_config["packageName"] = identity_name
-        if publisher and identity_name:
+        if configure_store_msix_identity(package_config, publisher, identity_name):
             # Store packages are signed by Microsoft after certification. Do not
             # ship MPDEV's development certificate in the Partner Center package.
-            package_config.setdefault("msix", {}).pop("digitalSignature", None)
             print("Partner Center identity configured; generating an unsigned Store-upload MSIX.")
         else:
             print(

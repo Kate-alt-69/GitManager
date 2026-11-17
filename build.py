@@ -43,9 +43,9 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
 try:
-    from tools.build_targets import BuildTarget, can_build_locally, host_platform, parse_build_selection
+    from tools.build_targets import BuildTarget, can_build_locally, host_platform, parse_build_selection, mpdev_platform_name
 except ModuleNotFoundError:
-    from build_targets import BuildTarget, can_build_locally, host_platform, parse_build_selection
+    from build_targets import BuildTarget, can_build_locally, host_platform, parse_build_selection, mpdev_platform_name
 
 RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
@@ -571,7 +571,7 @@ def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[
             raise ValueError("Windows Installer version components cannot exceed 65535.")
 
         package_config["version"] = ".".join(version_parts)
-        package_config["platform"] = package_arch
+        package_config["platform"] = mpdev_platform_name(package_arch)
         package_config["outputTypes"] = ["msi", "msix"]
         store_publisher = os.environ.get("MSIX_PUBLISHER", "").strip()
         store_identity = os.environ.get("MSIX_IDENTITY_NAME", "").strip()
@@ -1753,6 +1753,7 @@ def build_local_store_package(
 
         app_dir = project_root / "build" / "dist" / target.output_name / "app"
         platform_name = target.architecture
+        mpdev_platform = mpdev_platform_name(platform_name)
         stage_command = [
             sys.executable,
             str(project_root / "tools" / "package_windows_store.py"),
@@ -1766,8 +1767,9 @@ def build_local_store_package(
         manifest = cargo_target_root(project_root) / "windows-store" / "package.json"
         output_dir = project_root / "build" / "dist" / "store" / "msix"
         output_dir.mkdir(parents=True, exist_ok=True)
-        for existing in output_dir.glob(f"*_{platform_name}.msix"):
-            existing.unlink()
+        for existing in output_dir.glob("*.msix"):
+            if existing.stem.casefold().endswith(f"_{mpdev_platform.casefold()}"):
+                existing.unlink()
         environment = os.environ.copy()
         environment["GITMANAGER_APP_SOURCE"] = str(
             (cargo_target_root(project_root) / "windows-store" / "source").resolve()
@@ -1785,8 +1787,10 @@ def build_local_store_package(
         if result != 0:
             return result
         packages = sorted(
-            path for path in output_dir.glob(f"*_{platform_name}.msix")
-            if path.is_file() and path.stat().st_size > 1024 * 1024
+            path for path in output_dir.glob("*.msix")
+            if path.is_file()
+            and path.stem.casefold().endswith(f"_{mpdev_platform.casefold()}")
+            and path.stat().st_size > 1024 * 1024
         )
         if len(packages) != 1:
             log_err(f"Expected one non-empty Microsoft Store MSIX; found {len(packages)} in {output_dir}.")

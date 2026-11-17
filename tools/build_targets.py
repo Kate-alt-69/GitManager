@@ -49,6 +49,27 @@ SUPPORTED_ARCHITECTURES = {
     "macos": ("x64", "arm64"),
 }
 
+# MPDEV uses its documented enum spelling, which differs from our CLI/Rust
+# architecture aliases for ARM64.
+MPDEV_PLATFORM_NAMES = {
+    "x86": "x86",
+    "x64": "x64",
+    "arm64": "Arm64",
+}
+
+
+def mpdev_platform_name(architecture: str) -> str:
+    """Translate a GitManager architecture alias to MPDEV's platform enum."""
+    normalized = architecture.strip().lower()
+    try:
+        return MPDEV_PLATFORM_NAMES[normalized]
+    except KeyError as error:
+        supported = ", ".join(MPDEV_PLATFORM_NAMES)
+        raise ValueError(
+            f"MPDEV does not support the Windows architecture '{architecture}'. "
+            f"Supported architectures: {supported}."
+        ) from error
+
 
 def parse_build_selection(value: str) -> tuple[str, list[BuildTarget]]:
     """Return (kind, targets), where kind is exact, group, or all."""
