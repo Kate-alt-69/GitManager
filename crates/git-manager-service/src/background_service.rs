@@ -13,10 +13,10 @@ use crate::load_background_preferences;
 use crate::watcher_service::{
     apply_repository_update, check_all_repos_for_updates, send_os_desktop_notification,
 };
-use crate::scanner::{
+use crate::repository_index::{
     load_persisted_repository_index, save_persisted_repository_index,
-    scan_repositories_with_report, ScanOptions,
 };
+use crate::scanner::{scan_repositories_with_report, ScanOptions};
 use crate::notification_center::publish_repository_update;
 
 use crash_helper::start_service_control_server;
