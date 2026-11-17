@@ -72,9 +72,9 @@ def log_err(msg: str) -> None:
 PYTHON_EMBED_VERSION = "3.14.10"
 PYTHON_EMBED_BASE_URL = "https://www.python.org/ftp/python/3.14.10/"
 PYTHON_EMBED_PACKAGES = {
-    "x86_64": ("python-3.14.10-embed-amd64.zip", "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159", 0x8664),
-    "x86": ("python-3.14.10-embed-win32.zip", "11a28e8c00a6d8f56b0a6164d52546133a9ed015a5b33e04536917e4fd6e306c", 0x014C),
-    "aarch64": ("python-3.14.10-embed-arm64.zip", "bbe116bb1248820359cbf25127ac5c7794ea161869d83686cfbc9a45203ff836", 0xAA64),
+    "x86_64": ("python-3.14.10-embeddable-amd64.zip", "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159", 0x8664),
+    "x86": ("python-3.14.10-embeddable-win32.zip", "11a28e8c00a6d8f56b0a6164d52546133a9ed015a5b33e04536917e4fd6e306c", 0x014C),
+    "aarch64": ("python-3.14.10-embeddable-arm64.zip", "bbe116bb1248820359cbf25127ac5c7794ea161869d83686cfbc9a45203ff836", 0xAA64),
 }
 
 
