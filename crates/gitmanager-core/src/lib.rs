@@ -6,6 +6,7 @@
 pub mod app_preferences;
 pub mod git_info;
 pub mod scanner;
+pub mod storage;
 pub mod notification_center;
 
 pub use app_preferences::{load_background_preferences, AppPreferences, RepositoryPreferences};
