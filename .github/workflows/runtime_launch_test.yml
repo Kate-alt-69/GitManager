@@ -55,7 +55,7 @@ jobs:
 
       - name: Validate build-script syntax and target selectors
         run: |
-          python -m py_compile build.py tools/build_targets.py
+          python -m py_compile build.py tools/build_targets.py tools/runtime_launch_probe.py
           python tools/test_build_targets.py
 
       - name: Build the Linux x64 app without creating installers
@@ -118,20 +118,15 @@ jobs:
           mkdir -p build/runtime-test
           dbus-run-session -- xvfb-run -a \
             /usr/bin/time -v \
-            timeout --signal=TERM --kill-after=10s 45s \
+            timeout --signal=TERM --kill-after=10s 60s \
             env XDG_DATA_HOME="$GITHUB_WORKSPACE/build/runtime-test/xdg-data" GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
-            "$APP" --crash-helper-child \
+            python tools/runtime_launch_probe.py --app "$APP" --duration 45 --log build/runtime-test/app.log \
             2>&1 | tee build/runtime-test/linux-launch.log
           status=${PIPESTATUS[0]}
           set -e
 
-          if [ "$status" -eq 124 ]; then
-            echo "GitManager remained alive for the full 45-second launch window."
-          elif [ "$status" -eq 0 ]; then
-            echo "GitManager exited before the launch window ended; treating this as a startup failure."
-            exit 1
-          else
-            echo "GitManager launch failed with exit code $status."
+          if [ "$status" -ne 0 ]; then
+            echo "GitManager Linux runtime launch failed with exit code $status."
             exit "$status"
           fi
 
