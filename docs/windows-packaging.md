@@ -1,102 +1,114 @@
-# Windows packaging and installer comparison
+# Windows packaging
 
-GitManager keeps three Windows installer paths available:
+GitManager uses **Master Packager Dev (MPDEV) as the required Windows MSI/MSIX packager**. Tauri creates the application bundle and the NSIS fallback; MPDEV produces both Windows package formats from the same staged application payload.
 
-| Output | Builder | Status |
+| Output | Builder | Purpose |
 | --- | --- | --- |
-| \`GitManager-Setup.exe\` | Tauri + NSIS | Interactive setup |
-| Tauri \`*.msi\` | Tauri + WiX | Standard MSI fallback |
-| \`GitManager-MasterPackager.msi\` | Master Packager Dev | Experimental local comparison |
+| `GitManager-Setup.exe` | Tauri + NSIS | Fallback interactive installer |
+| `GitManager_<version>_<arch>.msi` | Master Packager Dev | Required Windows Installer package |
+| `GitManager_<version>_<arch>.msix` | Master Packager Dev | Required Windows app package |
 
-Master Packager Dev is additive. It does not replace WiX or NSIS.
+Tauri's WiX MSI target is disabled. WiX is not required or installed by the Windows build script.
 
-## Prepare a Windows build machine
+## Requirements
 
-Run this once from the repository root in PowerShell:
+- Rust toolchain and the Tauri CLI
+- Visual Studio C++ build tools for the selected architecture
+- Master Packager Dev (required)
+- NSIS (fallback installer)
 
-\`\`\`powershell
+The setup command installs MPDEV and NSIS using exact WinGet package IDs:
+
+```powershell
 py build.py setup-packaging-tools
-\`\`\`
+```
 
-This uses exact WinGet package IDs:
+MPDEV must be available as `mpdev.exe` on PATH or in its standard installation directory. The build fails clearly when MPDEV is missing; it never silently substitutes WiX or skips MSI/MSIX creation.
 
-- \`WiXToolset.WiXToolset\`
-- \`NSIS.NSIS\`
-- \`MasterPackager.MasterPackagerDev\`
+## Build locally
 
-You can combine the install and build steps:
+Run the interactive build selector:
 
-\`\`\`powershell
-py build.py build --install-packaging-tools
-\`\`\`
+```powershell
+py build.py
+```
 
-To also generate the experimental MPDEV MSI:
+Press Enter to build every architecture the current Windows machine can build. On a Windows x64 host, the script attempts x64 and x86 locally; Windows ARM64 is listed only when the matching Visual Studio toolchain is available. You can choose an individual architecture:
 
-\`\`\`powershell
-py build.py build --master-packager
-\`\`\`
+```powershell
+py build.py --build='windows(10,x64)' --type=installer
+py build.py --build='windows(11,x86)' --type=installer
+py build.py --build='windows(11,arm64)' --type=installer
+```
 
-Or do everything in one command:
+MPDEV runs automatically for every Windows `--type=installer` build. The old `--master-packager` switch remains accepted for command-line compatibility, but is no longer needed to enable MPDEV.
 
-\`\`\`powershell
-py build.py build --install-packaging-tools --master-packager
-\`\`\`
+```powershell
+# Build only the application payload, without installers
+py build.py --build='windows(10,x64)' --type=app
 
-The installer-tool setup is explicit because WinGet may install machine-wide developer tools and may request elevation. A normal \`py build.py build\` does not silently install software. Tauri can also download/cache the bundler tools it needs.
+# Build a Microsoft Store identity MSIX locally
+py build.py --store=msix
+```
 
-Master Packager Dev is free without activation for open-source and non-commercial projects. Commercial use follows its own licensing terms; no license key is stored in this repository.
+The normal Windows build creates MPDEV MSI and MSIX packages plus the NSIS fallback. It does not use GitHub Actions to compile or package your local build.
 
-## Build outputs
+## Output layout
 
-A normal Windows \`py build.py build\` creates both Tauri-native outputs:
+All build products remain under the repository's ignored `build/` directory:
 
-- NSIS setup executable under \`target/release/bundle/nsis/\`
-- WiX MSI under \`target/release/bundle/msi/\`
+```text
+build/
+  .rcache/
+    <rust-target>/release/        # Cargo outputs and intermediate files
+    windows-package/source/       # Generated MPDEV staging payload
+    windows-package/mpdev-package.json
+    windows-installers/           # MPDEV MSI and MSIX outputs
+  dist/
+    windows-x64/
+      app/                        # Main app and sidecar binaries
+      installer/
+        GitManager-Setup.exe      # NSIS fallback
+        GitManager_1.0.0.0_x64.msi
+        GitManager_1.0.0.0_x64.msix
+```
 
-When \`--master-packager\` is supplied, the build script stages the same release executables and supporting files into a generated directory, then calls \`mpdev build\` using \`src-tauri/packaging/master-packager-dev.json\`. Its output is placed under \`target/release/bundle/master-packager-dev/\`.
+The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padded to four numeric components. The generated desktop MSIX uses MPDEV's development/test signing certificate for local installation testing. Do not treat that certificate as a trusted public release identity.
 
-The MPDEV test payload includes:
+## Install locations and runtime files
 
-- \`GitManager.exe\`
-- \`crash_helper.exe\`
-- \`git-manager-service.exe\`
-- \`gitm.exe\`
-- \`GitManager-Setup.exe\`
-- \`resources/python/\` (the private CPython embeddable runtime)
-- \`resources/tools/gitmanager_cleaner.py\`
+The MSI targets the current user's Local AppData location:
 
-### Important: MPDEV output is local-build-only for now
-
-Master Packager Dev expands environment variables such as \`%LOCALAPPDATA%\` while building its project. The current experimental manifest therefore resolves the install path using the account that built the MSI. This is suitable for comparing the install flow on that same Windows account, but **do not redistribute this experimental MSI**: a build on a CI runner or another account would bake in that builder's profile path. The normal Tauri NSIS and WiX installers remain the portable release artifacts.
-
-The MPDEV MSI uses its own stable upgrade code. Do not change it between test builds of the same product; changing it causes Windows Installer to treat the package as a different product.
-
-## Expected NSIS install and resource layout
-
-The NSIS hook forces the installation directory to:
-
-\`\`\`text
+```text
 %LOCALAPPDATA%\kastrick's_software\GitManager
-\`\`\`
+```
 
-Shared settings and data remain in sibling directories:
+The package includes the main executable, `gitm`, first-run setup helper, crash supervisor, background service, Developer Cleaner and the private architecture-matched CPython embeddable runtime.
 
-\`\`\`text
+User settings and data remain separate:
+
+```text
 %LOCALAPPDATA%\kastrick's_software\config\GitManager
 %LOCALAPPDATA%\kastrick's_software\data\GitManager
-\`\`\`
+```
 
-Tauri maps the Python runtime directory recursively to \`resources/python/\` and the cleaner to \`resources/tools/gitmanager_cleaner.py\`. Before bundling, \`build.py\` verifies that \`python.exe\`, \`python314.zip\`, and \`python314._pth\` exist. The NSIS post-install hook verifies that \`resources/python/python.exe\` starts successfully and aborts rather than finishing an incomplete installation.
+MSIX is installed and managed inside the Windows package container. It does not use the MSI's Local AppData install path.
 
-## Comparison checklist
+## Microsoft Store identity
 
-On a clean Windows 10/11 x64 test account, compare the NSIS and MPDEV installers:
+For a Microsoft Store submission, use the separate local command `py build.py --store=msix`. Set `MSIX_PUBLISHER` and `MSIX_IDENTITY_NAME` to the exact values from Partner Center before building. That path generates an MSIX with the Store identity and omits the development certificate when both values are configured. Microsoft signs Store packages after certification.
 
-1. Confirm the app installs into \`kastrick's_software\\GitManager\`.
-2. Confirm the app starts and \`crash_helper.exe\` appears in the GitManager process tree.
-3. Confirm the Developer Cleaner starts with the bundled Python runtime.
-4. Confirm Start Menu shortcuts and Apps & Features entries are correct.
-5. Test install over an older version, repair, uninstall and reinstall.
-6. Confirm uninstall preserves the sibling user settings/data directories.
+A locally generated development/test-signed MSIX is for validation only, not direct public distribution.
 
-The WiX MSI remains the standard MSI fallback while the MPDEV install, upgrade and uninstall behavior is evaluated.
+## Fallback and verification
+
+NSIS remains the fallback when an MSI/MSIX package cannot be installed or tested. Its post-install hook verifies that the bundled private Python runtime starts successfully and aborts an incomplete install.
+
+Before considering an installer production-ready, test on a clean Windows 10/11 machine:
+
+1. Install and launch the NSIS fallback, MSI and MSIX separately.
+2. Confirm the crash supervisor, background service, CLI and Developer Cleaner work.
+3. Confirm the MSI installs into the per-user Local AppData directory.
+4. Test upgrade over an older version, repair, uninstall and reinstall.
+5. Confirm clean uninstall preserves the sibling settings/data directories.
+6. Import/trust the development MSIX certificate only for local testing; use the real Partner Center identity for Store submission.
