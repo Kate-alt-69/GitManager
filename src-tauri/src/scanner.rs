@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fs2::FileExt;
 
 use crate::git_info::{extract_git_repository_summary, GitRepositoryInfo};
@@ -43,10 +43,105 @@ pub struct ScanOptions {
     pub index_dependency_repositories: Option<bool>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanReport {
     pub repositories: Vec<GitRepositoryInfo>,
     pub truncated: bool,
+}
+
+const REPOSITORY_INDEX_VERSION: u32 = 1;
+const MAX_REPOSITORY_INDEX_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedRepositoryIndex {
+    pub schema_version: u32,
+    pub indexed_at_unix_ms: u64,
+    pub truncated: bool,
+    pub repositories: Vec<GitRepositoryInfo>,
+}
+
+pub fn repository_index_path() -> Result<PathBuf, String> {
+    let local_data = dirs::data_local_dir()
+        .ok_or_else(|| "Could not resolve the user's local data directory for the repository index.".to_string())?;
+    Ok(local_data
+        .join("kastrick's_software")
+        .join("data")
+        .join("GitManager")
+        .join("repo")
+        .join("metadata")
+        .join("index.json"))
+}
+
+pub fn load_persisted_repository_index() -> Result<Option<PersistedRepositoryIndex>, String> {
+    let path = repository_index_path()?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(&path)
+        .map_err(|error| format!("Could not inspect repository index {}: {error}", path.display()))?;
+    if metadata.len() > MAX_REPOSITORY_INDEX_BYTES {
+        return Err(format!(
+            "Repository index {} exceeds the {} MiB safety limit.",
+            path.display(),
+            MAX_REPOSITORY_INDEX_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes = fs::read(&path)
+        .map_err(|error| format!("Could not read repository index {}: {error}", path.display()))?;
+    let index: PersistedRepositoryIndex = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Repository index {} is invalid: {error}", path.display()))?;
+    if index.schema_version != REPOSITORY_INDEX_VERSION {
+        return Err(format!(
+            "Repository index schema {} is unsupported; expected {}.",
+            index.schema_version,
+            REPOSITORY_INDEX_VERSION
+        ));
+    }
+    Ok(Some(index))
+}
+
+pub fn save_persisted_repository_index(report: &ScanReport) -> Result<PersistedRepositoryIndex, String> {
+    let path = repository_index_path()?;
+    let parent = path.parent()
+        .ok_or_else(|| "Repository index path has no parent directory.".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create repository metadata directory: {error}"))?;
+
+    let indexed_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64;
+    let index = PersistedRepositoryIndex {
+        schema_version: REPOSITORY_INDEX_VERSION,
+        indexed_at_unix_ms,
+        truncated: report.truncated,
+        repositories: report.repositories.clone(),
+    };
+    let encoded = serde_json::to_vec(&index)
+        .map_err(|error| format!("Could not encode repository index: {error}"))?;
+    if encoded.len() as u64 > MAX_REPOSITORY_INDEX_BYTES {
+        return Err("Repository index exceeds the 64 MiB safety limit.".to_string());
+    }
+
+    let temporary = path.with_extension("json.tmp");
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| format!("Could not create temporary repository index: {error}"))?;
+        use std::io::Write;
+        file.write_all(&encoded)
+            .map_err(|error| format!("Could not write temporary repository index: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Could not flush temporary repository index: {error}"))?;
+    }
+    fs::rename(&temporary, &path)
+        .map_err(|error| format!("Could not publish repository index {}: {error}", path.display()))?;
+
+    Ok(index)
 }
 
 #[derive(Clone)]
