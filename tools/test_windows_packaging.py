@@ -220,6 +220,22 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("NSIS fallback", docs)
         self.assertIn("--master-packager", docs)
 
+    def test_repository_scan_engine_is_enabled_only_by_the_headless_service(self):
+        core_manifest = (ROOT / "crates" / "gitmanager-core" / "Cargo.toml").read_text(encoding="utf-8")
+        core_library = (ROOT / "crates" / "gitmanager-core" / "src" / "lib.rs").read_text(encoding="utf-8")
+        desktop_manifest = (ROOT / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
+        service_manifest = (ROOT / "crates" / "git-manager-service" / "Cargo.toml").read_text(encoding="utf-8")
+        desktop_source = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+
+        self.assertIn("[features]", core_manifest)
+        self.assertIn("scan-engine = []", core_manifest)
+        self.assertIn('#[cfg(feature = "scan-engine")]\\npub mod scanner;', core_library)
+        self.assertNotIn("scan-engine", desktop_manifest)
+        self.assertIn('features = ["scan-engine"]', service_manifest)
+        self.assertIn("pub use gitmanager_core::repository_index;", desktop_source)
+        self.assertNotIn("pub use gitmanager_core::scanner;", desktop_source)
+        self.assertNotIn("crate::scanner", desktop_source)
+
 
 if __name__ == "__main__":
     unittest.main()
