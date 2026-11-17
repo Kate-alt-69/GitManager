@@ -12,6 +12,9 @@ finish-args:
   - --socket=ssh-auth
   - --filesystem=home
   - --filesystem=~/.local/bin:create
+  - --filesystem=/media
+  - --filesystem=/run/media
+  - --filesystem=/mnt
 modules:
   - name: gitmanager
     buildsystem: simple
