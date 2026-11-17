@@ -1665,7 +1665,7 @@ def dispatch_store_build(store: str) -> int:
     return 0
 
 
-def publish_build_outputs(project_root: Path, release: bool, bundle: bool) -> int:
+def publish_build_outputs(project_root: Path, release: bool, bundle: bool, include_mpdev: bool = False) -> int:
     """Copy target outputs out of Cargo's cache into a stable build/dist layout."""
     selector = os.environ.get("GITMANAGER_BUILD_SELECTOR", "").strip()
     try:
@@ -1720,7 +1720,7 @@ def publish_build_outputs(project_root: Path, release: bool, bundle: bool) -> in
                 return 1
             installer_dir = output_root / "installer"
             shutil.copytree(bundle_source, installer_dir)
-            if target.platform == "windows":
+            if target.platform == "windows" and include_mpdev:
                 mpdev_outputs = cargo_target_root(project_root) / "windows-installers"
                 for package in sorted(mpdev_outputs.glob("*.msi")):
                     if package.is_file() and package.stat().st_size > 0:
@@ -1851,7 +1851,7 @@ def run_build_or_dev(
                 mpdev_result, _ = build_master_packager_dev_msi(project_root)
                 if mpdev_result != 0:
                     return mpdev_result
-        if publish_build_outputs(project_root, release, bundle) != 0:
+        if publish_build_outputs(project_root, release, bundle, build_master_packager) != 0:
             return 1
         return 0
 
