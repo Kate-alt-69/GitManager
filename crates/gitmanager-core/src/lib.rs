@@ -5,3 +5,4 @@
 
 pub mod git_info;
 pub mod scanner;
+pub mod notification_center;
