@@ -43,7 +43,10 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
-from tools.build_targets import can_build_locally, parse_build_selection
+try:
+    from tools.build_targets import can_build_locally, parse_build_selection
+except ModuleNotFoundError:
+    from build_targets import can_build_locally, parse_build_selection
 
 RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
