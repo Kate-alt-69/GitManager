@@ -191,9 +191,9 @@ export function useGitManager() {
 				const cliTools = await invoke<{ git: boolean; github: boolean }>("check_cli_tools");
 				if (!cliTools.git && !cliTools.github) {
 					const proceed = window.confirm(
-						"Git CLI and GitHub CLI were not detected.\\n\\n" +
+						"Git CLI and GitHub CLI were not detected.\n\n" +
 						"GitManager has its own built-in Git engine, so it can still scan local repositories. " +
-						"However, features that launch Git commands and GitHub CLI account integration will be unavailable.\\n\\n" +
+						"However, features that launch Git commands and GitHub CLI account integration will be unavailable.\n\n" +
 						"Would you like to continue with the repository scan?"
 					);
 					if (!proceed) {
