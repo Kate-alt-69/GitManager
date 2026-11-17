@@ -1456,6 +1456,7 @@ def build_gitm_sidecar(
 
 def dispatch_build_matrix(selection: str, build_type: str) -> int:
     """Dispatch multi-platform builds to native GitHub-hosted runners and download the artifacts."""
+    project_root = Path(__file__).resolve().parent
     gh = shutil.which("gh")
     if not gh:
         log_err(
@@ -1466,20 +1467,20 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
 
     branch = os.environ.get("GITHUB_REF_NAME", "").strip()
     if not branch and shutil.which("git"):
-        code, branch, _ = run_capture(["git", "branch", "--show-current"])
+        code, branch, _ = run_capture(["git", "branch", "--show-current"], cwd=project_root)
         if code != 0:
             branch = ""
     if not branch:
         code, branch, _ = run_capture([
             gh, "repo", "view", "--json", "defaultBranchRef",
             "--jq", ".defaultBranchRef.name",
-        ])
+        ], cwd=project_root)
         if code != 0:
             branch = ""
 
     local_head = ""
     if shutil.which("git"):
-        head_code, head_output, _ = run_capture(["git", "rev-parse", "HEAD"])
+        head_code, head_output, _ = run_capture(["git", "rev-parse", "HEAD"], cwd=project_root)
         if head_code == 0:
             local_head = head_output.strip()
 
@@ -1489,7 +1490,7 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
     command.extend(["-f", f"build={selection}", "-f", f"type={build_type}"])
     dispatch_started = time.time()
     log_info(f"Dispatching GitHub Actions build matrix: build={selection}, type={build_type}")
-    result = subprocess.call(command, cwd=str(Path(__file__).resolve().parent))
+    result = subprocess.call(command, cwd=str(project_root))
     if result != 0:
         log_err("GitHub Actions workflow dispatch failed. Check gh auth status and workflow permissions.")
         return result
@@ -1501,7 +1502,7 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
             "--event", "workflow_dispatch", "--limit", "10",
             "--json", "databaseId,event,headBranch,headSha,createdAt",
         ]
-        code, output, _ = run_capture(list_command)
+        code, output, _ = run_capture(list_command, cwd=project_root)
         if code == 0:
             try:
                 runs = json.loads(output)
@@ -1535,16 +1536,16 @@ def dispatch_build_matrix(selection: str, build_type: str) -> int:
         return 1
 
     log_info(f"Watching GitHub Actions build run {run_id}...")
-    watch_result = subprocess.call([gh, "run", "watch", str(run_id), "--exit-status"])
+    watch_result = subprocess.call([gh, "run", "watch", str(run_id), "--exit-status"], cwd=str(project_root))
     if watch_result != 0:
         log_err(f"GitHub Actions build run {run_id} did not complete successfully.")
         return watch_result
 
-    download_dir = Path(__file__).resolve().parent / "build" / "dist"
+    download_dir = project_root / "build" / "dist"
     download_dir.mkdir(parents=True, exist_ok=True)
     download_result = subprocess.call([
         gh, "run", "download", str(run_id), "--dir", str(download_dir),
-    ])
+    ], cwd=str(project_root))
     if download_result != 0:
         log_err(f"Build run {run_id} succeeded, but artifact download failed.")
         return download_result
