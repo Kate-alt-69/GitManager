@@ -856,6 +856,7 @@ def setup_build_environment(
     system = platform.system()
     host = host_platform()
     explicit_request = target_selection is not None or store_target is not None
+    all_platform_request = target_selection == "all" or store_target == "all"
 
     if store_target == "flatpak":
         selected_platforms = {"linux"}
@@ -913,6 +914,8 @@ def setup_build_environment(
                 outcomes.append(2)
             else:
                 outcomes.append(_setup_windows(windows_targets, default_yes=True))
+        elif all_platform_request:
+            _log("Windows SDK/MSVC/MPDEV setup skipped: run setup-build-tools on a native Windows machine.")
         else:
             _log("Windows SDK/MSVC/MPDEV installs require a native Windows host. Run setup-build-tools on Windows.")
             outcomes.append(2)
@@ -939,6 +942,8 @@ def setup_build_environment(
         mac_targets = [target for target in targets if target.platform == "macos"]
         if host == "macos":
             outcomes.append(_setup_macos(mac_targets, default_yes=True))
+        elif all_platform_request:
+            _log("macOS setup skipped: Apple's SDK requires a real Mac with Xcode Command Line Tools.")
         else:
             _log("Apple's macOS SDK cannot be installed on this host. Build macOS packages on a real Mac with Xcode Command Line Tools.")
             outcomes.append(2)
