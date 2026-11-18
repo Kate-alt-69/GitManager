@@ -1835,12 +1835,15 @@ fn capture_idle_performance_sync() -> Result<IdlePerformanceCapture, String> {
     const SAMPLE_INTERVAL: Duration = Duration::from_secs(3);
     const SAMPLE_COUNT: usize = 20;
 
-    let service_status = crash_helper::request_service_status().ok();
-    let service_pid = service_status
-        .as_ref()
-        .map(|status| status.process_id)
-        .filter(|pid| *pid > 0)
-        .map(|pid| Pid::from(pid as usize));
+    let service_status = crash_helper::request_service_status()
+        .map_err(|error| format!("The required core service is unavailable: {error}"))?;
+    if service_status.service_generation < crash_helper::SERVICE_GENERATION
+        || service_status.protocol_version < 2
+    {
+        return Err("The required GitManager core service is outdated. Restart the service before measuring idle performance.".to_string());
+    }
+    let service_pid = (service_status.process_id > 0)
+        .then(|| Pid::from_u32(service_status.process_id));
 
     let logical_processors = std::thread::available_parallelism()
         .map(|count| count.get())
@@ -1855,7 +1858,10 @@ fn capture_idle_performance_sync() -> Result<IdlePerformanceCapture, String> {
     let service_processes = service_pid
         .map(|pid| collect_process_tree(&system, pid, &HashSet::new()))
         .unwrap_or_default();
-    let ui_root = Pid::from(std::process::id() as usize);
+    if service_processes.is_empty() {
+        return Err("The core service process was not found in the operating-system process table.".to_string());
+    }
+    let ui_root = Pid::from_u32(std::process::id());
     let ui_processes = collect_process_tree(&system, ui_root, &service_processes);
     if ui_processes.is_empty() {
         return Err("Could not find the GitManager UI process in the operating-system process table.".to_string());
@@ -1929,8 +1935,8 @@ fn capture_idle_performance_sync() -> Result<IdlePerformanceCapture, String> {
             .as_millis(),
         ui_process_tree: ui_summary,
         service_process_tree: service_summary,
-        service_generation: service_status.as_ref().map(|status| status.service_generation).unwrap_or(0),
-        service_protocol_version: service_status.as_ref().map(|status| status.protocol_version).unwrap_or(0),
+        service_generation: service_status.service_generation,
+        service_protocol_version: service_status.protocol_version,
         notes: vec![
             "CPU percentages are normalized across all logical processors.".to_string(),
             "The UI group includes the Tauri process and descendant processes visible in the process tree.".to_string(),
