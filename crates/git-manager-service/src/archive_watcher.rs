@@ -525,7 +525,7 @@ fn capture_enabled_archives(
     remote_enabled: bool,
 ) {
     let repository_path_owned = repository_path.to_string();
-    crash_helper::with_repository_operation_lock(&repository_path_owned, || {
+    crash_helper::with_repository_read_lock(&repository_path_owned, || {
         if local_enabled {
             if let Err(error) = archive::capture_repository(
                 &repository_path_owned,
