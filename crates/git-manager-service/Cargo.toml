@@ -8,7 +8,7 @@ description = "Independent GitManager background data service"
 [dependencies]
 gitmanager-core = { path = "../gitmanager-core", features = ["scan-engine"] }
 gitmanager-archive = { path = "../archive-core" }
-crash-helper = { path = "../crash-helper", features = ["account-storage", "repository-data"] }
+crash-helper = { path = "../crash-helper", features = ["account-storage", "repository-data", "notification-storage"] }
 git2 = { version = "0.20.4", default-features = false, features = ["https", "ssh"] }
 dirs = "5.0"
 fs2 = "0.4"
