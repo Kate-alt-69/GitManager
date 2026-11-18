@@ -1490,7 +1490,7 @@ pub fn with_repository_archive_lock<T>(
 }
 
 fn handle_service_connection(
-    mut stream: TcpStream,
+    mut stream: LocalSocketStream,
     token: &str,
     state: &ServiceState,
     scan_requested: &AtomicBool,
@@ -1498,20 +1498,17 @@ fn handle_service_connection(
     remote_check_running: &AtomicBool,
     indexing: &AtomicBool,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_recv_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_send_timeout(Some(Duration::from_secs(15)));
 
-    let mut bytes = Vec::new();
-    let read_result = (&mut stream).take(MAX_MESSAGE_BYTES).read_to_end(&mut bytes);
-    let response = if read_result.is_err() || bytes.len() as u64 >= MAX_MESSAGE_BYTES {
-        ServiceResponse {
+    let response = match read_service_frame(&mut stream) {
+        Err(error) => ServiceResponse {
             ok: false,
             status: state.status("Invalid service-control request"),
-            error: Some("Invalid or oversized request".to_string()),
+            error: Some(format!("Invalid or oversized request: {error}")),
             data: None,
-        }
-    } else {
-        match serde_json::from_slice::<ServiceRequest>(&bytes) {
+        },
+        Ok(bytes) => match serde_json::from_slice::<ServiceRequest>(&bytes) {
             Ok(request) if request.token == token => match request.command {
                 ServiceCommand::Status => {
                     let mut status = state.status("Background service status");
@@ -1743,8 +1740,7 @@ fn handle_service_connection(
         } else {
             encoded
         };
-        let _ = stream.write_all(&response_bytes);
-        let _ = stream.flush();
+        let _ = write_service_frame(&mut stream, &response_bytes);
     }
 }
 
