@@ -1911,7 +1911,7 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
             let mut notification_generation =
                 notification_center::notification_store_modified_unix_nanos().unwrap_or_default();
             let mut last_service_check = Instant::now();
-            let mut last_service_state: Option<(bool, u32, u32, u32)> = None;
+            let mut last_service_state: Option<(bool, u32, u32, u32, bool, bool)> = None;
 
             loop {
                 std::thread::sleep(Duration::from_secs(1));
@@ -1936,27 +1936,38 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
                 }
 
                 if last_service_check.elapsed() >= Duration::from_secs(5) {
-                    let (ready, generation, process_id, protocol_version, message) =
+                    let (ready, generation, process_id, protocol_version, remote_check_pending, remote_check_running, message) =
                         match crash_helper::request_service_status() {
                             Ok(status) => (
                                 status.service_generation >= crash_helper::SERVICE_GENERATION,
                                 status.service_generation,
                                 status.process_id,
                                 status.protocol_version,
+                                status.remote_check_pending,
+                                status.remote_check_running,
                                 status.message,
                             ),
-                            Err(error) => (false, 0, 0, 0, error),
+                            Err(error) => (false, 0, 0, 0, false, false, error),
                         };
 
                     let changed = last_service_state
-                        .map(|(previous_ready, previous_generation, previous_pid, previous_protocol)| {
+                        .map(|(previous_ready, previous_generation, previous_pid, previous_protocol, previous_remote_pending, previous_remote_running)| {
                             previous_ready != ready
                                 || previous_generation != generation
                                 || previous_pid != process_id
                                 || previous_protocol != protocol_version
+                                || previous_remote_pending != remote_check_pending
+                                || previous_remote_running != remote_check_running
                         })
                         .unwrap_or(true);
                     if changed {
+                        let status_message = if remote_check_running {
+                            "Checking remote repository branches…".to_string()
+                        } else if remote_check_pending {
+                            "Remote repository check queued".to_string()
+                        } else {
+                            message
+                        };
                         let _ = app_handle.emit(
                             "gitmanager://service-health",
                             serde_json::json!({
@@ -1964,10 +1975,15 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
                                 "generation": generation,
                                 "processId": process_id,
                                 "protocolVersion": protocol_version,
-                                "message": message,
+                                "remoteCheckPending": remote_check_pending,
+                                "remoteCheckRunning": remote_check_running,
+                                "message": status_message,
                             }),
                         );
-                        last_service_state = Some((ready, generation, process_id, protocol_version));
+                        last_service_state = Some((
+                            ready, generation, process_id, protocol_version,
+                            remote_check_pending, remote_check_running,
+                        ));
                     }
                     last_service_check = Instant::now();
                 }
