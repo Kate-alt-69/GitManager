@@ -147,6 +147,7 @@ function TopBar({
 	serviceReady,
 	remoteCheckPending,
 	remoteCheckRunning,
+	serviceIndexing,
 	repositoryCount,
 	scanTruncated,
 	notifications,
@@ -168,6 +169,7 @@ function TopBar({
 	serviceReady: boolean;
 	remoteCheckPending: boolean;
 	remoteCheckRunning: boolean;
+	serviceIndexing: boolean;
 	repositoryCount: number;
 	scanTruncated: boolean;
 	notifications: AppNotification[];
@@ -246,7 +248,7 @@ function TopBar({
 							onClick={() => setOpenPanel((current) => current === "tasks" ? null : "tasks")}
 						>
 							<span aria-hidden="true">≡</span> Tasks
-							<span className={scanning ? "gm-panel-indicator busy" : serviceReady ? "gm-panel-indicator ready" : "gm-panel-indicator offline"} />
+							<span className={(scanning || serviceIndexing) ? "gm-panel-indicator busy" : serviceReady ? "gm-panel-indicator ready" : "gm-panel-indicator offline"} />
 						</button>
 						<button
 							type="button"
@@ -272,9 +274,9 @@ function TopBar({
 									<span className="gm-task-meta">{serviceReady ? "Ready" : "Offline"}</span>
 								</div>
 								<div className="gm-task-row">
-									<span className={scanning ? "gm-task-state busy" : "gm-task-state ready"} />
-									<div><strong>Repository index</strong><small>{scanning ? "Discovering repositories in the service process…" : scanTruncated ? "Index ready · safety limit reached" : `${repositoryCount} repositories indexed`}</small></div>
-									<span className="gm-task-meta">{scanning ? "Running" : "Idle"}</span>
+									<span className={(scanning || serviceIndexing) ? "gm-task-state busy" : "gm-task-state ready"} />
+									<div><strong>Repository index</strong><small>{(scanning || serviceIndexing) ? "Discovering repositories in the service process…" : scanTruncated ? "Index ready · safety limit reached" : `${repositoryCount} repositories indexed`}</small></div>
+									<span className="gm-task-meta">{(scanning || serviceIndexing) ? "Running" : "Idle"}</span>
 								</div>
 								<div className="gm-task-row">
 									<span className={remoteCheckRunning ? "gm-task-state busy" : remoteCheckPending ? "gm-task-state idle" : "gm-task-state ready"} />
@@ -954,6 +956,7 @@ export function GitManagerApp() {
 					serviceReady={git.serviceReady}
 					remoteCheckPending={git.remoteCheckPending}
 					remoteCheckRunning={git.remoteCheckRunning}
+					serviceIndexing={git.serviceIndexing}
 					repositoryCount={git.repositories.length}
 					scanTruncated={git.scanTruncated}
 					notifications={git.notifications}
