@@ -7,13 +7,14 @@
 use fs2::FileExt;
 use interprocess::local_socket::{
     prelude::*,
+    GenericFilePath,
     Listener,
     ListenerOptions,
     ListenerNonblockingMode,
     Stream as LocalSocketStream,
 };
 #[cfg(unix)]
-use interprocess::local_socket::{ConnectOptions, GenericFilePath};
+use interprocess::local_socket::ConnectOptions;
 use interprocess::{ConnectWaitMode, TryClone as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
