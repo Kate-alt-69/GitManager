@@ -400,6 +400,7 @@ pub struct ServiceControlServer {
     running: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     endpoint_path: PathBuf,
+    socket_directory: Option<PathBuf>,
     scan_requested: Arc<AtomicBool>,
     remote_check_requested: Arc<AtomicBool>,
     remote_check_running: Arc<AtomicBool>,
@@ -466,6 +467,10 @@ impl Drop for ServiceControlServer {
             let _ = worker.join();
         }
         let _ = fs::remove_file(&self.endpoint_path);
+        if let Some(directory) = &self.socket_directory {
+            let _ = fs::remove_file(directory.join("service.sock"));
+            let _ = fs::remove_dir(directory);
+        }
     }
 }
 
@@ -503,15 +508,18 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     lock_file.try_lock_exclusive()
         .map_err(|_| "Another GitManager background service instance already owns the service lock.".to_string())?;
 
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|error| format!("Could not bind the local service-control endpoint: {error}"))?;
-    listener.set_nonblocking(true)
-        .map_err(|error| format!("Could not configure the service-control listener: {error}"))?;
+    let (socket_name, socket_directory) = service_socket_name(&data_dir);
+    if let Some(directory) = &socket_directory {
+        prepare_service_socket_directory(directory)?;
+    }
+    let listener = bind_service_local_listener(&socket_name)
+        .map_err(|error| format!("Could not create the per-user local service socket: {error}"))?;
 
     let endpoint_path = data_dir.join(ENDPOINT_FILE);
     let endpoint = Endpoint {
         version: SERVICE_PROTOCOL_VERSION,
-        address: listener.local_addr().map_err(|error| error.to_string())?.to_string(),
+        name: socket_name,
+        address: String::new(),
         token: Uuid::new_v4().to_string(),
     };
     write_private_json(&endpoint_path, &endpoint)
@@ -538,7 +546,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         .spawn(move || {
             while thread_running.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok(stream) => {
                         if !reserve_service_request_slot(&thread_active_requests) {
                             // Reject excess work instead of creating unbounded
                             // threads or blocking the accept loop.
@@ -586,6 +594,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         running,
         worker: Some(worker),
         endpoint_path,
+        socket_directory,
         scan_requested,
         remote_check_requested,
         remote_check_running,
