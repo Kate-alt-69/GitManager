@@ -138,64 +138,13 @@ fn preferences_file(app_handle: &AppHandle) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn read_app_preferences_file(path: &Path) -> Result<AppPreferences, String> {
-    if !path.is_file() {
-        return Ok(AppPreferences::default());
-    }
-
-    let content = fs::read_to_string(path)
-        .map_err(|error| format!("Could not read GitManager preferences: {error}"))?;
-    if content.len() > 256 * 1024 {
-        return Err("GitManager preferences file is unexpectedly large.".to_string());
-    }
-
-    let mut preferences: AppPreferences = serde_json::from_str(&content)
-        .map_err(|error| format!("GitManager preferences are invalid JSON: {error}"))?;
-    // Keep disconnected drive roots in the saved setup so removable/external
-    // drives can be scanned again when they are mounted.
-    let mut retained_roots = Vec::new();
-    for raw_root in preferences.scan_roots.drain(..).take(32) {
-        let root = raw_root.trim();
-        if root.is_empty() {
-            continue;
-        }
-        let value = fs::canonicalize(root)
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_else(|_| root.to_string());
-        if !retained_roots.iter().any(|existing: &String| existing.eq_ignore_ascii_case(&value)) {
-            retained_roots.push(value);
-        }
-    }
-    preferences.scan_roots = retained_roots;
-    preferences.max_scan_depth = preferences.max_scan_depth.clamp(2, 16);
-    if preferences.archive_root.trim().is_empty() {
-        preferences.archive_root = archive::default_archive_root()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_default();
-    }
-    preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
-    if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
-        preferences.archive_trigger = "manual".to_string();
-    }
-    preferences.archive_quiet_ms = preferences.archive_quiet_ms.clamp(250, 60_000);
-    let saved_node_address = preferences.cloud_node_address.trim();
-    preferences.cloud_node_address = if saved_node_address.is_empty() {
-        String::new()
-    } else {
-        validate_rbe_node_base_url(saved_node_address)
-            .map(|address| address.to_string())
-            .unwrap_or_default()
-    };
-    Ok(preferences)
-}
-
-
 #[tauri::command]
-fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String> {
-    let path = preferences_file(&app_handle)?;
-    read_app_preferences_file(&path)
+async fn load_app_preferences() -> Result<AppPreferences, String> {
+    request_core_service(
+        crash_helper::service_load_app_preferences,
+        "application preferences",
+    ).await
 }
-
 
 fn repository_settings_path(repo_path: &str) -> Result<PathBuf, String> {
     if repo_path.trim().is_empty() { return Err("Select a local Git repository first.".to_string()); }
@@ -418,54 +367,30 @@ fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     Ok(normalized)
 }
 
-fn write_app_preferences_file(path: &Path, preferences: &AppPreferences) -> Result<(), String> {
-    let temporary = path.with_extension("json.tmp");
-    let backup = path.with_extension("json.bak");
-    let content = serde_json::to_vec_pretty(preferences)
-        .map_err(|error| format!("Could not serialize GitManager preferences: {error}"))?;
-    fs::write(&temporary, content)
-        .map_err(|error| format!("Could not write GitManager preferences: {error}"))?;
-
-    // Keep the previous valid file recoverable if the final rename fails.
-    let had_previous = path.exists();
-    if had_previous {
-        if backup.exists() {
-            fs::remove_file(&backup)
-                .map_err(|error| format!("Could not clear the old preferences backup: {error}"))?;
-        }
-        fs::rename(path, &backup)
-            .map_err(|error| format!("Could not stage the previous preferences file: {error}"))?;
-    }
-    if let Err(error) = fs::rename(&temporary, path) {
-        if had_previous {
-            let _ = fs::rename(&backup, path);
-        }
-        return Err(format!("Could not save GitManager preferences: {error}"));
-    }
-    if backup.exists() {
-        let _ = fs::remove_file(&backup);
-    }
-    Ok(())
-}
-
 #[tauri::command]
-fn save_cloud_node_address(app_handle: AppHandle, address: String) -> Result<String, String> {
+async fn save_cloud_node_address(address: String) -> Result<String, String> {
     let address = address.trim();
     let normalized = if address.is_empty() {
         String::new()
     } else {
         validate_rbe_node_base_url(address)?.to_string()
     };
-    let path = preferences_file(&app_handle)?;
-    let mut preferences = read_app_preferences_file(&path)?;
+    let mut preferences: AppPreferences = request_core_service(
+        crash_helper::service_load_app_preferences,
+        "application preferences",
+    ).await?;
     preferences.cloud_node_address = normalized.clone();
-    write_app_preferences_file(&path, &preferences)?;
+    let payload = serde_json::to_value(preferences)
+        .map_err(|error| format!("Could not encode GitManager preferences: {error}"))?;
+    let _: AppPreferences = request_core_service(
+        move || crash_helper::service_save_app_preferences(payload),
+        "save application preferences",
+    ).await?;
     Ok(normalized)
 }
 
 #[tauri::command]
-fn save_app_preferences(
-    app_handle: AppHandle,
+async fn save_app_preferences(
     mut preferences: AppPreferences,
 ) -> Result<AppPreferences, String> {
     preferences.scan_roots = normalize_scan_roots(preferences.scan_roots)?;
@@ -487,10 +412,12 @@ fn save_app_preferences(
         validate_rbe_node_base_url(saved_node_address)?.to_string()
     };
 
-    let path = preferences_file(&app_handle)?;
-    write_app_preferences_file(&path, &preferences)?;
-    // The next UI scan supplies discovered repositories to the archive watcher.
-    Ok(preferences)
+    let payload = serde_json::to_value(preferences)
+        .map_err(|error| format!("Could not encode GitManager preferences: {error}"))?;
+    request_core_service(
+        move || crash_helper::service_save_app_preferences(payload),
+        "save application preferences",
+    ).await
 }
 
 fn normalize_archive_root(raw: &str) -> Result<String, String> {
