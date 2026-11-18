@@ -362,7 +362,6 @@ async fn save_app_preferences(
     if !(2..=16).contains(&preferences.max_scan_depth) {
         return Err("Scan depth must be between 2 and 16.".to_string());
     }
-    preferences.archive_root = normalize_archive_root(&preferences.archive_root)?;
     preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
     if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
         return Err("Archive trigger must be manual, commit, or change.".to_string());
@@ -393,28 +392,6 @@ fn default_archive_root_path() -> Result<PathBuf, String> {
         .join("data")
         .join("GitManager")
         .join("archives"))
-}
-
-fn normalize_archive_root(raw: &str) -> Result<String, String> {
-    let candidate = if raw.trim().is_empty() {
-        default_archive_root_path()?
-    } else {
-        let value = PathBuf::from(raw.trim());
-        if value.is_absolute() {
-            value
-        } else {
-            std::env::current_dir()
-                .map_err(|error| format!("Could not resolve current directory: {error}"))?
-                .join(value)
-        }
-    };
-    let normalized = candidate.to_string_lossy().to_string();
-    if normalized.len() > 4096 {
-        return Err("Archive storage path exceeds the 4096-character safety limit.".to_string());
-    }
-    // Directory creation, canonicalization and all archive storage I/O belong
-    // to gitmanager.service. Saving Settings must not touch the archive store.
-    Ok(normalized)
 }
 
 #[tauri::command]
