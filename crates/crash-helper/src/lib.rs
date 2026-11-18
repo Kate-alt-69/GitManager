@@ -2670,6 +2670,14 @@ mod tests {
     }
 
     #[test]
+    fn service_status_exposes_repository_indexing_state() {
+        let mut status = super::ServiceStatus::default();
+        status.indexing = true;
+        let encoded = serde_json::to_value(status).expect("encode service status");
+        assert_eq!(encoded["indexing"], true);
+    }
+
+    #[test]
     fn legacy_protocol_is_allowed_only_for_status_negotiation() {
         assert!(super::is_legacy_protocol_command_compatible(&ServiceCommand::Status));
         assert!(!super::is_legacy_protocol_command_compatible(&ServiceCommand::LoadAccounts));
