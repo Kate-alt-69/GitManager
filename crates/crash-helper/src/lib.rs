@@ -1621,6 +1621,10 @@ fn handle_service_connection(
 }
 
 
+fn is_legacy_protocol_command_compatible(command: &ServiceCommand) -> bool {
+    matches!(command, ServiceCommand::Status)
+}
+
 fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, String> {
     let endpoint_path = gitmanager_data_dir()?.join(ENDPOINT_FILE);
     let content = fs::read(&endpoint_path)
@@ -1638,7 +1642,7 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
         return Err("Service-control protocol version is unsupported.".to_string());
     }
     if endpoint.version < SERVICE_PROTOCOL_VERSION
-        && !matches!(command, ServiceCommand::Status)
+        && !is_legacy_protocol_command_compatible(&command)
     {
         return Err(format!(
             "GitManager core service protocol v{} is outdated; protocol v{} is required. Restart the required service.",
@@ -2639,6 +2643,15 @@ mod tests {
         };
         let encoded_load = serde_json::to_value(load).expect("encode account load request");
         assert_eq!(encoded_load["command"]["action"], "load_accounts");
+    }
+
+    #[test]
+    fn legacy_protocol_is_allowed_only_for_status_negotiation() {
+        assert!(super::is_legacy_protocol_command_compatible(&ServiceCommand::Status));
+        assert!(!super::is_legacy_protocol_command_compatible(&ServiceCommand::LoadAccounts));
+        assert!(!super::is_legacy_protocol_command_compatible(
+            &ServiceCommand::GetRepositoryIndexGeneration
+        ));
     }
 
     #[test]
