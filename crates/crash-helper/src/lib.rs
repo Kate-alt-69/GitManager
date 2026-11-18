@@ -57,6 +57,7 @@ enum ServiceCommand {
     Suspend { seconds: u64 },
     Resume,
     RequestScan,
+    RequestRemoteCheck,
     LoadAccounts,
     SaveAccount { payload: serde_json::Value },
     InspectRepository { repo_path: String },
@@ -271,6 +272,7 @@ pub struct ServiceControlServer {
     worker: Option<JoinHandle<()>>,
     endpoint_path: PathBuf,
     scan_requested: Arc<AtomicBool>,
+    remote_check_requested: Arc<AtomicBool>,
     _lock_file: File,
 }
 
@@ -293,6 +295,16 @@ impl ServiceControlServer {
     /// Allows the service loop to wake early without consuming a request.
     pub fn scan_request_pending(&self) -> bool {
         self.scan_requested.load(Ordering::Acquire)
+    }
+
+    /// Returns true once per queued immediate remote-update check.
+    pub fn take_remote_check_request(&self) -> bool {
+        self.remote_check_requested.swap(false, Ordering::AcqRel)
+    }
+
+    /// Allows the service loop to wake early when the UI requests a remote check.
+    pub fn remote_check_pending(&self) -> bool {
+        self.remote_check_requested.load(Ordering::Acquire)
     }
 }
 
@@ -357,10 +369,12 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     let state = Arc::new(ServiceState::load(data_dir.join(SUSPENSION_FILE)));
     let running = Arc::new(AtomicBool::new(true));
     let scan_requested = Arc::new(AtomicBool::new(false));
+    let remote_check_requested = Arc::new(AtomicBool::new(false));
     let active_requests = Arc::new(AtomicUsize::new(0));
     let thread_state = Arc::clone(&state);
     let thread_running = Arc::clone(&running);
     let thread_scan_requested = Arc::clone(&scan_requested);
+    let thread_remote_check_requested = Arc::clone(&remote_check_requested);
     let thread_active_requests = Arc::clone(&active_requests);
     let token = endpoint.token.clone();
 
@@ -380,6 +394,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
                         let request_token = token.clone();
                         let request_state = Arc::clone(&thread_state);
                         let request_scan = Arc::clone(&thread_scan_requested);
+                        let request_remote_check = Arc::clone(&thread_remote_check_requested);
                         let request_counter = Arc::clone(&thread_active_requests);
                         if let Err(error) = thread::Builder::new()
                             .name("gitmanager-service-request".to_string())
@@ -389,6 +404,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
                                     &request_token,
                                     &request_state,
                                     &request_scan,
+                                    &request_remote_check,
                                 );
                                 request_counter.fetch_sub(1, Ordering::Release);
                             })
@@ -412,6 +428,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         worker: Some(worker),
         endpoint_path,
         scan_requested,
+        remote_check_requested,
         _lock_file: lock_file,
     })
 }
@@ -1024,6 +1041,7 @@ fn handle_service_connection(
     token: &str,
     state: &ServiceState,
     scan_requested: &AtomicBool,
+    remote_check_requested: &AtomicBool,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
@@ -1063,6 +1081,15 @@ fn handle_service_connection(
                     ServiceResponse {
                         ok: true,
                         status: state.status("Repository index refresh queued"),
+                        error: None,
+                        data: None,
+                    }
+                },
+                ServiceCommand::RequestRemoteCheck => {
+                    remote_check_requested.store(true, Ordering::Release);
+                    ServiceResponse {
+                        ok: true,
+                        status: state.status("Remote repository check queued"),
                         error: None,
                         data: None,
                     }
@@ -1422,6 +1449,11 @@ pub fn request_service_status() -> Result<ServiceStatus, String> {
 /// The UI never performs the directory walk itself.
 pub fn request_service_scan() -> Result<ServiceStatus, String> {
     send_service_command(ServiceCommand::RequestScan)
+}
+
+/// Requests an immediate remote-update check in the required service.
+pub fn request_service_remote_check() -> Result<ServiceStatus, String> {
+    send_service_command(ServiceCommand::RequestRemoteCheck)
 }
 
 /// Persists the suspension request before attempting IPC. If the service is
@@ -2247,6 +2279,17 @@ mod tests {
             assert_eq!(encoded["command"]["action"], action);
             assert!(encoded["command"]["repo_path"].is_string());
         }
+    }
+
+    #[test]
+    fn remote_check_request_uses_the_authenticated_control_protocol() {
+        let request = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::RequestRemoteCheck,
+        };
+        let encoded = serde_json::to_value(request).expect("encode remote check request");
+        assert_eq!(encoded["token"], "test-token");
+        assert_eq!(encoded["command"]["action"], "request_remote_check");
     }
 
     #[test]
