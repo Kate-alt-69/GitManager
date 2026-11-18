@@ -40,6 +40,8 @@ export function useGitManager() {
 	const indexGeneration = useRef("0");
 	const [version, setVersion] = useState("—");
 	const [preferences, setPreferences] = useState<AppPreferences>(DEFAULT_PREFERENCES);
+	const inAppNotificationsEnabledRef = useRef(preferences.inAppNotificationsEnabled !== false);
+	inAppNotificationsEnabledRef.current = preferences.inAppNotificationsEnabled !== false;
 	const [directories, setDirectories] = useState<ApplicationDirectories | null>(null);
 	const [repositories, setRepositories] = useState<GitRepository[]>([]);
 	const [dependencies, setDependencies] = useState<string[]>([]);
@@ -123,7 +125,7 @@ export function useGitManager() {
 	}, []);
 
 	const refreshNotifications = useCallback(async () => {
-		if (!isTauriRuntime()) return [];
+		if (!isTauriRuntime() || !inAppNotificationsEnabledRef.current) return [];
 		try {
 			const current = await invoke<AppNotification[]>("list_app_notifications");
 			setNotifications(current ?? []);
@@ -402,7 +404,7 @@ export function useGitManager() {
 			if (active && payload.status) setStatus(payload.status);
 		}).then((unlisten) => { unlistenState = unlisten; });
 		void listen("gitmanager://notifications-updated", () => {
-			if (active) void refreshNotifications();
+			if (active && inAppNotificationsEnabledRef.current) void refreshNotifications();
 		}).then((unlisten) => { unlistenNotifications = unlisten; });
 		void listen<{ ready: boolean; generation: number; message: string }>("gitmanager://service-health", (payload) => {
 			if (!active) return;
