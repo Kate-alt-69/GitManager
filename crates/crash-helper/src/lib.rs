@@ -11,7 +11,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -39,6 +39,7 @@ const UI_RECOVERY_GRACE: Duration = Duration::from_secs(15);
 const SUPERVISOR_POLL: Duration = Duration::from_millis(400);
 const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 const SERVICE_PROTOCOL_VERSION: u32 = 2;
+const MAX_CONCURRENT_SERVICE_REQUESTS: usize = 8;
 pub const SERVICE_GENERATION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,6 +263,23 @@ impl Drop for ServiceControlServer {
     }
 }
 
+fn reserve_service_request_slot(active: &AtomicUsize) -> bool {
+    loop {
+        let current = active.load(Ordering::Acquire);
+        if current >= MAX_CONCURRENT_SERVICE_REQUESTS {
+            return false;
+        }
+        if active.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).is_ok() {
+            return true;
+        }
+    }
+}
+
 /// Starts a loopback-only control endpoint protected by a random per-process token.
 pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     let data_dir = gitmanager_data_dir()?;
@@ -296,9 +314,11 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     let state = Arc::new(ServiceState::load(data_dir.join(SUSPENSION_FILE)));
     let running = Arc::new(AtomicBool::new(true));
     let scan_requested = Arc::new(AtomicBool::new(false));
+    let active_requests = Arc::new(AtomicUsize::new(0));
     let thread_state = Arc::clone(&state);
     let thread_running = Arc::clone(&running);
     let thread_scan_requested = Arc::clone(&scan_requested);
+    let thread_active_requests = Arc::clone(&active_requests);
     let token = endpoint.token.clone();
 
     let worker = thread::Builder::new()
@@ -306,9 +326,34 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         .spawn(move || {
             while thread_running.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((stream, _)) => handle_service_connection(
-                        stream, &token, &thread_state, &thread_scan_requested,
-                    ),
+                    Ok((stream, _)) => {
+                        if !reserve_service_request_slot(&thread_active_requests) {
+                            // Reject excess work instead of creating unbounded
+                            // threads or blocking the accept loop.
+                            drop(stream);
+                            continue;
+                        }
+
+                        let request_token = token.clone();
+                        let request_state = Arc::clone(&thread_state);
+                        let request_scan = Arc::clone(&thread_scan_requested);
+                        let request_counter = Arc::clone(&thread_active_requests);
+                        if let Err(error) = thread::Builder::new()
+                            .name("gitmanager-service-request".to_string())
+                            .spawn(move || {
+                                handle_service_connection(
+                                    stream,
+                                    &request_token,
+                                    &request_state,
+                                    &request_scan,
+                                );
+                                request_counter.fetch_sub(1, Ordering::Release);
+                            })
+                        {
+                            thread_active_requests.fetch_sub(1, Ordering::Release);
+                            eprintln!("GitManager service could not dispatch a control request: {error}");
+                        }
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(100));
                     }
@@ -1387,6 +1432,19 @@ mod tests {
         assert!(response.ok);
         assert!(response.data.is_none());
         assert_eq!(response.status.service_generation, 0);
+    }
+
+    #[test]
+    fn service_control_request_slots_are_bounded_and_released() {
+        let active = AtomicUsize::new(0);
+        for expected in 1..=MAX_CONCURRENT_SERVICE_REQUESTS {
+            assert!(reserve_service_request_slot(&active));
+            assert_eq!(active.load(Ordering::Acquire), expected);
+        }
+        assert!(!reserve_service_request_slot(&active));
+        active.fetch_sub(1, Ordering::Release);
+        assert!(reserve_service_request_slot(&active));
+        assert_eq!(active.load(Ordering::Acquire), MAX_CONCURRENT_SERVICE_REQUESTS);
     }
 
     #[test]
