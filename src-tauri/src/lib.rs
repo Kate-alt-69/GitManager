@@ -408,14 +408,13 @@ fn normalize_archive_root(raw: &str) -> Result<String, String> {
                 .join(value)
         }
     };
-    fs::create_dir_all(&candidate)
-        .map_err(|error| format!("Could not create archive storage directory: {error}"))?;
-    if !candidate.is_dir() {
-        return Err("Archive storage path must be a directory.".to_string());
+    let normalized = candidate.to_string_lossy().to_string();
+    if normalized.len() > 4096 {
+        return Err("Archive storage path exceeds the 4096-character safety limit.".to_string());
     }
-    candidate.canonicalize()
-        .map(|path| path.to_string_lossy().to_string())
-        .map_err(|error| format!("Could not resolve archive storage directory: {error}"))
+    // Directory creation, canonicalization and all archive storage I/O belong
+    // to gitmanager.service. Saving Settings must not touch the archive store.
+    Ok(normalized)
 }
 
 #[tauri::command]
