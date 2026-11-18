@@ -215,27 +215,33 @@ fn read_json<T: for<'de> Deserialize<'de>>(
     path: &Path,
     maximum_bytes: u64,
 ) -> Result<Option<T>, String> {
-    recover_backup(path)?;
-    if !path.is_file() {
+    // Readers never move a backup: a writer may be between its two rename
+    // operations, and restoring here could race with the writer's publish.
+    let backup = path.with_extension("previous");
+    let source = if path.is_file() {
+        path
+    } else if backup.is_file() {
+        backup.as_path()
+    } else {
         return Ok(None);
-    }
-    let metadata = fs::metadata(path)
-        .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
+    };
+    let metadata = fs::metadata(source)
+        .map_err(|error| format!("Could not inspect {}: {error}", source.display()))?;
     if metadata.len() > maximum_bytes {
         return Err(format!(
             "{} exceeds its {} MiB safety limit.",
-            path.display(),
+            source.display(),
             maximum_bytes / (1024 * 1024)
         ));
     }
-    let mut file = File::open(path)
-        .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
+    let mut file = File::open(source)
+        .map_err(|error| format!("Could not open {}: {error}", source.display()))?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.read_to_end(&mut bytes)
-        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+        .map_err(|error| format!("Could not read {}: {error}", source.display()))?;
     serde_json::from_slice(&bytes)
         .map(Some)
-        .map_err(|error| format!("{} contains invalid JSON: {error}", path.display()))
+        .map_err(|error| format!("{} contains invalid JSON: {error}", source.display()))
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -351,6 +357,29 @@ mod tests {
             .expect("read persisted metadata");
         assert!(!encoded.contains("access_token"));
         assert!(!encoded.contains("token"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn readers_use_previous_snapshot_without_moving_it_during_recovery_window() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("gitmanager-account-recovery-{suffix}"));
+        let path = metadata_path_at(&root);
+        fs::create_dir_all(path.parent().expect("metadata parent")).expect("create metadata parent");
+        let backup = path.with_extension("previous");
+        let saved = AccountMetadataFile { schema_version: ACCOUNT_SCHEMA_VERSION, accounts: Vec::new() };
+        fs::write(&backup, serde_json::to_vec(&saved).expect("encode backup")).expect("write backup");
+
+        let loaded = read_json::<AccountMetadataFile>(&path, MAX_ACCOUNT_METADATA_BYTES)
+            .expect("read backup snapshot")
+            .expect("backup snapshot exists");
+        assert_eq!(loaded.schema_version, ACCOUNT_SCHEMA_VERSION);
+        assert!(!path.exists());
+        assert!(backup.is_file());
 
         let _ = fs::remove_dir_all(root);
     }
