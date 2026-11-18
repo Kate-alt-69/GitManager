@@ -26,6 +26,10 @@ The first launch of the required core service checks its reported service genera
 
 The Windows installer also closes the old `git-manager.exe` and `git-manager-service.exe` processes before replacing files. This prevents an old worker from retaining the shared service lock or continuing duplicate repository watches and notifications after an upgrade.
 
+## Repository read ownership
+
+The required service performs Git repository overview reads, paginated commit-history traversal and individual commit-detail calculations. The Tauri command layer forwards those requests over the authenticated protocol-v2 loopback channel and deserializes the result for the UI. Commit-history requests are bounded to 100 results maximum (the UI requests 50 at a time); branch and text filters execute in the service process.
+
 ## Native runtime monitoring and idle behavior
 
 The Tauri host owns one lightweight native monitor thread. It watches the repository-index and notification-history generation stamps and emits Tauri events when those files change. It checks the authenticated core-service endpoint every five seconds and reports the native host heartbeat every three seconds to crash_helper. The React/WebView frontend subscribes to these events rather than polling on intervals.
