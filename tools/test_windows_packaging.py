@@ -27,7 +27,21 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         )
 
     def test_nsis_bin_directory_is_searched_for_makensis(self):
-        directories = [str(path).replace("\\", "/") for path in BUILD.windows_packaging_search_directories()]
+        # Supply Windows install roots explicitly so this path-construction
+        # test is deterministic when the suite runs on Linux/macOS CI.
+        with patch.dict(
+            os.environ,
+            {
+                "ProgramFiles(x86)": r"C:\Program Files (x86)",
+                "ProgramFiles": r"C:\Program Files",
+                "LOCALAPPDATA": r"C:\Users\GitManager\AppData\Local",
+            },
+            clear=True,
+        ):
+            directories = [
+                str(path).replace("\\", "/")
+                for path in BUILD.windows_packaging_search_directories()
+            ]
         self.assertTrue(any(path.endswith("/NSIS/Bin") for path in directories))
 
     def test_tauri_keeps_nsis_only_as_the_windows_fallback(self):
@@ -116,8 +130,8 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('"gitmanager.service.exe": sidecar_dir / f"gitmanager.service-{triple}.exe"', build_source)
         self.assertIn('"gitmanager.service.exe"', store_source)
         self.assertIn('"/SC", "ONLOGON"', watcher_source)
-        self.assertIn("git-manager.exe", desktop["detectRunningProcesses"])
-        self.assertIn("git-manager-service.exe", desktop["detectRunningProcesses"])
+        self.assertIn("git-manager.exe", desktop["msi"]["detectRunningProcesses"])
+        self.assertIn("git-manager-service.exe", desktop["msi"]["detectRunningProcesses"])
         self.assertIn("GitManager Background Service", watcher_source)
         self.assertIn("gitmanager-updater.service", watcher_source)
         self.assertIn("com.gitmanager.updater", watcher_source)
