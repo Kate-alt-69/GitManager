@@ -250,6 +250,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         core_preferences = (ROOT / "crates" / "gitmanager-core" / "src" / "app_preferences.rs").read_text(encoding="utf-8")
         desktop_manifest = (ROOT / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
         service_manifest = (ROOT / "crates" / "git-manager-service" / "Cargo.toml").read_text(encoding="utf-8")
+        archive_watcher = (ROOT / "crates" / "git-manager-service" / "src" / "archive_watcher.rs").read_text(encoding="utf-8")
         crash_helper_manifest = (ROOT / "crates" / "crash-helper" / "Cargo.toml").read_text(encoding="utf-8")
         desktop_source = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
 
@@ -258,6 +259,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('#[cfg(feature = "scan-engine")]', core_library)
         self.assertIn("pub mod scanner;", core_library)
         self.assertNotIn("scan-engine", desktop_manifest)
+        self.assertNotIn('gitmanager-archive = ', core_manifest)
         self.assertIn('features = ["scan-engine"]', service_manifest)
         self.assertIn("pub use gitmanager_core::repository_index;", desktop_source)
         self.assertNotIn("pub use gitmanager_core::scanner;", desktop_source)
@@ -295,6 +297,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("crash_helper::service_get_archive_cloud_storage_info", desktop_source)
         self.assertIn("crash_helper::service_configure_archive_cloud_storage", desktop_source)
         self.assertIn("crash_helper::service_disable_archive_cloud_storage", desktop_source)
+        self.assertIn("crash_helper::with_repository_archive_lock", archive_watcher)
         self.assertNotIn("fs::create_dir_all(&candidate)", desktop_source)
         self.assertNotIn("candidate.canonicalize()", desktop_source)
         self.assertNotIn("archive::capture_repository(", desktop_source)
