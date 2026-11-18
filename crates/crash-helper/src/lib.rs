@@ -108,6 +108,8 @@ enum ServiceCommand {
     MarkAllNotificationsRead,
     LoadAppPreferences,
     SaveAppPreferences { payload: serde_json::Value },
+    GetRepositoryIndexGeneration,
+    LoadIndexedRepositories { filter_mode: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,6 +599,41 @@ fn read_repository_file(
             branch.as_deref(),
         ),
     )
+}
+
+#[cfg(feature = "repository-data")]
+fn get_repository_index_generation(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository index generation",
+        gitmanager_core::repository_index::repository_index_modified_unix_nanos()
+            .map(|generation| generation.to_string()),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn load_indexed_repositories(state: &ServiceState, filter_mode: String) -> ServiceResponse {
+    let result = gitmanager_core::repository_index::load_persisted_repository_index()
+        .map(|index| {
+            let (repositories, truncated) = index
+                .map(|index| (index.repositories, index.truncated))
+                .unwrap_or_else(|| (Vec::new(), false));
+            gitmanager_core::repository_index::build_indexed_summary_with_scan_status(
+                repositories,
+                &filter_mode,
+                truncated,
+            )
+        });
+    repository_data_response(state, "Indexed repository snapshot", result)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn get_repository_index_generation(state: &ServiceState) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+#[cfg(not(feature = "repository-data"))]
+fn load_indexed_repositories(state: &ServiceState, _: String) -> ServiceResponse {
+    service_data_unavailable(state)
 }
 
 #[cfg(feature = "preferences-storage")]
@@ -1099,6 +1136,9 @@ fn handle_service_connection(
                 ServiceCommand::MarkAllNotificationsRead => mark_all_notifications_read(state),
                 ServiceCommand::LoadAppPreferences => load_app_preferences(state),
                 ServiceCommand::SaveAppPreferences { payload } => save_app_preferences(state, payload),
+                ServiceCommand::GetRepositoryIndexGeneration => get_repository_index_generation(state),
+                ServiceCommand::LoadIndexedRepositories { filter_mode } =>
+                    load_indexed_repositories(state, filter_mode),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
@@ -1365,6 +1405,13 @@ pub fn service_load_app_preferences() -> Result<serde_json::Value, String> {
 }
 pub fn service_save_app_preferences(payload: serde_json::Value) -> Result<serde_json::Value, String> {
     service_response_data(ServiceCommand::SaveAppPreferences { payload }, "saved application preferences")
+}
+
+pub fn service_get_repository_index_generation() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::GetRepositoryIndexGeneration, "repository index generation")
+}
+pub fn service_load_indexed_repositories(filter_mode: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::LoadIndexedRepositories { filter_mode }, "indexed repository snapshot")
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
