@@ -1971,7 +1971,7 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
             let mut notification_generation =
                 notification_center::notification_store_modified_unix_nanos().unwrap_or_default();
             let mut last_service_check = Instant::now();
-            let mut last_service_state: Option<(bool, u32)> = None;
+            let mut last_service_state: Option<(bool, u32, u32, u32)> = None;
 
             loop {
                 std::thread::sleep(Duration::from_secs(1));
@@ -2009,8 +2009,11 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
                         };
 
                     let changed = last_service_state
-                        .map(|(previous_ready, previous_generation)| {
-                            previous_ready != ready || previous_generation != generation
+                        .map(|(previous_ready, previous_generation, previous_pid, previous_protocol)| {
+                            previous_ready != ready
+                                || previous_generation != generation
+                                || previous_pid != process_id
+                                || previous_protocol != protocol_version
                         })
                         .unwrap_or(true);
                     if changed {
@@ -2024,7 +2027,7 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
                                 "message": message,
                             }),
                         );
-                        last_service_state = Some((ready, generation));
+                        last_service_state = Some((ready, generation, process_id, protocol_version));
                     }
                     last_service_check = Instant::now();
                 }
