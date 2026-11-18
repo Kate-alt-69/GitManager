@@ -1342,25 +1342,25 @@ fn handle_service_connection(
                 ServiceCommand::SaveAccount { payload } => save_account_storage(state, payload),
                 ServiceCommand::InspectRepository { repo_path } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || load_repository_overview(state, repo_path))
+                    with_repository_read_lock(&lock_path, || load_repository_overview(state, repo_path))
                 }
                 ServiceCommand::LoadCommitHistory {
                     repo_path, offset, limit, branch_filter, search_query,
                 } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || load_commit_history(
+                    with_repository_read_lock(&lock_path, || load_commit_history(
                         state, repo_path, offset, limit, branch_filter, search_query,
                     ))
                 }
                 ServiceCommand::GetCommitDetails { repo_path, oid } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || load_commit_details(state, repo_path, oid))
+                    with_repository_read_lock(&lock_path, || load_commit_details(state, repo_path, oid))
                 }
                 ServiceCommand::ListRepositoryFiles {
                     repo_path, relative_path, source, branch,
                 } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || list_repository_files(
+                    with_repository_read_lock(&lock_path, || list_repository_files(
                         state, repo_path, relative_path, source, branch,
                     ))
                 }
@@ -1368,7 +1368,7 @@ fn handle_service_connection(
                     repo_path, relative_path, source, branch,
                 } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || read_repository_file(
+                    with_repository_read_lock(&lock_path, || read_repository_file(
                         state, repo_path, relative_path, source, branch,
                     ))
                 }
@@ -1384,11 +1384,11 @@ fn handle_service_connection(
                 }
                 ServiceCommand::GetRepositoryChanges { repo_path } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || get_repository_changes(state, repo_path))
+                    with_repository_read_lock(&lock_path, || get_repository_changes(state, repo_path))
                 }
                 ServiceCommand::ReadRepositoryFileDiff { repo_path, relative_path, staged } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || {
+                    with_repository_read_lock(&lock_path, || {
                         read_repository_file_diff(state, repo_path, relative_path, staged)
                     })
                 }
@@ -1434,7 +1434,7 @@ fn handle_service_connection(
                 }
                 ServiceCommand::ListLocalRepositoryBranches { repo_path } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || list_local_repository_branches(state, repo_path))
+                    with_repository_read_lock(&lock_path, || list_local_repository_branches(state, repo_path))
                 }
                 ServiceCommand::SwitchRepositoryBranch { repo_path, branch_name } => {
                     let lock_path = repo_path.clone();
@@ -1465,13 +1465,13 @@ fn handle_service_connection(
                 }
                 ServiceCommand::CaptureRepositoryArchive { repo_path, kind, archive_root } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || {
+                    with_repository_read_lock(&lock_path, || {
                         capture_repository_archive(state, repo_path, kind, archive_root)
                     })
                 }
                 ServiceCommand::ListRepositoryArchives { repo_path, kind, archive_root } => {
                     let lock_path = repo_path.clone();
-                    with_repository_operation_lock(&lock_path, || {
+                    with_repository_read_lock(&lock_path, || {
                         list_repository_archives(state, repo_path, kind, archive_root)
                     })
                 }
