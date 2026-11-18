@@ -1637,6 +1637,15 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
     if endpoint.version == 0 || endpoint.version > SERVICE_PROTOCOL_VERSION {
         return Err("Service-control protocol version is unsupported.".to_string());
     }
+    if endpoint.version < SERVICE_PROTOCOL_VERSION
+        && !matches!(command, ServiceCommand::Status)
+    {
+        return Err(format!(
+            "GitManager core service protocol v{} is outdated; protocol v{} is required. Restart the required service.",
+            endpoint.version,
+            SERVICE_PROTOCOL_VERSION,
+        ));
+    }
 
     let address: SocketAddr = endpoint.address.parse()
         .map_err(|_| "Service-control address is invalid.".to_string())?;
