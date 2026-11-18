@@ -4,6 +4,7 @@
 //! share its repository index, user preferences and notification store.
 
 pub mod account_store;
+pub mod account_types;
 pub mod app_preferences;
 pub mod git_info;
 pub mod repository_index;
