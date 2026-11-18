@@ -247,6 +247,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
     def test_repository_scan_engine_is_enabled_only_by_the_headless_service(self):
         core_manifest = (ROOT / "crates" / "gitmanager-core" / "Cargo.toml").read_text(encoding="utf-8")
         core_library = (ROOT / "crates" / "gitmanager-core" / "src" / "lib.rs").read_text(encoding="utf-8")
+        core_preferences = (ROOT / "crates" / "gitmanager-core" / "src" / "app_preferences.rs").read_text(encoding="utf-8")
         desktop_manifest = (ROOT / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
         service_manifest = (ROOT / "crates" / "git-manager-service" / "Cargo.toml").read_text(encoding="utf-8")
         crash_helper_manifest = (ROOT / "crates" / "crash-helper" / "Cargo.toml").read_text(encoding="utf-8")
@@ -307,6 +308,9 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertNotIn("load_persisted_repository_index", desktop_source)
         self.assertNotIn("read_app_preferences_file", desktop_source)
         self.assertNotIn("write_app_preferences_file", desktop_source)
+        application_directories = desktop_source.split("fn application_directories()", 1)[1].split("\\n}", 1)[0]
+        self.assertNotIn("create_dir_all", application_directories)
+        self.assertIn("crate::storage::ensure_data_layout()?", core_preferences)
         self.assertNotIn("check_all_repos_for_updates", desktop_source)
         self.assertNotIn("notification_center::list_notifications()", desktop_source)
         self.assertNotIn("notification_center::mark_notification_read(", desktop_source)
