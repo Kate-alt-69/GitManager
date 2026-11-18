@@ -524,24 +524,27 @@ fn capture_enabled_archives(
     local_enabled: bool,
     remote_enabled: bool,
 ) {
-    if local_enabled {
-        if let Err(error) = archive::capture_repository(
-            repository_path,
-            Some(archive_root),
-            "local",
-        ) {
-            eprintln!("GitManager Local Archive for {repository_path}: {error}");
+    let repository_path_owned = repository_path.to_string();
+    crash_helper::with_repository_operation_lock(&repository_path_owned, || {
+        if local_enabled {
+            if let Err(error) = archive::capture_repository(
+                &repository_path_owned,
+                Some(archive_root),
+                "local",
+            ) {
+                eprintln!("GitManager Local Archive for {repository_path_owned}: {error}");
+            }
         }
-    }
-    if remote_enabled {
-        if let Err(error) = archive::capture_repository(
-            repository_path,
-            Some(archive_root),
-            "remote",
-        ) {
-            eprintln!("GitManager Remote Archive for {repository_path}: {error}");
+        if remote_enabled {
+            if let Err(error) = archive::capture_repository(
+                &repository_path_owned,
+                Some(archive_root),
+                "remote",
+            ) {
+                eprintln!("GitManager Remote Archive for {repository_path_owned}: {error}");
+            }
         }
-    }
+    });
 }
 
 #[cfg(test)]
