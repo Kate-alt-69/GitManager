@@ -37,7 +37,8 @@ const UI_STARTUP_GRACE: Duration = Duration::from_secs(90);
 const UI_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 const UI_RECOVERY_GRACE: Duration = Duration::from_secs(15);
 const SUPERVISOR_POLL: Duration = Duration::from_millis(400);
-const MAX_MESSAGE_BYTES: u64 = 4096;
+const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
+const SERVICE_PROTOCOL_VERSION: u32 = 2;
 pub const SERVICE_GENERATION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +55,8 @@ enum ServiceCommand {
     Suspend { seconds: u64 },
     Resume,
     RequestScan,
+    LoadAccounts,
+    SaveAccount { payload: serde_json::Value },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +80,8 @@ struct ServiceResponse {
     ok: bool,
     status: ServiceStatus,
     error: Option<String>,
+    #[serde(default)]
+    data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,7 +271,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
 
     let endpoint_path = data_dir.join(ENDPOINT_FILE);
     let endpoint = Endpoint {
-        version: 1,
+        version: SERVICE_PROTOCOL_VERSION,
         address: listener.local_addr().map_err(|error| error.to_string())?.to_string(),
         token: Uuid::new_v4().to_string(),
     };
@@ -308,14 +313,89 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     })
 }
 
+#[cfg(feature = "account-storage")]
+fn load_account_storage(state: &ServiceState) -> ServiceResponse {
+    match gitmanager_core::account_store::load_accounts()
+        .and_then(|accounts| serde_json::to_value(accounts)
+            .map_err(|error| format!("Could not encode saved accounts: {error}")))
+    {
+        Ok(data) => ServiceResponse {
+            ok: true,
+            status: state.status("Account metadata loaded from the core service"),
+            error: None,
+            data: Some(data),
+        },
+        Err(error) => ServiceResponse {
+            ok: false,
+            status: state.status("Could not load account metadata"),
+            error: Some(error),
+            data: None,
+        },
+    }
+}
+
+#[cfg(not(feature = "account-storage"))]
+fn load_account_storage(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Account storage is not enabled in this process"),
+        error: Some("Account persistence is only available through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+
+#[cfg(feature = "account-storage")]
+fn save_account_storage(state: &ServiceState, payload: serde_json::Value) -> ServiceResponse {
+    let result = (|| {
+        let metadata_value = payload.get("metadata")
+            .cloned()
+            .ok_or_else(|| "Account save request is missing metadata.".to_string())?;
+        let repositories_value = payload.get("repositories")
+            .cloned()
+            .ok_or_else(|| "Account save request is missing repository data.".to_string())?;
+        let metadata: gitmanager_core::account_store::AccountMetadata =
+            serde_json::from_value(metadata_value)
+                .map_err(|error| format!("Account metadata payload is invalid: {error}"))?;
+        let repositories: Vec<gitmanager_core::git_info::GitRepositoryInfo> =
+            serde_json::from_value(repositories_value)
+                .map_err(|error| format!("Account repository cache payload is invalid: {error}"))?;
+        gitmanager_core::account_store::save_account(&metadata, &repositories)
+    })();
+
+    match result {
+        Ok(()) => ServiceResponse {
+            ok: true,
+            status: state.status("Account metadata saved by the core service"),
+            error: None,
+            data: None,
+        },
+        Err(error) => ServiceResponse {
+            ok: false,
+            status: state.status("Could not save account metadata"),
+            error: Some(error),
+            data: None,
+        },
+    }
+}
+
+#[cfg(not(feature = "account-storage"))]
+fn save_account_storage(state: &ServiceState, _payload: serde_json::Value) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Account storage is not enabled in this process"),
+        error: Some("Account persistence is only available through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+
 fn handle_service_connection(
     mut stream: TcpStream,
     token: &str,
     state: &ServiceState,
     scan_requested: &AtomicBool,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
     let mut bytes = Vec::new();
     let read_result = (&mut stream).take(MAX_MESSAGE_BYTES).read_to_end(&mut bytes);
@@ -324,6 +404,7 @@ fn handle_service_connection(
             ok: false,
             status: state.status("Invalid service-control request"),
             error: Some("Invalid or oversized request".to_string()),
+            data: None,
         }
     } else {
         match serde_json::from_slice::<ServiceRequest>(&bytes) {
@@ -332,16 +413,19 @@ fn handle_service_connection(
                     ok: true,
                     status: state.status("Background service status"),
                     error: None,
+                    data: None,
                 },
                 ServiceCommand::Suspend { seconds } => ServiceResponse {
                     ok: true,
                     status: state.suspend(seconds),
                     error: None,
+                    data: None,
                 },
                 ServiceCommand::Resume => ServiceResponse {
                     ok: true,
                     status: state.resume(),
                     error: None,
+                    data: None,
                 },
                 ServiceCommand::RequestScan => {
                     scan_requested.store(true, Ordering::Release);
@@ -349,29 +433,45 @@ fn handle_service_connection(
                         ok: true,
                         status: state.status("Repository index refresh queued"),
                         error: None,
+                        data: None,
                     }
-                },
+                }
+                ServiceCommand::LoadAccounts => load_account_storage(state),
+                ServiceCommand::SaveAccount { payload } => save_account_storage(state, payload),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
                 status: state.status("Unauthorized service-control request"),
                 error: Some("Authentication failed".to_string()),
+                data: None,
             },
             Err(error) => ServiceResponse {
                 ok: false,
                 status: state.status("Invalid service-control request"),
                 error: Some(format!("Invalid request: {error}")),
+                data: None,
             },
         }
     };
 
     if let Ok(encoded) = serde_json::to_vec(&response) {
-        let _ = stream.write_all(&encoded);
+        let response_bytes = if encoded.len() as u64 >= MAX_MESSAGE_BYTES {
+            serde_json::to_vec(&ServiceResponse {
+                ok: false,
+                status: state.status("Service response exceeded its size limit"),
+                error: Some("The service response is too large to send over local IPC.".to_string()),
+                data: None,
+            }).unwrap_or_default()
+        } else {
+            encoded
+        };
+        let _ = stream.write_all(&response_bytes);
         let _ = stream.flush();
     }
 }
 
-fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String> {
+
+fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, String> {
     let endpoint_path = gitmanager_data_dir()?.join(ENDPOINT_FILE);
     let content = fs::read(&endpoint_path)
         .map_err(|error| format!("GitManager background service is not reachable: {error}"))?;
@@ -381,7 +481,7 @@ fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String
 
     let endpoint: Endpoint = serde_json::from_slice(&content)
         .map_err(|error| format!("Service-control endpoint is invalid: {error}"))?;
-    if endpoint.version != 1 {
+    if endpoint.version != SERVICE_PROTOCOL_VERSION {
         return Err("Service-control protocol version is unsupported.".to_string());
     }
 
@@ -391,14 +491,17 @@ fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String
         return Err("Service-control endpoint is not a loopback address.".to_string());
     }
 
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
         .map_err(|error| format!("Could not connect to GitManager background service: {error}"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
 
     let request = ServiceRequest { token: endpoint.token, command };
     let encoded = serde_json::to_vec(&request)
         .map_err(|error| format!("Could not encode service-control request: {error}"))?;
+    if encoded.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err("Account request is too large for the local service protocol.".to_string());
+    }
     stream.write_all(&encoded)
         .map_err(|error| format!("Could not send service-control request: {error}"))?;
     stream.shutdown(std::net::Shutdown::Write).ok();
@@ -406,12 +509,28 @@ fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String
     let mut response_bytes = Vec::new();
     stream.take(MAX_MESSAGE_BYTES).read_to_end(&mut response_bytes)
         .map_err(|error| format!("Could not read service-control response: {error}"))?;
+    if response_bytes.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err("Service-control response exceeded its size limit.".to_string());
+    }
     let response: ServiceResponse = serde_json::from_slice(&response_bytes)
         .map_err(|error| format!("Service-control response was invalid: {error}"))?;
     if !response.ok {
         return Err(response.error.unwrap_or_else(|| "Service-control request was rejected.".to_string()));
     }
-    Ok(response.status)
+    Ok(response)
+}
+
+fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String> {
+    send_service_request(command).map(|response| response.status)
+}
+
+pub fn load_service_account_cache() -> Result<serde_json::Value, String> {
+    let response = send_service_request(ServiceCommand::LoadAccounts)?;
+    response.data.ok_or_else(|| "The service returned no saved account metadata.".to_string())
+}
+
+pub fn save_service_account_cache(payload: serde_json::Value) -> Result<(), String> {
+    send_service_request(ServiceCommand::SaveAccount { payload }).map(|_| ())
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
