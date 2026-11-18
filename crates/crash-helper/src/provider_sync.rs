@@ -227,7 +227,7 @@ pub async fn fetch_remote_account_repositories(
 
 async fn fetch_github_account(req: ProviderAccountRequest) -> Result<ConnectedAccountSummary, String> {
     let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static("GitManager-Tauri2/1.0"));
+    headers.insert(USER_AGENT, HeaderValue::from_static("GitManager-Core-Service/1.0"));
     headers.insert(
         ACCEPT,
         HeaderValue::from_static("application/vnd.github+json"),
@@ -404,12 +404,14 @@ async fn fetch_gitlab_account(req: ProviderAccountRequest) -> Result<ConnectedAc
     let raw_identity = req.username_or_host.trim();
     let (base_url, username) = if raw_identity.starts_with("https://") {
         (validate_gitlab_base_url(raw_identity)?, String::new())
+    } else if raw_identity.is_empty() && has_token {
+        ("https://gitlab.com".to_string(), String::new())
     } else {
-        ("https://gitlab.com".to_string(), validate_provider_username(raw_identity, "GitLab").unwrap_or_default())
+        (
+            "https://gitlab.com".to_string(),
+            validate_provider_username(raw_identity, "GitLab")?,
+        )
     };
-    if !has_token && username.is_empty() {
-        return Err("Enter a GitLab username or provide a personal access token.".to_string());
-    }
 
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
