@@ -1390,6 +1390,47 @@ mod tests {
     }
 
     #[test]
+    fn repository_data_commands_use_bounded_versioned_request_shapes() {
+        let overview = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::InspectRepository {
+                repo_path: "/workspace/repository".to_string(),
+            },
+        };
+        let overview = serde_json::to_value(overview).expect("encode repository overview request");
+        assert_eq!(overview["command"]["action"], "inspect_repository");
+        assert_eq!(overview["command"]["repo_path"], "/workspace/repository");
+
+        let history = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::LoadCommitHistory {
+                repo_path: "/workspace/repository".to_string(),
+                offset: 50,
+                limit: 50,
+                branch_filter: Some("feature/topic".to_string()),
+                search_query: Some("needle".to_string()),
+            },
+        };
+        let history = serde_json::to_value(history).expect("encode commit history request");
+        assert_eq!(history["command"]["action"], "load_commit_history");
+        assert_eq!(history["command"]["offset"], 50);
+        assert_eq!(history["command"]["limit"], 50);
+        assert_eq!(history["command"]["branch_filter"], "feature/topic");
+        assert_eq!(history["command"]["search_query"], "needle");
+
+        let details = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::GetCommitDetails {
+                repo_path: "/workspace/repository".to_string(),
+                oid: "0123456789abcdef".to_string(),
+            },
+        };
+        let details = serde_json::to_value(details).expect("encode commit details request");
+        assert_eq!(details["command"]["action"], "get_commit_details");
+        assert_eq!(details["command"]["oid"], "0123456789abcdef");
+    }
+
+    #[test]
     fn repository_scan_request_uses_the_authenticated_control_protocol() {
         let request = ServiceRequest {
             token: "test-token".to_string(),
