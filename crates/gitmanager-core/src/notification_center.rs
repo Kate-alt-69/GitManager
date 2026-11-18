@@ -211,6 +211,24 @@ pub fn mark_notification_read(id: &str) -> Result<(), String> {
     mutate_notification(id, |notification| notification.read = true)
 }
 
+/// Marks every currently unread notification as read in one atomic store update.
+pub fn mark_all_notifications_read() -> Result<usize, String> {
+    let path = notification_file()?;
+    let _lock = lock_file(&path)?;
+    let mut store = read_store(&path)?;
+    let mut changed = 0usize;
+    for notification in &mut store.notifications {
+        if !notification.read {
+            notification.read = true;
+            changed += 1;
+        }
+    }
+    if changed > 0 {
+        write_store(&path, &store)?;
+    }
+    Ok(changed)
+}
+
 pub fn dismiss_notification(id: &str) -> Result<(), String> {
     let path = notification_file()?;
     let _lock = lock_file(&path)?;
@@ -249,6 +267,32 @@ mod tests {
         assert_eq!(first, repeated);
         assert_ne!(first, different_commit);
         assert_ne!(first, different_repository);
+    }
+
+
+    #[test]
+    fn bulk_read_only_changes_unread_notifications() {
+        let mut notifications = vec![
+            AppNotification {
+                id: "unread".to_string(), kind: "repository-update".to_string(),
+                title: "Update".to_string(), body: "Body".to_string(),
+                created_at_unix_ms: 1, read: false, repository_path: None,
+            },
+            AppNotification {
+                id: "read".to_string(), kind: "system".to_string(),
+                title: "Finished".to_string(), body: "Done".to_string(),
+                created_at_unix_ms: 2, read: true, repository_path: None,
+            },
+        ];
+        let mut changed = 0usize;
+        for notification in &mut notifications {
+            if !notification.read {
+                notification.read = true;
+                changed += 1;
+            }
+        }
+        assert_eq!(changed, 1);
+        assert!(notifications.iter().all(|notification| notification.read));
     }
 
     #[test]
