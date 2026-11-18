@@ -32,7 +32,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1.40", default-features = false, features = ["rt", "rt-multi-thread", "time"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
-gitmanager-archive = { path = "../crates/archive-core" }
 crash-helper = { path = "../crates/crash-helper" }
 gitmanager-core = { path = "../crates/gitmanager-core" }
 fs2 = "0.4"
