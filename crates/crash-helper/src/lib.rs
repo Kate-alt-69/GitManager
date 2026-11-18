@@ -2223,6 +2223,8 @@ mod tests {
         let status: super::ServiceStatus =
             serde_json::from_value(legacy).expect("deserialize legacy status");
         assert_eq!(status.service_generation, 0);
+        assert!(!status.remote_check_pending);
+        assert!(!status.remote_check_running);
     }
 
     #[test]
