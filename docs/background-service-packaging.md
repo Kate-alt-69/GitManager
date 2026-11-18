@@ -36,6 +36,14 @@ The service control listener has a hard cap of eight concurrent requests. This k
 
 The required service performs Git repository overview reads, paginated commit-history traversal and individual commit-detail calculations. The Tauri command layer forwards those requests over the authenticated protocol-v2 loopback channel and deserializes the result for the UI. Commit-history requests are bounded to 100 results maximum (the UI requests 50 at a time); branch and text filters execute in the service process.
 
+## Notification lifecycle
+
+The required service is the only process that publishes and mutates persistent notification history. The Tauri UI requests the history, mark-read, bulk mark-read and dismiss operations through authenticated protocol-v2 IPC. The notification file is capped at 200 records and 2 MiB; deterministic repository-update IDs prevent duplicate records across service restarts.
+
+The In-app notifications and Operating system notifications preferences are independent. The service stores a repository-update notification once, then sends the same persisted title/body record to the OS only when OS notifications are enabled and that record was newly created. If persistence fails, the service logs the error and retries on the next remote-check cycle instead of emitting an OS toast without a matching in-app record. Disabling in-app notifications hides the in-app panel but does not implicitly disable OS notifications.
+
+The top-right Notifications popover supports All/Unread filters, per-item open/read/dismiss actions, and bulk mark-read. The Task Center is a separate compact top-right popover for required-service health, repository-index activity and bounded service-log output; neither surface is a full navigation page.
+
 ## Native runtime monitoring and idle behavior
 
 The Tauri host owns one lightweight native monitor thread. It watches the repository-index and notification-history generation stamps and emits Tauri events when those files change. It checks the authenticated core-service endpoint every five seconds and reports the native host heartbeat every three seconds to crash_helper. The React/WebView frontend subscribes to these events rather than polling on intervals.
