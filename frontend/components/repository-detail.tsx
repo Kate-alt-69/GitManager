@@ -329,7 +329,7 @@ export function RepositoryDetail({
 
 			<div className="gm-detail-stats">
 				<div><span>Current branch</span><strong><Glyph>⑂</Glyph>{displayRepo.current_branch}</strong></div>
-				<div><span>Commits indexed</span><strong>{displayRepo.total_commits_loaded}</strong></div>
+				<div><span>Commits loaded</span><strong>{displayRepo.total_commits_loaded}</strong></div>
 				<div><span>Working tree</span><strong>{displayRepo.dirty_files_count ? `${displayRepo.dirty_files_count} changed` : "Clean"}</strong></div>
 				<div><span>Remotes</span><strong>{displayRepo.remotes?.length ?? 0}</strong></div>
 			</div>
