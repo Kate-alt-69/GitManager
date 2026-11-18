@@ -2,7 +2,6 @@ mod process_utils;
 pub mod archive;
 pub use gitmanager_core::notification_center;
 pub use gitmanager_core::{load_background_preferences, AppPreferences, RepositoryPreferences};
-mod repository_workspace;
 pub use gitmanager_core::git_info;
 pub mod remote_providers;
 pub use gitmanager_core::repository_index;
@@ -926,101 +925,165 @@ async fn read_repository_file(
         .map_err(|error| format!("Core service returned an invalid repository file preview: {error}"))
 }
 
+async fn request_core_service<T, F>(
+    operation: F,
+    description: &'static str,
+) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    F: FnOnce() -> Result<serde_json::Value, String> + Send + 'static,
+{
+    let data = tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| format!("{description} service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned invalid {description}: {error}"))
+}
+
 #[tauri::command]
 async fn save_conflict_resolution(
-    repo_path: String,
-    relative_path: String,
-    content: String,
+    repo_path: String, relative_path: String, content: String,
 ) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || {
-        repository_workspace::save_conflict_resolution(&repo_path, &relative_path, &content)
-    })
-    .await
-    .map_err(|error| format!("Conflict resolution save task failed: {error}"))?
+    request_core_service(
+        move || crash_helper::service_save_conflict_resolution(repo_path, relative_path, content),
+        "conflict resolution",
+    ).await
 }
 
 #[tauri::command]
-async fn preview_repository_pull(repo_path: String) -> Result<repository_workspace::PullPreview, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::preview_repository_pull(&repo_path))
-        .await.map_err(|error| format!("Pull preview task failed: {error}"))?
+async fn preview_repository_pull(
+    repo_path: String,
+) -> Result<gitmanager_core::repository_workspace::PullPreview, String> {
+    request_core_service(
+        move || crash_helper::service_preview_repository_pull(repo_path),
+        "pull preview",
+    ).await
 }
 
 #[tauri::command]
-async fn get_repository_changes(repo_path: String) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::get_repository_changes(&repo_path))
-        .await.map_err(|error| format!("Repository status task failed: {error}"))?
-}
-#[tauri::command]
-async fn read_repository_file_diff(repo_path: String, relative_path: String, staged: bool) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::read_repository_file_diff(&repo_path, &relative_path, staged))
-        .await.map_err(|error| format!("Repository diff task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn fetch_repository_remote(repo_path: String, remote_name: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::fetch_repository_remote(&repo_path, &remote_name))
-        .await.map_err(|error| format!("Remote fetch task failed: {error}"))?
+async fn get_repository_changes(
+    repo_path: String,
+) -> Result<Vec<gitmanager_core::repository_workspace::WorktreeChange>, String> {
+    request_core_service(
+        move || crash_helper::service_get_repository_changes(repo_path),
+        "repository changes",
+    ).await
 }
 
 #[tauri::command]
-async fn stage_repository_paths(repo_path: String, paths: Vec<String>) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::stage_repository_paths(&repo_path, &paths))
-        .await.map_err(|error| format!("Repository stage task failed: {error}"))?
+async fn read_repository_file_diff(
+    repo_path: String, relative_path: String, staged: bool,
+) -> Result<String, String> {
+    request_core_service(
+        move || crash_helper::service_read_repository_file_diff(repo_path, relative_path, staged),
+        "repository diff",
+    ).await
 }
 
 #[tauri::command]
-async fn unstage_repository_paths(repo_path: String, paths: Vec<String>) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::unstage_repository_paths(&repo_path, &paths))
-        .await.map_err(|error| format!("Repository unstage task failed: {error}"))?
+async fn fetch_repository_remote(
+    repo_path: String, remote_name: String,
+) -> Result<String, String> {
+    request_core_service(
+        move || crash_helper::service_fetch_repository_remote(repo_path, remote_name),
+        "remote fetch",
+    ).await
 }
 
 #[tauri::command]
-async fn preview_repository_commit(repo_path: String) -> Result<repository_workspace::RepositoryCommitPreview, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::preview_repository_commit(&repo_path))
-        .await.map_err(|error| format!("Repository commit preview task failed: {error}"))?
+async fn stage_repository_paths(
+    repo_path: String, paths: Vec<String>,
+) -> Result<Vec<gitmanager_core::repository_workspace::WorktreeChange>, String> {
+    request_core_service(
+        move || crash_helper::service_stage_repository_paths(repo_path, paths),
+        "stage",
+    ).await
+}
+
+#[tauri::command]
+async fn unstage_repository_paths(
+    repo_path: String, paths: Vec<String>,
+) -> Result<Vec<gitmanager_core::repository_workspace::WorktreeChange>, String> {
+    request_core_service(
+        move || crash_helper::service_unstage_repository_paths(repo_path, paths),
+        "unstage",
+    ).await
+}
+
+#[tauri::command]
+async fn preview_repository_commit(
+    repo_path: String,
+) -> Result<gitmanager_core::repository_workspace::RepositoryCommitPreview, String> {
+    request_core_service(
+        move || crash_helper::service_preview_repository_commit(repo_path),
+        "commit preview",
+    ).await
 }
 
 #[tauri::command]
 async fn create_repository_commit(
     repo_path: String, message: String, expected_index_tree: String,
-) -> Result<(String, Vec<repository_workspace::WorktreeChange>), String> {
-    tokio::task::spawn_blocking(move || repository_workspace::create_repository_commit(&repo_path, &message, &expected_index_tree))
-        .await.map_err(|error| format!("Repository commit task failed: {error}"))?
+) -> Result<(String, Vec<gitmanager_core::repository_workspace::WorktreeChange>), String> {
+    request_core_service(
+        move || crash_helper::service_create_repository_commit(repo_path, message, expected_index_tree),
+        "commit",
+    ).await
 }
 
 #[tauri::command]
-async fn delete_repository_path(repo_path: String, relative_path: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::delete_repository_path(&repo_path, &relative_path))
-        .await.map_err(|error| format!("Repository delete task failed: {error}"))?
+async fn delete_repository_path(
+    repo_path: String, relative_path: String,
+) -> Result<String, String> {
+    request_core_service(
+        move || crash_helper::service_delete_repository_path(repo_path, relative_path),
+        "repository deletion",
+    ).await
 }
 
 #[tauri::command]
 async fn prepare_and_pull_repository_update(
-    repo_path: String, expected_branch: String, expected_local_oid: String,
-    expected_remote_oid: String, expected_status_token: String, mode: String,
-    stage_paths: Vec<String>, commit_message: Option<String>,
-) -> Result<repository_workspace::PullExecutionResult, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::prepare_and_pull_repository_update(
-        &repo_path, &expected_branch, &expected_local_oid, &expected_remote_oid,
-        &expected_status_token, &mode, &stage_paths, commit_message.as_deref().unwrap_or("")
-    )).await.map_err(|error| format!("Confirmed Pull task failed: {error}"))?
+    repo_path: String,
+    expected_branch: String,
+    expected_local_oid: String,
+    expected_remote_oid: String,
+    expected_status_token: String,
+    mode: String,
+    stage_paths: Vec<String>,
+    commit_message: Option<String>,
+) -> Result<gitmanager_core::repository_workspace::PullExecutionResult, String> {
+    request_core_service(
+        move || crash_helper::service_prepare_and_pull_repository_update(
+            repo_path,
+            expected_branch,
+            expected_local_oid,
+            expected_remote_oid,
+            expected_status_token,
+            mode,
+            stage_paths,
+            commit_message.unwrap_or_default(),
+        ),
+        "pull",
+    ).await
 }
 
-
 #[tauri::command]
-async fn list_local_repository_branches(repo_path: String) -> Result<Vec<git_info::BranchInfo>, String> {
-    tokio::task::spawn_blocking(move || git_info::list_local_repository_branches(Path::new(&repo_path)))
-        .await
-        .map_err(|error| format!("Branch listing task failed: {error}"))?
+async fn list_local_repository_branches(
+    repo_path: String,
+) -> Result<Vec<git_info::BranchInfo>, String> {
+    request_core_service(
+        move || crash_helper::service_list_local_repository_branches(repo_path),
+        "branch list",
+    ).await
 }
 
 #[tauri::command]
-async fn switch_repository_branch(repo_path: String, branch_name: String) -> Result<GitRepositoryInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        git_info::switch_repository_branch(Path::new(&repo_path), &branch_name)
-    })
-    .await
-    .map_err(|error| format!("Branch switch task failed: {error}"))?
+async fn switch_repository_branch(
+    repo_path: String, branch_name: String,
+) -> Result<GitRepositoryInfo, String> {
+    request_core_service(
+        move || crash_helper::service_switch_repository_branch(repo_path, branch_name),
+        "branch switch",
+    ).await
 }
 
 #[tauri::command]
