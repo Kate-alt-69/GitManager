@@ -201,6 +201,7 @@ pub fn run() -> ! {
                     if remote_check_requested {
                         service_control.take_remote_check_request();
                     }
+                    service_control.set_remote_check_running(true);
                     let updates = check_all_repos_for_updates(preferences.scan_roots.clone());
 
                     for update in updates {
@@ -246,6 +247,7 @@ pub fn run() -> ! {
                             }
                         }
                     }
+                    service_control.set_remote_check_running(false);
                     last_remote_check = Instant::now();
                 }
             }
