@@ -73,6 +73,10 @@ pub struct ServiceStatus {
     /// Missing in legacy workers; zero identifies the pre-core-service process.
     #[serde(default)]
     pub service_generation: u32,
+    #[serde(default)]
+    pub process_id: u32,
+    #[serde(default)]
+    pub protocol_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +171,8 @@ impl ServiceState {
             remaining_seconds: remaining,
             message: message.into(),
             service_generation: SERVICE_GENERATION,
+            process_id: std::process::id(),
+            protocol_version: SERVICE_PROTOCOL_VERSION,
         }
     }
 
@@ -566,6 +572,8 @@ pub fn request_service_suspend(seconds: u64) -> Result<ServiceStatus, String> {
             remaining_seconds: seconds,
             message: format!("Background-service suspension queued for {seconds} seconds; the service will observe the persisted state on its next poll: {error}"),
             service_generation: 0,
+            process_id: 0,
+            protocol_version: 0,
         }),
     }
 }
