@@ -1644,20 +1644,37 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
         return Err("Service-control endpoint is not a loopback address.".to_string());
     }
 
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
-        .map_err(|error| format!("Could not connect to GitManager background service: {error}"))?;
-    // Archive capture/restore can legitimately process large repositories;
-    // keep their control connection alive without extending normal status/Git reads.
-    let read_timeout = match &command {
+    // Health/control checks must fail quickly so the native monitor can
+    // report an unavailable service without waiting for a long Git timeout.
+    let (connect_timeout, read_timeout) = match &command {
+        ServiceCommand::Status
+        | ServiceCommand::Suspend { .. }
+        | ServiceCommand::Resume
+        | ServiceCommand::RequestScan
+        | ServiceCommand::RequestRemoteCheck => (
+            Duration::from_secs(2),
+            Duration::from_secs(3),
+        ),
         ServiceCommand::CaptureRepositoryArchive { .. }
         | ServiceCommand::ListRepositoryArchives { .. }
         | ServiceCommand::RestoreRepositoryArchive { .. }
         | ServiceCommand::ConfigureArchiveCloudStorage { .. }
         | ServiceCommand::DisableArchiveCloudStorage { .. }
-        | ServiceCommand::SyncArchiveCloudStorage { .. } => Duration::from_secs(600),
-        ServiceCommand::ConnectGitAccount { .. } => Duration::from_secs(300),
-        _ => Duration::from_secs(90),
+        | ServiceCommand::SyncArchiveCloudStorage { .. } => (
+            Duration::from_secs(5),
+            Duration::from_secs(600),
+        ),
+        ServiceCommand::ConnectGitAccount { .. } => (
+            Duration::from_secs(5),
+            Duration::from_secs(300),
+        ),
+        _ => (
+            Duration::from_secs(5),
+            Duration::from_secs(90),
+        ),
     };
+    let mut stream = TcpStream::connect_timeout(&address, connect_timeout)
+        .map_err(|error| format!("Could not connect to GitManager background service: {error}"))?;
     stream.set_read_timeout(Some(read_timeout)).ok();
     stream.set_write_timeout(Some(Duration::from_secs(15))).ok();
 
