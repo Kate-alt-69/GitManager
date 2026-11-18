@@ -28,6 +28,13 @@ fn repository_worktree_is_clean(repo: &Repository) -> Result<bool, String> {
 }
 
 pub fn check_single_repo_for_remote_update(repo_path: &Path) -> Option<RepoUpdateNotification> {
+    let key = repo_path.to_string_lossy().to_string();
+    crash_helper::with_repository_operation_lock(&key, || {
+        check_single_repo_for_remote_update_locked(repo_path)
+    })
+}
+
+fn check_single_repo_for_remote_update_locked(repo_path: &Path) -> Option<RepoUpdateNotification> {
     let repo = Repository::open(repo_path).ok()?;
     let head = repo.head().ok()?;
     if !head.is_branch() {
@@ -126,6 +133,13 @@ pub fn check_all_repos_for_updates(_root_paths: Vec<String>) -> Vec<RepoUpdateNo
 
 /// Pulls / fast-forwards the specified local repository from `origin/<branch>` when the user clicks "Update Now".
 pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
+    let key = repo_path.to_string_lossy().to_string();
+    crash_helper::with_repository_operation_lock(&key, || {
+        apply_repository_update_locked(repo_path)
+    })
+}
+
+fn apply_repository_update_locked(repo_path: &Path) -> Result<String, String> {
     let repo = Repository::open(repo_path).map_err(|error| error.to_string())?;
     let head = repo.head().map_err(|error| error.to_string())?;
     if !head.is_branch() {
