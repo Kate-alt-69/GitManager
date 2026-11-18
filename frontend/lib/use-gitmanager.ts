@@ -461,7 +461,7 @@ export function useGitManager() {
 
 	return {
 		available, serviceReady, remoteCheckPending, remoteCheckRunning, serviceIndexing, loading, scanning, scanTruncated, indexReady,
-		awaitingInitialIndex: serviceReady && preferences.firstRunComplete && !indexReady,
+		awaitingInitialIndex: serviceReady && !indexReady,
 		version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, accountsLoading, loadAccounts, updates, notifications, setupOpen, setSetupOpen,
 		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
