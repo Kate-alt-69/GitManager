@@ -303,7 +303,8 @@ export function useGitManager() {
 			accessToken: accessToken.trim() ? accessToken.trim() : null,
 		});
 		setAccountsLoaded(true);
-		setAccounts((current) => [			...current.filter((item) => !(
+		setAccounts((current) => [
+			...current.filter((item) => !(
 				item.provider === account.provider &&
 				item.account_login.toLowerCase() === account.account_login.toLowerCase()
 			)),
