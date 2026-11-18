@@ -21,6 +21,8 @@ pub struct ConnectedAccountSummary {
     pub email: String,
     pub avatar_url: String,
     pub profile_url: String,
+    #[serde(default)]
+    pub session_connected: bool,
     pub repositories: Vec<GitRepositoryInfo>,
 }
 
@@ -151,6 +153,7 @@ pub fn fetch_github_cli_account() -> Result<ConnectedAccountSummary, String> {
         email,
         avatar_url: user.avatar_url,
         profile_url: user.html_url,
+        session_connected: true,
         repositories,
     })
 }
@@ -349,6 +352,7 @@ async fn fetch_github_account(req: ProviderAccountRequest) -> Result<ConnectedAc
         email: owner_email,
         avatar_url: gh_user.avatar_url,
         profile_url: gh_user.html_url,
+        session_connected: true,
         repositories: mapped_repos,
     })
 }
@@ -499,6 +503,7 @@ async fn fetch_gitlab_account(req: ProviderAccountRequest) -> Result<ConnectedAc
         email: owner_email,
         avatar_url,
         profile_url: gl_user.web_url,
+        session_connected: true,
         repositories: mapped_repos,
     })
 }
