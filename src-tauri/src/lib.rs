@@ -1179,7 +1179,7 @@ async fn connect_git_account(
     };
     let payload = serde_json::json!({
         "metadata": metadata,
-        "repositories": summary.repositories,
+        "repositories": summary.repositories.clone(),
     });
     tokio::task::spawn_blocking(move || crash_helper::save_service_account_cache(payload))
         .await
