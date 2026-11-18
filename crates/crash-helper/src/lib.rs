@@ -14,7 +14,7 @@ use interprocess::local_socket::{
     ListenerNonblockingMode,
     Stream as LocalSocketStream,
 };
-use interprocess::ConnectWaitMode;
+use interprocess::{ConnectWaitMode, TryClone as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -135,7 +135,7 @@ fn bind_service_local_listener(name: &str) -> io::Result<Listener> {
     {
         use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
 
-        match options.clone().mode(0o600).create_sync() {
+        match options.try_clone()?.mode(0o600).create_sync() {
             Ok(listener) => Ok(listener),
             Err(error) if error.kind() == io::ErrorKind::Unsupported => options.create_sync(),
             Err(error) => Err(error),
