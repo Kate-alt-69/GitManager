@@ -40,7 +40,7 @@ jobs:
 
       - name: Validate local package workflow and manifest YAML
         run: |
-          ruby -e "require 'yaml'; %w[.github/workflows/store-build.yml .github/workflows/release.yml installer/flatpak/com.gitmanager.desktop.yml].each { |path| YAML.load_file(path, aliases: true) }"
+          ruby -e "require 'yaml'; %w[.github/workflows/store-build.yml .github/workflows/release.yml installer/flatpak/com.gitmanager.desktop.yml].each { |path| YAML.parse_file(path) }"
 
       - name: Run architecture and Windows packaging tests
         run: |
