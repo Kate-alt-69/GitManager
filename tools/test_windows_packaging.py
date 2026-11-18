@@ -116,6 +116,11 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('"gitmanager.service.exe": sidecar_dir / f"gitmanager.service-{triple}.exe"', build_source)
         self.assertIn('"gitmanager.service.exe"', store_source)
         self.assertIn('"/SC", "ONLOGON"', watcher_source)
+        self.assertIn("git-manager.exe", desktop["detectRunningProcesses"])
+        self.assertIn("git-manager-service.exe", desktop["detectRunningProcesses"])
+        self.assertIn("GitManager Background Service", watcher_source)
+        self.assertIn("gitmanager-updater.service", watcher_source)
+        self.assertIn("com.gitmanager.updater", watcher_source)
         self.assertIn("Windows Task Scheduler (user logon)", watcher_source)
         store_capabilities = store["msix"]["capabilities"]
         self.assertNotIn("packagedServices", store_capabilities)
