@@ -57,6 +57,15 @@ enum ServiceCommand {
     RequestScan,
     LoadAccounts,
     SaveAccount { payload: serde_json::Value },
+    InspectRepository { repo_path: String },
+    LoadCommitHistory {
+        repo_path: String,
+        offset: usize,
+        limit: usize,
+        branch_filter: Option<String>,
+        search_query: Option<String>,
+    },
+    GetCommitDetails { repo_path: String, oid: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,6 +403,112 @@ fn save_account_storage(state: &ServiceState, _payload: serde_json::Value) -> Se
     }
 }
 
+#[cfg(feature = "repository-data")]
+fn repository_data_response<T: Serialize>(
+    state: &ServiceState,
+    description: &str,
+    result: Result<T, String>,
+) -> ServiceResponse {
+    let data = result.and_then(|value| serde_json::to_value(value)
+        .map_err(|error| format!("Could not encode {description}: {error}")));
+    match data {
+        Ok(data) => ServiceResponse {
+            ok: true,
+            status: state.status(format!("{description} loaded by the core service")),
+            error: None,
+            data: Some(data),
+        },
+        Err(error) => ServiceResponse {
+            ok: false,
+            status: state.status(format!("Could not load {description}")),
+            error: Some(error),
+            data: None,
+        },
+    }
+}
+
+#[cfg(feature = "repository-data")]
+fn load_repository_overview(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    let workdir = Path::new(&repo_path);
+    let git_dir = workdir.join(".git");
+    repository_data_response(
+        state,
+        "Repository overview",
+        gitmanager_core::git_info::extract_git_repository_overview(workdir, &git_dir),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn load_commit_history(
+    state: &ServiceState,
+    repo_path: String,
+    offset: usize,
+    limit: usize,
+    branch_filter: Option<String>,
+    search_query: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Commit history page",
+        gitmanager_core::git_info::load_repository_commit_history(
+            Path::new(&repo_path),
+            offset,
+            limit,
+            branch_filter.as_deref(),
+            search_query.as_deref(),
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn load_commit_details(
+    state: &ServiceState,
+    repo_path: String,
+    oid: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Commit details",
+        gitmanager_core::git_info::load_commit_details(Path::new(&repo_path), &oid),
+    )
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn load_repository_overview(state: &ServiceState, _repo_path: String) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn load_commit_history(
+    state: &ServiceState,
+    _repo_path: String,
+    _offset: usize,
+    _limit: usize,
+    _branch_filter: Option<String>,
+    _search_query: Option<String>,
+) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn load_commit_details(
+    state: &ServiceState,
+    _repo_path: String,
+    _oid: String,
+) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn service_data_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Repository data IPC is not enabled in this process"),
+        error: Some("Repository data is available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+
 fn handle_service_connection(
     mut stream: TcpStream,
     token: &str,
@@ -444,6 +559,24 @@ fn handle_service_connection(
                 }
                 ServiceCommand::LoadAccounts => load_account_storage(state),
                 ServiceCommand::SaveAccount { payload } => save_account_storage(state, payload),
+                ServiceCommand::InspectRepository { repo_path } =>
+                    load_repository_overview(state, repo_path),
+                ServiceCommand::LoadCommitHistory {
+                    repo_path,
+                    offset,
+                    limit,
+                    branch_filter,
+                    search_query,
+                } => load_commit_history(
+                    state,
+                    repo_path,
+                    offset,
+                    limit,
+                    branch_filter,
+                    search_query,
+                ),
+                ServiceCommand::GetCommitDetails { repo_path, oid } =>
+                    load_commit_details(state, repo_path, oid),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
@@ -542,6 +675,47 @@ pub fn load_service_account_cache() -> Result<serde_json::Value, String> {
 
 pub fn save_service_account_cache(payload: serde_json::Value) -> Result<(), String> {
     send_service_request(ServiceCommand::SaveAccount { payload }).map(|_| ())
+}
+
+fn service_response_data(command: ServiceCommand, description: &str) -> Result<serde_json::Value, String> {
+    let response = send_service_request(command)?;
+    response.data.ok_or_else(|| format!("The core service returned no {description} payload."))
+}
+
+pub fn load_service_repository_overview(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::InspectRepository { repo_path },
+        "repository overview",
+    )
+}
+
+pub fn load_service_commit_history(
+    repo_path: String,
+    offset: usize,
+    limit: usize,
+    branch_filter: Option<String>,
+    search_query: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::LoadCommitHistory {
+            repo_path,
+            offset,
+            limit,
+            branch_filter,
+            search_query,
+        },
+        "commit history",
+    )
+}
+
+pub fn load_service_commit_details(
+    repo_path: String,
+    oid: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::GetCommitDetails { repo_path, oid },
+        "commit details",
+    )
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
