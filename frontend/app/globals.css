@@ -1871,3 +1871,45 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 	padding: 0 9px;
 	font-size: 8px;
 }
+
+
+/* Compact, square filters for the repository commit browser. */
+.gm-commit-filters {
+	display: flex;
+	gap: 6px;
+	padding: 0 10px 8px;
+	min-width: 0;
+}
+.gm-commit-filters input,
+.gm-commit-filters select {
+	min-width: 0;
+	min-height: 30px;
+	padding: 6px 8px;
+	border: 1px solid #303d4c;
+	border-radius: 0;
+	background: #101720;
+	color: #c9d1d9;
+	font: inherit;
+	font-size: 10px;
+}
+.gm-commit-filters input {
+	flex: 1 1 200px;
+}
+.gm-commit-filters select {
+	flex: 0 1 180px;
+}
+.gm-commit-filters input:focus,
+.gm-commit-filters select:focus {
+	outline: 1px solid #388bfd;
+	outline-offset: 0;
+	border-color: #388bfd;
+}
+@media (max-width: 640px) {
+	.gm-commit-filters {
+		flex-direction: column;
+	}
+	.gm-commit-filters input,
+	.gm-commit-filters select {
+		width: 100%;
+	}
+}
