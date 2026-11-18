@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { EngineBox, EngineGrid } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
@@ -821,6 +821,8 @@ function SetupDialog({
 	);
 }
 
+const MemoRepositoryPage = memo(RepositoryPage);
+
 export function GitManagerApp() {
 	const git = useGitManager();
 	const [page, setPage] = useState<PageKey>("repositories");
@@ -835,26 +837,30 @@ export function GitManagerApp() {
 		? parsedInternalRoute.destination
 		: { kind: "overview" };
 
-	function navigatePage(next: PageKey) {
+	const navigatePage = useCallback((next: PageKey) => {
 		if (next === "accounts") void git.loadAccounts().catch(() => undefined);
 		setPage(next);
 		setSelectedId(null);
 		setInternalRoute(sectionRoute(next));
-	}
+	}, [git.loadAccounts]);
 
-	function selectRepository(repo: GitRepository | null) {
+	const selectRepository = useCallback((repo: GitRepository | null) => {
 		setSelectedId(repo?.id ?? null);
 		setInternalRoute(repo ? repositoryRouteForItem(repo) : "/r");
-	}
+	}, []);
 
-	function navigateRepositoryDestination(destination: RepositoryDestination) {
+	const navigateRepositoryDestination = useCallback((destination: RepositoryDestination) => {
 		if (!selectedRepo) return;
 		const baseRoute = parseInternalRoute(repositoryRouteForItem(selectedRepo));
 		if (baseRoute.kind !== "repository") return;
 		setInternalRoute(repositorySubroute(baseRoute.owner, baseRoute.repository, destination));
-	}
+	}, [selectedRepo]);
 
-	async function openNotificationRepository(item: AppNotification) {
+	const handleScan = useCallback(() => { void git.scan(); }, [git.scan]);
+	const handleRetryService = useCallback(() => { void git.retryService(); }, [git.retryService]);
+	const handleOpenCleaner = useCallback(() => navigatePage("cleaner"), [navigatePage]);
+
+	const openNotificationRepository = useCallback(async (item: AppNotification) => {
 		if (!item.repositoryPath) return;
 		let repository = git.repositories.find((candidate) => candidate.path === item.repositoryPath) ?? null;
 		if (!repository) {
@@ -862,17 +868,16 @@ export function GitManagerApp() {
 			repository = refreshed.find((candidate) => candidate.path === item.repositoryPath) ?? null;
 		}
 		if (repository) {
-			setPage("repositories");
+			navigatePage("repositories");
 			selectRepository(repository);
 		} else {
-			setPage("repositories");
-			setInternalRoute("/r");
-			setError("The repository from this notification is not currently in the saved index. Refresh its scan roots and try again.");
+			navigatePage("repositories");
+			git.setError("The repository from this notification is not currently in the saved index. Refresh its scan roots and try again.");
 		}
 		if (!item.read) await git.markNotificationRead(item.id).catch((cause) => {
-			setError(cause instanceof Error ? cause.message : String(cause));
+			git.setError(cause instanceof Error ? cause.message : String(cause));
 		});
-	}
+	}, [git.repositories, git.scan, git.markNotificationRead, git.setError, navigatePage, selectRepository]);
 
 	if (git.loading) {
 		return (
@@ -914,15 +919,15 @@ export function GitManagerApp() {
 					onRefreshNotifications={git.refreshNotifications}
 					onMarkNotificationRead={git.markNotificationRead}
 					onDismissNotification={git.dismissNotification}
-					onOpenNotification={(item) => void openNotificationRepository(item)}
-					onScan={() => void git.scan()}
-					onRetryService={() => void git.retryService()}
+					onOpenNotification={openNotificationRepository}
+					onScan={handleScan}
+					onRetryService={handleRetryService}
 				/>
 				<main className="gm-main">
 					{(git.loading || git.scanning) && <div className="gm-loading-bar"><i /></div>}
 					{git.error && <div className="gm-error-banner"><span>{git.error}</span><button onClick={() => git.setError("")}>Dismiss</button></div>}
 					{page === "repositories" && (
-						<RepositoryPage
+						<MemoRepositoryPage
 							repositories={git.repositories}
 							dependencies={git.dependencies}
 							selectedRepo={selectedRepo}
@@ -938,14 +943,14 @@ export function GitManagerApp() {
 							scanning={git.scanning}
 							onScan={() => void git.scan()}
 							scanTruncated={git.scanTruncated}
-							onCheckUpdates={() => git.checkUpdates()}
+							onCheckUpdates={git.checkUpdates}
 							updates={git.updates}
 							onSwitchBranch={git.switchBranch}
 							preferences={git.preferences}
-							onRescan={() => void git.scan()}
+							onRescan={handleScan}
 							onRepositoryLoaded={git.updateRepository}
 							onPullCompleted={git.clearUpdate}
-							onOpenCleaner={() => navigatePage("cleaner")}
+							onOpenCleaner={handleOpenCleaner}
 						/>
 					)}
 					{page === "accounts" && <AccountsPage accounts={git.accounts} loading={git.accountsLoading} onConnect={git.connectAccount} />}
@@ -958,7 +963,7 @@ export function GitManagerApp() {
 							onOpenCleaner={() => navigatePage("cleaner")}
 						/>
 					)}
-					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={() => void git.scan()} initialRepoPath={selectedRepo?.path} />}
+					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={handleScan} initialRepoPath={selectedRepo?.path} />}
 				</main>
 				<footer className="gm-footer">
 					<span><i /> {git.available ? "Tauri runtime connected" : "Browser preview mode"}</span>
