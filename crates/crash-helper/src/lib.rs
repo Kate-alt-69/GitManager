@@ -67,6 +67,18 @@ enum ServiceCommand {
         search_query: Option<String>,
     },
     GetCommitDetails { repo_path: String, oid: String },
+    ListRepositoryFiles {
+        repo_path: String,
+        relative_path: Option<String>,
+        source: String,
+        branch: Option<String>,
+    },
+    ReadRepositoryFile {
+        repo_path: String,
+        relative_path: String,
+        source: String,
+        branch: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -518,6 +530,68 @@ fn load_commit_details(
     )
 }
 
+#[cfg(feature = "repository-data")]
+fn list_repository_files(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: Option<String>,
+    source: String,
+    branch: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository directory",
+        gitmanager_core::repository_browser::list_repository_files(
+            &repo_path,
+            relative_path.as_deref(),
+            &source,
+            branch.as_deref(),
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn read_repository_file(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: String,
+    source: String,
+    branch: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository file preview",
+        gitmanager_core::repository_browser::read_repository_file(
+            &repo_path,
+            &relative_path,
+            &source,
+            branch.as_deref(),
+        ),
+    )
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn list_repository_files(
+    state: &ServiceState,
+    _repo_path: String,
+    _relative_path: Option<String>,
+    _source: String,
+    _branch: Option<String>,
+) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn read_repository_file(
+    state: &ServiceState,
+    _repo_path: String,
+    _relative_path: String,
+    _source: String,
+    _branch: Option<String>,
+) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
 #[cfg(not(feature = "repository-data"))]
 fn load_repository_overview(state: &ServiceState, _repo_path: String) -> ServiceResponse {
     service_data_unavailable(state)
@@ -622,6 +696,18 @@ fn handle_service_connection(
                 ),
                 ServiceCommand::GetCommitDetails { repo_path, oid } =>
                     load_commit_details(state, repo_path, oid),
+                ServiceCommand::ListRepositoryFiles {
+                    repo_path,
+                    relative_path,
+                    source,
+                    branch,
+                } => list_repository_files(state, repo_path, relative_path, source, branch),
+                ServiceCommand::ReadRepositoryFile {
+                    repo_path,
+                    relative_path,
+                    source,
+                    branch,
+                } => read_repository_file(state, repo_path, relative_path, source, branch),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
@@ -760,6 +846,40 @@ pub fn load_service_commit_details(
     service_response_data(
         ServiceCommand::GetCommitDetails { repo_path, oid },
         "commit details",
+    )
+}
+
+pub fn load_service_repository_files(
+    repo_path: String,
+    relative_path: Option<String>,
+    source: String,
+    branch: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::ListRepositoryFiles {
+            repo_path,
+            relative_path,
+            source,
+            branch,
+        },
+        "repository directory",
+    )
+}
+
+pub fn read_service_repository_file(
+    repo_path: String,
+    relative_path: String,
+    source: String,
+    branch: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::ReadRepositoryFile {
+            repo_path,
+            relative_path,
+            source,
+            branch,
+        },
+        "repository file preview",
     )
 }
 
