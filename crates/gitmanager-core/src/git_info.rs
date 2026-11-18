@@ -518,6 +518,12 @@ pub fn load_repository_commit_history(
         let date_iso = chrono::DateTime::from_timestamp(seconds, 0)
             .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "Unknown date".to_string());
+        let mut commit_branches = oid_branches.remove(&oid_string).unwrap_or_default();
+        if let Some(branch_name) = normalized_branch {
+            if !commit_branches.iter().any(|name| name == branch_name) {
+                commit_branches.push(branch_name.to_string());
+            }
+        }
         commits.push(CommitNode {
             oid: oid_string.clone(),
             short_oid,
@@ -528,7 +534,7 @@ pub fn load_repository_commit_history(
             timestamp: seconds,
             date_iso,
             parents,
-            branches: oid_branches.remove(&oid_string).unwrap_or_default(),
+            branches: commit_branches,
             tags: oid_tags.remove(&oid_string).unwrap_or_default(),
             is_head: head_oid.as_deref() == Some(oid_string.as_str()),
             lane,
@@ -858,6 +864,12 @@ mod commit_history_tests {
         assert!(!third.has_more);
         assert_eq!(first.commits[0].summary, "commit 204");
         assert_eq!(third.commits.last().map(|commit| commit.summary.as_str()), Some("commit 0"));
+
+        let overview = extract_git_repository_overview(&path, &path.join(".git")).unwrap();
+        assert!(overview.details_loaded);
+        assert_eq!(overview.commits.len(), 1);
+        assert_eq!(overview.commits[0].summary, "commit 204");
+        assert!(overview.branches.iter().any(|branch| branch.name == "main"));
 
         let _ = fs::remove_dir_all(path);
     }
