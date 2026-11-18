@@ -39,7 +39,7 @@ const UI_RECOVERY_GRACE: Duration = Duration::from_secs(15);
 const SUPERVISOR_POLL: Duration = Duration::from_millis(400);
 const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 const SERVICE_PROTOCOL_VERSION: u32 = 2;
-pub const SERVICE_GENERATION: u32 = 2;
+pub const SERVICE_GENERATION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Endpoint {
@@ -487,7 +487,9 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
 
     let endpoint: Endpoint = serde_json::from_slice(&content)
         .map_err(|error| format!("Service-control endpoint is invalid: {error}"))?;
-    if endpoint.version != SERVICE_PROTOCOL_VERSION {
+    // Protocol v1 remains readable for status-only upgrade negotiation.
+    // Account-cache messages are v2-only and are rejected by an old worker.
+    if endpoint.version != 1 && endpoint.version != SERVICE_PROTOCOL_VERSION {
         return Err("Service-control protocol version is unsupported.".to_string());
     }
 
@@ -518,8 +520,11 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
     if response_bytes.len() as u64 >= MAX_MESSAGE_BYTES {
         return Err("Service-control response exceeded its size limit.".to_string());
     }
-    let response: ServiceResponse = serde_json::from_slice(&response_bytes)
+    let mut response: ServiceResponse = serde_json::from_slice(&response_bytes)
         .map_err(|error| format!("Service-control response was invalid: {error}"))?;
+    if response.status.protocol_version == 0 {
+        response.status.protocol_version = endpoint.version;
+    }
     if !response.ok {
         return Err(response.error.unwrap_or_else(|| "Service-control request was rejected.".to_string()));
     }
