@@ -264,7 +264,8 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('core-service = ["dep:gitmanager-core"]', crash_helper_manifest)
         self.assertIn('account-storage = ["core-service"]', crash_helper_manifest)
         self.assertIn('repository-data = ["core-service"]', crash_helper_manifest)
-        self.assertIn('features = ["account-storage", "repository-data"]', service_manifest)
+        self.assertIn('notification-storage = ["core-service"]', crash_helper_manifest)
+        self.assertIn('features = ["account-storage", "repository-data", "notification-storage"]', service_manifest)
         self.assertIn("crash_helper::load_service_account_cache", desktop_source)
         self.assertIn("crash_helper::save_service_account_cache", desktop_source)
         self.assertIn("crash_helper::load_service_repository_overview", desktop_source)
@@ -272,6 +273,13 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("crash_helper::load_service_commit_details", desktop_source)
         self.assertIn("crash_helper::load_service_repository_files", desktop_source)
         self.assertIn("crash_helper::read_service_repository_file", desktop_source)
+        self.assertIn("crash_helper::service_list_notifications", desktop_source)
+        self.assertIn("crash_helper::service_mark_notification_read", desktop_source)
+        self.assertIn("crash_helper::service_dismiss_notification", desktop_source)
+        self.assertIn("crash_helper::service_mark_all_notifications_read", desktop_source)
+        self.assertNotIn("notification_center::list_notifications()", desktop_source)
+        self.assertNotIn("notification_center::mark_notification_read(", desktop_source)
+        self.assertNotIn("notification_center::dismiss_notification(", desktop_source)
         for service_call in (
             "service_save_conflict_resolution",
             "service_preview_repository_pull",
