@@ -113,6 +113,20 @@ enum ServiceCommand {
     LoadIndexedRepositories { filter_mode: String },
     LoadRepositoryPreferences { repo_path: String, repo_id: Option<String> },
     SaveRepositoryPreferences { repo_path: String, payload: serde_json::Value },
+    CaptureRepositoryArchive { repo_path: String, kind: String, archive_root: Option<String> },
+    ListRepositoryArchives { repo_path: String, kind: Option<String>, archive_root: Option<String> },
+    RestoreRepositoryArchive {
+        repo_path: String,
+        destination_path: String,
+        snapshot_id: String,
+        kind: String,
+        archive_root: Option<String>,
+        confirm_replace: bool,
+    },
+    GetArchiveCloudStorageInfo { archive_root: String },
+    ConfigureArchiveCloudStorage { archive_root: String, provider_json: String },
+    DisableArchiveCloudStorage { archive_root: String },
+    SyncArchiveCloudStorage { archive_root: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -811,6 +825,140 @@ fn save_repository_preferences(
     service_workspace_unavailable(state)
 }
 
+#[cfg(feature = "archive-operations")]
+fn capture_repository_archive(
+    state: &ServiceState,
+    repo_path: String,
+    kind: String,
+    archive_root: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository archive capture",
+        gitmanager_archive::capture_repository(&repo_path, archive_root.as_deref(), &kind),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn list_repository_archives(
+    state: &ServiceState,
+    repo_path: String,
+    kind: Option<String>,
+    archive_root: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository archive list",
+        gitmanager_archive::list_repository_archives(
+            &repo_path,
+            archive_root.as_deref(),
+            kind.as_deref(),
+        ),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn restore_repository_archive(
+    state: &ServiceState,
+    repo_path: String,
+    destination_path: String,
+    snapshot_id: String,
+    kind: String,
+    archive_root: Option<String>,
+    confirm_replace: bool,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository archive restore",
+        gitmanager_archive::restore_repository_archive(
+            &repo_path,
+            &destination_path,
+            archive_root.as_deref(),
+            &kind,
+            &snapshot_id,
+            confirm_replace,
+        ),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn get_archive_cloud_storage_info(state: &ServiceState, archive_root: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Archive cloud storage information",
+        gitmanager_archive::archive_cloud_storage_info(Path::new(&archive_root)),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn configure_archive_cloud_storage(
+    state: &ServiceState,
+    archive_root: String,
+    provider_json: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Archive cloud storage configuration",
+        gitmanager_archive::configure_archive_cloud_storage(Some(&archive_root), &provider_json),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn disable_archive_cloud_storage(state: &ServiceState, archive_root: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Archive cloud storage configuration",
+        gitmanager_archive::disable_archive_cloud_storage(Some(&archive_root)),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn sync_archive_cloud_storage(state: &ServiceState, archive_root: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Archive cloud storage synchronization",
+        gitmanager_archive::sync_archive_cloud_storage(Some(&archive_root)),
+    )
+}
+
+#[cfg(not(feature = "archive-operations"))]
+fn archive_service_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Archive engine is available only in gitmanager.service"),
+        error: Some("Repository archive operations are available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+#[cfg(not(feature = "archive-operations"))]
+fn capture_repository_archive(
+    state: &ServiceState, _: String, _: String, _: Option<String>,
+) -> ServiceResponse { archive_service_unavailable(state) }
+#[cfg(not(feature = "archive-operations"))]
+fn list_repository_archives(
+    state: &ServiceState, _: String, _: Option<String>, _: Option<String>,
+) -> ServiceResponse { archive_service_unavailable(state) }
+#[cfg(not(feature = "archive-operations"))]
+fn restore_repository_archive(
+    state: &ServiceState, _: String, _: String, _: String, _: String, _: Option<String>, _: bool,
+) -> ServiceResponse { archive_service_unavailable(state) }
+#[cfg(not(feature = "archive-operations"))]
+fn get_archive_cloud_storage_info(state: &ServiceState, _: String) -> ServiceResponse {
+    archive_service_unavailable(state)
+}
+#[cfg(not(feature = "archive-operations"))]
+fn configure_archive_cloud_storage(state: &ServiceState, _: String, _: String) -> ServiceResponse {
+    archive_service_unavailable(state)
+}
+#[cfg(not(feature = "archive-operations"))]
+fn disable_archive_cloud_storage(state: &ServiceState, _: String) -> ServiceResponse {
+    archive_service_unavailable(state)
+}
+#[cfg(not(feature = "archive-operations"))]
+fn sync_archive_cloud_storage(state: &ServiceState, _: String) -> ServiceResponse {
+    archive_service_unavailable(state)
+}
+
 #[cfg(feature = "repository-data")]
 fn save_conflict_resolution(
     state: &ServiceState,
@@ -1301,6 +1449,36 @@ fn handle_service_connection(
                         save_repository_preferences(state, repo_path, payload)
                     })
                 }
+                ServiceCommand::CaptureRepositoryArchive { repo_path, kind, archive_root } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        capture_repository_archive(state, repo_path, kind, archive_root)
+                    })
+                }
+                ServiceCommand::ListRepositoryArchives { repo_path, kind, archive_root } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        list_repository_archives(state, repo_path, kind, archive_root)
+                    })
+                }
+                ServiceCommand::RestoreRepositoryArchive {
+                    repo_path, destination_path, snapshot_id, kind, archive_root, confirm_replace,
+                } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        restore_repository_archive(
+                            state, repo_path, destination_path, snapshot_id, kind, archive_root, confirm_replace,
+                        )
+                    })
+                }
+                ServiceCommand::GetArchiveCloudStorageInfo { archive_root } =>
+                    get_archive_cloud_storage_info(state, archive_root),
+                ServiceCommand::ConfigureArchiveCloudStorage { archive_root, provider_json } =>
+                    configure_archive_cloud_storage(state, archive_root, provider_json),
+                ServiceCommand::DisableArchiveCloudStorage { archive_root } =>
+                    disable_archive_cloud_storage(state, archive_root),
+                ServiceCommand::SyncArchiveCloudStorage { archive_root } =>
+                    sync_archive_cloud_storage(state, archive_root),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
@@ -1593,6 +1771,55 @@ pub fn service_save_repository_preferences(
         ServiceCommand::SaveRepositoryPreferences { repo_path, payload },
         "saved repository preferences",
     )
+}
+
+pub fn service_capture_repository_archive(
+    repo_path: String, kind: String, archive_root: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::CaptureRepositoryArchive { repo_path, kind, archive_root },
+        "repository archive capture",
+    )
+}
+pub fn service_list_repository_archives(
+    repo_path: String, kind: Option<String>, archive_root: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::ListRepositoryArchives { repo_path, kind, archive_root },
+        "repository archive list",
+    )
+}
+pub fn service_restore_repository_archive(
+    repo_path: String,
+    destination_path: String,
+    snapshot_id: String,
+    kind: String,
+    archive_root: Option<String>,
+    confirm_replace: bool,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::RestoreRepositoryArchive {
+            repo_path, destination_path, snapshot_id, kind, archive_root, confirm_replace,
+        },
+        "repository archive restore",
+    )
+}
+pub fn service_get_archive_cloud_storage_info(archive_root: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::GetArchiveCloudStorageInfo { archive_root }, "archive cloud storage information")
+}
+pub fn service_configure_archive_cloud_storage(
+    archive_root: String, provider_json: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::ConfigureArchiveCloudStorage { archive_root, provider_json },
+        "archive cloud storage configuration",
+    )
+}
+pub fn service_disable_archive_cloud_storage(archive_root: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::DisableArchiveCloudStorage { archive_root }, "archive cloud storage configuration")
+}
+pub fn service_sync_archive_cloud_storage(archive_root: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::SyncArchiveCloudStorage { archive_root }, "archive cloud storage synchronization")
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
@@ -2389,6 +2616,45 @@ mod tests {
                 command,
             };
             let encoded = serde_json::to_value(request).expect("encode service storage request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+        }
+    }
+
+    #[test]
+    fn archive_commands_use_stable_service_wire_names() {
+        let requests = vec![
+            ServiceCommand::CaptureRepositoryArchive {
+                repo_path: "/workspace/repo".to_string(), kind: "local".to_string(),
+                archive_root: Some("/archive".to_string()),
+            },
+            ServiceCommand::ListRepositoryArchives {
+                repo_path: "/workspace/repo".to_string(), kind: None,
+                archive_root: Some("/archive".to_string()),
+            },
+            ServiceCommand::RestoreRepositoryArchive {
+                repo_path: "/workspace/repo".to_string(), destination_path: "/restore".to_string(),
+                snapshot_id: "snapshot-1".to_string(), kind: "local".to_string(),
+                archive_root: Some("/archive".to_string()), confirm_replace: true,
+            },
+            ServiceCommand::GetArchiveCloudStorageInfo { archive_root: "/archive".to_string() },
+            ServiceCommand::ConfigureArchiveCloudStorage {
+                archive_root: "/archive".to_string(), provider_json: "{}".to_string(),
+            },
+            ServiceCommand::DisableArchiveCloudStorage { archive_root: "/archive".to_string() },
+            ServiceCommand::SyncArchiveCloudStorage { archive_root: "/archive".to_string() },
+        ];
+        let expected = [
+            "capture_repository_archive", "list_repository_archives", "restore_repository_archive",
+            "get_archive_cloud_storage_info", "configure_archive_cloud_storage",
+            "disable_archive_cloud_storage", "sync_archive_cloud_storage",
+        ];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode archive service request");
             assert_eq!(encoded["token"], "authenticated-test-token");
             assert_eq!(encoded["command"]["action"], action);
         }
