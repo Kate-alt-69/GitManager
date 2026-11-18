@@ -794,6 +794,7 @@ fn assign_commit_lane(
 mod commit_history_tests {
     use super::*;
     use git2::Signature;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn repository_with_commits(count: usize) -> PathBuf {
