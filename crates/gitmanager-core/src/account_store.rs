@@ -344,10 +344,8 @@ mod tests {
         assert!(root.join("account/metadata/accounts.json").is_file());
         let repository_cache = repositories_path_at(&root, "github", "example-user");
         assert!(repository_cache.is_file());
-        assert_eq!(
-            repository_cache.parent(),
-            Some(root.join("account/git_data").as_path())
-        );
+        let repository_cache_dir = root.join("account/git_data");
+        assert_eq!(repository_cache.parent(), Some(repository_cache_dir.as_path()));
 
         let encoded = fs::read_to_string(root.join("account/metadata/accounts.json"))
             .expect("read persisted metadata");
