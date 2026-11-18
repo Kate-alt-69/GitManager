@@ -1808,14 +1808,16 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
                 }
 
                 if last_service_check.elapsed() >= Duration::from_secs(5) {
-                    let (ready, generation, message) =
+                    let (ready, generation, process_id, protocol_version, message) =
                         match crash_helper::request_service_status() {
                             Ok(status) => (
                                 status.service_generation >= crash_helper::SERVICE_GENERATION,
                                 status.service_generation,
+                                status.process_id,
+                                status.protocol_version,
                                 status.message,
                             ),
-                            Err(error) => (false, 0, error),
+                            Err(error) => (false, 0, 0, 0, error),
                         };
 
                     let changed = last_service_state
@@ -1829,6 +1831,8 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
                             serde_json::json!({
                                 "ready": ready,
                                 "generation": generation,
+                                "processId": process_id,
+                                "protocolVersion": protocol_version,
                                 "message": message,
                             }),
                         );
