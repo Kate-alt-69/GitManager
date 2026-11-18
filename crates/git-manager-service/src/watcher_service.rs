@@ -18,8 +18,6 @@ pub struct RepoUpdateNotification {
     pub prompt_message: String, // "Hay you have <X-REPO_NAME> update do you want to update it?"
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-
 fn repository_worktree_is_clean(repo: &Repository) -> Result<bool, String> {
     let mut status_options = StatusOptions::new();
     status_options.include_untracked(true).recurse_untracked_dirs(true);
