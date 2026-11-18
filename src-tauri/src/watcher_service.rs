@@ -679,7 +679,7 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
 
     if let Ok(status) = crash_helper::request_service_status() {
         if status.service_generation >= crash_helper::SERVICE_GENERATION
-            && status.protocol_version >= 2
+            && status.protocol_version >= crash_helper::SERVICE_PROTOCOL_VERSION
         {
             return Ok(status.message);
         }
