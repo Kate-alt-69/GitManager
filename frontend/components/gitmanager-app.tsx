@@ -1008,7 +1008,7 @@ export function GitManagerApp() {
 						/>
 					)}
 					{parsedInternalRoute.kind === "performance" && (
-						<PerformancePage serviceReady={git.serviceReady} scanning={git.scanning} />
+						<PerformancePage serviceReady={git.serviceReady} scanning={git.scanning || git.serviceIndexing} />
 					)}
 					{page === "settings" && parsedInternalRoute.kind === "settings" && (
 						<SettingsPage
