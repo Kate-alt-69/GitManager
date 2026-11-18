@@ -102,6 +102,10 @@ enum ServiceCommand {
     },
     ListLocalRepositoryBranches { repo_path: String },
     SwitchRepositoryBranch { repo_path: String, branch_name: String },
+    ListNotifications,
+    MarkNotificationRead { id: String },
+    DismissNotification { id: String },
+    MarkAllNotificationsRead,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -593,6 +597,60 @@ fn read_repository_file(
     )
 }
 
+#[cfg(feature = "notification-storage")]
+fn list_notifications(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Notification history",
+        gitmanager_core::notification_center::list_notifications(),
+    )
+}
+
+#[cfg(feature = "notification-storage")]
+fn mark_notification_read(state: &ServiceState, id: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Notification read update",
+        gitmanager_core::notification_center::mark_notification_read(&id),
+    )
+}
+
+#[cfg(feature = "notification-storage")]
+fn dismiss_notification(state: &ServiceState, id: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Notification dismissal",
+        gitmanager_core::notification_center::dismiss_notification(&id),
+    )
+}
+
+#[cfg(feature = "notification-storage")]
+fn mark_all_notifications_read(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Bulk notification read update",
+        gitmanager_core::notification_center::mark_all_notifications_read(),
+    )
+}
+
+#[cfg(not(feature = "notification-storage"))]
+fn notification_storage_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Notification storage is not enabled in this process"),
+        error: Some("Notification storage is available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+#[cfg(not(feature = "notification-storage"))]
+fn list_notifications(state: &ServiceState) -> ServiceResponse { notification_storage_unavailable(state) }
+#[cfg(not(feature = "notification-storage"))]
+fn mark_notification_read(state: &ServiceState, _: String) -> ServiceResponse { notification_storage_unavailable(state) }
+#[cfg(not(feature = "notification-storage"))]
+fn dismiss_notification(state: &ServiceState, _: String) -> ServiceResponse { notification_storage_unavailable(state) }
+#[cfg(not(feature = "notification-storage"))]
+fn mark_all_notifications_read(state: &ServiceState) -> ServiceResponse { notification_storage_unavailable(state) }
+
 #[cfg(feature = "repository-data")]
 fn save_conflict_resolution(
     state: &ServiceState,
@@ -999,6 +1057,10 @@ fn handle_service_connection(
                     with_repository_operation_lock(&repo_path, || list_local_repository_branches(state, repo_path)),
                 ServiceCommand::SwitchRepositoryBranch { repo_path, branch_name } =>
                     with_repository_operation_lock(&repo_path, || switch_repository_branch(state, repo_path, branch_name)),
+                ServiceCommand::ListNotifications => list_notifications(state),
+                ServiceCommand::MarkNotificationRead { id } => mark_notification_read(state, id),
+                ServiceCommand::DismissNotification { id } => dismiss_notification(state, id),
+                ServiceCommand::MarkAllNotificationsRead => mark_all_notifications_read(state),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
@@ -1243,6 +1305,19 @@ pub fn service_switch_repository_branch(
     repo_path: String, branch_name: String,
 ) -> Result<serde_json::Value, String> {
     service_response_data(ServiceCommand::SwitchRepositoryBranch { repo_path, branch_name }, "branch switch result")
+}
+
+pub fn service_list_notifications() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::ListNotifications, "notification history")
+}
+pub fn service_mark_notification_read(id: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::MarkNotificationRead { id }, "notification read update")
+}
+pub fn service_dismiss_notification(id: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::DismissNotification { id }, "notification dismissal")
+}
+pub fn service_mark_all_notifications_read() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::MarkAllNotificationsRead, "bulk notification read update")
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
