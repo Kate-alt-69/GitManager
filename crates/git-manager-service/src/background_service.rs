@@ -220,26 +220,28 @@ pub fn run() -> ! {
                             continue;
                         }
 
-                        let key = format!("{}::{}", update.repo_path, update.remote_oid);
-                        if !notified_commits.contains(&key) {
-                            match publish_repository_update(
-                                &update.repo_id,
-                                &update.repo_name,
-                                &update.repo_path,
-                                &update.remote_oid,
-                                &update.prompt_message,
-                            ) {
-                                Ok((notification, created)) => {
-                                    notified_commits.insert(key);
-                                    if preferences.os_notifications_enabled && created {
-                                        send_os_desktop_notification(&notification);
+                        if preferences.in_app_notifications_enabled || preferences.os_notifications_enabled {
+                            let key = format!("{}::{}", update.repo_path, update.remote_oid);
+                            if !notified_commits.contains(&key) {
+                                match publish_repository_update(
+                                    &update.repo_id,
+                                    &update.repo_name,
+                                    &update.repo_path,
+                                    &update.remote_oid,
+                                    &update.prompt_message,
+                                ) {
+                                    Ok((notification, created)) => {
+                                        notified_commits.insert(key);
+                                        if preferences.os_notifications_enabled && created {
+                                            send_os_desktop_notification(&notification);
+                                        }
                                     }
-                                }
-                                Err(error) => {
-                                    // Do not mark this update as delivered when
-                                    // the persistent record could not be saved.
-                                    // The next service cycle retries publication.
-                                    eprintln!("GitManager core service: could not publish repository notification: {error}");
+                                    Err(error) => {
+                                        // Do not mark this update as delivered when
+                                        // the persistent record could not be saved.
+                                        // The next service cycle retries publication.
+                                        eprintln!("GitManager core service: could not publish repository notification: {error}");
+                                    }
                                 }
                             }
                         }
