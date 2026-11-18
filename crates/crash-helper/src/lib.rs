@@ -295,7 +295,10 @@ impl ServiceControlServer {
     }
 
     pub fn status(&self) -> ServiceStatus {
-        self.state.status("GitManager core service status")
+        let mut status = self.state.status("GitManager core service status");
+        status.remote_check_pending = self.remote_check_pending();
+        status.remote_check_running = self.remote_check_running();
+        status
     }
 
     /// Returns true once per queued repository-index refresh request.
