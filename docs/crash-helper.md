@@ -30,6 +30,8 @@ crash_helper consumes this switch and adds `--disable-gpu` to `WEBVIEW2_ADDITION
 
 The required service exposes a loopback-only TCP endpoint on an ephemeral port (protocol version 2). Its address and random token are stored in the per-user GitManager data directory. The endpoint file is owner-readable/writable on Unix and inherits the current user's LocalAppData ACL on Windows. Authenticated requests and responses are bounded to 8 MiB. The protocol supports status, timed suspend/resume, repository-index refresh and snapshot/generation reads, immediate remote-check requests, repository overview/history/commit/file/worktree and local-preference operations, notification history/read/dismiss/bulk-read, and account/application-preference load/save. Account messages carry only non-secret account metadata and provider repository records; access tokens are not sent to the service.
 
+The `Status` response also exposes `remote_check_pending` and `remote_check_running`. The native Tauri monitor emits a service-health event only when readiness, service identity/protocol, or these task states change; the WebView does not poll for remote-check progress.
+
 Suspension is cooperative. The service stops scheduling new remote checks, archive watcher work, and cloud sync. Already-running transactional operations are allowed to reach their safe stopping points. The service process is not OS-frozen, so its control channel and expiry timer remain alive. The Tauri UI starts this service on demand and waits for its authenticated readiness response before enabling the workspace.
 
 The default suspension is 120 seconds and requests are clamped to a 15–600 second range.
