@@ -272,6 +272,27 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("crash_helper::load_service_commit_details", desktop_source)
         self.assertIn("crash_helper::load_service_repository_files", desktop_source)
         self.assertIn("crash_helper::read_service_repository_file", desktop_source)
+        for service_call in (
+            "service_save_conflict_resolution",
+            "service_preview_repository_pull",
+            "service_get_repository_changes",
+            "service_read_repository_file_diff",
+            "service_fetch_repository_remote",
+            "service_stage_repository_paths",
+            "service_unstage_repository_paths",
+            "service_preview_repository_commit",
+            "service_create_repository_commit",
+            "service_delete_repository_path",
+            "service_prepare_and_pull_repository_update",
+            "service_list_local_repository_branches",
+            "service_switch_repository_branch",
+        ):
+            self.assertIn(f"crash_helper::{service_call}", desktop_source)
+        self.assertNotIn("repository_workspace::save_conflict_resolution(", desktop_source)
+        self.assertNotIn("repository_workspace::stage_repository_paths(", desktop_source)
+        self.assertNotIn("repository_workspace::create_repository_commit(", desktop_source)
+        self.assertNotIn("repository_workspace::prepare_and_pull_repository_update(", desktop_source)
+        self.assertNotIn("git_info::switch_repository_branch(", desktop_source)
         self.assertNotIn("extract_git_repository_overview", desktop_source)
         self.assertNotIn("git_info::load_repository_commit_history", desktop_source)
         self.assertNotIn("repository_workspace::list_repository_files", desktop_source)
