@@ -33,6 +33,8 @@ export function useGitManager() {
 	const scanInFlight = useRef(false);
 	const [available, setAvailable] = useState(false);
 	const [serviceReady, setServiceReady] = useState(false);
+	const [remoteCheckPending, setRemoteCheckPending] = useState(false);
+	const [remoteCheckRunning, setRemoteCheckRunning] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [scanning, setScanning] = useState(false);
 	const [scanTruncated, setScanTruncated] = useState(false);
@@ -406,9 +408,17 @@ export function useGitManager() {
 		void listen("gitmanager://notifications-updated", () => {
 			if (active && inAppNotificationsEnabledRef.current) void refreshNotifications();
 		}).then((unlisten) => { unlistenNotifications = unlisten; });
-		void listen<{ ready: boolean; generation: number; message: string }>("gitmanager://service-health", (payload) => {
+		void listen<{
+			ready: boolean;
+			generation: number;
+			message: string;
+			remoteCheckPending?: boolean;
+			remoteCheckRunning?: boolean;
+		}>("gitmanager://service-health", (payload) => {
 			if (!active) return;
 			setServiceReady(payload.ready);
+			setRemoteCheckPending(Boolean(payload.remoteCheckPending));
+			setRemoteCheckRunning(Boolean(payload.remoteCheckRunning));
 			if (payload.ready) {
 				setStatus(payload.message || "GitManager Core Service ready");
 				setError((current) => current.includes("GitManager Core Service") ? "" : current);
@@ -428,7 +438,7 @@ export function useGitManager() {
 	}, [performScan, refreshNotifications]);
 
 	return {
-		available, serviceReady, loading, scanning, scanTruncated, indexReady,
+		available, serviceReady, remoteCheckPending, remoteCheckRunning, loading, scanning, scanTruncated, indexReady,
 		awaitingInitialIndex: serviceReady && preferences.firstRunComplete && !indexReady,
 		version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, accountsLoading, loadAccounts, updates, notifications, setupOpen, setSetupOpen,
