@@ -249,6 +249,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         core_library = (ROOT / "crates" / "gitmanager-core" / "src" / "lib.rs").read_text(encoding="utf-8")
         desktop_manifest = (ROOT / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
         service_manifest = (ROOT / "crates" / "git-manager-service" / "Cargo.toml").read_text(encoding="utf-8")
+        crash_helper_manifest = (ROOT / "crates" / "crash-helper" / "Cargo.toml").read_text(encoding="utf-8")
         desktop_source = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
 
         self.assertIn("[features]", core_manifest)
@@ -260,6 +261,12 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("pub use gitmanager_core::repository_index;", desktop_source)
         self.assertNotIn("pub use gitmanager_core::scanner;", desktop_source)
         self.assertNotIn("crate::scanner", desktop_source)
+        self.assertIn('account-storage = ["dep:gitmanager-core"]', crash_helper_manifest)
+        self.assertIn('features = ["account-storage"]', service_manifest)
+        self.assertIn("crash_helper::load_service_account_cache", desktop_source)
+        self.assertIn("crash_helper::save_service_account_cache", desktop_source)
+        self.assertNotIn("gitmanager_core::account_store::load_accounts", desktop_source)
+        self.assertNotIn("gitmanager_core::account_store::save_account(", desktop_source)
 
         desktop_watcher = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
         service_source = (ROOT / "crates" / "git-manager-service" / "src" / "background_service.rs").read_text(encoding="utf-8")
