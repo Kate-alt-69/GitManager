@@ -1,9 +1,10 @@
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::process::Command;
 use std::ffi::OsStr;
+use std::time::Duration;
 
 use gitmanager_core::account_types::{ConnectedAccountSummary, GitHubIdentity, ProviderAccountRequest};
 use gitmanager_core::git_info::{BranchInfo, CommitNode, GitRepositoryInfo, RemoteEndpoint};
@@ -47,6 +48,40 @@ struct GithubRepoItem {
     description: Option<String>,
 }
 
+
+fn validate_provider_username(value: &str, provider: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 128 {
+        return Err(format!("Enter a valid {provider} username."));
+    }
+    let allowed = value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric()
+            || byte == b'-'
+            || (provider.eq_ignore_ascii_case("gitlab") && (byte == b'_' || byte == b'.'))
+    });
+    if !allowed {
+        return Err(format!("The {provider} username contains unsupported characters."));
+    }
+    Ok(value.to_string())
+}
+
+fn validate_gitlab_base_url(value: &str) -> Result<String, String> {
+    let authority = value.trim()
+        .strip_prefix("https://")
+        .ok_or_else(|| "GitLab hosts must use HTTPS.".to_string())?;
+    if authority.is_empty()
+        || authority.contains('@')
+        || authority.contains('?')
+        || authority.contains('#')
+        || authority.contains('/')
+        || !authority.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':')
+        })
+    {
+        return Err("Enter a valid HTTPS GitLab host without a path or credentials.".to_string());
+    }
+    Ok(format!("https://{authority}"))
+}
 
 fn run_gh_json(args: &[&str]) -> Result<Value, String> {
     let mut command = hidden_command("gh");
@@ -207,25 +242,25 @@ async fn fetch_github_account(req: ProviderAccountRequest) -> Result<ConnectedAc
     if let Some(ref token) = req.access_token {
         if !token.trim().is_empty() {
             let auth_val = format!("Bearer {}", token.trim());
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&auth_val).map_err(|e| e.to_string())?,
-            );
+            let mut authorization = HeaderValue::from_str(&auth_val)
+                .map_err(|_| "The provider access token contains invalid header characters.".to_string())?;
+            authorization.set_sensitive(true);
+            headers.insert(AUTHORIZATION, authorization);
         }
     }
 
     let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(45))
         .default_headers(headers)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "Could not initialize the GitHub API client.".to_string())?;
 
     let user_url = if has_token && req.username_or_host.trim().is_empty() {
         "https://api.github.com/user".to_string()
     } else {
-        format!(
-            "https://api.github.com/users/{}",
-            req.username_or_host.trim()
-        )
+        let username = validate_provider_username(&req.username_or_host, "GitHub")?;
+        format!("https://api.github.com/users/{username}")
     };
 
     let user_resp = client
@@ -359,21 +394,33 @@ async fn fetch_gitlab_account(req: ProviderAccountRequest) -> Result<ConnectedAc
     if let Some(ref token) = req.access_token {
         if !token.trim().is_empty() {
             let auth_val = format!("Bearer {}", token.trim());
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&auth_val).map_err(|e| e.to_string())?,
-            );
+            let mut authorization = HeaderValue::from_str(&auth_val)
+                .map_err(|_| "The provider access token contains invalid header characters.".to_string())?;
+            authorization.set_sensitive(true);
+            headers.insert(AUTHORIZATION, authorization);
         }
     }
 
+    let raw_identity = req.username_or_host.trim();
+    let (base_url, username) = if raw_identity.starts_with("https://") {
+        (validate_gitlab_base_url(raw_identity)?, String::new())
+    } else {
+        ("https://gitlab.com".to_string(), validate_provider_username(raw_identity, "GitLab").unwrap_or_default())
+    };
+    if !has_token && username.is_empty() {
+        return Err("Enter a GitLab username or provide a personal access token.".to_string());
+    }
+
     let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(45))
         .default_headers(headers)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "Could not initialize the GitLab API client.".to_string())?;
 
-    let gl_user: GitlabUserResponse = if has_token && req.username_or_host.trim().is_empty() {
+    let gl_user: GitlabUserResponse = if has_token && username.is_empty() {
         let resp = client
-            .get("https://gitlab.com/api/v4/user")
+            .get(format!("{base_url}/api/v4/user"))
             .send()
             .await
             .map_err(|e| format!("GitLab API error: {}", e))?;
@@ -383,8 +430,7 @@ async fn fetch_gitlab_account(req: ProviderAccountRequest) -> Result<ConnectedAc
         resp.json().await.map_err(|e| e.to_string())?
     } else {
         let search_url = format!(
-            "https://gitlab.com/api/v4/users?username={}",
-            req.username_or_host.trim()
+            "{base_url}/api/v4/users?username={username}"
         );
         let resp = client
             .get(&search_url)
