@@ -1939,3 +1939,194 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 	cursor: wait;
 	opacity: .6;
 }
+
+
+.gm-settings-diagnostics-nav {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+	margin-bottom: 14px;
+}
+.gm-settings-diagnostics-nav button {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 4px;
+	min-width: 0;
+	padding: 10px 12px;
+	border: 1px solid #303d4c;
+	border-radius: 0;
+	background: #111923;
+	color: #c9d1d9;
+	text-align: left;
+	cursor: pointer;
+}
+.gm-settings-diagnostics-nav button:hover {
+	border-color: #64819f;
+	background: #172331;
+}
+.gm-settings-diagnostics-nav strong {
+	font-size: 11px;
+	font-weight: 650;
+}
+.gm-settings-diagnostics-nav span {
+	color: #8594a3;
+	font-size: 9px;
+	line-height: 1.4;
+}
+.gm-diagnostics-page {
+	max-width: 1240px;
+}
+.gm-diagnostics-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+}
+.gm-diagnostic-panel {
+	min-width: 0;
+}
+.gm-diagnostics-state {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	padding: 6px 8px;
+	border: 1px solid #384555;
+	font-size: 10px;
+	font-weight: 650;
+	white-space: nowrap;
+}
+.gm-diagnostics-state i {
+	width: 7px;
+	height: 7px;
+	background: #8b949e;
+}
+.gm-diagnostics-state.ready i { background: #3fb950; }
+.gm-diagnostics-state.offline i { background: #f85149; }
+.gm-diagnostics-facts {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 1px;
+	margin: 0;
+	border: 1px solid #293541;
+	background: #293541;
+}
+.gm-diagnostics-facts > div {
+	min-width: 0;
+	padding: 10px;
+	background: #111923;
+}
+.gm-diagnostics-facts dt {
+	margin-bottom: 4px;
+	color: #8798a9;
+	font-size: 9px;
+}
+.gm-diagnostics-facts dd {
+	margin: 0;
+	color: #d6e0ea;
+	font-size: 12px;
+	font-weight: 650;
+	overflow-wrap: anywhere;
+}
+.gm-diagnostic-message {
+	margin-top: 10px;
+	padding: 9px 10px;
+	border-left: 2px solid #53677c;
+	background: #101821;
+	color: #9eacba;
+	font-size: 10px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.gm-diagnostic-log {
+	max-height: 300px;
+	overflow: auto;
+	margin: 10px 0 0;
+	padding: 10px;
+	border: 1px solid #293541;
+	background: #0b1118;
+	color: #9fb2c8;
+	font: 9px/1.5 "JetBrains Mono", Consolas, monospace;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.gm-performance-target {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	padding: 7px 10px;
+	border: 1px solid #354251;
+	background: #111923;
+}
+.gm-performance-target strong {
+	color: #d6e0ea;
+	font-size: 15px;
+}
+.gm-performance-target span {
+	color: #8798a9;
+	font-size: 9px;
+}
+.gm-performance-capture {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 12px;
+	margin-bottom: 12px;
+	padding: 14px;
+}
+.gm-performance-capture > div:first-child {
+	min-width: 220px;
+	flex: 1;
+}
+.gm-performance-capture strong {
+	color: #d6e0ea;
+	font-size: 12px;
+}
+.gm-performance-capture p {
+	margin: 5px 0 0;
+	color: #8798a9;
+	font-size: 10px;
+	line-height: 1.5;
+}
+.gm-performance-progress {
+	flex-basis: 100%;
+	padding: 8px 10px;
+	border-left: 2px solid #d29922;
+	background: #19170f;
+	color: #c9b68d;
+	font-size: 10px;
+}
+.gm-performance-result {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 0 0 12px;
+	padding: 10px 12px;
+	border: 1px solid #354251;
+	background: #111923;
+	font-size: 10px;
+}
+.gm-performance-result strong { color: #d6e0ea; }
+.gm-performance-result span { color: #9eacba; font-variant-numeric: tabular-nums; }
+.gm-performance-result.met { border-left: 3px solid #3fb950; }
+.gm-performance-result.over { border-left: 3px solid #d29922; }
+.gm-performance-notes {
+	display: grid;
+	gap: 4px;
+	margin-top: 10px;
+	color: #7f8c99;
+	font-size: 9px;
+}
+@media (max-width: 760px) {
+	.gm-settings-diagnostics-nav,
+	.gm-diagnostics-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.gm-diagnostics-state,
+	.gm-performance-target {
+		width: 100%;
+	}
+}
