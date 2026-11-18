@@ -2200,6 +2200,39 @@ mod tests {
     }
 
     #[test]
+    fn preference_and_repository_index_commands_use_stable_wire_names() {
+        let requests = vec![
+            ServiceCommand::LoadAppPreferences,
+            ServiceCommand::SaveAppPreferences {
+                payload: serde_json::json!({
+                    "scanRoots": ["/workspace"],
+                    "maxScanDepth": 8,
+                    "firstRunComplete": true
+                }),
+            },
+            ServiceCommand::GetRepositoryIndexGeneration,
+            ServiceCommand::LoadIndexedRepositories {
+                filter_mode: "grouped".to_string(),
+            },
+        ];
+        let expected = [
+            "load_app_preferences",
+            "save_app_preferences",
+            "get_repository_index_generation",
+            "load_indexed_repositories",
+        ];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode service storage request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+        }
+    }
+
+    #[test]
     fn notification_commands_use_stable_service_wire_names() {
         let requests = vec![
             ServiceCommand::ListNotifications,
