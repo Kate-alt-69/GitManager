@@ -7,13 +7,13 @@
 use fs2::FileExt;
 use interprocess::local_socket::{
     prelude::*,
-    ConnectOptions,
-    GenericFilePath,
     Listener,
     ListenerOptions,
     ListenerNonblockingMode,
     Stream as LocalSocketStream,
 };
+#[cfg(unix)]
+use interprocess::local_socket::{ConnectOptions, GenericFilePath};
 use interprocess::{ConnectWaitMode, TryClone as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -541,7 +541,7 @@ fn reserve_service_request_slot(active: &AtomicUsize) -> bool {
     }
 }
 
-/// Starts a loopback-only control endpoint protected by a random per-process token.
+/// Starts a per-user Named Pipe (Windows) or Unix Domain Socket protected by a random token.
 pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     let data_dir = gitmanager_data_dir()?;
     fs::create_dir_all(&data_dir)
