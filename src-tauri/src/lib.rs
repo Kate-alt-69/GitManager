@@ -250,40 +250,15 @@ fn save_repository_settings(repo_path: String, settings: RepositoryPreferences) 
     write_repository_settings_file(&path, &normalized)?;
     Ok(normalized)
 }
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CommitDetails {
-    oid: String, short_oid: String, summary: String, message: String, author_name: String,
-    author_email: String, authored_at: String, files_changed: usize, insertions: usize, deletions: usize,
-}
-fn read_commit_details(repo_path: &str, oid_text: &str) -> Result<CommitDetails, String> {
-    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
-    let oid = Oid::from_str(oid_text).map_err(|_| "The selected commit SHA is invalid.".to_string())?;
-    let commit = repo.find_commit(oid).map_err(|error| format!("Could not load selected commit: {error}"))?;
-    let tree = commit.tree().map_err(|error| format!("Could not read commit tree: {error}"))?;
-    let parent_tree = if commit.parent_count() > 0 {
-        Some(commit.parent(0).and_then(|parent| parent.tree()).map_err(|error| format!("Could not read parent commit tree: {error}"))?)
-    } else { None };
-    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
-        .map_err(|error| format!("Could not compare commit trees: {error}"))?;
-    let stats = diff.stats().map_err(|error| format!("Could not summarize commit changes: {error}"))?;
-    let author = commit.author();
-    let timestamp = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
-        .map(|value| value.format("%Y-%m-%d %H:%M:%S UTC").to_string()).unwrap_or_else(|| "Unknown date".to_string());
-    Ok(CommitDetails {
-        oid: oid.to_string(), short_oid: oid.to_string().chars().take(7).collect(),
-        summary: commit.summary().unwrap_or("(no commit message)").to_string(),
-        message: commit.message().unwrap_or("").trim().to_string(),
-        author_name: author.name().unwrap_or("Unknown Author").to_string(),
-        author_email: author.email().unwrap_or("unknown@local").to_string(),
-        authored_at: timestamp, files_changed: stats.files_changed(),
-        insertions: stats.insertions(), deletions: stats.deletions(),
-    })
-}
 #[tauri::command]
-async fn get_commit_details(repo_path: String, oid: String) -> Result<CommitDetails, String> {
-    tokio::task::spawn_blocking(move || read_commit_details(&repo_path, &oid))
-        .await.map_err(|error| format!("Commit detail task failed: {error}"))?
+async fn get_commit_details(repo_path: String, oid: String) -> Result<git_info::CommitDetails, String> {
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::load_service_commit_details(repo_path, oid)
+    })
+    .await
+    .map_err(|error| format!("Commit detail service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned invalid commit details: {error}"))
 }
 
 
@@ -876,11 +851,13 @@ fn get_core_service_status() -> Result<crash_helper::ServiceStatus, String> {
 
 #[tauri::command]
 async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        let workdir = PathBuf::from(repo_path);
-        let git_dir = workdir.join(".git");
-        extract_git_repository_overview(&workdir, &git_dir)
-    }).await.map_err(|error| format!("Repository inspection task failed: {error}"))?
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::load_service_repository_overview(repo_path)
+    })
+    .await
+    .map_err(|error| format!("Repository overview service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned invalid repository overview: {error}"))
 }
 
 #[tauri::command]
@@ -891,17 +868,19 @@ async fn load_repository_commit_history(
     branch_filter: Option<String>,
     search_query: Option<String>,
 ) -> Result<git_info::CommitHistoryPage, String> {
-    tokio::task::spawn_blocking(move || {
-        git_info::load_repository_commit_history(
-            Path::new(&repo_path),
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::load_service_commit_history(
+            repo_path,
             offset,
             limit,
-            branch_filter.as_deref(),
-            search_query.as_deref(),
+            branch_filter,
+            search_query,
         )
     })
     .await
-    .map_err(|error| format!("Commit history task failed: {error}"))?
+    .map_err(|error| format!("Commit history service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned invalid commit history: {error}"))
 }
 
 
