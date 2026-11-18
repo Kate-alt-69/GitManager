@@ -79,6 +79,28 @@ enum ServiceCommand {
         source: String,
         branch: Option<String>,
     },
+    SaveConflictResolution { repo_path: String, relative_path: String, content: String },
+    PreviewRepositoryPull { repo_path: String },
+    GetRepositoryChanges { repo_path: String },
+    ReadRepositoryFileDiff { repo_path: String, relative_path: String, staged: bool },
+    FetchRepositoryRemote { repo_path: String, remote_name: String },
+    StageRepositoryPaths { repo_path: String, paths: Vec<String> },
+    UnstageRepositoryPaths { repo_path: String, paths: Vec<String> },
+    PreviewRepositoryCommit { repo_path: String },
+    CreateRepositoryCommit { repo_path: String, message: String, expected_index_tree: String },
+    DeleteRepositoryPath { repo_path: String, relative_path: String },
+    PrepareAndPullRepositoryUpdate {
+        repo_path: String,
+        expected_branch: String,
+        expected_local_oid: String,
+        expected_remote_oid: String,
+        expected_status_token: String,
+        mode: String,
+        stage_paths: Vec<String>,
+        commit_message: String,
+    },
+    ListLocalRepositoryBranches { repo_path: String },
+    SwitchRepositoryBranch { repo_path: String, branch_name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -570,6 +592,228 @@ fn read_repository_file(
     )
 }
 
+#[cfg(feature = "repository-data")]
+fn save_conflict_resolution(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: String,
+    content: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Conflict resolution",
+        gitmanager_core::repository_workspace::save_conflict_resolution(
+            &repo_path, &relative_path, &content,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn preview_repository_pull(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Pull preview",
+        gitmanager_core::repository_workspace::preview_repository_pull(&repo_path),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn get_repository_changes(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository changes",
+        gitmanager_core::repository_workspace::get_repository_changes(&repo_path),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn read_repository_file_diff(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: String,
+    staged: bool,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository file diff",
+        gitmanager_core::repository_workspace::read_repository_file_diff(
+            &repo_path, &relative_path, staged,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn fetch_repository_remote(
+    state: &ServiceState,
+    repo_path: String,
+    remote_name: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Remote fetch",
+        gitmanager_core::repository_workspace::fetch_repository_remote(&repo_path, &remote_name),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn stage_repository_paths(
+    state: &ServiceState,
+    repo_path: String,
+    paths: Vec<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Staged repository changes",
+        gitmanager_core::repository_workspace::stage_repository_paths(&repo_path, &paths),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn unstage_repository_paths(
+    state: &ServiceState,
+    repo_path: String,
+    paths: Vec<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Unstaged repository changes",
+        gitmanager_core::repository_workspace::unstage_repository_paths(&repo_path, &paths),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn preview_repository_commit(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Commit preview",
+        gitmanager_core::repository_workspace::preview_repository_commit(&repo_path),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn create_repository_commit(
+    state: &ServiceState,
+    repo_path: String,
+    message: String,
+    expected_index_tree: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Created commit",
+        gitmanager_core::repository_workspace::create_repository_commit(
+            &repo_path, &message, &expected_index_tree,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn delete_repository_path(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository deletion",
+        gitmanager_core::repository_workspace::delete_repository_path(
+            &repo_path, &relative_path,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn prepare_and_pull_repository_update(
+    state: &ServiceState,
+    repo_path: String,
+    expected_branch: String,
+    expected_local_oid: String,
+    expected_remote_oid: String,
+    expected_status_token: String,
+    mode: String,
+    stage_paths: Vec<String>,
+    commit_message: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Pull execution",
+        gitmanager_core::repository_workspace::prepare_and_pull_repository_update(
+            &repo_path,
+            &expected_branch,
+            &expected_local_oid,
+            &expected_remote_oid,
+            &expected_status_token,
+            &mode,
+            &stage_paths,
+            &commit_message,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn list_local_repository_branches(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Local branches",
+        gitmanager_core::git_info::list_local_repository_branches(Path::new(&repo_path)),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn switch_repository_branch(
+    state: &ServiceState,
+    repo_path: String,
+    branch_name: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Branch switch",
+        gitmanager_core::git_info::switch_repository_branch(
+            Path::new(&repo_path), &branch_name,
+        ),
+    )
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn service_workspace_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Repository workspace IPC is not enabled in this process"),
+        error: Some("Repository workspace operations are available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn save_conflict_resolution(_: &ServiceState, _: String, _: String, _: String) -> ServiceResponse {
+    service_workspace_unavailable(_)
+}
+#[cfg(not(feature = "repository-data"))]
+fn preview_repository_pull(_: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn get_repository_changes(_: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn read_repository_file_diff(_: &ServiceState, _: String, _: String, _: bool) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn fetch_repository_remote(_: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn stage_repository_paths(_: &ServiceState, _: String, _: Vec<String>) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn unstage_repository_paths(_: &ServiceState, _: String, _: Vec<String>) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn preview_repository_commit(_: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn create_repository_commit(_: &ServiceState, _: String, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn delete_repository_path(_: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn prepare_and_pull_repository_update(
+    state: &ServiceState, _: String, _: String, _: String, _: String, _: String, _: String, _: Vec<String>, _: String,
+) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn list_local_repository_branches(_: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+#[cfg(not(feature = "repository-data"))]
+fn switch_repository_branch(_: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+
 #[cfg(not(feature = "repository-data"))]
 fn list_repository_files(
     state: &ServiceState,
@@ -708,6 +952,37 @@ fn handle_service_connection(
                     source,
                     branch,
                 } => read_repository_file(state, repo_path, relative_path, source, branch),
+                ServiceCommand::SaveConflictResolution { repo_path, relative_path, content } =>
+                    save_conflict_resolution(state, repo_path, relative_path, content),
+                ServiceCommand::PreviewRepositoryPull { repo_path } =>
+                    preview_repository_pull(state, repo_path),
+                ServiceCommand::GetRepositoryChanges { repo_path } =>
+                    get_repository_changes(state, repo_path),
+                ServiceCommand::ReadRepositoryFileDiff { repo_path, relative_path, staged } =>
+                    read_repository_file_diff(state, repo_path, relative_path, staged),
+                ServiceCommand::FetchRepositoryRemote { repo_path, remote_name } =>
+                    fetch_repository_remote(state, repo_path, remote_name),
+                ServiceCommand::StageRepositoryPaths { repo_path, paths } =>
+                    stage_repository_paths(state, repo_path, paths),
+                ServiceCommand::UnstageRepositoryPaths { repo_path, paths } =>
+                    unstage_repository_paths(state, repo_path, paths),
+                ServiceCommand::PreviewRepositoryCommit { repo_path } =>
+                    preview_repository_commit(state, repo_path),
+                ServiceCommand::CreateRepositoryCommit { repo_path, message, expected_index_tree } =>
+                    create_repository_commit(state, repo_path, message, expected_index_tree),
+                ServiceCommand::DeleteRepositoryPath { repo_path, relative_path } =>
+                    delete_repository_path(state, repo_path, relative_path),
+                ServiceCommand::PrepareAndPullRepositoryUpdate {
+                    repo_path, expected_branch, expected_local_oid, expected_remote_oid,
+                    expected_status_token, mode, stage_paths, commit_message,
+                } => prepare_and_pull_repository_update(
+                    state, repo_path, expected_branch, expected_local_oid, expected_remote_oid,
+                    expected_status_token, mode, stage_paths, commit_message,
+                ),
+                ServiceCommand::ListLocalRepositoryBranches { repo_path } =>
+                    list_local_repository_branches(state, repo_path),
+                ServiceCommand::SwitchRepositoryBranch { repo_path, branch_name } =>
+                    switch_repository_branch(state, repo_path, branch_name),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
