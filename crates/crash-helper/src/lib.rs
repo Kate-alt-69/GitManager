@@ -606,7 +606,7 @@ fn get_repository_index_generation(state: &ServiceState) -> ServiceResponse {
     repository_data_response(
         state,
         "Repository index generation",
-        gitmanager_core::repository_index::repository_index_modified_unix_nanos()
+        gitmanager_core::repository_index::repository_index_generation()
             .map(|generation| generation.to_string()),
     )
 }
