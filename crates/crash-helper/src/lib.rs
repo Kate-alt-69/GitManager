@@ -5,11 +5,21 @@
 //! endpoint and is never placed in the UI's process tree or termination scope.
 
 use fs2::FileExt;
+use interprocess::local_socket::{
+    prelude::*,
+    ConnectOptions,
+    GenericFilePath,
+    Listener,
+    ListenerOptions,
+    ListenerNonblockingMode,
+    Stream as LocalSocketStream,
+};
+use interprocess::ConnectWaitMode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io::{self, Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -41,15 +51,102 @@ const UI_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 const UI_RECOVERY_GRACE: Duration = Duration::from_secs(15);
 const SUPERVISOR_POLL: Duration = Duration::from_millis(400);
 const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
-pub const SERVICE_PROTOCOL_VERSION: u32 = 3;
+pub const SERVICE_PROTOCOL_VERSION: u32 = 4;
 const MAX_CONCURRENT_SERVICE_REQUESTS: usize = 8;
-pub const SERVICE_GENERATION: u32 = 4;
+pub const SERVICE_GENERATION: u32 = 5;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Endpoint {
     version: u32,
+    /// Current protocol: a per-user Named Pipe (Windows) or Unix socket path.
+    #[serde(default)]
+    name: String,
+    /// Legacy protocol v1-v3: loopback TCP address used only for status negotiation.
+    #[serde(default)]
     address: String,
     token: String,
+}
+
+fn service_socket_identity(data_dir: &Path) -> u64 {
+    let identity = data_dir.to_string_lossy();
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in identity.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Stable per-user local socket name. The hashed identity derives from the
+/// per-user GitManager data directory, not from a globally shared pipe name.
+fn service_socket_name(data_dir: &Path) -> (String, Option<PathBuf>) {
+    let identity = service_socket_identity(data_dir);
+    #[cfg(windows)]
+    {
+        (format!(r"\\.\pipe\kastrick-gitmanager-{identity:016x}"), None)
+    }
+    #[cfg(unix)]
+    {
+        // Keep the UDS path short enough for sockaddr_un::sun_path on macOS.
+        // A private parent directory prevents other users from reaching the
+        // socket even on systems where socket chmod is not supported.
+        let socket_directory = PathBuf::from("/tmp")
+            .join(format!("kastrick-gitmanager-{identity:016x}"));
+        let socket_path = socket_directory.join("service.sock");
+        (
+            socket_path.to_string_lossy().to_string(),
+            Some(socket_directory),
+        )
+    }
+}
+
+fn prepare_service_socket_directory(directory: &Path) -> Result<(), String> {
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("Could not create the private service socket directory: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("Could not restrict service socket directory permissions: {error}"))?;
+    }
+    Ok(())
+}
+
+fn bind_service_local_listener(name: &str) -> io::Result<Listener> {
+    let local_name = name.to_fs_name::<GenericFilePath>()?;
+    ListenerOptions::new()
+        .name(local_name)
+        .nonblocking(ListenerNonblockingMode::Accept)
+        .create_sync()
+}
+
+fn write_service_frame(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
+    if payload.is_empty() || payload.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Service IPC frame is empty or exceeds the message limit",
+        ));
+    }
+    let length = u32::try_from(payload.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Service IPC frame is too large"))?;
+    stream.write_all(&length.to_be_bytes())?;
+    stream.write_all(payload)?;
+    stream.flush()
+}
+
+fn read_service_frame(stream: &mut impl Read) -> io::Result<Vec<u8>> {
+    let mut header = [0u8; 4];
+    stream.read_exact(&mut header)?;
+    let length = u32::from_be_bytes(header) as u64;
+    if length == 0 || length >= MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Service IPC frame has an invalid length",
+        ));
+    }
+    let mut payload = vec![0u8; length as usize];
+    stream.read_exact(&mut payload)?;
+    Ok(payload)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
