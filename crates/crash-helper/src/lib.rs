@@ -2694,6 +2694,7 @@ mod tests {
         assert!(response.ok);
         assert!(response.data.is_none());
         assert_eq!(response.status.service_generation, 0);
+        assert!(!response.status.indexing);
     }
 
     #[test]
