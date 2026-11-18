@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::scanner::load_persisted_repository_index;
+use crate::repository_index::load_persisted_repository_index;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoUpdateNotification {
