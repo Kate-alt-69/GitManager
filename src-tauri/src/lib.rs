@@ -1350,23 +1350,34 @@ async fn read_service_log_tail() -> Result<String, String> {
 
 #[tauri::command]
 async fn list_app_notifications() -> Result<Vec<notification_center::AppNotification>, String> {
-    tokio::task::spawn_blocking(notification_center::list_notifications)
-        .await
-        .map_err(|error| format!("Notification history read task failed: {error}"))?
+    request_core_service(
+        crash_helper::service_list_notifications,
+        "notification history",
+    ).await
 }
 
 #[tauri::command]
 async fn mark_app_notification_read(id: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || notification_center::mark_notification_read(&id))
-        .await
-        .map_err(|error| format!("Notification update task failed: {error}"))?
+    request_core_service(
+        move || crash_helper::service_mark_notification_read(id),
+        "notification read update",
+    ).await
 }
 
 #[tauri::command]
 async fn dismiss_app_notification(id: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || notification_center::dismiss_notification(&id))
-        .await
-        .map_err(|error| format!("Notification dismissal task failed: {error}"))?
+    request_core_service(
+        move || crash_helper::service_dismiss_notification(id),
+        "notification dismissal",
+    ).await
+}
+
+#[tauri::command]
+async fn mark_all_app_notifications_read() -> Result<usize, String> {
+    request_core_service(
+        crash_helper::service_mark_all_notifications_read,
+        "bulk notification read update",
+    ).await
 }
 
 #[tauri::command]
@@ -2185,6 +2196,7 @@ pub fn run() {
             list_app_notifications,
             mark_app_notification_read,
             dismiss_app_notification,
+            mark_all_app_notifications_read,
             control_background_service,
             report_ui_heartbeat,
             resume_background_service,
