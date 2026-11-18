@@ -259,8 +259,8 @@ fn mutate_notification(
 #[cfg(test)]
 mod tests {
     use super::{
-        repository_update_notification_id, AppNotification, NotificationStore,
-        MAX_NOTIFICATION_COUNT,
+        mark_store_notifications_read, repository_update_notification_id, AppNotification,
+        NotificationStore, MAX_NOTIFICATION_COUNT,
     };
 
     #[test]
