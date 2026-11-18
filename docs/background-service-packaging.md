@@ -60,7 +60,7 @@ The required service is the only process that publishes and mutates persistent n
 
 The In-app notifications and Operating system notifications preferences are independent. The service stores a repository-update notification once, then sends the same persisted title/body record to the OS only when OS notifications are enabled and that record was newly created. If persistence fails, the service logs the error and retries on the next remote-check cycle instead of emitting an OS toast without a matching in-app record. Disabling in-app notifications hides the in-app panel but does not implicitly disable OS notifications.
 
-The top-right Notifications popover supports All/Unread filters, per-item open/read/dismiss actions, and bulk mark-read. The Task Center is a separate compact top-right popover for required-service health, repository-index activity and bounded service-log output; neither surface is a full navigation page.
+The top-right Notifications popover supports All/Unread filters, per-item open/read/dismiss actions, and bulk mark-read. The Task Center is a compact top-right popover for required-service health, the service-reported repository-indexing state, queued/running remote checks and bounded service-log output. The indexing row reflects the service's own scan lifecycle, including first-run index creation and automatic rebuilds, rather than only the UI's local scan button state. Notifications remains a sibling popover; neither surface is a full navigation page.
 
 ## Native runtime monitoring and idle behavior
 
