@@ -44,4 +44,4 @@ The default suspension is 120 seconds and requests are clamped to a 15–600 sec
 
 Both executables are packaged as Tauri sidecars. The build script stages target-triple-suffixed sidecars before Tauri packaging.
 
-Older protocol-v1 and protocol-v2 workers are accepted only for a status handshake so the desktop can identify and replace them; no newer storage or Git commands are sent over the legacy TCP transport.
+Older protocol-v1, protocol-v2 and protocol-v3 workers are accepted only for a status handshake so the desktop can identify and replace them; no newer storage or Git commands are sent over the legacy TCP transport.
