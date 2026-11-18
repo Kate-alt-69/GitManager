@@ -809,8 +809,8 @@ mod commit_history_tests {
         fs::create_dir_all(&path).unwrap();
 
         let repo = Repository::init(&path).unwrap();
-        repo.set_head("refs/heads/main").unwrap();
         let signature = Signature::now("GitManager Test", "gitmanager-test@invalid.local").unwrap();
+        let mut previous_oid = None;
 
         for index in 0..count {
             fs::write(path.join("history.txt"), format!("commit {index}\n")).unwrap();
@@ -824,27 +824,35 @@ mod commit_history_tests {
                 format!("commit {index}")
             };
 
-            let oid = if let Ok(head) = repo.head() {
-                if let Ok(parent) = head.peel_to_commit() {
-                    repo.commit(
-                        Some("HEAD"),
-                        &signature,
-                        &signature,
-                        &message,
-                        &tree,
-                        &[&parent],
-                    ).unwrap()
-                } else {
-                    repo.commit(Some("HEAD"), &signature, &signature, &message, &tree, &[]).unwrap()
-                }
+            let oid = if let Some(parent_oid) = previous_oid {
+                let parent = repo.find_commit(parent_oid).unwrap();
+                let oid = repo.commit(
+                    Some("refs/heads/main"),
+                    &signature,
+                    &signature,
+                    &message,
+                    &tree,
+                    &[&parent],
+                ).unwrap();
+                drop(parent);
+                oid
             } else {
-                repo.commit(Some("HEAD"), &signature, &signature, &message, &tree, &[]).unwrap()
+                repo.commit(
+                    Some("refs/heads/main"),
+                    &signature,
+                    &signature,
+                    &message,
+                    &tree,
+                    &[],
+                ).unwrap()
             };
+            previous_oid = Some(oid);
             drop(tree);
             drop(git_index);
-            assert_eq!(repo.head().unwrap().target(), Some(oid));
         }
 
+        repo.set_head("refs/heads/main").unwrap();
+        assert_eq!(repo.head().unwrap().target(), previous_oid);
         drop(repo);
         path
     }
