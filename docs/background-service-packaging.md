@@ -30,11 +30,17 @@ The Windows installer also closes the old `git-manager.exe` and `git-manager-ser
 
 All Git worktree operations now run in the required service through authenticated protocol-v2 IPC: repository status, diffs, fetch, stage/unstage, commit preview/create, safe path deletion, pull preview/preparation/execution, and branch list/switch. The shared gitmanager-core crate owns the implementation and keeps the existing path validation and recovery checks. The Tauri process forwards user intents and displays results; it does not open the working repository for these operations.
 
-The service control listener has a hard cap of eight concurrent requests. This keeps status/health requests responsive during a longer history or Git operation without allowing unbounded request threads. Per-repository serialization for conflicting operations remains a follow-up safeguard before increasing this concurrency cap.
+The service control listener has a hard cap of eight concurrent requests. This keeps status/health requests responsive during a longer history or Git operation without allowing unbounded request threads. Requests for the same repository are serialized by a per-repository lock; different repositories can proceed concurrently.
 
 ## Repository read ownership
 
 The required service performs Git repository overview reads, paginated commit-history traversal and individual commit-detail calculations. The Tauri command layer forwards those requests over the authenticated protocol-v2 loopback channel and deserializes the result for the UI. Commit-history requests are bounded to 100 results maximum (the UI requests 50 at a time); branch and text filters execute in the service process.
+
+## Preferences and repository inventory
+
+The service owns the global preferences file at the existing per-user config path and validates its persisted bounds. The desktop performs a one-time migration from the former Tauri app-config location before service startup; normal preference loads and saves use authenticated IPC. Writes are serialized and use a recoverable temporary/previous file.
+
+Repository discovery, indexing, the authoritative index snapshot and index generation all belong to the service. The UI requests a grouped snapshot and generation through IPC. The native Tauri monitor reads only the index file's metadata timestamp to emit change events; it does not deserialize the index. Manual Check remotes requests are queued to the service loop and use the same notification/OS delivery path as scheduled checks.
 
 ## Notification lifecycle
 
