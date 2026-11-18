@@ -327,6 +327,10 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
 
         desktop_watcher = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
         service_source = (ROOT / "crates" / "git-manager-service" / "src" / "background_service.rs").read_text(encoding="utf-8")
+        service_watcher = (ROOT / "crates" / "git-manager-service" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
+        self.assertIn("crash_helper::with_repository_operation_lock", service_watcher)
+        self.assertIn("check_single_repo_for_remote_update_locked", service_watcher)
+        self.assertIn("apply_repository_update_locked", service_watcher)
         self.assertIn("use crate::repository_index::load_persisted_repository_index;", desktop_watcher)
         self.assertNotIn("crate::scanner", desktop_watcher)
         self.assertLess(
