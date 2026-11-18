@@ -1158,6 +1158,49 @@ mod tests {
     }
 
     #[test]
+    fn account_storage_commands_use_the_versioned_authenticated_protocol() {
+        let save = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::SaveAccount {
+                payload: serde_json::json!({
+                    "metadata": { "provider": "github", "account_login": "example" },
+                    "repositories": []
+                }),
+            },
+        };
+        let encoded_save = serde_json::to_value(save).expect("encode account save request");
+        assert_eq!(encoded_save["token"], "test-token");
+        assert_eq!(encoded_save["command"]["action"], "save_account");
+        assert!(encoded_save["command"].get("payload").is_some());
+        assert!(encoded_save["command"]["payload"].get("access_token").is_none());
+
+        let load = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::LoadAccounts,
+        };
+        let encoded_load = serde_json::to_value(load).expect("encode account load request");
+        assert_eq!(encoded_load["command"]["action"], "load_accounts");
+    }
+
+    #[test]
+    fn legacy_service_response_defaults_to_empty_data_payload() {
+        let legacy = serde_json::json!({
+            "ok": true,
+            "status": {
+                "suspended": false,
+                "remaining_seconds": 0,
+                "message": "legacy worker"
+            },
+            "error": null
+        });
+        let response: super::ServiceResponse =
+            serde_json::from_value(legacy).expect("deserialize legacy service response");
+        assert!(response.ok);
+        assert!(response.data.is_none());
+        assert_eq!(response.status.service_generation, 0);
+    }
+
+    #[test]
     fn repository_scan_request_uses_the_authenticated_control_protocol() {
         let request = ServiceRequest {
             token: "test-token".to_string(),
