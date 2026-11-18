@@ -1011,11 +1011,32 @@ pub fn run_helper_from_args() -> i32 {
 mod tests {
     use super::{
         ServiceCommand, ServiceRequest, ServiceState, SuspensionRecord,
-        DEFAULT_SUSPENSION_SECONDS, MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS,
+        DEFAULT_SUSPENSION_SECONDS, MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS, SERVICE_GENERATION,
     };
     use super::Uuid;
     use std::fs;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn legacy_service_status_defaults_to_generation_zero() {
+        let legacy = serde_json::json!({
+            "suspended": false,
+            "remaining_seconds": 0,
+            "message": "legacy worker"
+        });
+        let status: super::ServiceStatus =
+            serde_json::from_value(legacy).expect("deserialize legacy status");
+        assert_eq!(status.service_generation, 0);
+    }
+
+    #[test]
+    fn new_service_status_reports_the_required_generation() {
+        let path = std::env::temp_dir()
+            .join(format!("gitmanager-service-generation-{}.json", Uuid::new_v4()));
+        let status = ServiceState::load(path.clone()).status("test");
+        assert_eq!(status.service_generation, SERVICE_GENERATION);
+        let _ = fs::remove_file(path);
+    }
 
     #[test]
     fn repository_scan_request_uses_the_authenticated_control_protocol() {
