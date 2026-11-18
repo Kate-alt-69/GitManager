@@ -43,6 +43,7 @@ export function ServiceManagerPage({
 			protocolVersion: number;
 			remoteCheckPending?: boolean;
 			remoteCheckRunning?: boolean;
+			indexing?: boolean;
 			message: string;
 		}>(
 			"gitmanager://service-health",
@@ -57,6 +58,7 @@ export function ServiceManagerPage({
 					protocol_version: payload.protocolVersion,
 					remote_check_pending: Boolean(payload.remoteCheckPending),
 					remote_check_running: Boolean(payload.remoteCheckRunning),
+					indexing: Boolean(payload.indexing),
 				}));
 				if (payload.ready) setError("");
 				else setError(payload.message || "GitManager Core Service is unavailable.");
@@ -108,6 +110,7 @@ export function ServiceManagerPage({
 						<div><dt>Process ID</dt><dd>{details?.process_id || "—"}</dd></div>
 						<div><dt>Protocol version</dt><dd>{details?.protocol_version || "—"}</dd></div>
 						<div><dt>Service generation</dt><dd>{details?.service_generation || "—"}</dd></div>
+						<div><dt>Repository indexing</dt><dd>{details ? details.indexing ? "Running" : "Idle" : "Unknown"}</dd></div>
 						<div><dt>Background work</dt><dd>{details?.suspended ? `Paused · ${details.remaining_seconds}s remaining` : details ? "Active" : "Unknown"}</dd></div>
 						<div><dt>Remote check</dt><dd>{details?.remote_check_running ? "Running" : details?.remote_check_pending ? "Queued" : "Idle"}</dd></div>
 					</dl>
