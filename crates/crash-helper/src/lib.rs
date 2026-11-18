@@ -1158,6 +1158,77 @@ pub fn read_service_repository_file(
     )
 }
 
+pub fn service_save_conflict_resolution(
+    repo_path: String, relative_path: String, content: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::SaveConflictResolution { repo_path, relative_path, content }, "conflict resolution")
+}
+pub fn service_preview_repository_pull(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::PreviewRepositoryPull { repo_path }, "pull preview")
+}
+pub fn service_get_repository_changes(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::GetRepositoryChanges { repo_path }, "repository changes")
+}
+pub fn service_read_repository_file_diff(
+    repo_path: String, relative_path: String, staged: bool,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::ReadRepositoryFileDiff { repo_path, relative_path, staged }, "repository file diff")
+}
+pub fn service_fetch_repository_remote(
+    repo_path: String, remote_name: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::FetchRepositoryRemote { repo_path, remote_name }, "remote fetch result")
+}
+pub fn service_stage_repository_paths(
+    repo_path: String, paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::StageRepositoryPaths { repo_path, paths }, "staged changes")
+}
+pub fn service_unstage_repository_paths(
+    repo_path: String, paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::UnstageRepositoryPaths { repo_path, paths }, "unstaged changes")
+}
+pub fn service_preview_repository_commit(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::PreviewRepositoryCommit { repo_path }, "commit preview")
+}
+pub fn service_create_repository_commit(
+    repo_path: String, message: String, expected_index_tree: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::CreateRepositoryCommit { repo_path, message, expected_index_tree }, "commit result")
+}
+pub fn service_delete_repository_path(
+    repo_path: String, relative_path: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::DeleteRepositoryPath { repo_path, relative_path }, "deletion result")
+}
+pub fn service_prepare_and_pull_repository_update(
+    repo_path: String,
+    expected_branch: String,
+    expected_local_oid: String,
+    expected_remote_oid: String,
+    expected_status_token: String,
+    mode: String,
+    stage_paths: Vec<String>,
+    commit_message: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::PrepareAndPullRepositoryUpdate {
+            repo_path, expected_branch, expected_local_oid, expected_remote_oid,
+            expected_status_token, mode, stage_paths, commit_message,
+        },
+        "pull result",
+    )
+}
+pub fn service_list_local_repository_branches(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::ListLocalRepositoryBranches { repo_path }, "branch list")
+}
+pub fn service_switch_repository_branch(
+    repo_path: String, branch_name: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::SwitchRepositoryBranch { repo_path, branch_name }, "branch switch result")
+}
+
 pub fn request_service_status() -> Result<ServiceStatus, String> {
     send_service_command(ServiceCommand::Status)
 }
