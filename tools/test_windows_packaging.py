@@ -270,8 +270,12 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("crash_helper::load_service_repository_overview", desktop_source)
         self.assertIn("crash_helper::load_service_commit_history", desktop_source)
         self.assertIn("crash_helper::load_service_commit_details", desktop_source)
+        self.assertIn("crash_helper::load_service_repository_files", desktop_source)
+        self.assertIn("crash_helper::read_service_repository_file", desktop_source)
         self.assertNotIn("extract_git_repository_overview", desktop_source)
         self.assertNotIn("git_info::load_repository_commit_history", desktop_source)
+        self.assertNotIn("repository_workspace::list_repository_files", desktop_source)
+        self.assertNotIn("repository_workspace::read_repository_file", desktop_source)
         self.assertNotIn("gitmanager_core::account_store::load_accounts", desktop_source)
         self.assertNotIn("gitmanager_core::account_store::save_account(", desktop_source)
 
