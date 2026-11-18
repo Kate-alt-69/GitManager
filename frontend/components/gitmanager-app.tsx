@@ -151,6 +151,7 @@ function TopBar({
 	inAppNotificationsEnabled,
 	onRefreshNotifications,
 	onMarkNotificationRead,
+	onMarkAllNotificationsRead,
 	onDismissNotification,
 	onOpenNotification,
 	onScan,
@@ -169,6 +170,7 @@ function TopBar({
 	inAppNotificationsEnabled: boolean;
 	onRefreshNotifications: () => Promise<unknown>;
 	onMarkNotificationRead: (id: string) => Promise<void>;
+	onMarkAllNotificationsRead: () => Promise<number>;
 	onDismissNotification: (id: string) => Promise<void>;
 	onOpenNotification: (item: AppNotification) => void;
 	onScan: () => void;
@@ -178,7 +180,12 @@ function TopBar({
 	const panelHostRef = useRef<HTMLDivElement | null>(null);
 	const [serviceLog, setServiceLog] = useState<string | null>(null);
 	const [serviceLogBusy, setServiceLogBusy] = useState(false);
+	const [notificationFilter, setNotificationFilter] = useState<"all" | "unread">("all");
 	const unreadCount = inAppNotificationsEnabled ? notifications.filter((item) => !item.read).length : 0;
+	const visibleNotifications = useMemo(
+		() => notificationFilter === "unread" ? notifications.filter((item) => !item.read) : notifications,
+		[notificationFilter, notifications],
+	);
 	const currentRoute = parseInternalRoute(internalRoute);
 	const label = routeLabel(currentRoute);
 
@@ -287,18 +294,30 @@ function TopBar({
 					{openPanel === "notifications" && (
 						<section id="gm-notifications-popover" className="gm-topbar-popover gm-notifications-panel" role="dialog" aria-label="Notifications">
 							<div className="gm-popover-heading">
-								<div><strong>Notifications</strong><small>{unreadCount} unread · latest activity</small></div>
+								<div><strong>Notifications</strong><small>{unreadCount} unread · {notifications.length} saved</small></div>
 								<button type="button" onClick={() => setOpenPanel(null)} aria-label="Close Notifications">×</button>
+							</div>
+							<div className="gm-notification-filters" role="tablist" aria-label="Notification filter">
+								<button type="button" role="tab" aria-selected={notificationFilter === "all"} className={notificationFilter === "all" ? "active" : ""} onClick={() => setNotificationFilter("all")}>
+									All <span>{notifications.length}</span>
+								</button>
+								<button type="button" role="tab" aria-selected={notificationFilter === "unread"} className={notificationFilter === "unread" ? "active" : ""} onClick={() => setNotificationFilter("unread")}>
+									Unread <span>{unreadCount}</span>
+								</button>
 							</div>
 							<div className="gm-notification-list">
 								{!inAppNotificationsEnabled ? (
-									<div className="gm-notification-empty"><strong>In-app notifications are disabled</strong><span>Enable them in Settings to show GitManager activity here. OS notifications can be configured separately.</span></div>
-								) : notifications.length === 0 ? (
-									<div className="gm-notification-empty"><strong>You're all caught up</strong><span>Repository updates and GitManager activity will appear here.</span></div>
-								) : notifications.map((item) => (
+									<div className="gm-notification-empty"><strong>In-app notifications are disabled</strong><span>Enable them in Settings to show saved activity here. Operating system notifications remain independently configurable.</span></div>
+								) : visibleNotifications.length === 0 ? (
+									<div className="gm-notification-empty"><strong>{notificationFilter === "unread" ? "No unread notifications" : "You're all caught up"}</strong><span>{notificationFilter === "unread" ? "Everything has been read. Switch to All to review recent activity." : "Repository updates and GitManager activity will appear here."}</span></div>
+								) : visibleNotifications.map((item) => (
 									<article className={item.read ? "gm-notification-item read" : "gm-notification-item unread"} key={item.id}>
 										<div className="gm-notification-copy">
-											<div className="gm-notification-title"><strong>{item.title}</strong><time>{new Date(item.createdAtUnixMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>
+											<div className="gm-notification-title">
+												<strong>{item.title}</strong>
+												<time title={new Date(item.createdAtUnixMs).toLocaleString()}>{new Date(item.createdAtUnixMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+											</div>
+											<span className="gm-notification-kind">{item.kind.replace(/-/g, " ")}</span>
 											<p>{item.body}</p>
 										</div>
 										<div className="gm-notification-actions">
@@ -309,8 +328,9 @@ function TopBar({
 									</article>
 								))}
 							</div>
-							<div className="gm-popover-actions">
-								<button type="button" onClick={() => void onRefreshNotifications()} disabled={!inAppNotificationsEnabled}>Refresh notifications</button>
+							<div className="gm-popover-actions gm-notification-footer">
+								<button type="button" onClick={() => void onMarkAllNotificationsRead()} disabled={!inAppNotificationsEnabled || unreadCount === 0}>Mark all read</button>
+								<button type="button" onClick={() => void onRefreshNotifications()} disabled={!inAppNotificationsEnabled}>Refresh</button>
 							</div>
 						</section>
 					)}
@@ -929,6 +949,7 @@ export function GitManagerApp() {
 					inAppNotificationsEnabled={git.preferences.inAppNotificationsEnabled !== false}
 					onRefreshNotifications={git.refreshNotifications}
 					onMarkNotificationRead={git.markNotificationRead}
+					onMarkAllNotificationsRead={git.markAllNotificationsRead}
 					onDismissNotification={git.dismissNotification}
 					onOpenNotification={openNotificationRepository}
 					onScan={handleScan}
