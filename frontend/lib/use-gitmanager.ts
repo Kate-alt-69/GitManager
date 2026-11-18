@@ -139,19 +139,35 @@ export function useGitManager() {
 
 
 	const markNotificationRead = useCallback(async (id: string) => {
-		await invoke("mark_app_notification_read", { id });
-		setNotifications((current) => current.map((item) => item.id === id ? { ...item, read: true } : item));
+		try {
+			await invoke("mark_app_notification_read", { id });
+			setNotifications((current) => current.map((item) => item.id === id ? { ...item, read: true } : item));
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+			setStatus("Could not update notification");
+		}
 	}, []);
 
 	const dismissNotification = useCallback(async (id: string) => {
-		await invoke("dismiss_app_notification", { id });
-		setNotifications((current) => current.filter((item) => item.id !== id));
+		try {
+			await invoke("dismiss_app_notification", { id });
+			setNotifications((current) => current.filter((item) => item.id !== id));
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+			setStatus("Could not dismiss notification");
+		}
 	}, []);
 
 	const markAllNotificationsRead = useCallback(async () => {
-		const changed = await invoke<number>("mark_all_app_notifications_read");
-		setNotifications((current) => current.map((item) => item.read ? item : { ...item, read: true }));
-		return changed;
+		try {
+			const changed = await invoke<number>("mark_all_app_notifications_read");
+			setNotifications((current) => current.map((item) => item.read ? item : { ...item, read: true }));
+			return changed;
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+			setStatus("Could not update notifications");
+			return 0;
+		}
 	}, []);
 
 
