@@ -84,28 +84,11 @@ fn application_directory_layout(local_data: &Path) -> ApplicationDirectories {
 }
 
 fn application_directories() -> Result<ApplicationDirectories, String> {
-    // On Windows dirs::data_local_dir resolves to %LOCALAPPDATA%; on macOS/Linux
-    // it selects the corresponding per-user local application-data directory.
+    // Resolve paths for Settings/diagnostics only. The required service owns
+    // directory creation through gitmanager_core::storage::ensure_data_layout.
     let local_data = dirs::data_local_dir()
         .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
-    let directories = application_directory_layout(&local_data);
-
-    for (label, path) in [
-        ("config", &directories.config_dir),
-        ("data", &directories.data_dir),
-        ("repository metadata", &directories.repo_metadata_dir),
-        ("Git data", &directories.git_data_dir),
-        ("account metadata", &directories.account_metadata_dir),
-        ("account Git data", &directories.account_git_data_dir),
-        ("remote repository metadata", &directories.remote_repo_metadata_dir),
-        ("remote repository Git data", &directories.remote_repo_git_data_dir),
-        ("cache", &directories.cache_dir),
-    ] {
-        fs::create_dir_all(path)
-            .map_err(|error| format!("Could not create GitManager {label} directory: {error}"))?;
-    }
-
-    Ok(directories)
+    Ok(application_directory_layout(&local_data))
 }
 
 #[tauri::command]
@@ -117,11 +100,18 @@ fn preferences_file(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let directories = application_directories()?;
     let path = PathBuf::from(directories.config_dir).join("preferences.json");
 
-    // Migrate the previous Tauri-managed preferences file once, without deleting the old copy.
+    // Migrate the previous Tauri-managed preferences file once, without
+    // deleting the old copy. The service creates this directory on all normal
+    // launches; Tauri creates only this config parent when an actual legacy
+    // settings file needs to be copied before the service starts.
     if !path.exists() {
         if let Ok(legacy_directory) = app_handle.path().app_config_dir() {
             let legacy_file = legacy_directory.join("preferences.json");
             if legacy_file.is_file() {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| format!("Could not prepare the GitManager preferences migration directory: {error}"))?;
+                }
                 fs::copy(&legacy_file, &path)
                     .map_err(|error| format!("Could not migrate existing GitManager preferences: {error}"))?;
             }
