@@ -497,6 +497,7 @@ export function RepositoryDetail({
 						</div>
 						<small className="gm-archive-root">Archive folder: {archiveRoot || "Resolving…"}</small>
 					</div>
+					</div>
 				</div>}
 			</section>
 	);
