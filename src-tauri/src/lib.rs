@@ -1739,7 +1739,7 @@ fn capture_idle_performance_sync() -> Result<IdlePerformanceCapture, String> {
     let service_status = crash_helper::request_service_status()
         .map_err(|error| format!("The required core service is unavailable: {error}"))?;
     if service_status.service_generation < crash_helper::SERVICE_GENERATION
-        || service_status.protocol_version < 2
+        || service_status.protocol_version < crash_helper::SERVICE_PROTOCOL_VERSION
     {
         return Err("The required GitManager core service is outdated. Restart the service before measuring idle performance.".to_string());
     }
