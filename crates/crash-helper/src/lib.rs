@@ -41,9 +41,9 @@ const UI_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 const UI_RECOVERY_GRACE: Duration = Duration::from_secs(15);
 const SUPERVISOR_POLL: Duration = Duration::from_millis(400);
 const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
-const SERVICE_PROTOCOL_VERSION: u32 = 2;
+pub const SERVICE_PROTOCOL_VERSION: u32 = 3;
 const MAX_CONCURRENT_SERVICE_REQUESTS: usize = 8;
-pub const SERVICE_GENERATION: u32 = 3;
+pub const SERVICE_GENERATION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Endpoint {
@@ -1634,7 +1634,7 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
         .map_err(|error| format!("Service-control endpoint is invalid: {error}"))?;
     // Protocol v1 remains readable for status-only upgrade negotiation.
     // Account-cache messages are v2-only and are rejected by an old worker.
-    if endpoint.version != 1 && endpoint.version != SERVICE_PROTOCOL_VERSION {
+    if endpoint.version == 0 || endpoint.version > SERVICE_PROTOCOL_VERSION {
         return Err("Service-control protocol version is unsupported.".to_string());
     }
 
