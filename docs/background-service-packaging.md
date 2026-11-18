@@ -55,7 +55,7 @@ On Windows this is under `%LOCALAPPDATA%\\kastrick's_software\\data\\GitManager`
 
 The repository index is an atomic, versioned snapshot at `repo/metadata/index.json`. Existing working copies and their `.git` directories remain the source of truth; GitManager does not duplicate those repositories into its data directory.
 
-Account identity metadata and cached provider repository lists are stored separately under `account/metadata` and `account/git_data`. Personal access tokens are not written to either location. A token entered in the Accounts page is used for that connection request only; GitHub CLI credentials remain managed by `gh`. On a later launch, cached identities are shown as cached until the user reconnects.
+Account identity metadata and cached provider repository lists are stored separately under `account/metadata` and `account/git_data`. The Tauri coordinator sends the non-secret account summary and repository cache to `gitmanager.service` over authenticated protocol-v2 IPC; the service owns persistent reads and writes. Provider API requests remain in the coordinator for this iteration. Personal access tokens are not written to either location or included in account-cache IPC. GitHub CLI credentials remain managed by `gh`. On a later launch, cached identities are shown as cached until the user reconnects.
 
 ## Windows MSI and MSIX
 
