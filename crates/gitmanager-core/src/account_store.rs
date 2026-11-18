@@ -70,10 +70,10 @@ fn repositories_path_at(root: &Path, provider: &str, account_login: &str) -> Pat
         provider.trim().to_ascii_lowercase(),
         account_login.trim().to_ascii_lowercase()
     );
-    let mut hash = 0x811c9dc5u32;
+    let mut hash = 0xcbf29ce484222325u64;
     for byte in identity.bytes() {
-        hash ^= u32::from(byte);
-        hash = hash.wrapping_mul(0x01000193);
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
     }
     let provider_slug = provider
         .chars()
@@ -88,7 +88,7 @@ fn repositories_path_at(root: &Path, provider: &str, account_login: &str) -> Pat
     };
     root.join("account")
         .join("git_data")
-        .join(format!("{provider_slug}-{hash:08x}.json"))
+        .join(format!("{provider_slug}-{hash:016x}.json"))
 }
 
 fn load_account_metadata_at(root: &Path) -> Result<Vec<AccountMetadata>, String> {
