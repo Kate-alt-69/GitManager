@@ -70,6 +70,11 @@ fn repository_auto_update_enabled(repo_path: &str) -> bool {
 /// The archive-watcher lease protects against duplicate service instances;
 /// the desktop UI consumes the published repository index and never owns watches.
 pub fn run() -> ! {
+    if let Err(error) = gitmanager_core::storage::ensure_data_layout() {
+        eprintln!("GitManager core service could not initialize its persistent data layout: {error}");
+        std::process::exit(2);
+    }
+
     let service_control = match start_service_control_server() {
         Ok(server) => server,
         Err(error) => {
