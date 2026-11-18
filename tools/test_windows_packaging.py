@@ -121,6 +121,11 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("GitManager Background Service", watcher_source)
         self.assertIn("gitmanager-updater.service", watcher_source)
         self.assertIn("com.gitmanager.updater", watcher_source)
+        startup = watcher_source.split("pub fn ensure_required_service", 1)[1]
+        self.assertLess(
+            startup.index("stop_legacy_background_service();"),
+            startup.index("request_service_status()"),
+        )
         self.assertIn("Windows Task Scheduler (user logon)", watcher_source)
         store_capabilities = store["msix"]["capabilities"]
         self.assertNotIn("packagedServices", store_capabilities)
