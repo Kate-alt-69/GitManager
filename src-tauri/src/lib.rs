@@ -886,20 +886,44 @@ async fn load_repository_commit_history(
 
 #[tauri::command]
 async fn list_repository_files(
-    repo_path: String, relative_path: Option<String>, source: Option<String>, branch: Option<String>,
-) -> Result<Vec<repository_workspace::RepositoryFileEntry>, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::list_repository_files(
-        &repo_path, relative_path.as_deref(), source.as_deref().unwrap_or("local"), branch.as_deref()
-    )).await.map_err(|error| format!("Repository file listing task failed: {error}"))?
+    repo_path: String,
+    relative_path: Option<String>,
+    source: Option<String>,
+    branch: Option<String>,
+) -> Result<Vec<gitmanager_core::repository_browser::RepositoryFileEntry>, String> {
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::load_service_repository_files(
+            repo_path,
+            relative_path,
+            source.unwrap_or_else(|| "local".to_string()),
+            branch,
+        )
+    })
+    .await
+    .map_err(|error| format!("Repository file listing service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned an invalid repository file listing: {error}"))
 }
 
 #[tauri::command]
 async fn read_repository_file(
-    repo_path: String, relative_path: String, source: Option<String>, branch: Option<String>,
+    repo_path: String,
+    relative_path: String,
+    source: Option<String>,
+    branch: Option<String>,
 ) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::read_repository_file(
-        &repo_path, &relative_path, source.as_deref().unwrap_or("local"), branch.as_deref()
-    )).await.map_err(|error| format!("Repository file read task failed: {error}"))?
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::read_service_repository_file(
+            repo_path,
+            relative_path,
+            source.unwrap_or_else(|| "local".to_string()),
+            branch,
+        )
+    })
+    .await
+    .map_err(|error| format!("Repository file read service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned an invalid repository file preview: {error}"))
 }
 
 #[tauri::command]
