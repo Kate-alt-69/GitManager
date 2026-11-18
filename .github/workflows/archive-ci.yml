@@ -127,6 +127,14 @@ jobs:
       - name: Check the desktop backend and all sidecar dependencies
         run: cargo check --locked --workspace --all-targets
 
+      - name: Check crash-helper service features independently
+        shell: bash
+        run: |
+          for feature in account-storage repository-data notification-storage preferences-storage archive-operations provider-sync; do
+            echo "Checking crash-helper feature: $feature"
+            cargo check --locked -p crash-helper --no-default-features --features "$feature"
+          done
+
       - name: Check GitManager's provider-sync-only Cloud Node feature set
         run: cargo check --locked -p cloud-node --no-default-features --features provider-sync
 
