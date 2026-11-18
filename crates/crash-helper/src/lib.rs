@@ -707,8 +707,8 @@ fn load_app_preferences(state: &ServiceState) -> ServiceResponse {
 fn save_app_preferences(state: &ServiceState, payload: serde_json::Value) -> ServiceResponse {
     let result = serde_json::from_value::<gitmanager_core::AppPreferences>(payload)
         .map_err(|error| format!("Application preference payload is invalid: {error}"))
-        .and_then(|preferences| {
-            gitmanager_core::app_preferences::save_background_preferences(&preferences)?;
+        .and_then(|mut preferences| {
+            gitmanager_core::app_preferences::save_background_preferences(&mut preferences)?;
             Ok(preferences)
         });
     repository_data_response(state, "Saved application preferences", result)
