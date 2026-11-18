@@ -8,7 +8,7 @@ pub mod remote_providers;
 pub use gitmanager_core::repository_index;
 pub mod watcher_service;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -22,6 +22,7 @@ use tauri::path::BaseDirectory;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::ShellExt;
 
@@ -1758,6 +1759,193 @@ async fn sign_windows_installer(installer_path: String, thumbprint: String) -> R
         .map_err(|error| format!("Installer signing task failed: {error}"))?
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessUsageSummary {
+    average_cpu_percent: f32,
+    peak_cpu_percent: f32,
+    average_memory_bytes: u64,
+    peak_memory_bytes: u64,
+    process_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IdlePerformanceCapture {
+    sample_duration_seconds: u64,
+    sample_count: usize,
+    logical_processors: usize,
+    captured_at_unix_ms: u128,
+    ui_process_tree: ProcessUsageSummary,
+    service_process_tree: Option<ProcessUsageSummary>,
+    service_generation: u32,
+    service_protocol_version: u32,
+    notes: Vec<String>,
+}
+
+fn collect_process_tree(
+    system: &System,
+    root: Pid,
+    excluded: &HashSet<Pid>,
+) -> HashSet<Pid> {
+    let mut collected = HashSet::new();
+    if system.process(&root).is_none() || excluded.contains(&root) {
+        return collected;
+    }
+    collected.insert(root);
+
+    loop {
+        let additions = system.processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                if collected.contains(pid) || excluded.contains(pid) {
+                    return None;
+                }
+                process.parent()
+                    .filter(|parent| collected.contains(parent))
+                    .map(|_| pid.clone())
+            })
+            .collect::<Vec<_>>();
+        if additions.is_empty() {
+            break;
+        }
+        collected.extend(additions);
+    }
+
+    collected
+}
+
+fn read_process_group(
+    system: &System,
+    pids: &HashSet<Pid>,
+    logical_processors: f32,
+) -> (f32, u64) {
+    let mut cpu_percent = 0.0f32;
+    let mut memory_bytes = 0u64;
+    for pid in pids {
+        if let Some(process) = system.process(pid) {
+            cpu_percent += process.cpu_usage() / logical_processors.max(1.0);
+            memory_bytes = memory_bytes.saturating_add(process.memory());
+        }
+    }
+    (cpu_percent, memory_bytes)
+}
+
+fn capture_idle_performance_sync() -> Result<IdlePerformanceCapture, String> {
+    const SAMPLE_INTERVAL: Duration = Duration::from_secs(3);
+    const SAMPLE_COUNT: usize = 20;
+
+    let service_status = crash_helper::request_service_status().ok();
+    let service_pid = service_status
+        .as_ref()
+        .map(|status| status.process_id)
+        .filter(|pid| *pid > 0)
+        .map(|pid| Pid::from(pid as usize));
+
+    let logical_processors = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    let logical_processors_f32 = logical_processors as f32;
+
+    // Process enumeration is deliberately done only after an explicit user
+    // action. Normal application startup and idle operation do not use sysinfo.
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+
+    let service_processes = service_pid
+        .map(|pid| collect_process_tree(&system, pid, &HashSet::new()))
+        .unwrap_or_default();
+    let ui_root = Pid::from(std::process::id() as usize);
+    let ui_processes = collect_process_tree(&system, ui_root, &service_processes);
+    if ui_processes.is_empty() {
+        return Err("Could not find the GitManager UI process in the operating-system process table.".to_string());
+    }
+
+    let mut tracked = ui_processes.iter().cloned().collect::<HashSet<_>>();
+    tracked.extend(service_processes.iter().cloned());
+    let tracked = tracked.into_iter().collect::<Vec<_>>();
+
+    // Prime the CPU counters before collecting the 60-second window.
+    system.refresh_processes(ProcessesToUpdate::Some(&tracked), true);
+    std::thread::sleep(Duration::from_millis(500));
+    system.refresh_processes(ProcessesToUpdate::Some(&tracked), true);
+
+    let mut ui_cpu_total = 0.0f32;
+    let mut ui_cpu_peak = 0.0f32;
+    let mut ui_memory_total = 0u128;
+    let mut ui_memory_peak = 0u64;
+    let mut service_cpu_total = 0.0f32;
+    let mut service_cpu_peak = 0.0f32;
+    let mut service_memory_total = 0u128;
+    let mut service_memory_peak = 0u64;
+
+    for _ in 0..SAMPLE_COUNT {
+        std::thread::sleep(SAMPLE_INTERVAL);
+        system.refresh_processes(ProcessesToUpdate::Some(&tracked), true);
+
+        let (ui_cpu, ui_memory) =
+            read_process_group(&system, &ui_processes, logical_processors_f32);
+        ui_cpu_total += ui_cpu;
+        ui_cpu_peak = ui_cpu_peak.max(ui_cpu);
+        ui_memory_total += u128::from(ui_memory);
+        ui_memory_peak = ui_memory_peak.max(ui_memory);
+
+        if !service_processes.is_empty() {
+            let (service_cpu, service_memory) =
+                read_process_group(&system, &service_processes, logical_processors_f32);
+            service_cpu_total += service_cpu;
+            service_cpu_peak = service_cpu_peak.max(service_cpu);
+            service_memory_total += u128::from(service_memory);
+            service_memory_peak = service_memory_peak.max(service_memory);
+        }
+    }
+
+    let ui_summary = ProcessUsageSummary {
+        average_cpu_percent: ui_cpu_total / SAMPLE_COUNT as f32,
+        peak_cpu_percent: ui_cpu_peak,
+        average_memory_bytes: (ui_memory_total / SAMPLE_COUNT as u128) as u64,
+        peak_memory_bytes: ui_memory_peak,
+        process_count: ui_processes.len(),
+    };
+    let service_summary = if service_processes.is_empty() {
+        None
+    } else {
+        Some(ProcessUsageSummary {
+            average_cpu_percent: service_cpu_total / SAMPLE_COUNT as f32,
+            peak_cpu_percent: service_cpu_peak,
+            average_memory_bytes: (service_memory_total / SAMPLE_COUNT as u128) as u64,
+            peak_memory_bytes: service_memory_peak,
+            process_count: service_processes.len(),
+        })
+    };
+
+    Ok(IdlePerformanceCapture {
+        sample_duration_seconds: SAMPLE_INTERVAL.as_secs() * SAMPLE_COUNT as u64,
+        sample_count: SAMPLE_COUNT,
+        logical_processors,
+        captured_at_unix_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        ui_process_tree: ui_summary,
+        service_process_tree: service_summary,
+        service_generation: service_status.as_ref().map(|status| status.service_generation).unwrap_or(0),
+        service_protocol_version: service_status.as_ref().map(|status| status.protocol_version).unwrap_or(0),
+        notes: vec![
+            "CPU percentages are normalized across all logical processors.".to_string(),
+            "The UI group includes the Tauri process and descendant processes visible in the process tree.".to_string(),
+            "Close active scans, account sync and large diffs before starting an idle capture.".to_string(),
+        ],
+    })
+}
+
+#[tauri::command]
+async fn capture_idle_performance() -> Result<IdlePerformanceCapture, String> {
+    tokio::task::spawn_blocking(capture_idle_performance_sync)
+        .await
+        .map_err(|error| format!("Performance capture task failed: {error}"))?
+}
+
 /// Keeps low-frequency health and file-change monitoring outside the WebView.
 /// The frontend sleeps until one of these native events reports a real change.
 fn start_native_runtime_monitor(app_handle: AppHandle) {
@@ -1893,6 +2081,7 @@ pub fn run() {
             get_core_service_status,
             inspect_repository,
             load_repository_commit_history,
+            capture_idle_performance,
             list_repository_files,
             read_repository_file,
             save_conflict_resolution,
