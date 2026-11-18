@@ -153,8 +153,13 @@ pub fn save_repository_preferences(
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_settings;
+    use super::{
+        load_repository_preferences, normalize_settings, save_repository_preferences,
+    };
     use crate::app_preferences::RepositoryPreferences;
+    use git2::Repository;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn repository_exclude_patterns_are_normalized_and_traversal_is_removed() {
@@ -173,6 +178,50 @@ mod tests {
             normalized.cleaner_exclude_patterns,
             vec!["build/cache".to_string(), "src/generated".to_string()]
         );
+    }
+
+    #[test]
+    fn repository_preferences_round_trip_through_the_git_info_directory() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("gitmanager-repo-preferences-{nonce}"));
+        fs::create_dir_all(&path).expect("create temporary repository directory");
+        let repo = Repository::init(&path).expect("initialize temporary repository");
+        drop(repo);
+
+        let settings = RepositoryPreferences {
+            auto_update: true,
+            keep_remote_clean: true,
+            cleaner_exclude_patterns: vec!["build/cache".to_string(), "target".to_string()],
+            ..RepositoryPreferences::default()
+        };
+        let saved = save_repository_preferences(
+            &path.to_string_lossy(),
+            settings,
+        ).expect("save repository preferences");
+        let loaded = load_repository_preferences(&path.to_string_lossy(), None)
+            .expect("load repository preferences");
+
+        assert_eq!(loaded, saved);
+        assert!(path.join(".git/info/gitmanager-settings.json").is_file());
+        fs::remove_dir_all(path).expect("remove temporary repository directory");
+    }
+
+    #[test]
+    fn repository_preferences_reject_bare_repositories() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("gitmanager-bare-preferences-{nonce}.git"));
+        fs::create_dir_all(&path).expect("create temporary repository directory");
+        let repo = Repository::init_bare(&path).expect("initialize bare repository");
+        drop(repo);
+
+        assert!(load_repository_preferences(&path.to_string_lossy(), None).is_err());
+        fs::remove_dir_all(path).expect("remove temporary bare repository");
     }
 
     #[test]
