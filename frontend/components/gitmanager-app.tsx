@@ -6,7 +6,7 @@ import { EngineBox, EngineGrid } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
 import { invoke, openDialog } from "../lib/tauri";
 import { Button, EmptyState, Field, Glyph, ProviderMark, RepoAvatar, Switch } from "./shared-ui";
-import { parseInternalRoute, repositoryRouteForItem, repositorySubroute, routeLabel, sectionRoute } from "../lib/internal-routing";
+import { parseInternalRoute, repositoryRouteForItem, repositorySubroute, routeLabel, sectionForRoute, sectionRoute } from "../lib/internal-routing";
 import type { RepositoryDestination } from "../lib/internal-routing";
 import type { AppPreferences, ArchiveSnapshot, AppNotification, BranchInfo, GitRepository, UpdateAlert } from "../lib/types";
 
@@ -825,23 +825,20 @@ const MemoRepositoryPage = memo(RepositoryPage);
 
 export function GitManagerApp() {
 	const git = useGitManager();
-	const [page, setPage] = useState<PageKey>("repositories");
 	const [internalRoute, setInternalRoute] = useState("/r");
 	const [query, setQuery] = useState("");
 	const [filter, setFilter] = useState<RepoFilter>("all");
 	const [kind, setKind] = useState<RepoKind>("projects");
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const selectedRepo = git.repositories.find((repo) => repo.id === selectedId) ?? null;
-	const currentDestination = useMemo<RepositoryDestination>(() => {
-		const parsedInternalRoute = parseInternalRoute(internalRoute);
-		return parsedInternalRoute.kind === "repository"
-			? parsedInternalRoute.destination
-			: { kind: "overview" };
-	}, [internalRoute]);
+	const parsedInternalRoute = useMemo(() => parseInternalRoute(internalRoute), [internalRoute]);
+	const page: PageKey = sectionForRoute(parsedInternalRoute);
+	const currentDestination: RepositoryDestination = parsedInternalRoute.kind === "repository"
+		? parsedInternalRoute.destination
+		: { kind: "overview" };
 
 	const navigatePage = useCallback((next: PageKey) => {
 		if (next === "accounts") void git.loadAccounts().catch(() => undefined);
-		setPage(next);
 		setSelectedId(null);
 		setInternalRoute(sectionRoute(next));
 	}, [git.loadAccounts]);
