@@ -143,6 +143,33 @@ fn bind_service_local_listener(name: &str) -> io::Result<Listener> {
     }
 }
 
+fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<LocalSocketStream> {
+    #[cfg(windows)]
+    {
+        use interprocess::os::windows::named_pipe::{
+            local_socket,
+            pipe_mode,
+            DuplexPipeStream,
+        };
+        // Use the direct named-pipe API here: ConnectOptions' local-socket
+        // timeout is not enforced for an overloaded Windows pipe.
+        let pipe = DuplexPipeStream::<pipe_mode::Bytes>::connect_by_path_with_wait_mode(
+            name,
+            ConnectWaitMode::Timeout(timeout),
+        )?;
+        Ok(local_socket::Stream::from(pipe))
+    }
+
+    #[cfg(unix)]
+    {
+        let local_name = name.to_fs_name::<GenericFilePath>()?;
+        ConnectOptions::new()
+            .name(local_name)
+            .wait_mode(ConnectWaitMode::Timeout(timeout))
+            .connect_sync()
+    }
+}
+
 fn write_service_frame(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
     if payload.is_empty() || payload.len() as u64 >= MAX_MESSAGE_BYTES {
         return Err(io::Error::new(
@@ -1879,13 +1906,7 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
     if endpoint.name != expected_name {
         return Err("Service-control socket name does not match this user's GitManager data directory.".to_string());
     }
-    let local_name = endpoint.name.as_str()
-        .to_fs_name::<GenericFilePath>()
-        .map_err(|error| format!("Service-control local socket name is invalid: {error}"))?;
-    let mut stream = ConnectOptions::new()
-        .name(local_name)
-        .wait_mode(ConnectWaitMode::Timeout(connect_timeout))
-        .connect_sync()
+    let mut stream = connect_service_local_socket(&endpoint.name, connect_timeout)
         .map_err(|error| format!("Could not connect to GitManager core service: {error}"))?;
     stream.set_recv_timeout(Some(read_timeout))
         .map_err(|error| format!("Could not set service IPC receive timeout: {error}"))?;
