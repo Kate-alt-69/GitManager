@@ -2130,3 +2130,62 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 		width: 100%;
 	}
 }
+
+
+.gm-notification-filters {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	padding: 7px 10px;
+	border-bottom: 1px solid #2c3947;
+	background: #101720;
+}
+.gm-notification-filters button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 25px;
+	padding: 0 8px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: #8fa0b1;
+	font-size: 9px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.gm-notification-filters button span {
+	color: #728295;
+	font: 8px "JetBrains Mono", Consolas, monospace;
+}
+.gm-notification-filters button:hover,
+.gm-notification-filters button.active {
+	border-color: #3b4d60;
+	background: #1a2938;
+	color: #e1ebf5;
+}
+.gm-notification-filters button.active span {
+	color: #c1d8ef;
+}
+.gm-notification-kind {
+	align-self: flex-start;
+	padding: 2px 5px;
+	border: 1px solid #35485b;
+	color: #8fb6da;
+	font-size: 8px;
+	line-height: 1.2;
+	text-transform: capitalize;
+}
+.gm-notification-footer {
+	justify-content: space-between;
+}
+.gm-notification-footer button:first-child:not(:disabled) {
+	color: #a9c8e4;
+}
+@media (max-width: 760px) {
+	.gm-notification-filters {
+		padding-inline: 8px;
+	}
+	.gm-notification-footer {
+		justify-content: flex-end;
+	}
+}
