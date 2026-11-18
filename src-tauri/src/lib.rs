@@ -24,9 +24,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::ShellExt;
 
 use git_info::GitRepositoryInfo;
-use remote_providers::{
-    fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
-};
+use remote_providers::{ConnectedAccountSummary, ProviderAccountRequest};
 use repository_index::{default_scan_roots, IndexedRepoSummary};
 use watcher_service::{
     register_os_background_service, BackgroundWatcherControl,
@@ -968,8 +966,10 @@ async fn switch_repository_branch(
 
 #[tauri::command]
 async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, String> {
-    tokio::task::spawn_blocking(remote_providers::detect_github_identity).await
-        .map_err(|error| format!("GitHub identity detection task failed: {error}"))?
+    request_core_service(
+        crash_helper::service_detect_github_identity,
+        "GitHub CLI identity",
+    ).await
 }
 
 /// Return the application version from the compiled Cargo package metadata.
@@ -1107,44 +1107,28 @@ async fn connect_git_account(
     access_token: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ConnectedAccountSummary, String> {
-    let summary = if provider.eq_ignore_ascii_case("github") && username_or_host.trim().is_empty()
-        && access_token.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
-        tokio::task::spawn_blocking(remote_providers::fetch_github_cli_account).await
-            .map_err(|error| format!("GitHub account connection task failed: {error}"))??
-    } else {
-        fetch_remote_account_repositories(ProviderAccountRequest { provider, username_or_host, access_token }).await?
-    };
-
-    let metadata = gitmanager_core::account_store::AccountMetadata {
-        provider: summary.provider.clone(),
-        account_login: summary.account_login.clone(),
-        display_name: summary.display_name.clone(),
-        email: summary.email.clone(),
-        avatar_url: summary.avatar_url.clone(),
-        profile_url: summary.profile_url.clone(),
-        updated_at_unix_ms: 0,
-    };
-    let payload = serde_json::json!({
-        "metadata": metadata,
-        "repositories": summary.repositories.clone(),
-    });
-    tokio::task::spawn_blocking(move || crash_helper::save_service_account_cache(payload))
-        .await
-        .map_err(|error| format!("Account metadata service request failed: {error}"))??;
+    let payload = serde_json::to_value(ProviderAccountRequest {
+        provider,
+        username_or_host,
+        access_token,
+    }).map_err(|error| format!("Could not encode provider account request: {error}"))?;
+    let summary: ConnectedAccountSummary = request_core_service(
+        move || crash_helper::service_connect_git_account(payload),
+        "provider account synchronization",
+    ).await?;
 
     if let Ok(mut accounts) = state.connected_accounts.lock() {
-        accounts.retain(|a| {
-            !(a.provider == summary.provider
-                && a.account_login.eq_ignore_ascii_case(&summary.account_login))
+        accounts.retain(|account| {
+            !(account.provider == summary.provider
+                && account.account_login.eq_ignore_ascii_case(&summary.account_login))
         });
         accounts.push(summary.clone());
     }
 
     if let Ok(mut cache) = state.cached_repos.lock() {
-        for r in &summary.repositories {
-            let exists = cache.iter().any(|existing| existing.id == r.id);
-            if !exists {
-                cache.push(r.clone());
+        for repository in &summary.repositories {
+            if !cache.iter().any(|existing| existing.id == repository.id) {
+                cache.push(repository.clone());
             }
         }
     }
