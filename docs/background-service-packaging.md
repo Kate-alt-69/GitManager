@@ -30,7 +30,7 @@ The Windows installer also closes the old `git-manager.exe` and `git-manager-ser
 
 All Git worktree operations now run in the required service through authenticated protocol-v3 IPC: repository status, diffs, fetch, stage/unstage, commit preview/create, safe path deletion, pull preview/preparation/execution, and branch list/switch. The shared gitmanager-core crate owns the implementation and keeps the existing path validation and recovery checks. The Tauri process forwards user intents and displays results; it does not open the working repository for these operations.
 
-The service control listener has a hard cap of eight concurrent requests. This keeps status/health requests responsive during a longer history or Git operation without allowing unbounded request threads. Requests for the same repository are serialized by a per-repository lock; different repositories can proceed concurrently.
+The service control listener has a hard cap of eight concurrent requests. This keeps status/health requests responsive during a longer history or Git operation without allowing unbounded request threads. Each repository uses a read/write lock: read-only history, file and status requests may run concurrently, while stage/unstage, commit, fetch, pull, delete and branch mutations take an exclusive lock. Archive capture takes a shared repository read lock plus a separate per-repository archive lock, so it cannot overlap a Git write but does not block ordinary reads.
 
 ## Repository read ownership
 
