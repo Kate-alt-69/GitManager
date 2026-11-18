@@ -35,6 +35,7 @@ export function useGitManager() {
 	const [serviceReady, setServiceReady] = useState(false);
 	const [remoteCheckPending, setRemoteCheckPending] = useState(false);
 	const [remoteCheckRunning, setRemoteCheckRunning] = useState(false);
+	const [serviceIndexing, setServiceIndexing] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [scanning, setScanning] = useState(false);
 	const [scanTruncated, setScanTruncated] = useState(false);
@@ -433,11 +434,13 @@ export function useGitManager() {
 			message: string;
 			remoteCheckPending?: boolean;
 			remoteCheckRunning?: boolean;
+			indexing?: boolean;
 		}>("gitmanager://service-health", (payload) => {
 			if (!active) return;
 			setServiceReady(payload.ready);
 			setRemoteCheckPending(Boolean(payload.remoteCheckPending));
 			setRemoteCheckRunning(Boolean(payload.remoteCheckRunning));
+			setServiceIndexing(Boolean(payload.indexing));
 			if (payload.ready) {
 				setStatus(payload.message || "GitManager Core Service ready");
 				setError((current) => current.includes("GitManager Core Service") ? "" : current);
@@ -457,7 +460,7 @@ export function useGitManager() {
 	}, [performScan, refreshNotifications]);
 
 	return {
-		available, serviceReady, remoteCheckPending, remoteCheckRunning, loading, scanning, scanTruncated, indexReady,
+		available, serviceReady, remoteCheckPending, remoteCheckRunning, serviceIndexing, loading, scanning, scanTruncated, indexReady,
 		awaitingInitialIndex: serviceReady && preferences.firstRunComplete && !indexReady,
 		version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, accountsLoading, loadAccounts, updates, notifications, setupOpen, setSetupOpen,
