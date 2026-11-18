@@ -26,6 +26,12 @@ The first launch of the required core service checks its reported service genera
 
 The Windows installer also closes the old `git-manager.exe` and `git-manager-service.exe` processes before replacing files. This prevents an old worker from retaining the shared service lock or continuing duplicate repository watches and notifications after an upgrade.
 
+## Native runtime monitoring and idle behavior
+
+The Tauri host owns one lightweight native monitor thread. It watches the repository-index and notification-history generation stamps and emits Tauri events when those files change. It checks the authenticated core-service endpoint every five seconds and reports the native host heartbeat every three seconds to crash_helper. The React/WebView frontend subscribes to these events rather than polling on intervals.
+
+The monitor does not scan repository roots, enumerate Git history or query provider APIs. Those operations remain service/feature work and are started only when requested. The commit-history view loads 50 results per request through the shared Git history API; opening a repository overview loads branch metadata and HEAD without walking the history.
+
 ## Persistent data ownership
 
 Before publishing its authenticated IPC-ready endpoint, the service creates the canonical per-user data layout:
