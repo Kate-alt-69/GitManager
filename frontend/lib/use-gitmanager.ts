@@ -44,6 +44,9 @@ export function useGitManager() {
 	const [repositories, setRepositories] = useState<GitRepository[]>([]);
 	const [dependencies, setDependencies] = useState<string[]>([]);
 	const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
+	const [accountsLoaded, setAccountsLoaded] = useState(false);
+	const [accountsLoading, setAccountsLoading] = useState(false);
+	const accountsLoadInFlight = useRef<Promise<ConnectedAccount[]> | null>(null);
 	const [updates, setUpdates] = useState<UpdateAlert[]>([]);
 	const [notifications, setNotifications] = useState<AppNotification[]>([]);
 	const [setupOpen, setSetupOpen] = useState(false);
@@ -265,6 +268,30 @@ export function useGitManager() {
 		}
 	}, []);
 
+	const loadAccounts = useCallback(async () => {
+		if (accountsLoaded) return accounts;
+		if (accountsLoadInFlight.current) return accountsLoadInFlight.current;
+		setAccountsLoading(true);
+		const request = invoke<ConnectedAccount[]>("load_connected_accounts")
+			.then((saved) => {
+				const loaded = saved ?? [];
+				setAccounts(loaded);
+				setAccountsLoaded(true);
+				return loaded;
+			})
+			.catch((cause) => {
+				const message = cause instanceof Error ? cause.message : String(cause);
+				setError(message);
+				throw cause;
+			})
+			.finally(() => {
+				accountsLoadInFlight.current = null;
+				setAccountsLoading(false);
+			});
+		accountsLoadInFlight.current = request;
+		return request;
+	}, [accounts, accountsLoaded]);
+
 	const connectAccount = useCallback(async (
 		provider: string,
 		usernameOrHost: string,
@@ -275,8 +302,8 @@ export function useGitManager() {
 			usernameOrHost,
 			accessToken: accessToken.trim() ? accessToken.trim() : null,
 		});
-		setAccounts((current) => [
-			...current.filter((item) => !(
+		setAccountsLoaded(true);
+		setAccounts((current) => [			...current.filter((item) => !(
 				item.provider === account.provider &&
 				item.account_login.toLowerCase() === account.account_login.toLowerCase()
 			)),
@@ -417,7 +444,7 @@ export function useGitManager() {
 		available, serviceReady, loading, scanning, scanTruncated, indexReady,
 		awaitingInitialIndex: serviceReady && preferences.firstRunComplete && !indexReady,
 		version, preferences, setPreferences, directories,
-		repositories, dependencies, accounts, updates, notifications, setupOpen, setSetupOpen,
+		repositories, dependencies, accounts, accountsLoading, loadAccounts, updates, notifications, setupOpen, setSetupOpen,
 		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
 		refreshNotifications, markNotificationRead, dismissNotification,
 	};
