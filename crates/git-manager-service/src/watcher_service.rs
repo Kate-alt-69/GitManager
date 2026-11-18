@@ -94,9 +94,18 @@ fn check_single_repo_for_remote_update_locked(repo_path: &Path) -> Option<RepoUp
         .to_string_lossy()
         .to_string();
 
+    let ahead_summary = if commits_ahead == usize::MAX {
+        "local history comparison unavailable".to_string()
+    } else {
+        format!("{commits_ahead} local commit(s) ahead")
+    };
+    let worktree_summary = if working_tree_clean {
+        "working tree clean"
+    } else {
+        "local changes are present"
+    };
     let prompt_message = format!(
-        "Hay you have {} update do you want to update it?",
-        repo_name
+        "{repo_name} has {commits_behind} new commit(s) on {branch_name} ({ahead_summary}; {worktree_summary}). Review before pulling."
     );
 
     Some(RepoUpdateNotification {
