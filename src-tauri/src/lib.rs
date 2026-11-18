@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 use serde::{Deserialize, Serialize};
-use git2::{Oid, Repository};
 use crate::process_utils::hidden_command;
 use serde_json::Value;
 use tauri::path::BaseDirectory;
