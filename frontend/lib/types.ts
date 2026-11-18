@@ -96,6 +96,7 @@ export interface ConnectedAccount {
 	email: string;
 	avatar_url: string;
 	profile_url: string;
+	session_connected: boolean;
 	repositories: GitRepository[];
 }
 
