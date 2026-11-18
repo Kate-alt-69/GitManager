@@ -137,17 +137,27 @@ pub fn parse_remote_url(remote_name: &str, raw_url: &str) -> RemoteEndpoint {
     }
 }
 
-/// Extracts full Git metadata for a selected repository.
+/// Extracts full Git metadata including the first, bounded commit-history snapshot.
 pub fn extract_git_repository_info(workdir: &Path, git_dir_path: &Path) -> Result<GitRepositoryInfo, String> {
-    extract_git_repository_info_with_detail(workdir, git_dir_path, true)
+    extract_git_repository_info_with_detail(workdir, git_dir_path, true, true)
+}
+
+/// Extracts repository, branch and working-tree metadata without walking commit history.
+pub fn extract_git_repository_overview(workdir: &Path, git_dir_path: &Path) -> Result<GitRepositoryInfo, String> {
+    extract_git_repository_info_with_detail(workdir, git_dir_path, true, false)
 }
 
 /// Extracts only repository-card metadata and HEAD.
 pub fn extract_git_repository_summary(workdir: &Path, git_dir_path: &Path) -> Result<GitRepositoryInfo, String> {
-    extract_git_repository_info_with_detail(workdir, git_dir_path, false)
+    extract_git_repository_info_with_detail(workdir, git_dir_path, false, false)
 }
 
-fn extract_git_repository_info_with_detail(workdir: &Path, git_dir_path: &Path, load_details: bool) -> Result<GitRepositoryInfo, String> {
+fn extract_git_repository_info_with_detail(
+    workdir: &Path,
+    git_dir_path: &Path,
+    load_details: bool,
+    load_commit_history: bool,
+) -> Result<GitRepositoryInfo, String> {
     let repo = Repository::open(workdir).map_err(|e| format!("Failed to open git repo at {:?}: {}", workdir, e))?;
 
     let name = workdir
@@ -243,7 +253,7 @@ fn extract_git_repository_info_with_detail(workdir: &Path, git_dir_path: &Path, 
     }
 
     let mut commits: Vec<CommitNode> = Vec::new();
-    if load_details {
+    if load_commit_history {
         let mut oid_tags: HashMap<String, Vec<String>> = HashMap::new();
         let _ = repo.tag_foreach(|oid, name_bytes| {
             let raw_name = String::from_utf8_lossy(name_bytes).to_string();
@@ -368,6 +378,169 @@ fn extract_git_repository_info_with_detail(workdir: &Path, git_dir_path: &Path, 
         dirty_files_count,
         source_kind: "local_scan".to_string(),
         details_loaded: load_details,
+    })
+}
+
+
+
+/// A bounded page of Git commit history. has_more is computed from one
+/// additional matching commit, so the caller does not need an expensive count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitHistoryPage {
+    pub commits: Vec<CommitNode>,
+    pub offset: usize,
+    pub limit: usize,
+    pub has_more: bool,
+}
+
+/// Reads a page of commit history on demand, optionally scoped to one local or
+/// remote branch and/or a case-insensitive SHA/message/author search.
+pub fn load_repository_commit_history(
+    workdir: &Path,
+    offset: usize,
+    limit: usize,
+    branch_filter: Option<&str>,
+    search_query: Option<&str>,
+) -> Result<CommitHistoryPage, String> {
+    const MAX_PAGE_SIZE: usize = 100;
+    const MAX_OFFSET: usize = 250_000;
+
+    if limit == 0 || limit > MAX_PAGE_SIZE {
+        return Err(format!("Commit history page size must be between 1 and {MAX_PAGE_SIZE}."));
+    }
+    if offset > MAX_OFFSET {
+        return Err(format!("Commit history offset exceeds the {MAX_OFFSET} safety limit."));
+    }
+
+    let repo = Repository::open(workdir)
+        .map_err(|error| format!("Failed to open Git repository at {}: {error}", workdir.display()))?;
+    let normalized_branch = branch_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let normalized_query = search_query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase);
+
+    let mut oid_branches: HashMap<String, Vec<String>> = HashMap::new();
+    if let Ok(branches) = repo.branches(None) {
+        for branch_result in branches.flatten() {
+            let (branch, _) = branch_result;
+            let name = branch.name().ok().flatten().unwrap_or("unknown").to_string();
+            if let Some(oid) = branch.get().target() {
+                oid_branches.entry(oid.to_string()).or_default().push(name);
+            }
+        }
+    }
+
+    let mut oid_tags: HashMap<String, Vec<String>> = HashMap::new();
+    let _ = repo.tag_foreach(|oid, name_bytes| {
+        let raw_name = String::from_utf8_lossy(name_bytes).to_string();
+        let clean_tag = raw_name.trim_start_matches("refs/tags/").to_string();
+        let resolved_oid = repo.find_tag(oid).ok()
+            .map(|tag| tag.target_id().to_string())
+            .unwrap_or_else(|| oid.to_string());
+        oid_tags.entry(resolved_oid).or_default().push(clean_tag);
+        true
+    });
+
+    let mut revwalk = repo.revwalk()
+        .map_err(|error| format!("Could not create commit history iterator: {error}"))?;
+    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .map_err(|error| format!("Could not configure commit history order: {error}"))?;
+
+    if let Some(branch_name) = normalized_branch {
+        let branch = repo.find_branch(branch_name, BranchType::Local)
+            .or_else(|_| repo.find_branch(branch_name, BranchType::Remote))
+            .map_err(|_| format!("Branch '{branch_name}' does not exist in this repository."))?;
+        let reference_name = branch.get().name()
+            .ok_or_else(|| format!("Branch '{branch_name}' has no valid Git reference name."))?
+            .to_string();
+        revwalk.push_ref(&reference_name)
+            .map_err(|error| format!("Could not traverse branch '{branch_name}': {error}"))?;
+    } else {
+        if revwalk.push_glob("refs/heads/*").is_err() {
+            if let Ok(head) = repo.head() {
+                if let Some(oid) = head.target() {
+                    let _ = revwalk.push(oid);
+                }
+            }
+        }
+        let _ = revwalk.push_glob("refs/remotes/*");
+    }
+
+    let head_oid = repo.head().ok()
+        .and_then(|reference| reference.target())
+        .map(|oid| oid.to_string());
+    let mut active_lanes: Vec<Option<String>> = Vec::new();
+    let mut matched = 0usize;
+    let mut commits = Vec::with_capacity(limit);
+    let mut has_more = false;
+
+    for oid_result in revwalk {
+        let Ok(oid) = oid_result else { continue; };
+        let Ok(commit) = repo.find_commit(oid) else { continue; };
+        let oid_string = oid.to_string();
+        let parents: Vec<String> = commit.parent_ids().map(|parent| parent.to_string()).collect();
+        // Advance graph lanes even for filtered/skipped commits so page N has
+        // the same lane assignments as a full walk from the beginning.
+        let lane = assign_commit_lane(&oid_string, &parents, &mut active_lanes);
+        let author = commit.author();
+        let author_name = author.name().unwrap_or("Unknown Author").to_string();
+        let author_email = author.email().unwrap_or("unknown@local").to_string();
+        let message = commit.message().unwrap_or("").trim().to_string();
+        let summary = commit.summary().unwrap_or("(no commit message)").to_string();
+        let short_oid = oid_string.chars().take(7).collect::<String>();
+
+        let matches_query = normalized_query.as_ref().is_none_or(|query| {
+            oid_string.to_lowercase().contains(query)
+                || short_oid.to_lowercase().contains(query)
+                || summary.to_lowercase().contains(query)
+                || message.to_lowercase().contains(query)
+                || author_name.to_lowercase().contains(query)
+                || author_email.to_lowercase().contains(query)
+        });
+        if !matches_query {
+            continue;
+        }
+
+        if matched < offset {
+            matched += 1;
+            continue;
+        }
+        if commits.len() == limit {
+            has_more = true;
+            break;
+        }
+
+        let seconds = commit.time().seconds();
+        let date_iso = chrono::DateTime::from_timestamp(seconds, 0)
+            .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "Unknown date".to_string());
+        commits.push(CommitNode {
+            oid: oid_string.clone(),
+            short_oid,
+            message,
+            summary,
+            author_name,
+            author_email,
+            timestamp: seconds,
+            date_iso,
+            parents,
+            branches: oid_branches.remove(&oid_string).unwrap_or_default(),
+            tags: oid_tags.remove(&oid_string).unwrap_or_default(),
+            is_head: head_oid.as_deref() == Some(oid_string.as_str()),
+            lane,
+        });
+        matched += 1;
+    }
+
+    Ok(CommitHistoryPage {
+        commits,
+        offset,
+        limit,
+        has_more,
     })
 }
 
