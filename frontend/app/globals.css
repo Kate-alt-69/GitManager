@@ -1913,3 +1913,29 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 		width: 100%;
 	}
 }
+
+
+.gm-commit-more {
+	padding: 8px 10px 10px;
+	border-top: 1px solid #26323e;
+}
+.gm-commit-more button {
+	width: 100%;
+	min-height: 30px;
+	padding: 5px 9px;
+	border: 1px solid #354251;
+	border-radius: 0;
+	background: #151d27;
+	color: #c9d1d9;
+	font-size: 10px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.gm-commit-more button:hover:not(:disabled) {
+	border-color: #64819f;
+	background: #1b2a39;
+}
+.gm-commit-more button:disabled {
+	cursor: wait;
+	opacity: .6;
+}
