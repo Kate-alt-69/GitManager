@@ -36,7 +36,15 @@ export function ServiceManagerPage({
 	useEffect(() => {
 		let active = true;
 		let unlisten: (() => void) | undefined;
-		void listen<{ ready: boolean; generation: number; processId: number; protocolVersion: number; message: string }>(
+		void listen<{
+			ready: boolean;
+			generation: number;
+			processId: number;
+			protocolVersion: number;
+			remoteCheckPending?: boolean;
+			remoteCheckRunning?: boolean;
+			message: string;
+		}>(
 			"gitmanager://service-health",
 			(payload) => {
 				if (!active) return;
@@ -47,6 +55,8 @@ export function ServiceManagerPage({
 					service_generation: payload.generation,
 					process_id: payload.processId,
 					protocol_version: payload.protocolVersion,
+					remote_check_pending: Boolean(payload.remoteCheckPending),
+					remote_check_running: Boolean(payload.remoteCheckRunning),
 				}));
 				if (payload.ready) setError("");
 				else setError(payload.message || "GitManager Core Service is unavailable.");
@@ -99,6 +109,7 @@ export function ServiceManagerPage({
 						<div><dt>Protocol version</dt><dd>{details?.protocol_version || "—"}</dd></div>
 						<div><dt>Service generation</dt><dd>{details?.service_generation || "—"}</dd></div>
 						<div><dt>Background work</dt><dd>{details?.suspended ? `Paused · ${details.remaining_seconds}s remaining` : details ? "Active" : "Unknown"}</dd></div>
+						<div><dt>Remote check</dt><dd>{details?.remote_check_running ? "Running" : details?.remote_check_pending ? "Queued" : "Idle"}</dd></div>
 					</dl>
 					<div className="gm-diagnostic-message">{details?.message || status}</div>
 					<div className="gm-panel-actions">
