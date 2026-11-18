@@ -553,7 +553,6 @@ fn save_account_storage(state: &ServiceState, _payload: serde_json::Value) -> Se
     }
 }
 
-#[cfg(feature = "repository-data")]
 fn repository_data_response<T: Serialize>(
     state: &ServiceState,
     description: &str,
