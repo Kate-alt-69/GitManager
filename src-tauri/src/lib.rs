@@ -1906,7 +1906,8 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
                     let (ready, generation, process_id, protocol_version, remote_check_pending, remote_check_running, message) =
                         match crash_helper::request_service_status() {
                             Ok(status) => (
-                                status.service_generation >= crash_helper::SERVICE_GENERATION,
+                                status.service_generation >= crash_helper::SERVICE_GENERATION
+                                    && status.protocol_version >= crash_helper::SERVICE_PROTOCOL_VERSION,
                                 status.service_generation,
                                 status.process_id,
                                 status.protocol_version,
