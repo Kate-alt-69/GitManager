@@ -28,13 +28,13 @@ The Windows installer also closes the old `git-manager.exe` and `git-manager-ser
 
 ## Repository workspace ownership
 
-All Git worktree operations now run in the required service through authenticated protocol-v2 IPC: repository status, diffs, fetch, stage/unstage, commit preview/create, safe path deletion, pull preview/preparation/execution, and branch list/switch. The shared gitmanager-core crate owns the implementation and keeps the existing path validation and recovery checks. The Tauri process forwards user intents and displays results; it does not open the working repository for these operations.
+All Git worktree operations now run in the required service through authenticated protocol-v3 IPC: repository status, diffs, fetch, stage/unstage, commit preview/create, safe path deletion, pull preview/preparation/execution, and branch list/switch. The shared gitmanager-core crate owns the implementation and keeps the existing path validation and recovery checks. The Tauri process forwards user intents and displays results; it does not open the working repository for these operations.
 
 The service control listener has a hard cap of eight concurrent requests. This keeps status/health requests responsive during a longer history or Git operation without allowing unbounded request threads. Requests for the same repository are serialized by a per-repository lock; different repositories can proceed concurrently.
 
 ## Repository read ownership
 
-The required service performs Git repository overview reads, paginated commit-history traversal and individual commit-detail calculations. The Tauri command layer forwards those requests over the authenticated protocol-v2 loopback channel and deserializes the result for the UI. Commit-history requests are bounded to 100 results maximum (the UI requests 50 at a time); branch and text filters execute in the service process.
+The required service performs Git repository overview reads, paginated commit-history traversal and individual commit-detail calculations. The Tauri command layer forwards those requests over the authenticated protocol-v3 loopback channel and deserializes the result for the UI. Commit-history requests are bounded to 100 results maximum (the UI requests 50 at a time); branch and text filters execute in the service process.
 
 ## Preferences and repository inventory
 
@@ -56,7 +56,7 @@ The required service owns archive capture, archive listing, restore, Cloud Node 
 
 ## Notification lifecycle
 
-The required service is the only process that publishes and mutates persistent notification history. The Tauri UI requests the history, mark-read, bulk mark-read and dismiss operations through authenticated protocol-v2 IPC. The notification file is capped at 200 records and 2 MiB; deterministic repository-update IDs prevent duplicate records across service restarts.
+The required service is the only process that publishes and mutates persistent notification history. The Tauri UI requests the history, mark-read, bulk mark-read and dismiss operations through authenticated protocol-v3 IPC. The notification file is capped at 200 records and 2 MiB; deterministic repository-update IDs prevent duplicate records across service restarts.
 
 The In-app notifications and Operating system notifications preferences are independent. The service stores a repository-update notification once, then sends the same persisted title/body record to the OS only when OS notifications are enabled and that record was newly created. If persistence fails, the service logs the error and retries on the next remote-check cycle instead of emitting an OS toast without a matching in-app record. Disabling in-app notifications hides the in-app panel but does not implicitly disable OS notifications.
 
@@ -91,7 +91,7 @@ On Windows this is under `%LOCALAPPDATA%\\kastrick's_software\\data\\GitManager`
 
 The repository index is an atomic, versioned snapshot at `repo/metadata/index.json`. Existing working copies and their `.git` directories remain the source of truth; GitManager does not duplicate those repositories into its data directory.
 
-Account identity metadata and cached provider repository lists are stored separately under `account/metadata` and `account/git_data`. The Tauri coordinator sends the non-secret account summary and repository cache to `gitmanager.service` over authenticated protocol-v2 IPC; the service owns persistent reads and writes. Provider API requests remain in the coordinator for this iteration. Personal access tokens are not written to either location or included in account-cache IPC. GitHub CLI credentials remain managed by `gh`. On a later launch, cached identities are shown as cached until the user reconnects.
+Account identity metadata and cached provider repository lists are stored separately under `account/metadata` and `account/git_data`. The Tauri coordinator sends the non-secret account summary and repository cache to `gitmanager.service` over authenticated protocol-v3 IPC; the service owns persistent reads and writes. Provider API requests remain in the coordinator for this iteration. Personal access tokens are not written to either location or included in account-cache IPC. GitHub CLI credentials remain managed by `gh`. On a later launch, cached identities are shown as cached until the user reconnects.
 
 ## Windows MSI and MSIX
 
