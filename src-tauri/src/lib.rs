@@ -1104,6 +1104,32 @@ fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn load_connected_accounts(
+    state: State<'_, AppState>,
+) -> Result<Vec<ConnectedAccountSummary>, String> {
+    let records = tokio::task::spawn_blocking(gitmanager_core::account_store::load_accounts)
+        .await
+        .map_err(|error| format!("Account metadata load task failed: {error}"))??;
+    let accounts = records
+        .into_iter()
+        .map(|record| ConnectedAccountSummary {
+            provider: record.metadata.provider,
+            account_login: record.metadata.account_login,
+            display_name: record.metadata.display_name,
+            email: record.metadata.email,
+            avatar_url: record.metadata.avatar_url,
+            profile_url: record.metadata.profile_url,
+            session_connected: false,
+            repositories: record.repositories,
+        })
+        .collect::<Vec<_>>();
+    if let Ok(mut cached) = state.connected_accounts.lock() {
+        *cached = accounts.clone();
+    }
+    Ok(accounts)
+}
+
+#[tauri::command]
 async fn connect_git_account(
     provider: String,
     username_or_host: String,
@@ -1117,6 +1143,22 @@ async fn connect_git_account(
     } else {
         fetch_remote_account_repositories(ProviderAccountRequest { provider, username_or_host, access_token }).await?
     };
+
+    let metadata = gitmanager_core::account_store::AccountMetadata {
+        provider: summary.provider.clone(),
+        account_login: summary.account_login.clone(),
+        display_name: summary.display_name.clone(),
+        email: summary.email.clone(),
+        avatar_url: summary.avatar_url.clone(),
+        profile_url: summary.profile_url.clone(),
+        updated_at_unix_ms: 0,
+    };
+    let repositories = summary.repositories.clone();
+    tokio::task::spawn_blocking(move || {
+        gitmanager_core::account_store::save_account(&metadata, &repositories)
+    })
+    .await
+    .map_err(|error| format!("Account metadata save task failed: {error}"))??;
 
     if let Ok(mut accounts) = state.connected_accounts.lock() {
         accounts.retain(|a| {
@@ -1753,6 +1795,7 @@ pub fn run() {
             open_external_url,
             is_setup_mode,
             launch_first_run_setup,
+            load_connected_accounts,
             connect_git_account,
             check_repo_updates_now,
             pull_repository_update,
