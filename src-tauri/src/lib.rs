@@ -668,7 +668,7 @@ async fn load_indexed_repositories(
     state: State<'_, AppState>,
 ) -> Result<IndexedRepoSummary, String> {
     let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
-    let summary = request_core_service(
+    let summary: IndexedRepoSummary = request_core_service(
         move || crash_helper::service_load_indexed_repositories(requested),
         "repository index snapshot",
     ).await?;
@@ -1278,11 +1278,9 @@ async fn control_background_service(
         "Linux systemd User Service"
     };
 
-    let pending = state
-        .pending_updates
-        .lock()
-        .map(|p| p.clone())
-        .unwrap_or_default();
+    // Remote-update results now live in the service-owned notification store.
+    // Keep this legacy response field empty for older settings clients.
+    let pending: Vec<RepoUpdateNotification> = Vec::new();
 
     Ok(ServiceStatusInfo {
         running_in_background: state.watcher.enabled.load(Ordering::Relaxed),
