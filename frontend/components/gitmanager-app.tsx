@@ -43,6 +43,14 @@ const SettingsPage = dynamic(
 	() => import("./settings-page").then((module) => module.SettingsPage),
 	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Settings…</div> },
 );
+const ServiceManagerPage = dynamic(
+	() => import("./service-manager-page").then((module) => module.ServiceManagerPage),
+	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Service Manager…</div> },
+);
+const PerformancePage = dynamic(
+	() => import("./performance-page").then((module) => module.PerformancePage),
+	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Performance Center…</div> },
+);
 const CleanerPage = dynamic(
 	() => import("./cleaner-page").then((module) => module.CleanerPage),
 	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Developer Cleaner…</div> },
@@ -860,6 +868,8 @@ export function GitManagerApp() {
 	const handleScan = useCallback(() => { void git.scan(); }, [git.scan]);
 	const handleRetryService = useCallback(() => { void git.retryService(); }, [git.retryService]);
 	const handleOpenCleaner = useCallback(() => navigatePage("cleaner"), [navigatePage]);
+	const openServiceManager = useCallback(() => setInternalRoute("/s/service"), []);
+	const openPerformanceCenter = useCallback(() => setInternalRoute("/s/performance"), []);
 
 	const openNotificationRepository = useCallback(async (item: AppNotification) => {
 		if (!item.repositoryPath) return;
@@ -955,13 +965,25 @@ export function GitManagerApp() {
 						/>
 					)}
 					{page === "accounts" && <AccountsPage accounts={git.accounts} loading={git.accountsLoading} onConnect={git.connectAccount} />}
-					{page === "settings" && (
+					{parsedInternalRoute.kind === "service" && (
+						<ServiceManagerPage
+							serviceReady={git.serviceReady}
+							status={git.status}
+							onStart={handleRetryService}
+						/>
+					)}
+					{parsedInternalRoute.kind === "performance" && (
+						<PerformancePage serviceReady={git.serviceReady} scanning={git.scanning} />
+					)}
+					{page === "settings" && parsedInternalRoute.kind === "settings" && (
 						<SettingsPage
 							preferences={git.preferences}
 							directories={git.directories}
 							onSave={git.savePreferences}
 							onScan={() => void git.scan()}
 							onOpenCleaner={() => navigatePage("cleaner")}
+							onOpenService={openServiceManager}
+							onOpenPerformance={openPerformanceCenter}
 						/>
 					)}
 					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={handleScan} initialRepoPath={selectedRepo?.path} />}
