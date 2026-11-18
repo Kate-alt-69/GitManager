@@ -38,6 +38,7 @@ const UI_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 const UI_RECOVERY_GRACE: Duration = Duration::from_secs(15);
 const SUPERVISOR_POLL: Duration = Duration::from_millis(400);
 const MAX_MESSAGE_BYTES: u64 = 4096;
+pub const SERVICE_GENERATION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Endpoint {
@@ -66,6 +67,9 @@ pub struct ServiceStatus {
     pub suspended: bool,
     pub remaining_seconds: u64,
     pub message: String,
+    /// Missing in legacy workers; zero identifies the pre-core-service process.
+    #[serde(default)]
+    pub service_generation: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +161,7 @@ impl ServiceState {
             suspended: remaining > 0,
             remaining_seconds: remaining,
             message: message.into(),
+            service_generation: SERVICE_GENERATION,
         }
     }
 
@@ -441,6 +446,7 @@ pub fn request_service_suspend(seconds: u64) -> Result<ServiceStatus, String> {
             suspended: true,
             remaining_seconds: seconds,
             message: format!("Background-service suspension queued for {seconds} seconds; the service will observe the persisted state on its next poll: {error}"),
+            service_generation: 0,
         }),
     }
 }
@@ -461,6 +467,7 @@ pub fn request_service_resume() -> Result<ServiceStatus, String> {
             suspended: false,
             remaining_seconds: 0,
             message: format!("Background-service activation queued for its next control poll: {error}"),
+            service_generation: 0,
         }),
     }
 }
