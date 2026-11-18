@@ -15,7 +15,9 @@ path = "src/main.rs"
 
 [features]
 default = []
-account-storage = ["dep:gitmanager-core"]
+core-service = ["dep:gitmanager-core"]
+account-storage = ["core-service"]
+repository-data = ["core-service"]
 
 [dependencies]
 gitmanager-core = { path = "../gitmanager-core", optional = true }
