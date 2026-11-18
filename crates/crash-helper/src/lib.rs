@@ -157,6 +157,9 @@ pub struct ServiceStatus {
     /// True while the service is querying remote refs and publishing results.
     #[serde(default)]
     pub remote_check_running: bool,
+    /// True while the service is walking the configured repository roots.
+    #[serde(default)]
+    pub indexing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,6 +258,7 @@ impl ServiceState {
             protocol_version: SERVICE_PROTOCOL_VERSION,
             remote_check_pending: false,
             remote_check_running: false,
+            indexing: false,
         }
     }
 
@@ -302,6 +306,7 @@ pub struct ServiceControlServer {
     scan_requested: Arc<AtomicBool>,
     remote_check_requested: Arc<AtomicBool>,
     remote_check_running: Arc<AtomicBool>,
+    indexing: Arc<AtomicBool>,
     _lock_file: File,
 }
 
@@ -316,6 +321,7 @@ impl ServiceControlServer {
         let mut status = self.state.status("GitManager core service status");
         status.remote_check_pending = self.remote_check_pending();
         status.remote_check_running = self.remote_check_running();
+        status.indexing = self.indexing();
         status
     }
 
@@ -345,6 +351,14 @@ impl ServiceControlServer {
 
     pub fn remote_check_running(&self) -> bool {
         self.remote_check_running.load(Ordering::Acquire)
+    }
+
+    pub fn set_indexing(&self, indexing: bool) {
+        self.indexing.store(indexing, Ordering::Release);
+    }
+
+    pub fn indexing(&self) -> bool {
+        self.indexing.load(Ordering::Acquire)
     }
 }
 
@@ -411,12 +425,14 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     let scan_requested = Arc::new(AtomicBool::new(false));
     let remote_check_requested = Arc::new(AtomicBool::new(false));
     let remote_check_running = Arc::new(AtomicBool::new(false));
+    let indexing = Arc::new(AtomicBool::new(false));
     let active_requests = Arc::new(AtomicUsize::new(0));
     let thread_state = Arc::clone(&state);
     let thread_running = Arc::clone(&running);
     let thread_scan_requested = Arc::clone(&scan_requested);
     let thread_remote_check_requested = Arc::clone(&remote_check_requested);
     let thread_remote_check_running = Arc::clone(&remote_check_running);
+    let thread_indexing = Arc::clone(&indexing);
     let thread_active_requests = Arc::clone(&active_requests);
     let token = endpoint.token.clone();
 
@@ -438,6 +454,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
                         let request_scan = Arc::clone(&thread_scan_requested);
                         let request_remote_check = Arc::clone(&thread_remote_check_requested);
                         let request_remote_running = Arc::clone(&thread_remote_check_running);
+                        let request_indexing = Arc::clone(&thread_indexing);
                         let request_counter = Arc::clone(&thread_active_requests);
                         if let Err(error) = thread::Builder::new()
                             .name("gitmanager-service-request".to_string())
@@ -449,6 +466,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
                                     &request_scan,
                                     &request_remote_check,
                                     &request_remote_running,
+                                    &request_indexing,
                                 );
                                 request_counter.fetch_sub(1, Ordering::Release);
                             })
@@ -474,6 +492,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         scan_requested,
         remote_check_requested,
         remote_check_running,
+        indexing,
         _lock_file: lock_file,
     })
 }
@@ -1371,6 +1390,7 @@ fn handle_service_connection(
     scan_requested: &AtomicBool,
     remote_check_requested: &AtomicBool,
     remote_check_running: &AtomicBool,
+    indexing: &AtomicBool,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
@@ -1391,6 +1411,7 @@ fn handle_service_connection(
                     let mut status = state.status("Background service status");
                     status.remote_check_pending = remote_check_requested.load(Ordering::Acquire);
                     status.remote_check_running = remote_check_running.load(Ordering::Acquire);
+                    status.indexing = indexing.load(Ordering::Acquire);
                     ServiceResponse {
                         ok: true,
                         status,
@@ -1424,6 +1445,7 @@ fn handle_service_connection(
                     let mut status = state.status("Remote repository check queued");
                     status.remote_check_pending = true;
                     status.remote_check_running = remote_check_running.load(Ordering::Acquire);
+                    status.indexing = indexing.load(Ordering::Acquire);
                     ServiceResponse {
                         ok: true,
                         status,
@@ -2021,6 +2043,7 @@ pub fn request_service_suspend(seconds: u64) -> Result<ServiceStatus, String> {
             protocol_version: 0,
             remote_check_pending: false,
             remote_check_running: false,
+            indexing: false,
         }),
     }
 }
