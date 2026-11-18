@@ -493,16 +493,12 @@ pub fn read_service_log_tail() -> Result<String, String> {
 }
 
 fn is_legacy_service_command(command: &str) -> bool {
-    command.split_whitespace().any(|argument| {
-        if argument == "--command=git-manager-service" {
-            return true;
-        }
-        let normalized = argument.replace('\\', "/");
-        matches!(
-            normalized.rsplit('/').next().unwrap_or(&normalized),
-            "git-manager-service" | "git-manager-service.exe"
-        )
-    })
+    let mut arguments = command.split_whitespace();
+    let executable = arguments.next().unwrap_or("");
+    let normalized = executable.replace('\\', "/");
+    let executable_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    matches!(executable_name, "git-manager-service" | "git-manager-service.exe")
+        || arguments.any(|argument| argument == "--command=git-manager-service")
 }
 
 #[cfg(unix)]
