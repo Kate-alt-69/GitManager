@@ -48,7 +48,7 @@ Per-repository settings are stored in the repository's `.git/info/gitmanager-set
 
 ## Archive operations
 
-The required service owns archive capture, archive listing, restore, Cloud Node configuration and synchronization. Tauri forwards the existing command payloads over authenticated IPC and receives serialized results; it no longer links the archive engine directly or runs repository archive work in the desktop process. Archive operations are serialized with other work on the same repository, and the archive engine's own per-repository lock remains the storage-level guard. Long-running archive commands receive an extended IPC response timeout so large restore points do not get abandoned by the UI adapter.
+The required service owns archive capture, archive listing, restore, Cloud Node configuration and synchronization. Tauri forwards the existing command payloads over authenticated IPC and receives serialized results; it no longer links the archive engine directly or runs repository archive work in the desktop process. Archive capture/list operations share a per-repository read lock, so overview/history/file reads can proceed concurrently while commits, fetches, pulls, restores and branch changes wait for a consistent snapshot. Multiple archive operations for the same repository are serialized by a dedicated archive lock, and the archive engine's own per-repository file lock remains the cross-process storage guard. Long-running archive commands receive an extended IPC response timeout so large restore points do not get abandoned by the UI adapter.
 
 ## Notification lifecycle
 
