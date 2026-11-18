@@ -119,6 +119,35 @@ export interface UpdateAlert {
 	prompt_message?: string;
 }
 
+export interface CoreServiceStatus {
+	suspended: boolean;
+	remaining_seconds: number;
+	message: string;
+	service_generation: number;
+	process_id: number;
+	protocol_version: number;
+}
+
+export interface ProcessUsageSummary {
+	averageCpuPercent: number;
+	peakCpuPercent: number;
+	averageMemoryBytes: number;
+	peakMemoryBytes: number;
+	processCount: number;
+}
+
+export interface IdlePerformanceCapture {
+	sampleDurationSeconds: number;
+	sampleCount: number;
+	logicalProcessors: number;
+	capturedAtUnixMs: number;
+	uiProcessTree: ProcessUsageSummary;
+	serviceProcessTree: ProcessUsageSummary | null;
+	serviceGeneration: number;
+	serviceProtocolVersion: number;
+	notes: string[];
+}
+
 export interface AppNotification {
 	id: string;
 	kind: string;
