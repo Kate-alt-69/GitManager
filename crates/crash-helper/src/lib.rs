@@ -1118,8 +1118,10 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
 
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
         .map_err(|error| format!("Could not connect to GitManager background service: {error}"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+    // Git fetch/pull and deep-history reads can legitimately outlast a
+    // short health-check timeout. The caller remains asynchronous in Tauri.
+    stream.set_read_timeout(Some(Duration::from_secs(90))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(15))).ok();
 
     let request = ServiceRequest { token: endpoint.token, command };
     let encoded = serde_json::to_vec(&request)
