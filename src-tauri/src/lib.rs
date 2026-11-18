@@ -1761,15 +1761,28 @@ async fn sign_windows_installer(installer_path: String, thumbprint: String) -> R
 /// Keeps low-frequency health and file-change monitoring outside the WebView.
 /// The frontend sleeps until one of these native events reports a real change.
 fn start_native_runtime_monitor(app_handle: AppHandle) {
-    let spawn = std::thread::Builder::new()
+    let heartbeat_spawn = std::thread::Builder::new()
+        .name("gitmanager-native-supervisor-heartbeat".to_string())
+        .spawn(|| {
+            loop {
+                std::thread::sleep(Duration::from_secs(3));
+                // This updates the native supervisor heartbeat directly;
+                // it no longer requires waking the React/WebView runtime.
+                let _ = crash_helper::report_ui_heartbeat_from_env();
+            }
+        });
+    if let Err(error) = heartbeat_spawn {
+        eprintln!("GitManager native supervisor heartbeat could not start: {error}");
+    }
+
+    let monitor_spawn = std::thread::Builder::new()
         .name("gitmanager-native-runtime-monitor".to_string())
         .spawn(move || {
             let mut index_generation =
                 repository_index::repository_index_modified_unix_nanos().unwrap_or_default();
             let mut notification_generation =
                 notification_center::notification_store_modified_unix_nanos().unwrap_or_default();
-            let mut last_service_check = Instant::now() - Duration::from_secs(5);
-            let mut last_heartbeat = Instant::now();
+            let mut last_service_check = Instant::now();
             let mut last_service_state: Option<(bool, u32)> = None;
 
             loop {
@@ -1823,17 +1836,10 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
                     }
                     last_service_check = Instant::now();
                 }
-
-                if last_heartbeat.elapsed() >= Duration::from_secs(3) {
-                    // This updates the native supervisor heartbeat directly;
-                    // it no longer requires waking the React/WebView runtime.
-                    let _ = crash_helper::report_ui_heartbeat_from_env();
-                    last_heartbeat = Instant::now();
-                }
             }
         });
 
-    if let Err(error) = spawn {
+    if let Err(error) = monitor_spawn {
         eprintln!("GitManager native runtime monitor could not start: {error}");
     }
 }
