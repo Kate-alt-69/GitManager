@@ -2166,11 +2166,13 @@ pub fn run_helper_from_args() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServiceCommand, ServiceRequest, ServiceState, SuspensionRecord,
-        DEFAULT_SUSPENSION_SECONDS, MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS, SERVICE_GENERATION,
+        reserve_service_request_slot, ServiceCommand, ServiceRequest, ServiceState,
+        SuspensionRecord, DEFAULT_SUSPENSION_SECONDS, MAX_CONCURRENT_SERVICE_REQUESTS,
+        MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS, SERVICE_GENERATION,
     };
     use super::Uuid;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime};
 
     #[test]
