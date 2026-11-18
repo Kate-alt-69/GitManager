@@ -42,6 +42,10 @@ The service owns the global preferences file at the existing per-user config pat
 
 Repository discovery, indexing, the authoritative index snapshot and index generation all belong to the service. The UI requests a grouped snapshot and generation through IPC. The native Tauri monitor reads only the index file's metadata timestamp to emit change events; it does not deserialize the index. Manual Check remotes requests are queued to the service loop and use the same notification/OS delivery path as scheduled checks.
 
+## Repository-local preferences
+
+Per-repository settings are stored in the repository's `.git/info/gitmanager-settings.json` file. Reads, legacy fallback from the previous global preferences entry, validation, backup recovery and writes all run in `gitmanager.service` through authenticated IPC. The Tauri host no longer opens the working tree with libgit2 for settings operations and does not own the repository settings file.
+
 ## Notification lifecycle
 
 The required service is the only process that publishes and mutates persistent notification history. The Tauri UI requests the history, mark-read, bulk mark-read and dismiss operations through authenticated protocol-v2 IPC. The notification file is capped at 200 records and 2 MiB; deterministic repository-update IDs prevent duplicate records across service restarts.
