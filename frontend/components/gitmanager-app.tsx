@@ -836,6 +836,7 @@ export function GitManagerApp() {
 		: { kind: "overview" };
 
 	function navigatePage(next: PageKey) {
+		if (next === "accounts") void git.loadAccounts().catch(() => undefined);
 		setPage(next);
 		setSelectedId(null);
 		setInternalRoute(sectionRoute(next));
@@ -947,7 +948,7 @@ export function GitManagerApp() {
 							onOpenCleaner={() => navigatePage("cleaner")}
 						/>
 					)}
-					{page === "accounts" && <AccountsPage accounts={git.accounts} onConnect={git.connectAccount} />}
+					{page === "accounts" && <AccountsPage accounts={git.accounts} loading={git.accountsLoading} onConnect={git.connectAccount} />}
 					{page === "settings" && (
 						<SettingsPage
 							preferences={git.preferences}
