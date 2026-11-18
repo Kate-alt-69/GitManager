@@ -308,7 +308,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertNotIn("load_persisted_repository_index", desktop_source)
         self.assertNotIn("read_app_preferences_file", desktop_source)
         self.assertNotIn("write_app_preferences_file", desktop_source)
-        application_directories = desktop_source.split("fn application_directories()", 1)[1].split("\\n}", 1)[0]
+        application_directories = desktop_source.split("fn application_directories()", 1)[1].split("\n}", 1)[0]
         self.assertNotIn("create_dir_all", application_directories)
         self.assertIn("crate::storage::ensure_data_layout()?", core_preferences)
         self.assertNotIn("check_all_repos_for_updates", desktop_source)
