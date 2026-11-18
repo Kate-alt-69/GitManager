@@ -141,58 +141,30 @@ async fn load_app_preferences() -> Result<AppPreferences, String> {
     ).await
 }
 
-fn repository_settings_path(repo_path: &str) -> Result<PathBuf, String> {
-    if repo_path.trim().is_empty() { return Err("Select a local Git repository first.".to_string()); }
-    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
-    if repo.is_bare() { return Err("Repository-local settings require a non-bare working tree.".to_string()); }
-    let info_dir = repo.path().join("info");
-    fs::create_dir_all(&info_dir).map_err(|error| format!("Could not create repository-local Git info directory: {error}"))?;
-    Ok(info_dir.join("gitmanager-settings.json"))
-}
-fn write_repository_settings_file(path: &Path, settings: &RepositoryPreferences) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(settings).map_err(|error| format!("Could not serialize repository settings: {error}"))?;
-    if bytes.len() > 64 * 1024 { return Err("Repository settings exceed the 64 KiB safety limit.".to_string()); }
-    let temporary = path.with_extension("json.tmp");
-    let backup = path.with_extension("json.bak");
-    fs::write(&temporary, bytes).map_err(|error| format!("Could not write temporary repository settings: {error}"))?;
-    let had_previous = path.exists();
-    if had_previous {
-        if backup.exists() { fs::remove_file(&backup).map_err(|error| format!("Could not clear repository settings backup: {error}"))?; }
-        fs::rename(path, &backup).map_err(|error| format!("Could not stage previous repository settings: {error}"))?;
-    }
-    if let Err(error) = fs::rename(&temporary, path) {
-        if had_previous { let _ = fs::rename(&backup, path); }
-        return Err(format!("Could not save repository settings: {error}"));
-    }
-    if backup.exists() { let _ = fs::remove_file(&backup); }
-    Ok(())
-}
 #[tauri::command]
-fn load_repository_settings(app_handle: AppHandle, repo_path: String, repo_id: Option<String>) -> Result<RepositoryPreferences, String> {
-    let path = repository_settings_path(&repo_path)?;
-    if path.is_file() {
-        let content = fs::read_to_string(&path).map_err(|error| format!("Could not read repository-local settings: {error}"))?;
-        if content.len() > 64 * 1024 { return Err("Repository settings exceed the 64 KiB safety limit.".to_string()); }
-        return serde_json::from_str(&content).map_err(|error| format!("Repository-local settings are invalid JSON: {error}"));
-    }
-    let legacy = repo_id.and_then(|id| load_app_preferences(app_handle).ok()
-        .and_then(|preferences| preferences.repository_settings.get(&id).cloned()));
-    let settings = legacy.unwrap_or_default();
-    if settings != RepositoryPreferences::default() { write_repository_settings_file(&path, &settings)?; }
-    Ok(settings)
+async fn load_repository_settings(
+    repo_path: String,
+    repo_id: Option<String>,
+) -> Result<RepositoryPreferences, String> {
+    request_core_service(
+        move || crash_helper::service_load_repository_preferences(repo_path, repo_id),
+        "repository preferences",
+    ).await
 }
+
 #[tauri::command]
-fn save_repository_settings(repo_path: String, settings: RepositoryPreferences) -> Result<RepositoryPreferences, String> {
-    if settings.cleaner_exclude_patterns.len() > 256 { return Err("A repository can have at most 256 cleaner exclusion patterns.".to_string()); }
-    let mut normalized = settings;
-    normalized.cleaner_exclude_patterns = normalized.cleaner_exclude_patterns.into_iter()
-        .map(|value| value.trim().replace('\\', "/"))
-        .filter(|value| !value.is_empty() && !value.starts_with('/') && !value.split('/').any(|part| part == ".."))
-        .take(256).collect();
-    let path = repository_settings_path(&repo_path)?;
-    write_repository_settings_file(&path, &normalized)?;
-    Ok(normalized)
+async fn save_repository_settings(
+    repo_path: String,
+    settings: RepositoryPreferences,
+) -> Result<RepositoryPreferences, String> {
+    let payload = serde_json::to_value(settings)
+        .map_err(|error| format!("Could not encode repository preferences: {error}"))?;
+    request_core_service(
+        move || crash_helper::service_save_repository_preferences(repo_path, payload),
+        "save repository preferences",
+    ).await
 }
+
 #[tauri::command]
 async fn get_commit_details(repo_path: String, oid: String) -> Result<git_info::CommitDetails, String> {
     let data = tokio::task::spawn_blocking(move || {
