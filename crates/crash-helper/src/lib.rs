@@ -111,6 +111,8 @@ enum ServiceCommand {
     SaveAppPreferences { payload: serde_json::Value },
     GetRepositoryIndexGeneration,
     LoadIndexedRepositories { filter_mode: String },
+    LoadRepositoryPreferences { repo_path: String, repo_id: Option<String> },
+    SaveRepositoryPreferences { repo_path: String, payload: serde_json::Value },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -742,6 +744,49 @@ fn dismiss_notification(state: &ServiceState, _: String) -> ServiceResponse { no
 fn mark_all_notifications_read(state: &ServiceState) -> ServiceResponse { notification_storage_unavailable(state) }
 
 #[cfg(feature = "repository-data")]
+fn load_repository_preferences(
+    state: &ServiceState,
+    repo_path: String,
+    repo_id: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository preferences",
+        gitmanager_core::repository_preferences::load_repository_preferences(
+            &repo_path,
+            repo_id.as_deref(),
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn save_repository_preferences(
+    state: &ServiceState,
+    repo_path: String,
+    payload: serde_json::Value,
+) -> ServiceResponse {
+    let result = serde_json::from_value::<gitmanager_core::RepositoryPreferences>(payload)
+        .map_err(|error| format!("Repository preference payload is invalid: {error}"))
+        .and_then(|settings| {
+            gitmanager_core::repository_preferences::save_repository_preferences(&repo_path, settings)
+        });
+    repository_data_response(state, "Saved repository preferences", result)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn load_repository_preferences(
+    state: &ServiceState, _: String, _: Option<String>,
+) -> ServiceResponse {
+    service_workspace_unavailable(state)
+}
+#[cfg(not(feature = "repository-data"))]
+fn save_repository_preferences(
+    state: &ServiceState, _: String, _: serde_json::Value,
+) -> ServiceResponse {
+    service_workspace_unavailable(state)
+}
+
+#[cfg(feature = "repository-data")]
 fn save_conflict_resolution(
     state: &ServiceState,
     repo_path: String,
@@ -1169,6 +1214,10 @@ fn handle_service_connection(
                 ServiceCommand::GetRepositoryIndexGeneration => get_repository_index_generation(state),
                 ServiceCommand::LoadIndexedRepositories { filter_mode } =>
                     load_indexed_repositories(state, filter_mode),
+                ServiceCommand::LoadRepositoryPreferences { repo_path, repo_id } =>
+                    with_repository_operation_lock(&repo_path, || load_repository_preferences(state, repo_path, repo_id)),
+                ServiceCommand::SaveRepositoryPreferences { repo_path, payload } =>
+                    with_repository_operation_lock(&repo_path, || save_repository_preferences(state, repo_path, payload)),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
@@ -1442,6 +1491,25 @@ pub fn service_get_repository_index_generation() -> Result<serde_json::Value, St
 }
 pub fn service_load_indexed_repositories(filter_mode: String) -> Result<serde_json::Value, String> {
     service_response_data(ServiceCommand::LoadIndexedRepositories { filter_mode }, "indexed repository snapshot")
+}
+
+pub fn service_load_repository_preferences(
+    repo_path: String,
+    repo_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::LoadRepositoryPreferences { repo_path, repo_id },
+        "repository preferences",
+    )
+}
+pub fn service_save_repository_preferences(
+    repo_path: String,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::SaveRepositoryPreferences { repo_path, payload },
+        "saved repository preferences",
+    )
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
@@ -2232,6 +2300,34 @@ mod tests {
             let encoded = serde_json::to_value(request).expect("encode service storage request");
             assert_eq!(encoded["token"], "authenticated-test-token");
             assert_eq!(encoded["command"]["action"], action);
+        }
+    }
+
+    #[test]
+    fn repository_preference_commands_use_stable_wire_names() {
+        let requests = vec![
+            ServiceCommand::LoadRepositoryPreferences {
+                repo_path: "/workspace/repo".to_string(),
+                repo_id: Some("local::repo-id".to_string()),
+            },
+            ServiceCommand::SaveRepositoryPreferences {
+                repo_path: "/workspace/repo".to_string(),
+                payload: serde_json::json!({
+                    "autoUpdate": false,
+                    "cleanerExcludePatterns": ["target"]
+                }),
+            },
+        ];
+        let expected = ["load_repository_preferences", "save_repository_preferences"];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode repository preference request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+            assert_eq!(encoded["command"]["repo_path"], "/workspace/repo");
         }
     }
 
