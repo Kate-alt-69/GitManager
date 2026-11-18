@@ -45,14 +45,14 @@ pub const SERVICE_PROTOCOL_VERSION: u32 = 3;
 const MAX_CONCURRENT_SERVICE_REQUESTS: usize = 8;
 pub const SERVICE_GENERATION: u32 = 4;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Endpoint {
     version: u32,
     address: String,
     token: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum ServiceCommand {
     Status,
@@ -133,7 +133,7 @@ enum ServiceCommand {
     ConnectGitAccount { payload: serde_json::Value },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ServiceRequest {
     token: String,
     command: ServiceCommand,
