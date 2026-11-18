@@ -1,7 +1,7 @@
 mod process_utils;
 pub mod archive;
 pub use gitmanager_core::notification_center;
-pub use gitmanager_core::{load_background_preferences, AppPreferences, RepositoryPreferences};
+pub use gitmanager_core::{AppPreferences, RepositoryPreferences};
 pub use gitmanager_core::git_info;
 pub mod remote_providers;
 pub use gitmanager_core::repository_index;
@@ -31,8 +31,7 @@ use remote_providers::{
 };
 use repository_index::{default_scan_roots, IndexedRepoSummary};
 use watcher_service::{
-    apply_repository_update, check_all_repos_for_updates, register_os_background_service,
-    send_os_desktop_notification, BackgroundWatcherControl,
+    apply_repository_update, register_os_background_service, BackgroundWatcherControl,
     RepoUpdateNotification, ServiceStatusInfo,
 };
 
