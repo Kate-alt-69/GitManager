@@ -16,6 +16,16 @@ The OS logon-registration option also runs it as the signed-in user:
 
 The desktop app always starts the service when the UI opens. Separate OS logon registration remains opt-in, allowing the service to run before the desktop UI is opened. Do not convert it into a machine-wide privileged service.
 
+## Upgrade migration from the legacy worker
+
+The first launch of the required core service checks its reported service generation. A generation-less response is treated as the PR #9 legacy worker, not as a ready core service. Before starting the replacement, GitManager removes the old per-user startup registration and stops the old executable:
+
+- Windows Task Scheduler task: `GitManager Background Service`; process: `git-manager-service.exe`
+- Linux systemd user unit: `gitmanager-updater.service`
+- macOS LaunchAgent: `com.gitmanager.updater`
+
+The Windows installer also closes the old `git-manager.exe` and `git-manager-service.exe` processes before replacing files. This prevents an old worker from retaining the shared service lock or continuing duplicate repository watches and notifications after an upgrade.
+
 ## Persistent data ownership
 
 Before publishing its authenticated IPC-ready endpoint, the service creates the canonical per-user data layout:
