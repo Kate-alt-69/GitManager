@@ -37,7 +37,7 @@ jobs:
           python tools/test_build_environment.py
           python -m json.tool installer/store/msix/package.json > /dev/null
           python -c "import xml.etree.ElementTree as ET; ET.parse('installer/flatpak/com.gitmanager.desktop.metainfo.xml')"
-          ruby -e "require 'yaml'; %w[.github/workflows/runtime_launch_test.yml .github/workflows/store-build.yml .github/workflows/release.yml installer/flatpak/com.gitmanager.desktop.yml].each { |path| YAML.load_file(path, aliases: true) }"
+          ruby -e "require 'yaml'; %w[.github/workflows/runtime_launch_test.yml .github/workflows/store-build.yml .github/workflows/release.yml installer/flatpak/com.gitmanager.desktop.yml].each { |path| YAML.parse_file(path) }"
 
       - name: Resolve the newest CI-green Engine source and build the Tauri frontend
         run: python tools/nextjs_engine_source.py build --project-root .
@@ -144,7 +144,7 @@ jobs:
           node --check ui/app.js
           python -m py_compile build.py tools/build_targets.py tools/setup_build_environment.py tools/test_build_environment.py tools/package_flatpak.py tools/package_windows_store.py tools/runtime_launch_probe.py
           python tools/test_build_targets.py
-          ruby -e "require 'yaml'; YAML.load_file('.github/workflows/store-build.yml', aliases: true); YAML.load_file('installer/flatpak/com.gitmanager.desktop.yml', aliases: true)"
+          ruby -e "require 'yaml'; YAML.parse_file('.github/workflows/store-build.yml'); YAML.parse_file('installer/flatpak/com.gitmanager.desktop.yml')"
           python -m json.tool installer/store/msix/package.json > /dev/null
           python -m py_compile tools/cloud-node-deployment/setup.py
           python -m py_compile tools/cloud-node-deployment/test_setup.py
