@@ -16,6 +16,31 @@ The OS logon-registration option also runs it as the signed-in user:
 
 The desktop app always starts the service when the UI opens. Separate OS logon registration remains opt-in, allowing the service to run before the desktop UI is opened. Do not convert it into a machine-wide privileged service.
 
+## Persistent data ownership
+
+Before publishing its authenticated IPC-ready endpoint, the service creates the canonical per-user data layout:
+
+```text
+data/GitManager/
+├── repo/
+│   ├── metadata/       # Persisted local repository inventory
+│   └── remote/
+│       ├── metadata/   # Remote identities and synchronization metadata
+│       └── git_data/   # Cached remote Git data
+├── git_data/           # Local Git-derived indexes and cache data
+├── account/
+│   ├── metadata/       # Non-secret account identities
+│   └── git_data/       # Per-account cached repository lists
+├── notifications/      # Bounded in-app notification history
+└── .cache/             # Disposable derived data
+```
+
+On Windows this is under `%LOCALAPPDATA%\\kastrick's_software\\data\\GitManager`; macOS and Linux use the current user's local application-data directory. The desktop and service share the same path resolver, but the service initializes the layout before it reports ready.
+
+The repository index is an atomic, versioned snapshot at `repo/metadata/index.json`. Existing working copies and their `.git` directories remain the source of truth; GitManager does not duplicate those repositories into its data directory.
+
+Account identity metadata and cached provider repository lists are stored separately under `account/metadata` and `account/git_data`. Personal access tokens are not written to either location. A token entered in the Accounts page is used for that connection request only; GitHub CLI credentials remain managed by `gh`. On a later launch, cached identities are shown as cached until the user reconnects.
+
 ## Windows MSI and MSIX
 
 The Windows desktop and Store package payloads include `gitmanager.service.exe` alongside the other application binaries. Packaging the executable does not mean registering it with the Windows Service Control Manager.
