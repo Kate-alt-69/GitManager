@@ -19,26 +19,6 @@ fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     command
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderAccountRequest {
-    pub provider: String,         // "github" | "gitlab"
-    pub username_or_host: String, // e.g. "octocat" or "https://gitlab.com"
-    pub access_token: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectedAccountSummary {
-    pub provider: String,
-    pub account_login: String,
-    pub display_name: String,
-    pub email: String,
-    pub avatar_url: String,
-    pub profile_url: String,
-    #[serde(default)]
-    pub session_connected: bool,
-    pub repositories: Vec<GitRepositoryInfo>,
-}
-
 #[derive(Debug, Deserialize)]
 struct GithubUserResponse {
     login: String,
@@ -67,10 +47,6 @@ struct GithubRepoItem {
     description: Option<String>,
 }
 
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitHubIdentity { pub login: String, pub display_name: String, pub organizations: Vec<String> }
 
 fn run_gh_json(args: &[&str]) -> Result<Value, String> {
     let mut command = hidden_command("gh");
