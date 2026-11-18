@@ -1749,40 +1749,81 @@ fn is_legacy_protocol_command_compatible(command: &ServiceCommand) -> bool {
     matches!(command, ServiceCommand::Status)
 }
 
+fn finish_service_response(
+    endpoint_version: u32,
+    response_bytes: &[u8],
+) -> Result<ServiceResponse, String> {
+    let mut response: ServiceResponse = serde_json::from_slice(response_bytes)
+        .map_err(|error| format!("Service-control response was invalid: {error}"))?;
+    if response.status.protocol_version == 0 {
+        response.status.protocol_version = endpoint_version;
+    }
+    if !response.ok {
+        return Err(response.error.unwrap_or_else(|| "Service-control request was rejected.".to_string()));
+    }
+    Ok(response)
+}
+
+/// Protocol v1-v3 used loopback TCP and an unframed JSON stream.
+/// Only Status is allowed here so the UI can identify and replace an older worker.
+fn send_legacy_tcp_status(endpoint: &Endpoint) -> Result<ServiceResponse, String> {
+    if endpoint.address.trim().is_empty() {
+        return Err("The previous GitManager service did not publish a TCP endpoint.".to_string());
+    }
+    let address: SocketAddr = endpoint.address.parse()
+        .map_err(|_| "Legacy service-control address is invalid.".to_string())?;
+    if !address.ip().is_loopback() {
+        return Err("Legacy service-control endpoint is not a loopback address.".to_string());
+    }
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+        .map_err(|error| format!("Could not connect to the previous GitManager service: {error}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(3))).ok();
+
+    let request = ServiceRequest {
+        token: endpoint.token.clone(),
+        command: ServiceCommand::Status,
+    };
+    let encoded = serde_json::to_vec(&request)
+        .map_err(|error| format!("Could not encode legacy status request: {error}"))?;
+    stream.write_all(&encoded)
+        .map_err(|error| format!("Could not send legacy service status request: {error}"))?;
+    stream.shutdown(std::net::Shutdown::Write).ok();
+
+    let mut response_bytes = Vec::new();
+    stream.take(MAX_MESSAGE_BYTES).read_to_end(&mut response_bytes)
+        .map_err(|error| format!("Could not read legacy service status response: {error}"))?;
+    if response_bytes.is_empty() || response_bytes.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err("Legacy service status response was empty or exceeded its size limit.".to_string());
+    }
+    finish_service_response(endpoint.version, &response_bytes)
+}
+
 fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, String> {
-    let endpoint_path = gitmanager_data_dir()?.join(ENDPOINT_FILE);
+    let data_dir = gitmanager_data_dir()?;
+    let endpoint_path = data_dir.join(ENDPOINT_FILE);
     let content = fs::read(&endpoint_path)
-        .map_err(|error| format!("GitManager background service is not reachable: {error}"))?;
+        .map_err(|error| format!("GitManager core service is not reachable: {error}"))?;
     if content.len() > 4096 {
         return Err("Service-control endpoint file is invalid.".to_string());
     }
 
     let endpoint: Endpoint = serde_json::from_slice(&content)
         .map_err(|error| format!("Service-control endpoint is invalid: {error}"))?;
-    // Older protocol versions remain readable for status-only upgrade
-    // negotiation. The UI verifies the current generation/protocol before
-    // sending storage, Git, archive or provider-sync commands.
     if endpoint.version == 0 || endpoint.version > SERVICE_PROTOCOL_VERSION {
         return Err("Service-control protocol version is unsupported.".to_string());
     }
-    if endpoint.version < SERVICE_PROTOCOL_VERSION
-        && !is_legacy_protocol_command_compatible(&command)
-    {
-        return Err(format!(
-            "GitManager core service protocol v{} is outdated; protocol v{} is required. Restart the required service.",
-            endpoint.version,
-            SERVICE_PROTOCOL_VERSION,
-        ));
+    if endpoint.version < SERVICE_PROTOCOL_VERSION {
+        if !is_legacy_protocol_command_compatible(&command) {
+            return Err(format!(
+                "GitManager core service protocol v{} is outdated; protocol v{} is required. Restart the required service.",
+                endpoint.version,
+                SERVICE_PROTOCOL_VERSION,
+            ));
+        }
+        return send_legacy_tcp_status(&endpoint);
     }
 
-    let address: SocketAddr = endpoint.address.parse()
-        .map_err(|_| "Service-control address is invalid.".to_string())?;
-    if !address.ip().is_loopback() {
-        return Err("Service-control endpoint is not a loopback address.".to_string());
-    }
-
-    // Health/control checks must fail quickly so the native monitor can
-    // report an unavailable service without waiting for a long Git timeout.
     let (connect_timeout, read_timeout) = match &command {
         ServiceCommand::Status
         | ServiceCommand::Suspend { .. }
@@ -1810,37 +1851,37 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
             Duration::from_secs(90),
         ),
     };
-    let mut stream = TcpStream::connect_timeout(&address, connect_timeout)
-        .map_err(|error| format!("Could not connect to GitManager background service: {error}"))?;
-    stream.set_read_timeout(Some(read_timeout)).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(15))).ok();
+
+    let expected_name = service_socket_name(&data_dir).0;
+    if endpoint.name != expected_name {
+        return Err("Service-control socket name does not match this user's GitManager data directory.".to_string());
+    }
+    let local_name = endpoint.name.as_str()
+        .to_fs_name::<GenericFilePath>()
+        .map_err(|error| format!("Service-control local socket name is invalid: {error}"))?;
+    let mut stream = ConnectOptions::new()
+        .name(local_name)
+        .wait_mode(ConnectWaitMode::Timeout(connect_timeout))
+        .connect_sync()
+        .map_err(|error| format!("Could not connect to GitManager core service: {error}"))?;
+    stream.set_recv_timeout(Some(read_timeout))
+        .map_err(|error| format!("Could not set service IPC receive timeout: {error}"))?;
+    stream.set_send_timeout(Some(Duration::from_secs(15)))
+        .map_err(|error| format!("Could not set service IPC send timeout: {error}"))?;
 
     let request = ServiceRequest { token: endpoint.token, command };
     let encoded = serde_json::to_vec(&request)
         .map_err(|error| format!("Could not encode service-control request: {error}"))?;
-    if encoded.len() as u64 >= MAX_MESSAGE_BYTES {
-        return Err("Account request is too large for the local service protocol.".to_string());
+    if encoded.is_empty() || encoded.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err("Service-control request exceeded its size limit.".to_string());
     }
-    stream.write_all(&encoded)
+    write_service_frame(&mut stream, &encoded)
         .map_err(|error| format!("Could not send service-control request: {error}"))?;
-    stream.shutdown(std::net::Shutdown::Write).ok();
-
-    let mut response_bytes = Vec::new();
-    stream.take(MAX_MESSAGE_BYTES).read_to_end(&mut response_bytes)
+    let response_bytes = read_service_frame(&mut stream)
         .map_err(|error| format!("Could not read service-control response: {error}"))?;
-    if response_bytes.len() as u64 >= MAX_MESSAGE_BYTES {
-        return Err("Service-control response exceeded its size limit.".to_string());
-    }
-    let mut response: ServiceResponse = serde_json::from_slice(&response_bytes)
-        .map_err(|error| format!("Service-control response was invalid: {error}"))?;
-    if response.status.protocol_version == 0 {
-        response.status.protocol_version = endpoint.version;
-    }
-    if !response.ok {
-        return Err(response.error.unwrap_or_else(|| "Service-control request was rejected.".to_string()));
-    }
-    Ok(response)
+    finish_service_response(endpoint.version, &response_bytes)
 }
+
 
 fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String> {
     send_service_request(command).map(|response| response.status)
