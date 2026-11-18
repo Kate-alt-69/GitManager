@@ -1606,6 +1606,34 @@ mod tests {
         let details = serde_json::to_value(details).expect("encode commit details request");
         assert_eq!(details["command"]["action"], "get_commit_details");
         assert_eq!(details["command"]["oid"], "0123456789abcdef");
+
+        let list_files = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::ListRepositoryFiles {
+                repo_path: "/workspace/repository".to_string(),
+                relative_path: Some("src".to_string()),
+                source: "remote".to_string(),
+                branch: Some("origin/main".to_string()),
+            },
+        };
+        let list_files = serde_json::to_value(list_files).expect("encode repository file list request");
+        assert_eq!(list_files["command"]["action"], "list_repository_files");
+        assert_eq!(list_files["command"]["relative_path"], "src");
+        assert_eq!(list_files["command"]["source"], "remote");
+        assert_eq!(list_files["command"]["branch"], "origin/main");
+
+        let read_file = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::ReadRepositoryFile {
+                repo_path: "/workspace/repository".to_string(),
+                relative_path: "src/main.rs".to_string(),
+                source: "local".to_string(),
+                branch: None,
+            },
+        };
+        let read_file = serde_json::to_value(read_file).expect("encode repository file read request");
+        assert_eq!(read_file["command"]["action"], "read_repository_file");
+        assert_eq!(read_file["command"]["relative_path"], "src/main.rs");
     }
 
     #[test]
