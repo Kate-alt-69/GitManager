@@ -29,10 +29,7 @@ use git_info::GitRepositoryInfo;
 use remote_providers::{
     fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
 };
-use repository_index::{
-    build_indexed_summary_with_scan_status, default_scan_roots, load_persisted_repository_index,
-    repository_index_modified_unix_nanos, IndexedRepoSummary, ScanReport,
-};
+use repository_index::{default_scan_roots, IndexedRepoSummary};
 use watcher_service::{
     apply_repository_update, check_all_repos_for_updates, register_os_background_service,
     send_os_desktop_notification, BackgroundWatcherControl,
@@ -689,8 +686,11 @@ fn get_default_scan_directories() -> Vec<String> {
 }
 
 #[tauri::command]
-fn get_repository_index_generation() -> Result<String, String> {
-    repository_index_modified_unix_nanos().map(|generation| generation.to_string())
+async fn get_repository_index_generation() -> Result<String, String> {
+    request_core_service(
+        crash_helper::service_get_repository_index_generation,
+        "repository index generation",
+    ).await
 }
 
 #[tauri::command]
@@ -698,71 +698,69 @@ async fn load_indexed_repositories(
     filter_mode: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<IndexedRepoSummary, String> {
-    let index = tokio::task::spawn_blocking(load_persisted_repository_index)
-        .await
-        .map_err(|error| format!("Repository index read task failed: {error}"))??;
-    let report = index.map(|index| ScanReport {
-        repositories: index.repositories,
-        truncated: index.truncated,
-    }).unwrap_or(ScanReport {
-        repositories: Vec::new(),
-        truncated: false,
-    });
-    if let Ok(mut cache) = state.cached_repos.lock() {
-        *cache = report.repositories.clone();
-    }
     let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
-    Ok(build_indexed_summary_with_scan_status(report.repositories, &requested, report.truncated))
+    let summary = request_core_service(
+        move || crash_helper::service_load_indexed_repositories(requested),
+        "repository index snapshot",
+    ).await?;
+    if let Ok(mut cache) = state.cached_repos.lock() {
+        *cache = summary.repositories.clone();
+    }
+    Ok(summary)
 }
 
 #[tauri::command]
 async fn scan_machine_repositories(
-    root_paths: Vec<String>, max_depth: Option<usize>, include_hidden_dirs: Option<bool>,
-    filter_mode: Option<String>, index_dependency_repositories: Option<bool>, state: State<'_, AppState>,
+    root_paths: Vec<String>,
+    max_depth: Option<usize>,
+    include_hidden_dirs: Option<bool>,
+    filter_mode: Option<String>,
+    index_dependency_repositories: Option<bool>,
+    state: State<'_, AppState>,
 ) -> Result<IndexedRepoSummary, String> {
-    // Keep the legacy command contract while moving the actual directory walk
-    // into gitmanager.service. Preferences are saved separately before a scan
-    // is requested; the service reads those persisted scan settings.
+    // Retain the public command contract; the service reads persisted settings
+    // and performs the filesystem walk. The UI only waits for a newer service
+    // generation and fetches the published snapshot through authenticated IPC.
     let _requested_settings = (root_paths, max_depth, include_hidden_dirs, index_dependency_repositories);
-    let previous_modified = tokio::task::spawn_blocking(repository_index_modified_unix_nanos)
-        .await
-        .map_err(|error| format!("Repository index metadata task failed: {error}"))??;
+    let previous_generation = request_core_service::<String, _>(
+        crash_helper::service_get_repository_index_generation,
+        "repository index generation",
+    ).await?
+    .parse::<u64>()
+    .map_err(|error| format!("Core service returned an invalid repository index generation: {error}"))?;
 
     crash_helper::request_service_scan()
         .map_err(|error| format!("Could not request repository indexing from gitmanager.service: {error}"))?;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    let report = loop {
-        let modified = tokio::task::spawn_blocking(repository_index_modified_unix_nanos)
-            .await
-            .map_err(|error| format!("Repository index metadata task failed: {error}"))??;
-        if modified > previous_modified {
-            let index = tokio::task::spawn_blocking(load_persisted_repository_index)
-                .await
-                .map_err(|error| format!("Repository index read task failed: {error}"))??
-                .ok_or_else(|| "The service published an empty repository index file.".to_string())?;
-            break ScanReport {
-                repositories: index.repositories,
-                truncated: index.truncated,
-            };
+    loop {
+        let current_generation = request_core_service::<String, _>(
+            crash_helper::service_get_repository_index_generation,
+            "repository index generation",
+        ).await?
+        .parse::<u64>()
+        .map_err(|error| format!("Core service returned an invalid repository index generation: {error}"))?;
+
+        if current_generation > previous_generation {
+            let requested = filter_mode.clone().unwrap_or_else(|| "grouped".to_string());
+            let summary: IndexedRepoSummary = request_core_service(
+                move || crash_helper::service_load_indexed_repositories(requested),
+                "repository index snapshot",
+            ).await?;
+            if let Ok(mut cache) = state.cached_repos.lock() {
+                *cache = summary.repositories.clone();
+            }
+            return Ok(summary);
         }
+
         if std::time::Instant::now() >= deadline {
             return Err(
                 "gitmanager.service has not published a refreshed repository index yet. The existing index is preserved; check Task Center → Service for diagnostics."
                     .to_string(),
             );
         }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    };
-
-    if let Ok(mut cache) = state.cached_repos.lock() {
-        *cache = report.repositories.clone();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
-
-    // The required service owns archive watcher registration. The UI only
-    // consumes its persisted repository inventory.
-    let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
-    Ok(build_indexed_summary_with_scan_status(report.repositories, &requested, report.truncated))
 }
 
 #[tauri::command]
