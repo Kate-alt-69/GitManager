@@ -784,35 +784,35 @@ fn service_workspace_unavailable(state: &ServiceState) -> ServiceResponse {
 }
 
 #[cfg(not(feature = "repository-data"))]
-fn save_conflict_resolution(_: &ServiceState, _: String, _: String, _: String) -> ServiceResponse {
-    service_workspace_unavailable(_)
+fn save_conflict_resolution(state: &ServiceState, _: String, _: String, _: String) -> ServiceResponse {
+    service_workspace_unavailable(state)
 }
 #[cfg(not(feature = "repository-data"))]
-fn preview_repository_pull(_: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+fn preview_repository_pull(state: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn get_repository_changes(_: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+fn get_repository_changes(state: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn read_repository_file_diff(_: &ServiceState, _: String, _: String, _: bool) -> ServiceResponse { service_workspace_unavailable(_) }
+fn read_repository_file_diff(state: &ServiceState, _: String, _: String, _: bool) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn fetch_repository_remote(_: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+fn fetch_repository_remote(state: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn stage_repository_paths(_: &ServiceState, _: String, _: Vec<String>) -> ServiceResponse { service_workspace_unavailable(_) }
+fn stage_repository_paths(state: &ServiceState, _: String, _: Vec<String>) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn unstage_repository_paths(_: &ServiceState, _: String, _: Vec<String>) -> ServiceResponse { service_workspace_unavailable(_) }
+fn unstage_repository_paths(state: &ServiceState, _: String, _: Vec<String>) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn preview_repository_commit(_: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+fn preview_repository_commit(state: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn create_repository_commit(_: &ServiceState, _: String, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+fn create_repository_commit(state: &ServiceState, _: String, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn delete_repository_path(_: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+fn delete_repository_path(state: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
 fn prepare_and_pull_repository_update(
     state: &ServiceState, _: String, _: String, _: String, _: String, _: String, _: String, _: Vec<String>, _: String,
 ) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn list_local_repository_branches(_: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+fn list_local_repository_branches(state: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
 #[cfg(not(feature = "repository-data"))]
-fn switch_repository_branch(_: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(_) }
+fn switch_repository_branch(state: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
 
 #[cfg(not(feature = "repository-data"))]
 fn list_repository_files(
