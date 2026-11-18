@@ -26,7 +26,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::ShellExt;
 
-use git_info::{extract_git_repository_overview, GitRepositoryInfo};
+use git_info::GitRepositoryInfo;
 use remote_providers::{
     fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
 };
