@@ -6,13 +6,14 @@
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -872,6 +873,21 @@ fn service_data_unavailable(state: &ServiceState) -> ServiceResponse {
     }
 }
 
+fn with_repository_operation_lock<T>(
+    repo_path: &str,
+    operation: impl FnOnce() -> T,
+) -> T {
+    static REPOSITORY_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let key = fs::canonicalize(repo_path).unwrap_or_else(|_| PathBuf::from(repo_path));
+    let lock = {
+        let locks = REPOSITORY_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
+    };
+    let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
+}
+
 fn handle_service_connection(
     mut stream: TcpStream,
     token: &str,
@@ -923,66 +939,66 @@ fn handle_service_connection(
                 ServiceCommand::LoadAccounts => load_account_storage(state),
                 ServiceCommand::SaveAccount { payload } => save_account_storage(state, payload),
                 ServiceCommand::InspectRepository { repo_path } =>
-                    load_repository_overview(state, repo_path),
+                    with_repository_operation_lock(&repo_path, || load_repository_overview(state, repo_path)),
                 ServiceCommand::LoadCommitHistory {
                     repo_path,
                     offset,
                     limit,
                     branch_filter,
                     search_query,
-                } => load_commit_history(
+                } => with_repository_operation_lock(&repo_path, || load_commit_history(
                     state,
                     repo_path,
                     offset,
                     limit,
                     branch_filter,
                     search_query,
-                ),
+                )),
                 ServiceCommand::GetCommitDetails { repo_path, oid } =>
-                    load_commit_details(state, repo_path, oid),
+                    with_repository_operation_lock(&repo_path, || load_commit_details(state, repo_path, oid)),
                 ServiceCommand::ListRepositoryFiles {
                     repo_path,
                     relative_path,
                     source,
                     branch,
-                } => list_repository_files(state, repo_path, relative_path, source, branch),
+                } => with_repository_operation_lock(&repo_path, || list_repository_files(state, repo_path, relative_path, source, branch)),
                 ServiceCommand::ReadRepositoryFile {
                     repo_path,
                     relative_path,
                     source,
                     branch,
-                } => read_repository_file(state, repo_path, relative_path, source, branch),
+                } => with_repository_operation_lock(&repo_path, || read_repository_file(state, repo_path, relative_path, source, branch)),
                 ServiceCommand::SaveConflictResolution { repo_path, relative_path, content } =>
-                    save_conflict_resolution(state, repo_path, relative_path, content),
+                    with_repository_operation_lock(&repo_path, || save_conflict_resolution(state, repo_path, relative_path, content)),
                 ServiceCommand::PreviewRepositoryPull { repo_path } =>
-                    preview_repository_pull(state, repo_path),
+                    with_repository_operation_lock(&repo_path, || preview_repository_pull(state, repo_path)),
                 ServiceCommand::GetRepositoryChanges { repo_path } =>
-                    get_repository_changes(state, repo_path),
+                    with_repository_operation_lock(&repo_path, || get_repository_changes(state, repo_path)),
                 ServiceCommand::ReadRepositoryFileDiff { repo_path, relative_path, staged } =>
-                    read_repository_file_diff(state, repo_path, relative_path, staged),
+                    with_repository_operation_lock(&repo_path, || read_repository_file_diff(state, repo_path, relative_path, staged)),
                 ServiceCommand::FetchRepositoryRemote { repo_path, remote_name } =>
-                    fetch_repository_remote(state, repo_path, remote_name),
+                    with_repository_operation_lock(&repo_path, || fetch_repository_remote(state, repo_path, remote_name)),
                 ServiceCommand::StageRepositoryPaths { repo_path, paths } =>
-                    stage_repository_paths(state, repo_path, paths),
+                    with_repository_operation_lock(&repo_path, || stage_repository_paths(state, repo_path, paths)),
                 ServiceCommand::UnstageRepositoryPaths { repo_path, paths } =>
-                    unstage_repository_paths(state, repo_path, paths),
+                    with_repository_operation_lock(&repo_path, || unstage_repository_paths(state, repo_path, paths)),
                 ServiceCommand::PreviewRepositoryCommit { repo_path } =>
-                    preview_repository_commit(state, repo_path),
+                    with_repository_operation_lock(&repo_path, || preview_repository_commit(state, repo_path)),
                 ServiceCommand::CreateRepositoryCommit { repo_path, message, expected_index_tree } =>
-                    create_repository_commit(state, repo_path, message, expected_index_tree),
+                    with_repository_operation_lock(&repo_path, || create_repository_commit(state, repo_path, message, expected_index_tree)),
                 ServiceCommand::DeleteRepositoryPath { repo_path, relative_path } =>
-                    delete_repository_path(state, repo_path, relative_path),
+                    with_repository_operation_lock(&repo_path, || delete_repository_path(state, repo_path, relative_path)),
                 ServiceCommand::PrepareAndPullRepositoryUpdate {
                     repo_path, expected_branch, expected_local_oid, expected_remote_oid,
                     expected_status_token, mode, stage_paths, commit_message,
-                } => prepare_and_pull_repository_update(
+                } => with_repository_operation_lock(&repo_path, || prepare_and_pull_repository_update(
                     state, repo_path, expected_branch, expected_local_oid, expected_remote_oid,
                     expected_status_token, mode, stage_paths, commit_message,
-                ),
+                )),
                 ServiceCommand::ListLocalRepositoryBranches { repo_path } =>
-                    list_local_repository_branches(state, repo_path),
+                    with_repository_operation_lock(&repo_path, || list_local_repository_branches(state, repo_path)),
                 ServiceCommand::SwitchRepositoryBranch { repo_path, branch_name } =>
-                    switch_repository_branch(state, repo_path, branch_name),
+                    with_repository_operation_lock(&repo_path, || switch_repository_branch(state, repo_path, branch_name)),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
