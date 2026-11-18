@@ -2069,6 +2069,7 @@ pub fn request_service_resume() -> Result<ServiceStatus, String> {
             protocol_version: 0,
             remote_check_pending: false,
             remote_check_running: false,
+            indexing: false,
         }),
     }
 }
