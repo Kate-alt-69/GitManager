@@ -596,6 +596,78 @@ fn stop_legacy_background_service() {
     }
 }
 
+fn is_core_service_command(command: &str) -> bool {
+    let mut arguments = command.split_whitespace();
+    let executable = arguments.next().unwrap_or("");
+    let normalized = executable.replace('\\', "/");
+    let executable_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    matches!(executable_name, "gitmanager-service" | "gitmanager-service.exe")
+}
+
+#[cfg(windows)]
+fn stop_outdated_core_service(reported_pid: u32) {
+    if reported_pid > 0 {
+        let _ = hidden_command("taskkill.exe")
+            .args(["/PID", &reported_pid.to_string(), "/T", "/F"])
+            .output();
+    } else {
+        // Protocol-v1 workers do not report a PID. Restrict fallback cleanup
+        // to this interactive Windows account rather than other user sessions.
+        let username = hidden_command("whoami.exe")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|value| !value.is_empty());
+        if let Some(username) = username {
+            let filter = format!("USERNAME eq {username}");
+            let _ = hidden_command("taskkill.exe")
+                .args(["/FI", &filter, "/IM", "gitmanager-service.exe", "/T", "/F"])
+                .output();
+        }
+    }
+    thread::sleep(Duration::from_millis(500));
+}
+
+#[cfg(unix)]
+fn stop_outdated_core_service(reported_pid: u32) {
+    let mut stopped_any = false;
+    if reported_pid > 1 && reported_pid != std::process::id() {
+        let _ = hidden_command("kill")
+            .args(["-TERM", &reported_pid.to_string()])
+            .output();
+        stopped_any = true;
+    } else {
+        let username = std::env::var("USER").ok().filter(|value| !value.is_empty())
+            .or_else(|| hidden_command("id").arg("-un").output().ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .filter(|value| !value.is_empty()));
+        let Some(username) = username else { return; };
+        #[cfg(target_os = "linux")]
+        let output = hidden_command("ps").args(["-u", &username, "-o", "pid=,args="]).output();
+        #[cfg(target_os = "macos")]
+        let output = hidden_command("ps").args(["-u", &username, "-o", "pid=,command="]).output();
+        let Ok(output) = output else { return; };
+
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut fields = line.trim().splitn(2, char::is_whitespace);
+            let Some(pid_text) = fields.next() else { continue; };
+            let Ok(pid) = pid_text.trim().parse::<u32>() else { continue; };
+            let command = fields.next().unwrap_or("").trim();
+            if pid > 1 && pid != std::process::id() && is_core_service_command(command) {
+                let _ = hidden_command("kill").args(["-TERM", &pid.to_string()]).output();
+                stopped_any = true;
+            }
+        }
+    }
+
+    if stopped_any {
+        // Let the service release its single-instance lock and remove its endpoint.
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
 /// Ensures the required repository/data engine is running before the UI becomes
 /// functional. The service is launched as a detached per-user process and uses
 /// its own authenticated local control endpoint for its readiness handshake.
@@ -605,8 +677,13 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
     stop_legacy_background_service();
 
     if let Ok(status) = crash_helper::request_service_status() {
-        if status.service_generation >= crash_helper::SERVICE_GENERATION {
+        if status.service_generation >= crash_helper::SERVICE_GENERATION
+            && status.protocol_version >= 2
+        {
             return Ok(status.message);
+        }
+        if status.service_generation > 0 || status.protocol_version > 0 {
+            stop_outdated_core_service(status.process_id);
         }
     }
 
@@ -643,7 +720,9 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Ok(status) = crash_helper::request_service_status() {
-            if status.service_generation >= crash_helper::SERVICE_GENERATION {
+            if status.service_generation >= crash_helper::SERVICE_GENERATION
+                && status.protocol_version >= 2
+            {
                 return Ok(status.message);
             }
         }
