@@ -595,6 +595,8 @@ pub fn request_service_resume() -> Result<ServiceStatus, String> {
             remaining_seconds: 0,
             message: format!("Background-service activation queued for its next control poll: {error}"),
             service_generation: 0,
+            process_id: 0,
+            protocol_version: 0,
         }),
     }
 }
