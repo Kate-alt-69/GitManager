@@ -63,7 +63,7 @@ fn repository_worktree_is_clean(repo: &Repository) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::repository_worktree_is_clean;
+    use super::{is_legacy_service_command, repository_worktree_is_clean};
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -126,6 +126,15 @@ mod tests {
 
         assert!(error.contains("Flatpak command was not found"));
     }
+    #[test]
+    fn legacy_worker_detection_matches_only_the_old_executable_identity() {
+        assert!(is_legacy_service_command("/opt/gitmanager/git-manager-service"));
+        assert!(is_legacy_service_command("--command=git-manager-service"));
+        assert!(is_legacy_service_command(r"C:\\GitManager\\git-manager-service.exe"));
+        assert!(!is_legacy_service_command("/opt/gitmanager/gitmanager.service"));
+        assert!(!is_legacy_service_command("gitmanager-service"));
+    }
+
     use git2::Repository;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -483,12 +492,131 @@ pub fn read_service_log_tail() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+fn is_legacy_service_command(command: &str) -> bool {
+    command.split_whitespace().any(|argument| {
+        if argument == "--command=git-manager-service" {
+            return true;
+        }
+        let normalized = argument.replace('\\', "/");
+        matches!(
+            normalized.rsplit('/').next().unwrap_or(&normalized),
+            "git-manager-service" | "git-manager-service.exe"
+        )
+    })
+}
+
+#[cfg(unix)]
+fn stop_legacy_worker_processes() {
+    #[cfg(target_os = "linux")]
+    let output = hidden_command("ps").args(["-eo", "pid=,args="]).output();
+    #[cfg(target_os = "macos")]
+    let output = hidden_command("ps").args(["-axo", "pid=,command="]).output();
+
+    let Ok(output) = output else { return; };
+    let own_pid = std::process::id();
+    let mut stopped_any = false;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.trim().splitn(2, char::is_whitespace);
+        let Some(pid_text) = fields.next() else { continue; };
+        let Ok(pid) = pid_text.trim().parse::<u32>() else { continue; };
+        let command = fields.next().unwrap_or("").trim();
+        if pid > 1 && pid != own_pid && is_legacy_service_command(command) {
+            let _ = hidden_command("kill").args(["-TERM", &pid.to_string()]).output();
+            stopped_any = true;
+        }
+    }
+    if stopped_any {
+        // The old worker uses the same per-user lock and endpoint files. Give
+        // the OS a moment to release its lock before the replacement starts.
+        thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Stops PR #9's optional updater before the required core service starts.
+/// The old process used the same IPC endpoint and lock file, so accepting its
+/// status response would make the new UI believe an obsolete worker was ready.
+fn stop_legacy_background_service() {
+    #[cfg(windows)]
+    {
+        const LEGACY_TASK: &str = "GitManager Background Service";
+        let _ = hidden_command("schtasks.exe")
+            .args(["/End", "/TN", LEGACY_TASK])
+            .output();
+        let _ = hidden_command("schtasks.exe")
+            .args(["/Delete", "/TN", LEGACY_TASK, "/F"])
+            .output();
+        let _ = hidden_command("taskkill.exe")
+            .args(["/IM", "git-manager-service.exe", "/T", "/F"])
+            .output();
+        let _ = hidden_command("sc.exe").args(["stop", "GitManagerUpdateSvc"]).output();
+        let _ = hidden_command("sc.exe").args(["delete", "GitManagerUpdateSvc"]).output();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = hidden_command("systemctl")
+            .args(["--user", "stop", "gitmanager-updater.service"])
+            .output();
+        let _ = hidden_command("systemctl")
+            .args(["--user", "disable", "gitmanager-updater.service"])
+            .output();
+        if let Some(home) = dirs::home_dir() {
+            let legacy_unit = home
+                .join(".config")
+                .join("systemd")
+                .join("user")
+                .join("gitmanager-updater.service");
+            let _ = fs::remove_file(legacy_unit);
+        }
+        let _ = hidden_command("systemctl")
+            .args(["--user", "daemon-reload"])
+            .output();
+        stop_legacy_worker_processes();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let uid = hidden_command("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .filter(|result| result.status.success())
+            .map(|result| String::from_utf8_lossy(&result.stdout).trim().to_string())
+            .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()));
+        if let Some(uid) = uid {
+            let domain = format!("gui/{uid}");
+            let service = format!("{domain}/com.gitmanager.updater");
+            let _ = hidden_command("launchctl").args(["bootout", &service]).output();
+            let _ = hidden_command("launchctl").args(["disable", &service]).output();
+        }
+        if let Some(home) = dirs::home_dir() {
+            let legacy_agent = home
+                .join("Library")
+                .join("LaunchAgents")
+                .join("com.gitmanager.updater.plist");
+            let _ = fs::remove_file(legacy_agent);
+        }
+        stop_legacy_worker_processes();
+    }
+}
+
 /// Ensures the required repository/data engine is running before the UI becomes
 /// functional. The service is launched as a detached per-user process and uses
 /// its own authenticated local control endpoint for its readiness handshake.
 pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> {
     if let Ok(status) = crash_helper::request_service_status() {
-        return Ok(status.message);
+        if status.service_generation >= crash_helper::SERVICE_GENERATION {
+            return Ok(status.message);
+        }
+    }
+
+    // Migrate the old optional watcher before launching the required service.
+    // Never treat a legacy worker's successful Status response as readiness.
+    stop_legacy_background_service();
+    if let Ok(status) = crash_helper::request_service_status() {
+        if status.service_generation >= crash_helper::SERVICE_GENERATION {
+            return Ok(status.message);
+        }
     }
 
     let service_exe = resolve_background_service_executable(&app_handle)?;
@@ -524,7 +652,9 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Ok(status) = crash_helper::request_service_status() {
-            return Ok(status.message);
+            if status.service_generation >= crash_helper::SERVICE_GENERATION {
+                return Ok(status.message);
+            }
         }
         if let Ok(Some(exit)) = child.try_wait() {
             return Err(format!(
