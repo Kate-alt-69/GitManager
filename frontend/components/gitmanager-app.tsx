@@ -832,10 +832,12 @@ export function GitManagerApp() {
 	const [kind, setKind] = useState<RepoKind>("projects");
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const selectedRepo = git.repositories.find((repo) => repo.id === selectedId) ?? null;
-	const parsedInternalRoute = parseInternalRoute(internalRoute);
-	const currentDestination: RepositoryDestination = parsedInternalRoute.kind === "repository"
-		? parsedInternalRoute.destination
-		: { kind: "overview" };
+	const currentDestination = useMemo<RepositoryDestination>(() => {
+		const parsedInternalRoute = parseInternalRoute(internalRoute);
+		return parsedInternalRoute.kind === "repository"
+			? parsedInternalRoute.destination
+			: { kind: "overview" };
+	}, [internalRoute]);
 
 	const navigatePage = useCallback((next: PageKey) => {
 		if (next === "accounts") void git.loadAccounts().catch(() => undefined);
