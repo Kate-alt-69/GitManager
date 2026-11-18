@@ -1202,7 +1202,7 @@ async fn connect_git_account(
 
 #[tauri::command]
 async fn check_repo_updates_now(
-    root_paths: Vec<String>,
+    _root_paths: Vec<String>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<RepoUpdateNotification>, String> {
@@ -1211,45 +1211,24 @@ async fn check_repo_updates_now(
         "gitmanager://update-check-state",
         serde_json::json!({
             "checking": true,
-            "status": "Checking remote repositories for updates..."
+            "status": "Queuing remote check in GitManager Core Service..."
         }),
     );
 
-    let updates = tokio::task::spawn_blocking(move || check_all_repos_for_updates(root_paths))
+    let result = tokio::task::spawn_blocking(crash_helper::request_service_remote_check)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| format!("Remote-check request task failed: {error}"))?;
 
     state.watcher.checking_now.store(false, Ordering::Relaxed);
     let _ = app_handle.emit(
         "gitmanager://update-check-state",
         serde_json::json!({
             "checking": false,
-            "updates_count": updates.len()
+            "queued": result.is_ok()
         }),
     );
-
-    if let Ok(mut pending) = state.pending_updates.lock() {
-        *pending = updates.clone();
-    }
-
-    let preferences = load_background_preferences().unwrap_or_default();
-    for upd in &updates {
-        let created = notification_center::publish_repository_update(
-            &upd.repo_id,
-            &upd.repo_name,
-            &upd.repo_path,
-            &upd.remote_oid,
-            &upd.prompt_message,
-        ).map(|(_, created)| created).unwrap_or(true);
-        if preferences.os_notifications_enabled && created {
-            // The shared notification event is persisted before OS delivery.
-            send_os_desktop_notification(upd);
-        }
-        let _ = app_handle.emit("gitmanager://repo-update-available", upd);
-    }
-    let _ = app_handle.emit("gitmanager://notifications-updated", ());
-
-    Ok(updates)
+    result.map_err(|error| format!("Could not queue remote check in gitmanager.service: {error}"))?;
+    Ok(Vec::new())
 }
 
 #[tauri::command]
