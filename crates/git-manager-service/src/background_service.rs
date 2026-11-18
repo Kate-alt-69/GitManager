@@ -148,12 +148,14 @@ pub fn run() -> ! {
                 let scan_requested = service_control.take_scan_request();
                 if scan_requested || index_missing || scan_settings_changed {
                     eprintln!("GitManager core service: refreshing the repository index.");
+                    service_control.set_indexing(true);
                     let report = scan_repositories_with_report(ScanOptions {
                         root_paths: preferences.scan_roots.clone(),
                         max_depth: Some(preferences.max_scan_depth),
                         include_hidden_dirs: Some(preferences.include_hidden_dirs),
                         index_dependency_repositories: Some(preferences.index_dependency_repositories),
                     });
+                    service_control.set_indexing(false);
                     match report {
                         Ok(report) => match save_persisted_repository_index(&report, &scan_settings_hash) {
                             Ok(index) => {
