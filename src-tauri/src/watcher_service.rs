@@ -65,6 +65,21 @@ fn repository_worktree_is_clean(repo: &Repository) -> Result<bool, String> {
 mod tests {
     use super::{is_legacy_service_command, repository_worktree_is_clean};
 
+    #[test]
+    fn legacy_worker_names_are_distinguished_from_the_current_service() {
+        assert!(is_legacy_service_command(r"C:\GitManager\git-manager-service.exe"));
+        assert!(is_legacy_service_command("/opt/gitmanager/git-manager-service"));
+        assert!(!is_legacy_service_command(r"C:\GitManager\gitmanager-service.exe"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_core_service_executable_name_is_detected() {
+        assert!(super::is_core_service_command(r"/opt/gitmanager/gitmanager-service"));
+        assert!(super::is_core_service_command(r"/opt/gitmanager/gitmanager-service --background"));
+        assert!(!super::is_core_service_command(r"/opt/gitmanager/git-manager-service"));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn flatpak_background_service_is_started_inside_its_sandbox() {
@@ -596,6 +611,7 @@ fn stop_legacy_background_service() {
     }
 }
 
+#[cfg(unix)]
 fn is_core_service_command(command: &str) -> bool {
     let mut arguments = command.split_whitespace();
     let executable = arguments.next().unwrap_or("");
