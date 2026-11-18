@@ -1789,7 +1789,7 @@ fn collect_process_tree(
     excluded: &HashSet<Pid>,
 ) -> HashSet<Pid> {
     let mut collected = HashSet::new();
-    if system.process(&root).is_none() || excluded.contains(&root) {
+    if system.process(root.clone()).is_none() || excluded.contains(&root) {
         return collected;
     }
     collected.insert(root);
@@ -1823,7 +1823,7 @@ fn read_process_group(
     let mut cpu_percent = 0.0f32;
     let mut memory_bytes = 0u64;
     for pid in pids {
-        if let Some(process) = system.process(pid) {
+        if let Some(process) = system.process(pid.clone()) {
             cpu_percent += process.cpu_usage() / logical_processors.max(1.0);
             memory_bytes = memory_bytes.saturating_add(process.memory());
         }
