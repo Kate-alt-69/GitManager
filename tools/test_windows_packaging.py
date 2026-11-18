@@ -237,6 +237,15 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertNotIn("pub use gitmanager_core::scanner;", desktop_source)
         self.assertNotIn("crate::scanner", desktop_source)
 
+        desktop_watcher = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
+        service_source = (ROOT / "crates" / "git-manager-service" / "src" / "background_service.rs").read_text(encoding="utf-8")
+        self.assertIn("use crate::repository_index::load_persisted_repository_index;", desktop_watcher)
+        self.assertNotIn("crate::scanner", desktop_watcher)
+        self.assertLess(
+            service_source.index("gitmanager_core::storage::ensure_data_layout()"),
+            service_source.index("let service_control = match start_service_control_server()"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
