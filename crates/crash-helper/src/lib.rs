@@ -106,6 +106,8 @@ enum ServiceCommand {
     MarkNotificationRead { id: String },
     DismissNotification { id: String },
     MarkAllNotificationsRead,
+    LoadAppPreferences,
+    SaveAppPreferences { payload: serde_json::Value },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,6 +599,40 @@ fn read_repository_file(
     )
 }
 
+#[cfg(feature = "preferences-storage")]
+fn load_app_preferences(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Application preferences",
+        gitmanager_core::load_background_preferences(),
+    )
+}
+
+#[cfg(feature = "preferences-storage")]
+fn save_app_preferences(state: &ServiceState, payload: serde_json::Value) -> ServiceResponse {
+    let result = serde_json::from_value::<gitmanager_core::AppPreferences>(payload)
+        .map_err(|error| format!("Application preference payload is invalid: {error}"))
+        .and_then(|preferences| {
+            gitmanager_core::app_preferences::save_background_preferences(&preferences)?;
+            Ok(preferences)
+        });
+    repository_data_response(state, "Saved application preferences", result)
+}
+
+#[cfg(not(feature = "preferences-storage"))]
+fn preference_storage_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Application preference storage is not enabled in this process"),
+        error: Some("Application preference storage is available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+#[cfg(not(feature = "preferences-storage"))]
+fn load_app_preferences(state: &ServiceState) -> ServiceResponse { preference_storage_unavailable(state) }
+#[cfg(not(feature = "preferences-storage"))]
+fn save_app_preferences(state: &ServiceState, _: serde_json::Value) -> ServiceResponse { preference_storage_unavailable(state) }
+
 #[cfg(feature = "notification-storage")]
 fn list_notifications(state: &ServiceState) -> ServiceResponse {
     repository_data_response(
@@ -1061,6 +1097,8 @@ fn handle_service_connection(
                 ServiceCommand::MarkNotificationRead { id } => mark_notification_read(state, id),
                 ServiceCommand::DismissNotification { id } => dismiss_notification(state, id),
                 ServiceCommand::MarkAllNotificationsRead => mark_all_notifications_read(state),
+                ServiceCommand::LoadAppPreferences => load_app_preferences(state),
+                ServiceCommand::SaveAppPreferences { payload } => save_app_preferences(state, payload),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
@@ -1320,6 +1358,13 @@ pub fn service_dismiss_notification(id: String) -> Result<serde_json::Value, Str
 }
 pub fn service_mark_all_notifications_read() -> Result<serde_json::Value, String> {
     service_response_data(ServiceCommand::MarkAllNotificationsRead, "bulk notification read update")
+}
+
+pub fn service_load_app_preferences() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::LoadAppPreferences, "application preferences")
+}
+pub fn service_save_app_preferences(payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::SaveAppPreferences { payload }, "saved application preferences")
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
