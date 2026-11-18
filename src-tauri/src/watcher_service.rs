@@ -600,15 +600,10 @@ fn stop_legacy_background_service() {
 /// functional. The service is launched as a detached per-user process and uses
 /// its own authenticated local control endpoint for its readiness handshake.
 pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> {
-    if let Ok(status) = crash_helper::request_service_status() {
-        if status.service_generation >= crash_helper::SERVICE_GENERATION {
-            return Ok(status.message);
-        }
-    }
-
-    // Migrate the old optional watcher before launching the required service.
-    // Never treat a legacy worker's successful Status response as readiness.
+    // Always remove the legacy logon registration, even when a current core
+    // service is already running, so the old worker cannot return next login.
     stop_legacy_background_service();
+
     if let Ok(status) = crash_helper::request_service_status() {
         if status.service_generation >= crash_helper::SERVICE_GENERATION {
             return Ok(status.message);
