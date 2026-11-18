@@ -114,10 +114,33 @@ fn prepare_service_socket_directory(directory: &Path) -> Result<(), String> {
 
 fn bind_service_local_listener(name: &str) -> io::Result<Listener> {
     let local_name = name.to_fs_name::<GenericFilePath>()?;
-    ListenerOptions::new()
+    let options = ListenerOptions::new()
         .name(local_name)
-        .nonblocking(ListenerNonblockingMode::Accept)
-        .create_sync()
+        .nonblocking(ListenerNonblockingMode::Accept);
+
+    #[cfg(windows)]
+    {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+        use widestring::U16CString;
+
+        // Owner Rights + Local System; no broad Users/Everyone ACE.
+        let sddl = U16CString::from_str("D:P(A;;GA;;;OW)(A;;GA;;;SY)")
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let descriptor = SecurityDescriptor::deserialize(&sddl)?;
+        options.security_descriptor(descriptor).create_sync()
+    }
+
+    #[cfg(unix)]
+    {
+        use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+
+        match options.clone().mode(0o600).create_sync() {
+            Ok(listener) => Ok(listener),
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => options.create_sync(),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 fn write_service_frame(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
