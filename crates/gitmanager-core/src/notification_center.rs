@@ -36,6 +36,19 @@ fn notification_file() -> Result<PathBuf, String> {
         .join("notifications.json"))
 }
 
+/// Returns a lightweight generation stamp for native change monitoring.
+pub fn notification_store_modified_unix_nanos() -> Result<u128, String> {
+    let path = notification_file()?;
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("Could not inspect notification history: {error}")),
+    };
+    let modified = metadata.modified()
+        .map_err(|error| format!("Could not read notification history timestamp: {error}"))?;
+    Ok(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())
+}
+
 fn lock_file(path: &PathBuf) -> Result<File, String> {
     let parent = path.parent()
         .ok_or_else(|| "Notification history path has no parent directory.".to_string())?;
