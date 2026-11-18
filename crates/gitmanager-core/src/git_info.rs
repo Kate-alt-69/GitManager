@@ -1,5 +1,5 @@
 use git2::build::CheckoutBuilder;
-use git2::{BranchType, Repository, RepositoryState, Sort, StatusOptions};
+use git2::{BranchType, Oid, Repository, RepositoryState, Sort, StatusOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -42,6 +42,21 @@ pub struct RemoteEndpoint {
     pub repo_slug: Option<String>,
     pub web_url: Option<String>,
     pub icon_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetails {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub message: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub authored_at: String,
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -550,6 +565,48 @@ pub fn load_repository_commit_history(
     })
 }
 
+
+
+/// Reads metadata and aggregate diff statistics for a single commit.
+pub fn load_commit_details(workdir: &Path, oid_text: &str) -> Result<CommitDetails, String> {
+    let repo = Repository::open(workdir)
+        .map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let oid = Oid::from_str(oid_text)
+        .map_err(|_| "The selected commit SHA is invalid.".to_string())?;
+    let commit = repo.find_commit(oid)
+        .map_err(|error| format!("Could not load selected commit: {error}"))?;
+    let tree = commit.tree()
+        .map_err(|error| format!("Could not read commit tree: {error}"))?;
+    let parent_tree = if commit.parent_count() > 0 {
+        Some(commit.parent(0)
+            .and_then(|parent| parent.tree())
+            .map_err(|error| format!("Could not read parent commit tree: {error}"))?)
+    } else {
+        None
+    };
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .map_err(|error| format!("Could not compare commit trees: {error}"))?;
+    let stats = diff.stats()
+        .map_err(|error| format!("Could not summarize commit changes: {error}"))?;
+    let author = commit.author();
+    let authored_at = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
+        .map(|value| value.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| "Unknown date".to_string());
+    let oid_string = oid.to_string();
+
+    Ok(CommitDetails {
+        oid: oid_string.clone(),
+        short_oid: oid_string.chars().take(7).collect(),
+        summary: commit.summary().unwrap_or("(no commit message)").to_string(),
+        message: commit.message().unwrap_or("").trim().to_string(),
+        author_name: author.name().unwrap_or("Unknown Author").to_string(),
+        author_email: author.email().unwrap_or("unknown@local").to_string(),
+        authored_at,
+        files_changed: stats.files_changed(),
+        insertions: stats.insertions(),
+        deletions: stats.deletions(),
+    })
+}
 
 /// Lists local branches without loading commit history or walking the working tree.
 pub fn list_local_repository_branches(workdir: &Path) -> Result<Vec<BranchInfo>, String> {
