@@ -46,6 +46,10 @@ Repository discovery, indexing, the authoritative index snapshot and index gener
 
 Per-repository settings are stored in the repository's `.git/info/gitmanager-settings.json` file. Reads, legacy fallback from the previous global preferences entry, validation, backup recovery and writes all run in `gitmanager.service` through authenticated IPC. The Tauri host no longer opens the working tree with libgit2 for settings operations and does not own the repository settings file.
 
+## Archive operations
+
+The required service owns archive capture, archive listing, restore, Cloud Node configuration and synchronization. Tauri forwards the existing command payloads over authenticated IPC and receives serialized results; it no longer links the archive engine directly or runs repository archive work in the desktop process. Archive operations are serialized with other work on the same repository, and the archive engine's own per-repository lock remains the storage-level guard. Long-running archive commands receive an extended IPC response timeout so large restore points do not get abandoned by the UI adapter.
+
 ## Notification lifecycle
 
 The required service is the only process that publishes and mutates persistent notification history. The Tauri UI requests the history, mark-read, bulk mark-read and dismiss operations through authenticated protocol-v2 IPC. The notification file is capped at 200 records and 2 MiB; deterministic repository-update IDs prevent duplicate records across service restarts.
