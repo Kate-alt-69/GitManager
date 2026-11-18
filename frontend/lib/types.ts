@@ -126,6 +126,8 @@ export interface CoreServiceStatus {
 	service_generation: number;
 	process_id: number;
 	protocol_version: number;
+	remote_check_pending?: boolean;
+	remote_check_running?: boolean;
 }
 
 export interface ProcessUsageSummary {
