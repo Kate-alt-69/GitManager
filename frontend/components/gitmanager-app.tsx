@@ -145,6 +145,8 @@ function TopBar({
 	setQuery,
 	scanning,
 	serviceReady,
+	remoteCheckPending,
+	remoteCheckRunning,
 	repositoryCount,
 	scanTruncated,
 	notifications,
@@ -164,6 +166,8 @@ function TopBar({
 	setQuery: (value: string) => void;
 	scanning: boolean;
 	serviceReady: boolean;
+	remoteCheckPending: boolean;
+	remoteCheckRunning: boolean;
 	repositoryCount: number;
 	scanTruncated: boolean;
 	notifications: AppNotification[];
@@ -271,6 +275,11 @@ function TopBar({
 									<span className={scanning ? "gm-task-state busy" : "gm-task-state ready"} />
 									<div><strong>Repository index</strong><small>{scanning ? "Discovering repositories in the service process…" : scanTruncated ? "Index ready · safety limit reached" : `${repositoryCount} repositories indexed`}</small></div>
 									<span className="gm-task-meta">{scanning ? "Running" : "Idle"}</span>
+								</div>
+								<div className="gm-task-row">
+									<span className={remoteCheckRunning ? "gm-task-state busy" : remoteCheckPending ? "gm-task-state idle" : "gm-task-state ready"} />
+									<div><strong>Remote repository check</strong><small>{remoteCheckRunning ? "Checking remote branches and publishing notifications…" : remoteCheckPending ? "Queued in the core service…" : "No remote check is running"}</small></div>
+									<span className="gm-task-meta">{remoteCheckRunning ? "Running" : remoteCheckPending ? "Queued" : "Idle"}</span>
 								</div>
 								<div className="gm-task-row">
 									<span className="gm-task-state idle" />
@@ -943,6 +952,8 @@ export function GitManagerApp() {
 					setQuery={setQuery}
 					scanning={git.scanning || git.awaitingInitialIndex}
 					serviceReady={git.serviceReady}
+					remoteCheckPending={git.remoteCheckPending}
+					remoteCheckRunning={git.remoteCheckRunning}
 					repositoryCount={git.repositories.length}
 					scanTruncated={git.scanTruncated}
 					notifications={git.notifications}
