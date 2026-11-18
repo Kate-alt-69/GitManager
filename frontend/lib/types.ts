@@ -14,6 +14,13 @@ export interface CommitNode {
 	lane: number;
 }
 
+export interface CommitHistoryPage {
+	commits: CommitNode[];
+	offset: number;
+	limit: number;
+	hasMore: boolean;
+}
+
 export interface BranchInfo {
 	name: string;
 	is_head: boolean;
