@@ -1129,9 +1129,11 @@ fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
 async fn load_connected_accounts(
     state: State<'_, AppState>,
 ) -> Result<Vec<ConnectedAccountSummary>, String> {
-    let records = tokio::task::spawn_blocking(gitmanager_core::account_store::load_accounts)
+    let payload = tokio::task::spawn_blocking(crash_helper::load_service_account_cache)
         .await
-        .map_err(|error| format!("Account metadata load task failed: {error}"))??;
+        .map_err(|error| format!("Account metadata service request failed: {error}"))??;
+    let records: Vec<gitmanager_core::account_store::StoredAccount> = serde_json::from_value(payload)
+        .map_err(|error| format!("Service returned invalid account metadata: {error}"))?;
     let accounts = records
         .into_iter()
         .map(|record| ConnectedAccountSummary {
@@ -1175,12 +1177,13 @@ async fn connect_git_account(
         profile_url: summary.profile_url.clone(),
         updated_at_unix_ms: 0,
     };
-    let repositories = summary.repositories.clone();
-    tokio::task::spawn_blocking(move || {
-        gitmanager_core::account_store::save_account(&metadata, &repositories)
-    })
-    .await
-    .map_err(|error| format!("Account metadata save task failed: {error}"))??;
+    let payload = serde_json::json!({
+        "metadata": metadata,
+        "repositories": summary.repositories,
+    });
+    tokio::task::spawn_blocking(move || crash_helper::save_service_account_cache(payload))
+        .await
+        .map_err(|error| format!("Account metadata service request failed: {error}"))??;
 
     if let Ok(mut accounts) = state.connected_accounts.lock() {
         accounts.retain(|a| {
