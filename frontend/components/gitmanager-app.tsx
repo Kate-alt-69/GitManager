@@ -52,6 +52,8 @@ type PageKey = "repositories" | "accounts" | "settings" | "cleaner";
 type RepoFilter = "all" | "remote" | "local";
 type RepoKind = "projects" | "dependencies" | "all";
 
+const OVERVIEW_DESTINATION: RepositoryDestination = { kind: "overview" };
+
 function relativeDate(timestamp: number): string {
 	if (!timestamp) return "No commit date";
 	const elapsed = Math.max(0, Date.now() - timestamp * 1000);
@@ -835,7 +837,7 @@ export function GitManagerApp() {
 	const page: PageKey = sectionForRoute(parsedInternalRoute);
 	const currentDestination: RepositoryDestination = parsedInternalRoute.kind === "repository"
 		? parsedInternalRoute.destination
-		: { kind: "overview" };
+		: OVERVIEW_DESTINATION;
 
 	const navigatePage = useCallback((next: PageKey) => {
 		if (next === "accounts") void git.loadAccounts().catch(() => undefined);
