@@ -19,6 +19,7 @@ core-service = ["dep:gitmanager-core"]
 account-storage = ["core-service"]
 repository-data = ["core-service"]
 notification-storage = ["core-service"]
+preferences-storage = ["core-service"]
 
 [dependencies]
 gitmanager-core = { path = "../gitmanager-core", optional = true }
