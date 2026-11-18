@@ -20,6 +20,8 @@ use uuid::Uuid;
 
 #[cfg(windows)]
 mod windows_process;
+#[cfg(feature = "provider-sync")]
+mod provider_sync;
 
 #[cfg(windows)]
 type ProcessContainment = windows_process::ProcessContainment;
@@ -127,6 +129,8 @@ enum ServiceCommand {
     ConfigureArchiveCloudStorage { archive_root: String, provider_json: String },
     DisableArchiveCloudStorage { archive_root: String },
     SyncArchiveCloudStorage { archive_root: String },
+    DetectGitHubIdentity,
+    ConnectGitAccount { payload: serde_json::Value },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -825,6 +829,75 @@ fn save_repository_preferences(
     service_workspace_unavailable(state)
 }
 
+#[cfg(feature = "provider-sync")]
+fn detect_github_identity(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "GitHub CLI identity",
+        provider_sync::detect_github_identity(),
+    )
+}
+
+#[cfg(feature = "provider-sync")]
+fn connect_git_account(state: &ServiceState, payload: serde_json::Value) -> ServiceResponse {
+    let result = serde_json::from_value::<gitmanager_core::account_types::ProviderAccountRequest>(payload)
+        .map_err(|error| format!("Provider account request is invalid: {error}"))
+        .and_then(|request| {
+            let use_github_cli = request.provider.eq_ignore_ascii_case("github")
+                && request.username_or_host.trim().is_empty()
+                && request.access_token.as_ref()
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true);
+            let summary = if use_github_cli {
+                provider_sync::fetch_github_cli_account()?
+            } else {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| format!("Could not initialize provider sync runtime: {error}"))?;
+                runtime.block_on(provider_sync::fetch_remote_account_repositories(request))?
+            };
+
+            let updated_at_unix_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .min(u64::MAX as u128) as u64;
+            let metadata = gitmanager_core::account_store::AccountMetadata {
+                provider: summary.provider.clone(),
+                account_login: summary.account_login.clone(),
+                display_name: summary.display_name.clone(),
+                email: summary.email.clone(),
+                avatar_url: summary.avatar_url.clone(),
+                profile_url: summary.profile_url.clone(),
+                updated_at_unix_ms,
+            };
+            // Only non-secret metadata and provider repository data are saved.
+            // The request token is dropped with this function and never persisted.
+            gitmanager_core::account_store::save_account(&metadata, &summary.repositories)?;
+            Ok(summary)
+        });
+    repository_data_response(state, "Connected provider account", result)
+}
+
+#[cfg(not(feature = "provider-sync"))]
+fn provider_sync_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Provider synchronization is available only in gitmanager.service"),
+        error: Some("Account provider synchronization is available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+#[cfg(not(feature = "provider-sync"))]
+fn detect_github_identity(state: &ServiceState) -> ServiceResponse {
+    provider_sync_unavailable(state)
+}
+#[cfg(not(feature = "provider-sync"))]
+fn connect_git_account(state: &ServiceState, _: serde_json::Value) -> ServiceResponse {
+    provider_sync_unavailable(state)
+}
+
 #[cfg(feature = "archive-operations")]
 fn capture_repository_archive(
     state: &ServiceState,
@@ -1514,6 +1587,8 @@ fn handle_service_connection(
                     disable_archive_cloud_storage(state, archive_root),
                 ServiceCommand::SyncArchiveCloudStorage { archive_root } =>
                     sync_archive_cloud_storage(state, archive_root),
+                ServiceCommand::DetectGitHubIdentity => detect_github_identity(state),
+                ServiceCommand::ConnectGitAccount { payload } => connect_git_account(state, payload),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
@@ -1864,6 +1939,13 @@ pub fn service_disable_archive_cloud_storage(archive_root: String) -> Result<ser
 }
 pub fn service_sync_archive_cloud_storage(archive_root: String) -> Result<serde_json::Value, String> {
     service_response_data(ServiceCommand::SyncArchiveCloudStorage { archive_root }, "archive cloud storage synchronization")
+}
+
+pub fn service_detect_github_identity() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::DetectGitHubIdentity, "GitHub CLI identity")
+}
+pub fn service_connect_git_account(payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::ConnectGitAccount { payload }, "connected provider account")
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
@@ -2660,6 +2742,30 @@ mod tests {
                 command,
             };
             let encoded = serde_json::to_value(request).expect("encode service storage request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+        }
+    }
+
+    #[test]
+    fn provider_sync_commands_use_stable_service_wire_names() {
+        let requests = vec![
+            ServiceCommand::DetectGitHubIdentity,
+            ServiceCommand::ConnectGitAccount {
+                payload: serde_json::json!({
+                    "provider": "github",
+                    "username_or_host": "octocat",
+                    "access_token": "ephemeral-test-token"
+                }),
+            },
+        ];
+        let expected = ["detect_github_identity", "connect_git_account"];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode provider sync request");
             assert_eq!(encoded["token"], "authenticated-test-token");
             assert_eq!(encoded["command"]["action"], action);
         }
