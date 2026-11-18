@@ -1255,10 +1255,18 @@ fn handle_service_connection(
                 ServiceCommand::GetRepositoryIndexGeneration => get_repository_index_generation(state),
                 ServiceCommand::LoadIndexedRepositories { filter_mode } =>
                     load_indexed_repositories(state, filter_mode),
-                ServiceCommand::LoadRepositoryPreferences { repo_path, repo_id } =>
-                    with_repository_operation_lock(&repo_path, || load_repository_preferences(state, repo_path, repo_id)),
-                ServiceCommand::SaveRepositoryPreferences { repo_path, payload } =>
-                    with_repository_operation_lock(&repo_path, || save_repository_preferences(state, repo_path, payload)),
+                ServiceCommand::LoadRepositoryPreferences { repo_path, repo_id } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        load_repository_preferences(state, repo_path, repo_id)
+                    })
+                }
+                ServiceCommand::SaveRepositoryPreferences { repo_path, payload } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        save_repository_preferences(state, repo_path, payload)
+                    })
+                }
             },
             Ok(_) => ServiceResponse {
                 ok: false,
