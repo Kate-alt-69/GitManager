@@ -1536,9 +1536,18 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
 
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
         .map_err(|error| format!("Could not connect to GitManager background service: {error}"))?;
-    // Git fetch/pull and deep-history reads can legitimately outlast a
-    // short health-check timeout. The caller remains asynchronous in Tauri.
-    stream.set_read_timeout(Some(Duration::from_secs(90))).ok();
+    // Archive capture/restore can legitimately process large repositories;
+    // keep their control connection alive without extending normal status/Git reads.
+    let read_timeout = match &command {
+        ServiceCommand::CaptureRepositoryArchive { .. }
+        | ServiceCommand::ListRepositoryArchives { .. }
+        | ServiceCommand::RestoreRepositoryArchive { .. }
+        | ServiceCommand::ConfigureArchiveCloudStorage { .. }
+        | ServiceCommand::DisableArchiveCloudStorage { .. }
+        | ServiceCommand::SyncArchiveCloudStorage { .. } => Duration::from_secs(600),
+        _ => Duration::from_secs(90),
+    };
+    stream.set_read_timeout(Some(read_timeout)).ok();
     stream.set_write_timeout(Some(Duration::from_secs(15))).ok();
 
     let request = ServiceRequest { token: endpoint.token, command };
