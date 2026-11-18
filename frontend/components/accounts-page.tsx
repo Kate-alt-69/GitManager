@@ -7,9 +7,11 @@ import { Button, EmptyState, Field, ProviderMark, RepoAvatar } from "./shared-ui
 
 export function AccountsPage({
 	accounts,
+	loading,
 	onConnect,
 }: {
 	accounts: ConnectedAccount[];
+	loading: boolean;
 	onConnect: (provider: string, username: string, token: string) => Promise<unknown>;
 }) {
 	const [provider, setProvider] = useState("github");
@@ -39,11 +41,11 @@ export function AccountsPage({
 	return (
 		<div className="gm-page-content">
 			<div className="gm-page-heading">
-				<div><div className="gm-eyebrow">REMOTE PROVIDERS</div><h1>Accounts</h1><p>Connect provider identities to browse repositories outside your local scan roots.</p></div>
+				<div><div className="gm-eyebrow">REMOTE PROVIDERS</div><h1>Accounts</h1><p>Connect provider identities to browse repositories outside your local scan roots. Cached account metadata is retained between launches.</p></div>
 			</div>
 			<div className="gm-account-layout">
 				<div className="gm-panel gm-connect-panel">
-					<div className="gm-panel-heading"><div><h2>Connect an account</h2><p>GitManager keeps provider credentials in the active app session.</p></div></div>
+					<div className="gm-panel-heading"><div><h2>Connect an account</h2><p>GitManager does not save personal access tokens. GitHub CLI credentials remain managed by gh.</p></div></div>
 					<div className="gm-form-grid">
 						<label className="gm-field">
 							<span>Provider</span>
@@ -67,13 +69,13 @@ export function AccountsPage({
 				</div>
 				<div className="gm-panel gm-connected-panel">
 					<div className="gm-panel-heading"><div><h2>Connected identities</h2><p>Provider sessions available in this app.</p></div><span className="gm-count-chip">{accounts.length}</span></div>
-					{accounts.length === 0 ? (
+					{loading ? <div className="gm-panel-empty">Loading saved account metadata…</div> : accounts.length === 0 ? (
 						<EmptyState icon="◎" title="No accounts connected" body="Connect GitHub or GitLab to browse remote repositories." />
 					) : accounts.map((account) => (
 						<div className="gm-account-row" key={account.provider + account.account_login}>
 							<ProviderMark provider={account.provider} />
 							<div className="gm-account-copy"><strong>{account.display_name || account.account_login}</strong><small>{account.account_login} · {account.provider}</small></div>
-							<span className="gm-connected-pill"><i /> Connected</span>
+							<span className="gm-connected-pill"><i /> {account.session_connected ? "Connected this session" : "Cached · reconnect to refresh"}</span>
 							{account.repositories?.length > 0 && <span className="gm-count-chip">{account.repositories.length} repos</span>}
 						</div>
 					))}
