@@ -64,9 +64,13 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn current_core_service_executable_name_is_detected() {
+    fn current_core_service_executable_names_are_detected() {
+        assert!(super::is_core_service_command(r"/opt/gitmanager/gitmanager.service"));
+        assert!(super::is_core_service_command(r"/opt/gitmanager/gitmanager.service --background"));
+        assert!(super::is_core_service_command(r"/opt/gitmanager/gitmanager.service.exe"));
         assert!(super::is_core_service_command(r"/opt/gitmanager/gitmanager-service"));
-        assert!(super::is_core_service_command(r"/opt/gitmanager/gitmanager-service --background"));
+        assert!(super::is_core_service_command(r"/opt/gitmanager/gitmanager-service.exe"));
+        assert!(super::is_core_service_command(r"flatpak run --command=gitmanager.service com.gitmanager.desktop"));
         assert!(!super::is_core_service_command(r"/opt/gitmanager/git-manager-service"));
     }
 
@@ -512,7 +516,13 @@ fn is_core_service_command(command: &str) -> bool {
     let executable = arguments.next().unwrap_or("");
     let normalized = executable.replace('\\', "/");
     let executable_name = normalized.rsplit('/').next().unwrap_or(&normalized);
-    matches!(executable_name, "gitmanager-service" | "gitmanager-service.exe")
+    matches!(
+        executable_name,
+        "gitmanager.service"
+            | "gitmanager.service.exe"
+            | "gitmanager-service"
+            | "gitmanager-service.exe"
+    ) || arguments.any(|argument| argument == "--command=gitmanager.service")
 }
 
 #[cfg(windows)]
@@ -532,9 +542,13 @@ fn stop_outdated_core_service(reported_pid: u32) {
             .filter(|value| !value.is_empty());
         if let Some(username) = username {
             let filter = format!("USERNAME eq {username}");
-            let _ = hidden_command("taskkill.exe")
-                .args(["/FI", &filter, "/IM", "gitmanager-service.exe", "/T", "/F"])
-                .output();
+            // Installed builds use the dotted sidecar name; older development
+            // builds used the hyphenated Cargo binary name.
+            for image_name in ["gitmanager.service.exe", "gitmanager-service.exe"] {
+                let _ = hidden_command("taskkill.exe")
+                    .args(["/FI", &filter, "/IM", image_name, "/T", "/F"])
+                    .output();
+            }
         }
     }
     thread::sleep(Duration::from_millis(500));
