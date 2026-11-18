@@ -1635,6 +1635,8 @@ pub fn request_service_suspend(seconds: u64) -> Result<ServiceStatus, String> {
             service_generation: 0,
             process_id: 0,
             protocol_version: 0,
+            remote_check_pending: false,
+            remote_check_running: false,
         }),
     }
 }
@@ -1658,6 +1660,8 @@ pub fn request_service_resume() -> Result<ServiceStatus, String> {
             service_generation: 0,
             process_id: 0,
             protocol_version: 0,
+            remote_check_pending: false,
+            remote_check_running: false,
         }),
     }
 }
