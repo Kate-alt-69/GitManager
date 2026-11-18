@@ -1632,8 +1632,9 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
 
     let endpoint: Endpoint = serde_json::from_slice(&content)
         .map_err(|error| format!("Service-control endpoint is invalid: {error}"))?;
-    // Protocol v1 remains readable for status-only upgrade negotiation.
-    // Account-cache messages are v2-only and are rejected by an old worker.
+    // Older protocol versions remain readable for status-only upgrade
+    // negotiation. The UI verifies the current generation/protocol before
+    // sending storage, Git, archive or provider-sync commands.
     if endpoint.version == 0 || endpoint.version > SERVICE_PROTOCOL_VERSION {
         return Err("Service-control protocol version is unsupported.".to_string());
     }
