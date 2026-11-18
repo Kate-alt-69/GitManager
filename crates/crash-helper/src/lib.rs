@@ -2074,6 +2074,31 @@ mod tests {
     }
 
     #[test]
+    fn notification_commands_use_stable_service_wire_names() {
+        let requests = vec![
+            ServiceCommand::ListNotifications,
+            ServiceCommand::MarkNotificationRead { id: "notification-1".to_string() },
+            ServiceCommand::DismissNotification { id: "notification-2".to_string() },
+            ServiceCommand::MarkAllNotificationsRead,
+        ];
+        let expected = [
+            "list_notifications",
+            "mark_notification_read",
+            "dismiss_notification",
+            "mark_all_notifications_read",
+        ];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode notification IPC request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+        }
+    }
+
+    #[test]
     fn worktree_and_commit_commands_use_stable_service_wire_names() {
         let requests = vec![
             ServiceCommand::SaveConflictResolution {
