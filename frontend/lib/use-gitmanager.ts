@@ -204,21 +204,22 @@ export function useGitManager() {
 	}, [performScan]);
 
 	const checkUpdates = useCallback(async () => {
-		setStatus("Checking remote branches…");
+		setStatus("Queuing remote check in GitManager Core Service…");
 		try {
-			const found = await invoke<UpdateAlert[]>("check_repo_updates_now", {
+			await invoke("check_repo_updates_now", {
 				rootPaths: preferences.scanRoots,
 			});
-			setUpdates(found ?? []);
-			setStatus(found?.length ? `${found.length} update available` : "All repositories are up to date");
-			return found ?? [];
+			setUpdates([]);
+			void refreshNotifications();
+			setStatus("Remote check queued · results will appear in Notifications");
+			return [];
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			setError(message);
-			setStatus("Remote check failed");
+			setStatus("Remote check could not be queued");
 			return [];
 		}
-	}, [preferences.scanRoots]);
+	}, [preferences.scanRoots, refreshNotifications]);
 
 	const switchBranch = useCallback(async (repoPath: string, branchName: string) => {
 		setStatus("Switching local branch safely…");
