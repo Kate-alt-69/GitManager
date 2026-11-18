@@ -13,12 +13,16 @@ export function SettingsPage({
 	onSave,
 	onScan,
 	onOpenCleaner,
+	onOpenService,
+	onOpenPerformance,
 }: {
 	preferences: AppPreferences;
 	directories: ApplicationDirectories | null;
 	onSave: (next: AppPreferences) => Promise<unknown>;
 	onScan: () => void;
 	onOpenCleaner: () => void;
+	onOpenService: () => void;
+	onOpenPerformance: () => void;
 }) {
 	const [tab, setTab] = useState<SettingsTab>("general");
 	const [draft, setDraft] = useState(preferences);
@@ -282,6 +286,10 @@ export function SettingsPage({
 
 	return (
 		<div className="gm-page-content">
+			<div className="gm-settings-diagnostics-nav">
+				<button type="button" onClick={onOpenService}><strong>Service Manager</strong><span>Core service status, process and diagnostics</span></button>
+				<button type="button" onClick={onOpenPerformance}><strong>Performance Center</strong><span>CPU and memory capture for the UI and service</span></button>
+			</div>
 			<div className="gm-page-heading">
 				<div><div className="gm-eyebrow">PREFERENCES & MAINTENANCE</div><h1>Settings</h1><p>Configure scanning, archive behaviour, cloud storage and application locations.</p></div>
 				<Button variant="primary" onClick={() => void save()} disabled={saving}>{saving ? "Saving…" : "Save changes"}</Button>
