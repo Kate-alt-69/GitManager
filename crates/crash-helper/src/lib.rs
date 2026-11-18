@@ -1655,6 +1655,7 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
         | ServiceCommand::ConfigureArchiveCloudStorage { .. }
         | ServiceCommand::DisableArchiveCloudStorage { .. }
         | ServiceCommand::SyncArchiveCloudStorage { .. } => Duration::from_secs(600),
+        ServiceCommand::ConnectGitAccount { .. } => Duration::from_secs(300),
         _ => Duration::from_secs(90),
     };
     stream.set_read_timeout(Some(read_timeout)).ok();
