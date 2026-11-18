@@ -192,13 +192,16 @@ pub fn run() -> ! {
                     last_cloud_archive_sync = Instant::now();
                 }
 
-                let remote_check_requested = service_control.take_remote_check_request();
-                if remote_check_requested || last_remote_check.elapsed() >= REMOTE_UPDATE_INTERVAL {
-                    let updates = if service_control.is_suspended() {
-                        Vec::new()
-                    } else {
-                        check_all_repos_for_updates(preferences.scan_roots.clone())
-                    };
+                // Keep an explicit request pending during suspension. The service
+                // resumes it once the suspension deadline has elapsed.
+                let remote_check_requested = service_control.remote_check_pending();
+                if !service_control.is_suspended()
+                    && (remote_check_requested || last_remote_check.elapsed() >= REMOTE_UPDATE_INTERVAL)
+                {
+                    if remote_check_requested {
+                        service_control.take_remote_check_request();
+                    }
+                    let updates = check_all_repos_for_updates(preferences.scan_roots.clone());
 
                     for update in updates {
                         if service_control.is_suspended() {
@@ -253,10 +256,11 @@ pub fn run() -> ! {
 
         let refresh_deadline = Instant::now() + PREFERENCE_REFRESH;
         while Instant::now() < refresh_deadline
-            && !service_control.is_suspended()
             && !service_control.scan_request_pending()
             && !service_control.remote_check_pending()
         {
+            // Continue sleeping while suspended so the service's timer and IPC
+            // remain responsive without a tight loop.
             thread::sleep(Duration::from_secs(1));
         }
     }
