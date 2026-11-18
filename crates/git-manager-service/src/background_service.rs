@@ -192,7 +192,8 @@ pub fn run() -> ! {
                     last_cloud_archive_sync = Instant::now();
                 }
 
-                if last_remote_check.elapsed() >= REMOTE_UPDATE_INTERVAL {
+                let remote_check_requested = service_control.take_remote_check_request();
+                if remote_check_requested || last_remote_check.elapsed() >= REMOTE_UPDATE_INTERVAL {
                     let updates = if service_control.is_suspended() {
                         Vec::new()
                     } else {
@@ -254,6 +255,7 @@ pub fn run() -> ! {
         while Instant::now() < refresh_deadline
             && !service_control.is_suspended()
             && !service_control.scan_request_pending()
+            && !service_control.remote_check_pending()
         {
             thread::sleep(Duration::from_secs(1));
         }
