@@ -144,6 +144,12 @@ export function useGitManager() {
 		setNotifications((current) => current.filter((item) => item.id !== id));
 	}, []);
 
+	const markAllNotificationsRead = useCallback(async () => {
+		const changed = await invoke<number>("mark_all_app_notifications_read");
+		setNotifications((current) => current.map((item) => item.read ? item : { ...item, read: true }));
+		return changed;
+	}, []);
+
 
 	// The native runtime monitor emits an event when the service publishes a
 	// new index. Listen first, then compare the generation once to close the
@@ -424,6 +430,6 @@ export function useGitManager() {
 		version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, accountsLoading, loadAccounts, updates, notifications, setupOpen, setSetupOpen,
 		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
-		refreshNotifications, markNotificationRead, dismissNotification,
+		refreshNotifications, markNotificationRead, dismissNotification, markAllNotificationsRead,
 	};
 }
