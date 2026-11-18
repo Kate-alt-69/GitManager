@@ -15,6 +15,8 @@ export type InternalRoute =
 	| { kind: "repositories"; path: "/r" }
 	| { kind: "accounts"; path: "/a" }
 	| { kind: "settings"; path: "/s" }
+	| { kind: "service"; path: "/s/service" }
+	| { kind: "performance"; path: "/s/performance" }
 	| { kind: "cleaner"; path: "/tools/cleaner" }
 	| {
 			kind: "repository";
@@ -77,6 +79,8 @@ export function parseInternalRoute(input: string): InternalRoute {
 	if (normalized === "/r") return { kind: "repositories", path: "/r" };
 	if (normalized === "/a") return { kind: "accounts", path: "/a" };
 	if (normalized === "/s") return { kind: "settings", path: "/s" };
+	if (normalized === "/s/service") return { kind: "service", path: "/s/service" };
+	if (normalized === "/s/performance") return { kind: "performance", path: "/s/performance" };
 	if (normalized === "/tools/cleaner") return { kind: "cleaner", path: "/tools/cleaner" };
 
 	const segments = normalized.split("/").slice(1);
@@ -131,7 +135,7 @@ export function parseInternalRoute(input: string): InternalRoute {
 
 export function sectionForRoute(route: InternalRoute): MainSection {
 	if (route.kind === "accounts") return "accounts";
-	if (route.kind === "settings") return "settings";
+	if (route.kind === "settings" || route.kind === "service" || route.kind === "performance") return "settings";
 	if (route.kind === "cleaner") return "cleaner";
 	return "repositories";
 }
@@ -141,6 +145,8 @@ export function routeLabel(route: InternalRoute): string {
 		case "repositories": return "Repositories";
 		case "accounts": return "Accounts";
 		case "settings": return "Settings";
+		case "service": return "Service Manager";
+		case "performance": return "Performance Center";
 		case "cleaner": return "Developer Cleaner";
 		case "unknown": return "Workspace";
 		case "repository": {
