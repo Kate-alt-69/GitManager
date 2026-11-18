@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { invoke } from "../lib/tauri";
 import type { AppPreferences, ArchiveSnapshot, GitRepository } from "../lib/types";
@@ -76,6 +76,8 @@ export function RepositoryDetail({
 	const [archiveStatus, setArchiveStatus] = useState("");
 	const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
 	const [commitDetail, setCommitDetail] = useState<unknown>(null);
+	const [commitQuery, setCommitQuery] = useState("");
+	const [commitBranchFilter, setCommitBranchFilter] = useState("");
 	const [busy, setBusy] = useState(false);
 	const commitRouteSha = destination.kind === "commit-details" ? destination.sha : null;
 
@@ -193,6 +195,29 @@ export function RepositoryDetail({
 	const isPullRoute = destination.kind === "pull-browser" || destination.kind === "pull-request";
 	const branches = (displayRepo.branches ?? []).filter((branch) => isPullRoute ? branch.is_remote : !branch.is_remote);
 	const commits = displayRepo.commits ?? [];
+
+	const commitBranchOptions = useMemo(() => Array.from(new Set([
+		...(displayRepo.branches ?? []).map((branch) => branch.name),
+		...commits.flatMap((commit) => commit.branches ?? []),
+	])).filter(Boolean).sort((left, right) => left.localeCompare(right)), [displayRepo.branches, commits]);
+	const filteredCommits = useMemo(() => {
+		const query = commitQuery.trim().toLocaleLowerCase();
+		return commits.filter((commit) => {
+			const searchable = [
+				commit.oid,
+				commit.short_oid,
+				commit.summary,
+				commit.message,
+				commit.author_name,
+				commit.author_email,
+			].join(" ").toLocaleLowerCase();
+			const matchesQuery = !query || searchable.includes(query);
+			const matchesBranch = !commitBranchFilter
+				|| (commit.branches ?? []).includes(commitBranchFilter)
+				|| (commit.is_head && displayRepo.current_branch === commitBranchFilter);
+			return matchesQuery && matchesBranch;
+		});
+	}, [commits, commitQuery, commitBranchFilter, displayRepo.current_branch]);
 	const isCommitRoute = destination.kind === "commit-browser" || destination.kind === "commit-details";
 	const showWorkspace = destination.kind === "overview"
 		|| destination.kind === "conflicts"
@@ -298,12 +323,28 @@ export function RepositoryDetail({
 			{showCommitHistory && <div className="gm-detail-columns">
 				<div className="gm-panel gm-commit-panel">
 					<div className="gm-panel-heading">
-						<div><h2>Commit history</h2><p>Recent commits across local and remote branches.</p></div>
-						<span className="gm-count-chip">{commits.length} commits</span>
+						<div><h2>Commit history</h2><p>Filter the locally indexed commit set by branch, message, author or SHA.</p></div>
+						<span className="gm-count-chip">{filteredCommits.length} / {commits.length}</span>
 					</div>
-					{detailsLoading ? <div className="gm-panel-empty">Loading Git Tree, branches and repository status…</div> : commits.length === 0 ? <div className="gm-panel-empty">No commits were found for this repository.</div> : (
+					<div className="gm-commit-filters">
+						<input
+							value={commitQuery}
+							onChange={(event) => setCommitQuery(event.target.value)}
+							placeholder="Filter message, author or SHA…"
+							aria-label="Filter commits by message, author or SHA"
+						/>
+						<select
+							value={commitBranchFilter}
+							onChange={(event) => setCommitBranchFilter(event.target.value)}
+							aria-label="Filter commits by branch"
+						>
+							<option value="">All branches</option>
+							{commitBranchOptions.map((branch) => <option value={branch} key={branch}>{branch}</option>)}
+						</select>
+					</div>
+					{detailsLoading ? <div className="gm-panel-empty">Loading Git Tree, branches and repository status…</div> : commits.length === 0 ? <div className="gm-panel-empty">No commits were found for this repository.</div> : filteredCommits.length === 0 ? <div className="gm-panel-empty">No indexed commits match these filters.</div> : (
 						<div className="gm-commit-list">
-							{commits.map((commit, index) => (
+							{filteredCommits.map((commit, index) => (
 								<button
 									key={commit.oid}
 									className={selectedCommit === commit.oid ? "gm-commit-row selected" : "gm-commit-row"}
