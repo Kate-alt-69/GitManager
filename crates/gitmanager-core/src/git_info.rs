@@ -782,3 +782,112 @@ fn assign_commit_lane(
 
     lane
 }
+
+
+#[cfg(test)]
+mod commit_history_tests {
+    use super::*;
+    use git2::Signature;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn repository_with_commits(count: usize) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gitmanager-history-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).unwrap();
+
+        let repo = Repository::init(&path).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        let signature = Signature::now("GitManager Test", "gitmanager-test@invalid.local").unwrap();
+
+        for index in 0..count {
+            fs::write(path.join("history.txt"), format!("commit {index}\n")).unwrap();
+            let mut git_index = repo.index().unwrap();
+            git_index.add_path(Path::new("history.txt")).unwrap();
+            let tree_id = git_index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let message = if index == 125 {
+                format!("needle commit {index}")
+            } else {
+                format!("commit {index}")
+            };
+
+            let oid = if let Ok(head) = repo.head() {
+                if let Ok(parent) = head.peel_to_commit() {
+                    repo.commit(
+                        Some("HEAD"),
+                        &signature,
+                        &signature,
+                        &message,
+                        &tree,
+                        &[&parent],
+                    ).unwrap()
+                } else {
+                    repo.commit(Some("HEAD"), &signature, &signature, &message, &tree, &[]).unwrap()
+                }
+            } else {
+                repo.commit(Some("HEAD"), &signature, &signature, &message, &tree, &[]).unwrap()
+            };
+            drop(tree);
+            drop(git_index);
+            assert_eq!(repo.head().unwrap().target(), Some(oid));
+        }
+
+        drop(repo);
+        path
+    }
+
+    #[test]
+    fn commit_history_pages_include_commits_beyond_the_legacy_180_limit() {
+        let path = repository_with_commits(205);
+
+        let first = load_repository_commit_history(&path, 0, 100, None, None).unwrap();
+        let second = load_repository_commit_history(&path, 100, 100, None, None).unwrap();
+        let third = load_repository_commit_history(&path, 200, 100, None, None).unwrap();
+
+        assert_eq!(first.commits.len(), 100);
+        assert_eq!(second.commits.len(), 100);
+        assert_eq!(third.commits.len(), 5);
+        assert!(first.has_more);
+        assert!(second.has_more);
+        assert!(!third.has_more);
+        assert_eq!(first.commits[0].summary, "commit 204");
+        assert_eq!(third.commits.last().map(|commit| commit.summary.as_str()), Some("commit 0"));
+
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn commit_history_search_and_branch_filters_apply_before_pagination() {
+        let path = repository_with_commits(205);
+
+        let page = load_repository_commit_history(
+            &path,
+            0,
+            20,
+            Some("main"),
+            Some("NEEDLE"),
+        ).unwrap();
+
+        assert_eq!(page.commits.len(), 1);
+        assert!(!page.has_more);
+        assert_eq!(page.commits[0].summary, "needle commit 125");
+        assert!(page.commits[0].branches.iter().any(|name| name == "main"));
+
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn commit_history_rejects_unbounded_page_requests() {
+        let path = repository_with_commits(1);
+        assert!(load_repository_commit_history(&path, 0, 101, None, None).is_err());
+        assert!(load_repository_commit_history(&path, 250_001, 20, None, None).is_err());
+        assert!(load_repository_commit_history(&path, 0, 0, None, None).is_err());
+        let _ = fs::remove_dir_all(path);
+    }
+}
