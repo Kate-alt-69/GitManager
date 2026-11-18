@@ -63,12 +63,12 @@ export function AccountsPage({
 					{error && <div className="gm-inline-error">{error}</div>}
 					{message && <div className="gm-inline-success">{message}</div>}
 					<div className="gm-panel-actions">
-						<Button variant="primary" onClick={() => void connect()} disabled={busy}>{busy ? "Connecting…" : "Connect provider"}</Button>
+						<Button variant="primary" onClick={() => void connect()} disabled={busy || loading}>{busy ? "Connecting…" : "Connect provider"}</Button>
 						{provider === "github" && <span className="gm-muted-copy">Leave both fields blank to use the active <code>gh auth login</code> session.</span>}
 					</div>
 				</div>
 				<div className="gm-panel gm-connected-panel">
-					<div className="gm-panel-heading"><div><h2>Connected identities</h2><p>Provider sessions available in this app.</p></div><span className="gm-count-chip">{accounts.length}</span></div>
+					<div className="gm-panel-heading"><div><h2>Connected identities</h2><p>Saved identities and their cached repository lists.</p></div><span className="gm-count-chip">{accounts.length}</span></div>
 					{loading ? <div className="gm-panel-empty">Loading saved account metadata…</div> : accounts.length === 0 ? (
 						<EmptyState icon="◎" title="No accounts connected" body="Connect GitHub or GitLab to browse remote repositories." />
 					) : accounts.map((account) => (
