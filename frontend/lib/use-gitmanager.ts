@@ -133,14 +133,6 @@ export function useGitManager() {
 		}
 	}, []);
 
-	// The independent service cannot emit through this Tauri process. Refresh
-	// the small bounded store periodically so the unread badge stays current.
-	useEffect(() => {
-		if (!serviceReady || preferences.inAppNotificationsEnabled === false) return;
-		const timer = window.setInterval(() => void refreshNotifications(), 15000);
-		return () => window.clearInterval(timer);
-	}, [serviceReady, preferences.inAppNotificationsEnabled, refreshNotifications]);
-
 
 	const markNotificationRead = useCallback(async (id: string) => {
 		await invoke("mark_app_notification_read", { id });
@@ -153,13 +145,14 @@ export function useGitManager() {
 	}, []);
 
 
-	// Initial discovery is owned by gitmanager.service. Poll only the tiny index
-	// generation stamp until the service publishes its first index; then read the
-	// full inventory exactly once. This avoids a duplicate startup directory walk.
+	// The native runtime monitor emits an event when the service publishes a
+	// new index. Listen first, then compare the generation once to close the
+	// startup race; the WebView no longer polls while idle.
 	useEffect(() => {
-		if (!serviceReady || !preferences.firstRunComplete || indexReady) return;
+		if (!serviceReady || !preferences.firstRunComplete) return;
 		let active = true;
-		const refreshInitialIndex = async () => {
+		let unlisten: (() => void) | undefined;
+		const refreshRepositoryIndex = async () => {
 			try {
 				const generation = await invoke<string>("get_repository_index_generation");
 				if (!active || generation === "0" || generation === indexGeneration.current) return;
@@ -177,50 +170,21 @@ export function useGitManager() {
 					? `Indexed ${local.length} repositories · stopped at a safety limit`
 					: `Indexed ${local.length} repositories`);
 			} catch {
-				// A missing index is normal while the service performs first-run discovery.
+				// The service may still be publishing the initial index.
 			}
 		};
-		void refreshInitialIndex();
-		const timer = window.setInterval(() => void refreshInitialIndex(), 1500);
+		void listen("gitmanager://repository-index-updated", () => {
+			if (active) void refreshRepositoryIndex();
+		}).then((stop) => {
+			if (!active) { stop(); return; }
+			unlisten = stop;
+			void refreshRepositoryIndex();
+		});
 		return () => {
 			active = false;
-			window.clearInterval(timer);
+			unlisten?.();
 		};
-	}, [serviceReady, preferences.firstRunComplete, indexReady]);
-
-	// Check the authenticated local endpoint rather than trusting the UI's
-	// original startup result forever. A crashed service must show as offline.
-	useEffect(() => {
-		if (!available || !serviceReady || !isTauriRuntime()) return;
-		let active = true;
-		const checkServiceHealth = async () => {
-			try {
-				await invoke("get_core_service_status");
-			} catch (cause) {
-				if (!active) return;
-				setServiceReady(false);
-				setStatus("GitManager Core Service connection lost");
-				setError(cause instanceof Error ? cause.message : String(cause));
-			}
-		};
-		const timer = window.setInterval(() => void checkServiceHealth(), 10000);
-		return () => {
-			active = false;
-			window.clearInterval(timer);
-		};
-	}, [available, serviceReady]);
-
-	// Report only after the desktop hook is ready. The independent crash_helper
-	// treats a missing heartbeat as an unresponsive UI.
-	useEffect(() => {
-		if (!available || loading || !isTauriRuntime()) return;
-		const heartbeat = () => {
-			void invoke("report_ui_heartbeat").catch(() => undefined);
-		};
-		heartbeat();
-		const timer = window.setInterval(heartbeat, 3000);
-		return () => window.clearInterval(timer);
-	}, [available, loading]);
+	}, [serviceReady, preferences.firstRunComplete]);
 
 	const savePreferences = useCallback(async (next: AppPreferences) => {
 		const saved = await invoke<AppPreferences>("save_app_preferences", {
@@ -319,6 +283,7 @@ export function useGitManager() {
 		let unlistenUpdate: (() => void) | undefined;
 		let unlistenState: (() => void) | undefined;
 		let unlistenNotifications: (() => void) | undefined;
+		let unlistenServiceHealth: (() => void) | undefined;
 
 		async function initialize() {
 			setAvailable(isTauriRuntime());
@@ -398,7 +363,7 @@ export function useGitManager() {
 					}
 				} else {
 					// The service owns first-run discovery. Render cached data immediately
-					// and let the lightweight generation poll hydrate the first new index.
+					// and let the native index-change event hydrate the first new index.
 					setLoading(false);
 					setStatus(indexGeneration.current === "0"
 						? "GitManager Core Service is indexing repositories…"
@@ -432,12 +397,24 @@ export function useGitManager() {
 		void listen("gitmanager://notifications-updated", () => {
 			if (active) void refreshNotifications();
 		}).then((unlisten) => { unlistenNotifications = unlisten; });
+		void listen<{ ready: boolean; generation: number; message: string }>("gitmanager://service-health", (payload) => {
+			if (!active) return;
+			setServiceReady(payload.ready);
+			if (payload.ready) {
+				setStatus(payload.message || "GitManager Core Service ready");
+				setError((current) => current.includes("GitManager Core Service") ? "" : current);
+			} else {
+				setStatus("GitManager Core Service connection lost");
+				setError(payload.message || "GitManager Core Service is unavailable.");
+			}
+		}).then((unlisten) => { unlistenServiceHealth = unlisten; });
 
 		return () => {
 			active = false;
 			unlistenUpdate?.();
 			unlistenState?.();
 			unlistenNotifications?.();
+			unlistenServiceHealth?.();
 		};
 	}, [performScan, refreshNotifications]);
 
