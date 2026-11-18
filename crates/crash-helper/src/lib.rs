@@ -1271,6 +1271,27 @@ pub fn with_repository_operation_lock<T>(
     operation()
 }
 
+/// Serializes archive work for one repository while allowing normal read-only
+/// views to proceed. The shared reader lock still excludes Git writes until the
+/// archive operation has captured a consistent worktree/ref state.
+pub fn with_repository_archive_lock<T>(
+    repo_path: &str,
+    operation: impl FnOnce() -> T,
+) -> T {
+    static ARCHIVE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let key = fs::canonicalize(repo_path).unwrap_or_else(|_| PathBuf::from(repo_path));
+    let lock = {
+        let locks = ARCHIVE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
+    };
+    let repository_lock = repository_operation_lock(repo_path);
+    let _read_guard = repository_lock.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _archive_guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
+}
+
 fn handle_service_connection(
     mut stream: TcpStream,
     token: &str,
@@ -1465,13 +1486,13 @@ fn handle_service_connection(
                 }
                 ServiceCommand::CaptureRepositoryArchive { repo_path, kind, archive_root } => {
                     let lock_path = repo_path.clone();
-                    with_repository_read_lock(&lock_path, || {
+                    with_repository_archive_lock(&lock_path, || {
                         capture_repository_archive(state, repo_path, kind, archive_root)
                     })
                 }
                 ServiceCommand::ListRepositoryArchives { repo_path, kind, archive_root } => {
                     let lock_path = repo_path.clone();
-                    with_repository_read_lock(&lock_path, || {
+                    with_repository_archive_lock(&lock_path, || {
                         list_repository_archives(state, repo_path, kind, archive_root)
                     })
                 }
