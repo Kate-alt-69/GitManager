@@ -148,6 +148,7 @@ function TopBar({
 	remoteCheckPending,
 	remoteCheckRunning,
 	serviceIndexing,
+	awaitingInitialIndex,
 	repositoryCount,
 	scanTruncated,
 	notifications,
@@ -170,6 +171,7 @@ function TopBar({
 	remoteCheckPending: boolean;
 	remoteCheckRunning: boolean;
 	serviceIndexing: boolean;
+	awaitingInitialIndex: boolean;
 	repositoryCount: number;
 	scanTruncated: boolean;
 	notifications: AppNotification[];
@@ -274,9 +276,9 @@ function TopBar({
 									<span className="gm-task-meta">{serviceReady ? "Ready" : "Offline"}</span>
 								</div>
 								<div className="gm-task-row">
-									<span className={(scanning || serviceIndexing) ? "gm-task-state busy" : "gm-task-state ready"} />
-									<div><strong>Repository index</strong><small>{(scanning || serviceIndexing) ? "Discovering repositories in the service process…" : scanTruncated ? "Index ready · safety limit reached" : `${repositoryCount} repositories indexed`}</small></div>
-									<span className="gm-task-meta">{(scanning || serviceIndexing) ? "Running" : "Idle"}</span>
+									<span className={(scanning || serviceIndexing) ? "gm-task-state busy" : awaitingInitialIndex ? "gm-task-state idle" : "gm-task-state ready"} />
+									<div><strong>Repository index</strong><small>{(scanning || serviceIndexing) ? "Discovering repositories in the service process…" : awaitingInitialIndex ? "Waiting for the service to publish its first repository snapshot…" : scanTruncated ? "Index ready · safety limit reached" : `${repositoryCount} repositories indexed`}</small></div>
+									<span className="gm-task-meta">{(scanning || serviceIndexing) ? "Running" : awaitingInitialIndex ? "Waiting" : "Ready"}</span>
 								</div>
 								<div className="gm-task-row">
 									<span className={remoteCheckRunning ? "gm-task-state busy" : remoteCheckPending ? "gm-task-state idle" : "gm-task-state ready"} />
@@ -957,6 +959,7 @@ export function GitManagerApp() {
 					remoteCheckPending={git.remoteCheckPending}
 					remoteCheckRunning={git.remoteCheckRunning}
 					serviceIndexing={git.serviceIndexing}
+					awaitingInitialIndex={git.awaitingInitialIndex}
 					repositoryCount={git.repositories.length}
 					scanTruncated={git.scanTruncated}
 					notifications={git.notifications}
