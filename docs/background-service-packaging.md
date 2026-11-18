@@ -34,7 +34,7 @@ The service control listener has a hard cap of eight concurrent requests. This k
 
 ## Repository read ownership
 
-The required service performs Git repository overview reads, paginated commit-history traversal and individual commit-detail calculations. The Tauri command layer forwards those requests over the authenticated protocol-v3 loopback channel and deserializes the result for the UI. Commit-history requests are bounded to 100 results maximum (the UI requests 50 at a time); branch and text filters execute in the service process.
+The required service performs Git repository overview reads, paginated commit-history traversal and individual commit-detail calculations. The Tauri command layer forwards those requests over the authenticated protocol-v4 local socket (Windows Named Pipe or Unix Domain Socket) and deserializes the result for the UI. Commit-history requests are bounded to 100 results maximum (the UI requests 50 at a time); branch and text filters execute in the service process.
 
 ## Preferences and repository inventory
 
