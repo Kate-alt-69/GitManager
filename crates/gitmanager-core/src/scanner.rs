@@ -377,7 +377,8 @@ fn should_visit_directory(
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_scan_roots, scan_worker_count_for, should_visit_directory,
+        normalize_scan_roots, path_has_dependency_component, scan_worker_count_for,
+        should_visit_directory,
     };
     use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
