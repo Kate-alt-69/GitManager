@@ -42,6 +42,10 @@ The service owns the global preferences file at the existing per-user config pat
 
 Repository discovery, indexing, the authoritative index snapshot and index generation all belong to the service. The UI requests a grouped snapshot and generation through IPC. The native Tauri monitor reads only the index file's metadata timestamp to emit change events; it does not deserialize the index. Manual Check remotes requests are queued to the service loop and use the same notification/OS delivery path as scheduled checks.
 
+## Account provider synchronization
+
+GitHub CLI identity detection and GitHub/GitLab repository synchronization run in `gitmanager.service`. The Tauri process forwards the provider request over authenticated IPC and displays the returned account/repository summary. Personal access tokens are request-only values: the service uses them in memory for the HTTPS request, marks authorization headers sensitive, and does not store them in account metadata or logs. The persisted account record contains only non-secret provider identity and repository cache data. GitHub CLI credentials remain managed by the user's `gh` installation.
+
 ## Repository-local preferences
 
 Per-repository settings are stored in the repository's `.git/info/gitmanager-settings.json` file. Reads, legacy fallback from the previous global preferences entry, validation, backup recovery and writes all run in `gitmanager.service` through authenticated IPC. The Tauri host no longer opens the working tree with libgit2 for settings operations and does not own the repository settings file.
