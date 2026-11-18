@@ -1,5 +1,4 @@
 mod process_utils;
-pub mod archive;
 pub use gitmanager_core::notification_center;
 pub use gitmanager_core::{AppPreferences, RepositoryPreferences};
 pub use gitmanager_core::git_info;
@@ -386,9 +385,19 @@ async fn save_app_preferences(
     ).await
 }
 
+fn default_archive_root_path() -> Result<PathBuf, String> {
+    let local_data = dirs::data_local_dir()
+        .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
+    Ok(local_data
+        .join("kastrick's_software")
+        .join("data")
+        .join("GitManager")
+        .join("archives"))
+}
+
 fn normalize_archive_root(raw: &str) -> Result<String, String> {
     let candidate = if raw.trim().is_empty() {
-        archive::default_archive_root()?
+        default_archive_root_path()?
     } else {
         let value = PathBuf::from(raw.trim());
         if value.is_absolute() {
@@ -411,40 +420,42 @@ fn normalize_archive_root(raw: &str) -> Result<String, String> {
 
 #[tauri::command]
 fn get_default_archive_directory() -> Result<String, String> {
-    archive::default_archive_root().map(|path| path.to_string_lossy().to_string())
+    default_archive_root_path().map(|path| path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn get_archive_cloud_storage_info(archive_root: String) -> Result<archive::ArchiveCloudStorageInfo, String> {
-    archive::archive_cloud_storage_info(&PathBuf::from(archive_root))
+async fn get_archive_cloud_storage_info(archive_root: String) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_get_archive_cloud_storage_info(archive_root),
+        "archive cloud storage information",
+    ).await
 }
 
 #[tauri::command]
 async fn configure_archive_cloud_storage(
     archive_root: String,
     provider_json: String,
-) -> Result<archive::ArchiveCloudStorageInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        archive::configure_archive_cloud_storage(Some(&archive_root), &provider_json)
-    })
-    .await
-    .map_err(|error| format!("Cloud archive configuration task failed: {error}"))?
+) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_configure_archive_cloud_storage(archive_root, provider_json),
+        "archive cloud storage configuration",
+    ).await
 }
 
 #[tauri::command]
-async fn disable_archive_cloud_storage(archive_root: String) -> Result<archive::ArchiveCloudStorageInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        archive::disable_archive_cloud_storage(Some(&archive_root))
-    })
-    .await
-    .map_err(|error| format!("Cloud archive configuration task failed: {error}"))?
+async fn disable_archive_cloud_storage(archive_root: String) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_disable_archive_cloud_storage(archive_root),
+        "archive cloud storage configuration",
+    ).await
 }
 
 #[tauri::command]
-async fn sync_archive_cloud_storage(archive_root: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || archive::sync_archive_cloud_storage(Some(&archive_root)))
-        .await
-        .map_err(|error| format!("Cloud archive sync task failed: {error}"))?
+async fn sync_archive_cloud_storage(archive_root: String) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_sync_archive_cloud_storage(archive_root),
+        "archive cloud storage synchronization",
+    ).await
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -616,9 +627,11 @@ async fn capture_repository_archive(
     repo_path: String,
     kind: String,
     archive_root: Option<String>,
-) -> Result<archive::ArchiveSnapshot, String> {
-    tokio::task::spawn_blocking(move || archive::capture_repository(&repo_path, archive_root.as_deref(), &kind))
-        .await.map_err(|error| format!("Archive capture task failed: {error}"))?
+) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_capture_repository_archive(repo_path, kind, archive_root),
+        "repository archive capture",
+    ).await
 }
 
 #[tauri::command]
@@ -626,9 +639,11 @@ async fn list_repository_archives(
     repo_path: String,
     kind: Option<String>,
     archive_root: Option<String>,
-) -> Result<Vec<archive::ArchiveSnapshot>, String> {
-    tokio::task::spawn_blocking(move || archive::list_repository_archives(&repo_path, archive_root.as_deref(), kind.as_deref()))
-        .await.map_err(|error| format!("Archive listing task failed: {error}"))?
+) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_list_repository_archives(repo_path, kind, archive_root),
+        "repository archive list",
+    ).await
 }
 
 #[tauri::command]
@@ -639,11 +654,13 @@ async fn restore_repository_archive(
     kind: String,
     archive_root: Option<String>,
     confirm_replace: bool,
-) -> Result<archive::ArchiveRestoreResult, String> {
-    tokio::task::spawn_blocking(move || archive::restore_repository_archive(
-        &repo_path, &destination_path, archive_root.as_deref(), &kind, &snapshot_id, confirm_replace
-    ))
-    .await.map_err(|error| format!("Archive restore task failed: {error}"))?
+) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_restore_repository_archive(
+            repo_path, destination_path, snapshot_id, kind, archive_root, confirm_replace,
+        ),
+        "repository archive restore",
+    ).await
 }
 
 #[tauri::command]
