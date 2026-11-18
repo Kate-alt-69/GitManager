@@ -78,6 +78,17 @@ pub fn load_background_preferences() -> Result<AppPreferences, String> {
         .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
     let path = config_dir.join("preferences.json");
     if !path.is_file() {
+        // Recover either backup naming scheme from previous preference writers.
+        for extension in ["json.previous", "json.bak"] {
+            let backup = path.with_extension(extension);
+            if backup.is_file() {
+                fs::rename(&backup, &path)
+                    .map_err(|error| format!("Could not recover previous GitManager preferences: {error}"))?;
+                break;
+            }
+        }
+    }
+    if !path.is_file() {
         return Ok(AppPreferences::default());
     }
     let metadata = fs::metadata(&path)
