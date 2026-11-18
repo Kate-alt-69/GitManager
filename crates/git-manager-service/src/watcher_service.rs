@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use crate::process_utils::hidden_command;
 use crate::repository_index::load_persisted_repository_index;
+use gitmanager_core::notification_center::AppNotification;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoUpdateNotification {
@@ -200,33 +201,60 @@ pub fn apply_repository_update(repo_path: &Path) -> Result<String, String> {
     ))
 }
 
-/// Triggers an OS-level desktop toast notification when the background service finds a repo update
-pub fn send_os_desktop_notification(notification: &RepoUpdateNotification) {
-    let title = format!("GitManager — {} Update Available", notification.repo_name);
-    let body = &notification.prompt_message;
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+#[cfg(target_os = "macos")]
+fn escape_applescript_string(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\r', " ")
+        .replace('\n', " ")
+}
+
+/// Deliver the same persisted notification record used by the in-app panel.
+pub fn send_os_desktop_notification(notification: &AppNotification) {
+    let title = &notification.title;
+    let body = &notification.body;
 
     #[cfg(target_os = "windows")]
     {
+        // Embed only hex data in the PowerShell source. User-controlled text is
+        // decoded at runtime and never parsed as PowerShell syntax.
+        let title_hex = hex_encode(title.as_bytes());
+        let body_hex = hex_encode(body.as_bytes());
         let ps_script = format!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+            "$titleHex = '{title_hex}'; \
+             $bodyHex = '{body_hex}'; \
+             $titleBytes = for ($i = 0; $i -lt $titleHex.Length; $i += 2) {{ [Convert]::ToByte($titleHex.Substring($i, 2), 16) }}; \
+             $bodyBytes = for ($i = 0; $i -lt $bodyHex.Length; $i += 2) {{ [Convert]::ToByte($bodyHex.Substring($i, 2), 16) }}; \
+             $titleText = [Text.Encoding]::UTF8.GetString([byte[]]$titleBytes); \
+             $bodyText = [Text.Encoding]::UTF8.GetString([byte[]]$bodyBytes); \
+             [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
              $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
              $textNodes = $template.GetElementsByTagName('text'); \
-             $textNodes.Item(0).AppendChild($template.CreateTextNode('{}')) > $null; \
-             $textNodes.Item(1).AppendChild($template.CreateTextNode('{}')) > $null; \
+             $textNodes.Item(0).AppendChild($template.CreateTextNode($titleText)) > $null; \
+             $textNodes.Item(1).AppendChild($template.CreateTextNode($bodyText)) > $null; \
              $toast = [Windows.UI.Notifications.ToastNotification]::new($template); \
-             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('GitManager').Show($toast);",
-            title.replace('\'', ""),
-            body.replace('\'', "")
+             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('GitManager').Show($toast);"
         );
-        let _ = hidden_command("powershell")
-            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script])
+        let _ = hidden_command("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps_script])
             .spawn();
     }
 
     #[cfg(target_os = "linux")]
     {
         let _ = hidden_command("notify-send")
-            .args(["-a", "GitManager", &title, body])
+            .args(["--app-name=GitManager", "--urgency=normal", "--expire-time=10000", title, body])
             .spawn();
     }
 
@@ -234,9 +262,24 @@ pub fn send_os_desktop_notification(notification: &RepoUpdateNotification) {
     {
         let apple_script = format!(
             "display notification \"{}\" with title \"{}\"",
-            body.replace('"', "\\\""),
-            title.replace('"', "\\\"")
+            escape_applescript_string(body),
+            escape_applescript_string(title),
         );
         let _ = hidden_command("osascript").args(["-e", &apple_script]).spawn();
+    }
+}
+
+#[cfg(test)]
+mod os_notification_tests {
+    use super::hex_encode;
+
+    #[test]
+    fn notification_text_is_encoded_as_data_before_entering_powershell() {
+        let text = "Hello 'world'; $env:PATH unicode 雪";
+        let encoded = hex_encode(text.as_bytes());
+        assert!(!encoded.contains('$'));
+        assert!(!encoded.contains('\''));
+        assert_eq!(encoded.len(), text.as_bytes().len() * 2);
+        assert!(encoded.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 }
