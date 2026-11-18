@@ -35,7 +35,7 @@ pub struct RepositoryFileEntry {
     pub size_bytes: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeChange {
     pub path: String,
@@ -44,7 +44,7 @@ pub struct WorktreeChange {
     pub staged: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullPreview {
     pub repo_name: String,
@@ -60,7 +60,7 @@ pub struct PullPreview {
     pub can_pull: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullExecutionResult {
     pub message: String,
@@ -69,7 +69,7 @@ pub struct PullExecutionResult {
     pub rebased: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepositoryCommitPreview {
     pub changes: Vec<WorktreeChange>,
