@@ -31,7 +31,7 @@ use remote_providers::{
 };
 use repository_index::{default_scan_roots, IndexedRepoSummary};
 use watcher_service::{
-    apply_repository_update, register_os_background_service, BackgroundWatcherControl,
+    register_os_background_service, BackgroundWatcherControl,
     RepoUpdateNotification, ServiceStatusInfo,
 };
 
@@ -39,7 +39,6 @@ use watcher_service::{
 pub struct AppState {
     pub cached_repos: Mutex<Vec<GitRepositoryInfo>>,
     pub connected_accounts: Mutex<Vec<ConnectedAccountSummary>>,
-    pub pending_updates: Mutex<Vec<RepoUpdateNotification>>,
     pub watcher: BackgroundWatcherControl,
 }
 
@@ -1231,23 +1230,6 @@ async fn check_repo_updates_now(
 }
 
 #[tauri::command]
-async fn pull_repository_update(
-    repo_path: String,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let path_clone = repo_path.clone();
-    let result = tokio::task::spawn_blocking(move || apply_repository_update(Path::new(&path_clone)))
-        .await
-        .map_err(|e| e.to_string())??;
-
-    if let Ok(mut pending) = state.pending_updates.lock() {
-        pending.retain(|u| u.repo_path != repo_path);
-    }
-
-    Ok(result)
-}
-
-#[tauri::command]
 async fn read_service_log_tail() -> Result<String, String> {
     tokio::task::spawn_blocking(watcher_service::read_service_log_tail)
         .await
@@ -2097,7 +2079,6 @@ pub fn run() {
             load_connected_accounts,
             connect_git_account,
             check_repo_updates_now,
-            pull_repository_update,
             read_service_log_tail,
             list_app_notifications,
             mark_app_notification_read,
