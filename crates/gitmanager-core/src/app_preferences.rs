@@ -35,6 +35,18 @@ pub struct AppPreferences {
     pub os_notifications_enabled: bool,
 }
 
+fn default_archive_root_string() -> String {
+    dirs::data_local_dir()
+        .map(|root| root
+            .join("kastrick's_software")
+            .join("data")
+            .join("GitManager")
+            .join("archives")
+            .to_string_lossy()
+            .to_string())
+        .unwrap_or_default()
+}
+
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
@@ -48,9 +60,7 @@ impl Default for AppPreferences {
             show_dependency_repositories: true,
             repository_settings: HashMap::new(),
             first_run_complete: false,
-            archive_root: gitmanager_archive::default_archive_root()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default(),
+            archive_root: default_archive_root_string(),
             archive_local_enabled: true,
             archive_remote_enabled: true,
             archive_trigger: "manual".to_string(),
@@ -117,9 +127,7 @@ pub fn load_background_preferences() -> Result<AppPreferences, String> {
     preferences.scan_roots = retained_roots;
     preferences.max_scan_depth = preferences.max_scan_depth.clamp(2, 16);
     if preferences.archive_root.trim().is_empty() {
-        preferences.archive_root = gitmanager_archive::default_archive_root()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_default();
+        preferences.archive_root = default_archive_root_string();
     }
     preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
     if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
