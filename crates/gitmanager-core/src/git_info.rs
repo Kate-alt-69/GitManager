@@ -968,4 +968,21 @@ mod commit_history_tests {
         assert!(load_repository_commit_history(&path, 0, 0, None, None).is_err());
         let _ = fs::remove_dir_all(path);
     }
+
+    #[test]
+    fn commit_details_are_loaded_from_the_shared_core() {
+        let path = repository_with_commits(1);
+        let repo = Repository::open(&path).unwrap();
+        let oid = repo.head().unwrap().target().unwrap().to_string();
+        drop(repo);
+
+        let details = load_commit_details(&path, &oid).unwrap();
+        assert_eq!(details.oid, oid);
+        assert_eq!(details.summary, "commit 0");
+        assert_eq!(details.files_changed, 1);
+        assert_eq!(details.insertions, 1);
+        assert_eq!(details.deletions, 0);
+
+        let _ = fs::remove_dir_all(path);
+    }
 }
