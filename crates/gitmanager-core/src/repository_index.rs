@@ -50,6 +50,13 @@ pub fn repository_index_modified_unix_nanos() -> Result<u128, String> {
     Ok(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())
 }
 
+/// Returns a strictly increasing generation from the persisted index metadata.
+pub fn repository_index_generation() -> Result<u64, String> {
+    Ok(load_persisted_repository_index()?
+        .map(|index| index.indexed_at_unix_ms)
+        .unwrap_or(0))
+}
+
 pub fn load_persisted_repository_index() -> Result<Option<PersistedRepositoryIndex>, String> {
     let path = repository_index_path()?;
     if !path.is_file() {
