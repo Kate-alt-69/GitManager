@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -140,7 +141,7 @@ pub fn load_background_preferences() -> Result<AppPreferences, String> {
 
 /// Persists the validated application preferences from the required service.
 /// The desktop may normalize user input, but it never writes this file itself.
-pub fn save_background_preferences(preferences: &AppPreferences) -> Result<(), String> {
+pub fn save_background_preferences(preferences: &mut AppPreferences) -> Result<(), String> {
     if !(2..=16).contains(&preferences.max_scan_depth) {
         return Err("Scan depth must be between 2 and 16.".to_string());
     }
@@ -156,6 +157,32 @@ pub fn save_background_preferences(preferences: &AppPreferences) -> Result<(), S
     if preferences.archive_root.len() > 4096 || preferences.cloud_node_address.len() > 2048 {
         return Err("One of the saved application paths or addresses is too long.".to_string());
     }
+
+    let archive_root = if preferences.archive_root.trim().is_empty() {
+        default_archive_root_string()
+    } else {
+        preferences.archive_root.trim().to_string()
+    };
+    if archive_root.trim().is_empty() {
+        return Err("Could not resolve the default GitManager archive directory.".to_string());
+    }
+    let archive_path = PathBuf::from(&archive_root);
+    let archive_path = if archive_path.is_absolute() {
+        archive_path
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("Could not resolve the current directory: {error}"))?
+            .join(archive_path)
+    };
+    fs::create_dir_all(&archive_path)
+        .map_err(|error| format!("Could not create archive storage directory: {error}"))?;
+    if !archive_path.is_dir() {
+        return Err("Archive storage path must be a directory.".to_string());
+    }
+    preferences.archive_root = fs::canonicalize(&archive_path)
+        .map_err(|error| format!("Could not resolve archive storage directory: {error}"))?
+        .to_string_lossy()
+        .to_string();
 
     let _guard = preferences_lock().lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
