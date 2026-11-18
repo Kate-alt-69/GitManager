@@ -13,7 +13,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -1239,21 +1239,35 @@ fn service_data_unavailable(state: &ServiceState) -> ServiceResponse {
     }
 }
 
+fn repository_operation_lock(repo_path: &str) -> Arc<RwLock<()>> {
+    static REPOSITORY_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<RwLock<()>>>>> = OnceLock::new();
+    let key = fs::canonicalize(repo_path).unwrap_or_else(|_| PathBuf::from(repo_path));
+    let locks = REPOSITORY_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Drop idle lock entries so visiting repositories over time cannot grow
+    // this registry without bound. Active readers/writers keep a strong ref.
+    locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(RwLock::new(()))))
+}
+
+/// Runs a read-only operation. Other reads for this repository remain concurrent,
+/// while a writer waits until all readers have finished.
+pub fn with_repository_read_lock<T>(
+    repo_path: &str,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let lock = repository_operation_lock(repo_path);
+    let _guard = lock.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
+}
+
+/// Runs a repository mutation exclusively against all reads and other writes.
 pub fn with_repository_operation_lock<T>(
     repo_path: &str,
     operation: impl FnOnce() -> T,
 ) -> T {
-    static REPOSITORY_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
-    let key = fs::canonicalize(repo_path).unwrap_or_else(|_| PathBuf::from(repo_path));
-    let lock = {
-        let locks = REPOSITORY_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Drop idle lock entries so visiting repositories over time cannot
-        // grow this registry without bound.
-        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
-        Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
-    };
-    let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock = repository_operation_lock(repo_path);
+    let _guard = lock.write().unwrap_or_else(|poisoned| poisoned.into_inner());
     operation()
 }
 
