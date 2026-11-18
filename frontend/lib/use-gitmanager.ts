@@ -325,7 +325,6 @@ export function useGitManager() {
 				if (!active) return;
 				setServiceReady(true);
 				setStatus("Core service connected");
-				void refreshNotifications();
 
 				const cliTools = await invoke<{ git: boolean; github: boolean }>("check_cli_tools");
 				if (!cliTools.git && !cliTools.github) {
@@ -361,6 +360,10 @@ export function useGitManager() {
 					resolved = { ...resolved, scanRoots: suggested ?? [] };
 				}
 				setPreferences(resolved);
+				// Load the persisted unread badge only after the saved preference is
+				// known, avoiding a disabled-history IPC read during startup.
+				inAppNotificationsEnabledRef.current = resolved.inAppNotificationsEnabled !== false;
+				if (inAppNotificationsEnabledRef.current) void refreshNotifications();
 
 				// Hydrate the last published inventory before requesting any refresh.
 				// This is a read of the service-owned index, never a filesystem scan.
