@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::ShellExt;
 
-use git_info::{extract_git_repository_info, GitRepositoryInfo};
+use git_info::{extract_git_repository_overview, GitRepositoryInfo};
 use remote_providers::{
     fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
 };
@@ -877,8 +877,29 @@ async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, Stri
     tokio::task::spawn_blocking(move || {
         let workdir = PathBuf::from(repo_path);
         let git_dir = workdir.join(".git");
-        extract_git_repository_info(&workdir, &git_dir)
+        extract_git_repository_overview(&workdir, &git_dir)
     }).await.map_err(|error| format!("Repository inspection task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn load_repository_commit_history(
+    repo_path: String,
+    offset: usize,
+    limit: usize,
+    branch_filter: Option<String>,
+    search_query: Option<String>,
+) -> Result<git_info::CommitHistoryPage, String> {
+    tokio::task::spawn_blocking(move || {
+        git_info::load_repository_commit_history(
+            Path::new(&repo_path),
+            offset,
+            limit,
+            branch_filter.as_deref(),
+            search_query.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Commit history task failed: {error}"))?
 }
 
 
@@ -1775,6 +1796,7 @@ pub fn run() {
             ensure_required_service,
             get_core_service_status,
             inspect_repository,
+            load_repository_commit_history,
             list_repository_files,
             read_repository_file,
             save_conflict_resolution,
