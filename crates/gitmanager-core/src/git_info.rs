@@ -631,7 +631,7 @@ pub fn switch_repository_branch(workdir: &Path, branch_name: &str) -> Result<Git
         repo.path().to_path_buf()
     };
 
-    extract_git_repository_info(workdir, &git_dir)
+    extract_git_repository_overview(workdir, &git_dir)
         .map_err(|error| format!("Branch switched, but repository details could not be refreshed: {error}"))
 }
 
