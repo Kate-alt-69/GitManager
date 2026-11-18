@@ -331,8 +331,11 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("crash_helper::with_repository_operation_lock", service_watcher)
         self.assertIn("check_single_repo_for_remote_update_locked", service_watcher)
         self.assertIn("apply_repository_update_locked", service_watcher)
-        self.assertIn("use crate::repository_index::load_persisted_repository_index;", desktop_watcher)
+        self.assertNotIn("use crate::repository_index::load_persisted_repository_index;", desktop_watcher)
         self.assertNotIn("crate::scanner", desktop_watcher)
+        self.assertNotIn("check_all_repos_for_updates", desktop_watcher)
+        self.assertNotIn("apply_repository_update", desktop_watcher)
+        self.assertNotIn("git2::Repository", desktop_watcher)
         self.assertLess(
             service_source.index("gitmanager_core::storage::ensure_data_layout()"),
             service_source.index("let service_control = match start_service_control_server()"),
