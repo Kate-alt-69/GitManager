@@ -21,11 +21,14 @@ repository-data = ["core-service"]
 notification-storage = ["core-service"]
 preferences-storage = ["core-service"]
 archive-operations = ["repository-data", "dep:gitmanager-archive"]
+account-provider = ["account-storage", "dep:reqwest", "dep:tokio"]
 provider-sync = ["repository-data", "account-storage", "dep:reqwest", "dep:tokio"]
 
 [dependencies]
 gitmanager-core = { path = "../gitmanager-core", optional = true }
 gitmanager-archive = { path = "../archive-core", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+tokio = { version = "1.40", default-features = false, features = ["rt", "net", "time"], optional = true }
 dirs = "5.0"
 fs2 = "0.4"
 libc = "0.2"
