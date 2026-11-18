@@ -1983,6 +1983,63 @@ mod tests {
     }
 
     #[test]
+    fn worktree_and_commit_commands_use_stable_service_wire_names() {
+        let requests = vec![
+            ServiceCommand::SaveConflictResolution {
+                repo_path: "/repo".to_string(), relative_path: "src/main.rs".to_string(), content: "fixed".to_string(),
+            },
+            ServiceCommand::PreviewRepositoryPull { repo_path: "/repo".to_string() },
+            ServiceCommand::GetRepositoryChanges { repo_path: "/repo".to_string() },
+            ServiceCommand::ReadRepositoryFileDiff {
+                repo_path: "/repo".to_string(), relative_path: "src/main.rs".to_string(), staged: true,
+            },
+            ServiceCommand::FetchRepositoryRemote {
+                repo_path: "/repo".to_string(), remote_name: "origin".to_string(),
+            },
+            ServiceCommand::StageRepositoryPaths {
+                repo_path: "/repo".to_string(), paths: vec!["src/main.rs".to_string()],
+            },
+            ServiceCommand::UnstageRepositoryPaths {
+                repo_path: "/repo".to_string(), paths: vec!["src/main.rs".to_string()],
+            },
+            ServiceCommand::PreviewRepositoryCommit { repo_path: "/repo".to_string() },
+            ServiceCommand::CreateRepositoryCommit {
+                repo_path: "/repo".to_string(), message: "test".to_string(), expected_index_tree: "tree".to_string(),
+            },
+            ServiceCommand::DeleteRepositoryPath {
+                repo_path: "/repo".to_string(), relative_path: "old.txt".to_string(),
+            },
+            ServiceCommand::PrepareAndPullRepositoryUpdate {
+                repo_path: "/repo".to_string(), expected_branch: "main".to_string(),
+                expected_local_oid: "local".to_string(), expected_remote_oid: "remote".to_string(),
+                expected_status_token: "status".to_string(), mode: "stash".to_string(),
+                stage_paths: vec![], commit_message: String::new(),
+            },
+            ServiceCommand::ListLocalRepositoryBranches { repo_path: "/repo".to_string() },
+            ServiceCommand::SwitchRepositoryBranch {
+                repo_path: "/repo".to_string(), branch_name: "feature/topic".to_string(),
+            },
+        ];
+        let expected = [
+            "save_conflict_resolution", "preview_repository_pull", "get_repository_changes",
+            "read_repository_file_diff", "fetch_repository_remote", "stage_repository_paths",
+            "unstage_repository_paths", "preview_repository_commit", "create_repository_commit",
+            "delete_repository_path", "prepare_and_pull_repository_update",
+            "list_local_repository_branches", "switch_repository_branch",
+        ];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode service request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+            assert!(encoded["command"]["repo_path"].is_string());
+        }
+    }
+
+    #[test]
     fn repository_scan_request_uses_the_authenticated_control_protocol() {
         let request = ServiceRequest {
             token: "test-token".to_string(),
