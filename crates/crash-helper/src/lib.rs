@@ -2821,6 +2821,53 @@ mod tests {
     }
 
     #[test]
+    fn legacy_endpoint_json_defaults_to_tcp_compatibility_fields() {
+        let endpoint: super::Endpoint = serde_json::from_str(
+            r#"{"version":3,"address":"127.0.0.1:41234","token":"legacy-token"}"#,
+        ).expect("decode a protocol-v3 endpoint");
+        assert_eq!(endpoint.version, 3);
+        assert!(endpoint.name.is_empty());
+        assert_eq!(endpoint.address, "127.0.0.1:41234");
+        assert_eq!(endpoint.token, "legacy-token");
+    }
+
+    #[test]
+    fn service_ipc_frames_round_trip_with_a_bounded_length_prefix() {
+        let payload = br#"{"token":"abc","command":{"action":"status"}}"#;
+        let mut encoded = Vec::new();
+        super::write_service_frame(&mut encoded, payload).expect("write IPC frame");
+        assert_eq!(&encoded[..4], &(payload.len() as u32).to_be_bytes());
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded = super::read_service_frame(&mut cursor).expect("read IPC frame");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn service_ipc_frame_reader_rejects_oversized_payloads() {
+        let mut frame = (super::MAX_MESSAGE_BYTES as u32).to_be_bytes().to_vec();
+        let mut cursor = std::io::Cursor::new(std::mem::take(&mut frame));
+        let error = super::read_service_frame(&mut cursor).expect_err("oversized IPC frame should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn service_local_socket_names_are_stable_and_per_user() {
+        let first = super::service_socket_name(std::path::Path::new("/home/alice/GitManager"));
+        let same = super::service_socket_name(std::path::Path::new("/home/alice/GitManager"));
+        let other = super::service_socket_name(std::path::Path::new("/home/bob/GitManager"));
+        assert_eq!(first.0, same.0);
+        assert_ne!(first.0, other.0);
+        #[cfg(windows)]
+        assert!(first.0.starts_with(r"\.pipekastrick-gitmanager-"));
+        #[cfg(unix)]
+        {
+            assert!(first.0.starts_with("/tmp/kastrick-gitmanager-"));
+            assert!(first.1.is_some());
+        }
+    }
+
+    #[test]
     fn legacy_protocol_is_allowed_only_for_status_negotiation() {
         assert!(super::is_legacy_protocol_command_compatible(&ServiceCommand::Status));
         assert!(!super::is_legacy_protocol_command_compatible(&ServiceCommand::LoadAccounts));
