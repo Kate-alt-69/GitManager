@@ -1021,7 +1021,7 @@ fn service_data_unavailable(state: &ServiceState) -> ServiceResponse {
     }
 }
 
-fn with_repository_operation_lock<T>(
+pub fn with_repository_operation_lock<T>(
     repo_path: &str,
     operation: impl FnOnce() -> T,
 ) -> T {
@@ -1030,6 +1030,9 @@ fn with_repository_operation_lock<T>(
     let lock = {
         let locks = REPOSITORY_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Drop idle lock entries so visiting repositories over time cannot
+        // grow this registry without bound.
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
         Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
     };
     let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1093,7 +1096,7 @@ fn handle_service_connection(
                         error: None,
                         data: None,
                     }
-                }
+                },
                 ServiceCommand::LoadAccounts => load_account_storage(state),
                 ServiceCommand::SaveAccount { payload } => save_account_storage(state, payload),
                 ServiceCommand::InspectRepository { repo_path } =>
