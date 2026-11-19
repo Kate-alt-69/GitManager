@@ -136,7 +136,8 @@ def _download_response_to_file(response, destination: Path, work: str = "CPython
     downloaded = 0
     last_percentage_bucket = -10
     last_reported_bytes = 0
-    last_reported_at = time.monotonic()
+    started_at = time.monotonic()
+    last_reported_at = started_at
     chunk_size = 256 * 1024
 
     detail = "Waiting for the first response bytes..."
@@ -181,7 +182,7 @@ def _download_response_to_file(response, destination: Path, work: str = "CPython
             f"Download ended early: received {downloaded:,} of {total_bytes:,} bytes."
         )
 
-    elapsed = max(time.monotonic() - last_reported_at, 0.001)
+    elapsed = max(time.monotonic() - started_at, 0.001)
     log_work(
         work,
         "100%",
