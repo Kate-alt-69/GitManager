@@ -521,7 +521,8 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
     // crash_helper owns the service lifecycle for a supervised UI child.
     // Starting another copy here races the helper's child and produces a
     // misleading exit-code-2 failure when the first process owns the lock.
-    let supervisor_managed = std::env::var_os("GITMANAGER_CRASH_HELPER_ADDRESS").is_some();
+    let supervisor_managed = std::env::var_os("GITMANAGER_CRASH_HELPER_ADDRESS").is_some()
+        || std::env::var_os("GITMANAGER_SERVICE_SUPERVISOR").is_some();
     let startup_wait = if supervisor_managed {
         Duration::from_secs(30)
     } else {
