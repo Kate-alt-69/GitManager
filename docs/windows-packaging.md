@@ -117,7 +117,7 @@ The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padde
 
 Both Windows installers launch the packaged `gitmanager-setup.exe` companion after installation: NSIS runs its root-level sidecar, while the MPDEV MSI prompts the user to run `resources\gitmanager-setup.exe`. The companion launches the installed GUI with both `--setup` and `GITMANAGER_SETUP_MODE=1`, so the first-run wizard opens directly instead of re-triggering the launcher. The Tauri sidecar name must match the configured `binaries/gitmanager-setup` path exactly.
 
-The normal application bootstrap starts `crash_helper` before the UI. The helper starts and supervises `gitmanager.service` outside the UI's process-containment job, so the first-run wizard is reached with the required data service already starting. The optional Windows sign-in task remains an explicit user setting; setup does not silently register a permanent logon task.
+The normal application bootstrap starts `crash_helper` before the UI. The helper starts and supervises `gitmanager.service` outside the UI's process-containment job, so the first-run wizard is reached with the required data service already starting. The wizard offers a **checked-by-default** option to register a per-user sign-in task (Windows Task Scheduler, systemd user service, or macOS LaunchAgent); the user can uncheck it. The Settings page can also register the task later. When setup registers the Windows task while the service is already running, it does not launch a second copy.
 
 ## Windows background worker
 
