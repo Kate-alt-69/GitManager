@@ -527,6 +527,32 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('lock_file.write_all(format!("{}", std::process::id()).as_bytes())', helper)
         self.assertIn("crash_helper::service_control_lock_owner_pid()", watcher)
 
+    def test_existing_service_monitor_is_ready_even_when_its_worker_is_unhealthy(self):
+        helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
+        service_supervisor = helper.split("fn run_service_supervisor", 1)[1].split(
+            "fn run_stop_service_command", 1
+        )[0]
+        duplicate_monitor = service_supervisor.split(
+            "if lock_file.try_lock_exclusive().is_err() {", 1
+        )[1].split("\\n    }", 1)[0]
+
+        self.assertIn('println!("GITMANAGER_SERVICE_SUPERVISOR_READY")', duplicate_monitor)
+        self.assertNotIn("core_service_ready()", duplicate_monitor)
+        self.assertNotIn("Duration::from_secs(30)", duplicate_monitor)
+
+    def test_external_unresponsive_service_lock_has_bounded_pid_verified_recovery(self):
+        helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
+        supervisor = helper.split("struct CoreServiceSupervisor", 1)[1].split(
+            "fn host_target_triple", 1
+        )[0]
+
+        self.assertIn("EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE: Duration = Duration::from_secs(45)", helper)
+        self.assertIn("external_service_lock_recovery_due(unhealthy_since, Instant::now())", supervisor)
+        self.assertIn("service_control_lock_is_held() && service_control_lock_owner_pid() == Some(pid)", supervisor)
+        self.assertIn("stop_obsolete_service_process(pid)", supervisor)
+        self.assertIn("wait_for_exclusive_lock_release(path, Duration::from_secs(4))", supervisor)
+        self.assertIn("owner_pid.filter(|pid| *pid > 1 && *pid != std::process::id())", supervisor)
+
     def test_windows_pipe_response_flushes_and_status_health_check_retries(self):
         helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
         frame_writer = helper.split("fn write_service_frame_with_timeout", 1)[1].split("\n}", 1)[0]
