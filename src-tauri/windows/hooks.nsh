@@ -25,10 +25,22 @@
   Sleep 700
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "crash_helper.exe"'
   Pop $R9
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "crash_helper-x86_64-pc-windows-msvc.exe"'
+  Pop $R9
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "crash_helper-i686-pc-windows-msvc.exe"'
+  Pop $R9
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "crash_helper-aarch64-pc-windows-msvc.exe"'
+  Pop $R9
   Sleep 250
 
   ; Current dotted sidecar and historical Cargo executable names.
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "gitmanager.service.exe"'
+  Pop $R9
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "gitmanager.service-x86_64-pc-windows-msvc.exe"'
+  Pop $R9
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "gitmanager.service-i686-pc-windows-msvc.exe"'
+  Pop $R9
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "gitmanager.service-aarch64-pc-windows-msvc.exe"'
   Pop $R9
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "gitmanager-service.exe"'
   Pop $R9
