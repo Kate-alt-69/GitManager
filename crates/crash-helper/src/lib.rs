@@ -44,6 +44,8 @@ const DATA_ROOT: &str = "kastrick's_software";
 const ENDPOINT_FILE: &str = "service-control.json";
 const SUSPENSION_FILE: &str = "service-suspension.json";
 const LOCK_FILE: &str = "service-control.lock";
+const SERVICE_SUPERVISOR_LOCK_FILE: &str = "service-supervisor.lock";
+const SERVICE_SHUTDOWN_FILE: &str = "service-shutdown.requested";
 const DEFAULT_SUSPENSION_SECONDS: u64 = 120;
 const MIN_SUSPENSION_SECONDS: u64 = 15;
 const MAX_SUSPENSION_SECONDS: u64 = 600;
@@ -2553,13 +2555,94 @@ pub fn report_service_start_failure(reason: &str) {
     );
 }
 
+fn launch_service_supervisor(helper: &Path, current_exe: &Path) -> Result<bool, String> {
+    let mut command = Command::new(helper);
+    command
+        .arg("--supervise-service")
+        .arg(current_exe)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    configure_detached_command(&mut command);
+
+    let mut process = command.spawn()
+        .map_err(|error| format!("Could not start the GitManager service supervisor: {error}"))?;
+    let stdout = process.stdout.take()
+        .ok_or_else(|| "The GitManager service supervisor did not expose its startup channel.".to_string())?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("gitmanager-service-supervisor-startup".to_string())
+        .spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut line = String::new();
+            let result = reader.read_line(&mut line);
+            let _ = sender.send(result.map(|count| (count, line)));
+        })
+        .map_err(|error| format!("Could not monitor service-supervisor startup: {error}"))?;
+
+    match receiver.recv_timeout(Duration::from_secs(15)) {
+        Ok(Ok((count, line))) if count > 0 && line.trim() == "GITMANAGER_SERVICE_SUPERVISOR_READY" => {
+            // Dropping Child does not terminate the detached monitor. It owns
+            // its own lock and lifetime and continues after the UI exits.
+            drop(process);
+            Ok(true)
+        }
+        Ok(Ok((_count, line))) => {
+            let _ = process.kill();
+            let _ = process.wait();
+            Err(format!("GitManager service supervisor failed during startup: {}", line.trim()))
+        }
+        Ok(Err(error)) => {
+            let _ = process.kill();
+            let _ = process.wait();
+            Err(format!("Could not read service-supervisor startup status: {error}"))
+        }
+        Err(error) => {
+            let status = process.try_wait().ok().flatten();
+            if status.is_none() {
+                let _ = process.kill();
+                let _ = process.wait();
+            }
+            Err(format!("GitManager service supervisor did not become ready within 15 seconds: {error}"))
+        }
+    }
+}
+
+/// Start the independent core-service monitor before choosing the UI launch
+/// mode. In a debugger-attached session the UI remains in this process, while
+/// the service monitor still runs out-of-process and keeps its own lifetime.
 pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Result<bool, String> {
-    if is_supervised_child(args) || supervisor_should_bypass() {
+    if is_supervised_child(args) {
         return Ok(false);
     }
-    let helper = match find_crash_helper(current_exe) {
-        Some(path) => path,
-        None => return Ok(false),
+
+    let helper = find_crash_helper(current_exe);
+    let service_supervisor_started = if let Some(helper_path) = helper.as_ref() {
+        match launch_service_supervisor(helper_path, current_exe) {
+            Ok(started) => started,
+            Err(error) if cfg!(debug_assertions) => {
+                eprintln!("GitManager service supervisor could not start: {error}");
+                false
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        false
+    };
+
+    if service_supervisor_started {
+        std::env::set_var("GITMANAGER_SERVICE_SUPERVISOR", "1");
+    }
+
+    // Keep Visual Studio attached to the real WebView host. The independent
+    // service supervisor above remains active even when the UI watchdog is
+    // intentionally bypassed for debugger sessions.
+    if supervisor_should_bypass() {
+        return Ok(false);
+    }
+
+    let Some(helper) = helper else {
+        return Ok(false);
     };
 
     let mut command = Command::new(helper);
@@ -2569,8 +2652,8 @@ pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Res
         .map_err(|error| format!("Could not start crash_helper: {error}"))?;
 
     // Keep the original GitManager process alive as the process-tree root.
-    // This makes crash_helper.exe visible beneath the launched app while it
-    // supervises the UI; the independent service remains outside this tree.
+    // crash_helper owns UI containment; the separate service monitor owns the
+    // per-user data service and is deliberately not in that kill-on-close tree.
     let status = helper_process.wait()
         .map_err(|error| format!("Could not wait for crash_helper: {error}"))?;
     if !status.success() {
@@ -2578,6 +2661,7 @@ pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Res
     }
     Ok(true)
 }
+
 
 fn find_crash_helper(current_exe: &Path) -> Option<PathBuf> {
     let executable_dir = current_exe.parent()?;
@@ -3367,10 +3451,6 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
         .unwrap_or_default();
     let disable_webview_gpu = take_disable_webview_gpu_flag(&mut app_args);
 
-    // Start the per-user data engine independently before the UI requests its
-    // first readiness probe. The child is explicitly outside the UI Job Object.
-    let mut core_service_supervisor = CoreServiceSupervisor::new(&application);
-
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(listener) => listener,
         Err(error) => {
@@ -3430,8 +3510,6 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     let mut clean_shutdown = false;
 
     loop {
-        core_service_supervisor.tick();
-
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -3613,7 +3691,121 @@ fn force_terminate_service_process(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+fn request_service_supervisor_stop() -> Result<(), String> {
+    let data_dir = gitmanager_data_dir()?;
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Could not create GitManager service state directory: {error}"))?;
+    let marker = data_dir.join(SERVICE_SHUTDOWN_FILE);
+    fs::write(&marker, format!("{}\n", timestamp_ms()))
+        .map_err(|error| format!("Could not signal the GitManager service supervisor: {error}"))?;
+    set_private_permissions(&marker)
+        .map_err(|error| format!("Could not secure the service-supervisor shutdown signal: {error}"))
+}
+
+fn clear_service_supervisor_stop() -> Result<(), String> {
+    let marker = gitmanager_data_dir()?.join(SERVICE_SHUTDOWN_FILE);
+    match fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not clear the previous service-supervisor shutdown signal: {error}")),
+    }
+}
+
+fn service_supervisor_stop_requested() -> bool {
+    gitmanager_data_dir()
+        .map(|directory| directory.join(SERVICE_SHUTDOWN_FILE).is_file())
+        .unwrap_or(false)
+}
+
+fn run_service_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
+    suppress_windows_application_error_dialogs();
+    let Some(application) = arguments.first().map(PathBuf::from) else {
+        eprintln!("crash_helper: --supervise-service requires the GitManager executable path.");
+        return 2;
+    };
+
+    let data_dir = match gitmanager_data_dir() {
+        Ok(directory) => directory,
+        Err(error) => {
+            eprintln!("crash_helper: could not resolve the per-user data directory: {error}");
+            return 2;
+        }
+    };
+    if let Err(error) = fs::create_dir_all(&data_dir) {
+        eprintln!("crash_helper: could not create the per-user service directory: {error}");
+        return 2;
+    }
+
+    let lock_path = data_dir.join(SERVICE_SUPERVISOR_LOCK_FILE);
+    let lock_file = match OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&lock_path) {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("crash_helper: could not open the service-supervisor lock: {error}");
+            return 2;
+        }
+    };
+    if lock_file.try_lock_exclusive().is_err() {
+        // Another helper owns the monitor. Wait for its service to be healthy
+        // rather than creating a second monitor or racing a service start.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if core_service_ready() {
+                println!("GITMANAGER_SERVICE_SUPERVISOR_READY");
+                let _ = std::io::stdout().flush();
+                return 0;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+        eprintln!("crash_helper: an existing service supervisor owns the lock but did not publish a healthy service.");
+        return 1;
+    }
+
+    if let Err(error) = clear_service_supervisor_stop() {
+        eprintln!("crash_helper: {error}");
+        return 2;
+    }
+
+    let mut supervisor = CoreServiceSupervisor::new(&application);
+    println!("GITMANAGER_SERVICE_SUPERVISOR_READY");
+    let _ = std::io::stdout().flush();
+
+    let mut shutdown_started: Option<Instant> = None;
+    let mut shutdown_pid: Option<u32> = None;
+    loop {
+        if service_supervisor_stop_requested() {
+            let started = *shutdown_started.get_or_insert_with(Instant::now);
+            if shutdown_pid.is_none() {
+                shutdown_pid = request_service_status().ok().map(|status| status.process_id);
+                if shutdown_pid.is_none() {
+                    shutdown_pid = supervisor.child.as_ref().map(Child::id);
+                }
+            }
+
+            let process_running = shutdown_pid
+                .filter(|pid| *pid > 1)
+                .map(service_process_is_running)
+                .unwrap_or(false);
+            if !process_running || started.elapsed() >= Duration::from_secs(25) {
+                return if process_running { 1 } else { 0 };
+            }
+            // Shutdown is being handled by the authenticated one-shot helper.
+            // Never restart the service while an installer is replacing it.
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+
+        shutdown_started = None;
+        shutdown_pid = None;
+        supervisor.tick();
+        thread::sleep(SUPERVISOR_POLL);
+    }
+}
+
 fn run_stop_service_command() -> i32 {
+    if let Err(error) = request_service_supervisor_stop() {
+        eprintln!("crash_helper: could not signal the independent service monitor: {error}");
+        return 1;
+    }
     let initial = match request_service_status() {
         Ok(status) => status,
         Err(error) => {
@@ -3706,6 +3898,8 @@ pub fn run_helper_from_args() -> i32 {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if arguments.first().is_some_and(|argument| argument.to_string_lossy() == "--supervise") {
         run_supervisor(arguments.into_iter().skip(1).collect())
+    } else if arguments.first().is_some_and(|argument| argument.to_string_lossy() == "--supervise-service") {
+        run_service_supervisor(arguments.into_iter().skip(1).collect())
     } else if arguments.first().is_some_and(|argument| argument.to_string_lossy() == "--stop-service") {
         run_stop_service_command()
     } else {
