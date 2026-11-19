@@ -39,13 +39,11 @@ function statusLabel(change: WorktreeChange): string {
 export function RepositoryWorkspace({
 	repo,
 	onRepositoryUpdated,
-	onPullCompleted,
 	onOpenCleaner,
 	focus = "all",
 }: {
 	repo: GitRepository;
 	onRepositoryUpdated: (repo: GitRepository) => void;
-	onPullCompleted: (repoPath: string) => void;
 	onOpenCleaner: () => void;
 	focus?: WorkspaceFocus;
 }) {
@@ -457,7 +455,6 @@ export function RepositoryWorkspace({
 			});
 			setPullPreview(null);
 			setPullMode("");
-			onPullCompleted(repo.path);
 			setNotice(
 				result.message
 				+ (result.commitCreated ? " Local changes were committed and rebased." : "")
