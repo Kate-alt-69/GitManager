@@ -9,7 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::git_info::GitRepositoryInfo;
+use crate::models::GitRepositoryInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanReport {
