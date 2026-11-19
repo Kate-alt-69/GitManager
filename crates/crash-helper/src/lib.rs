@@ -298,7 +298,8 @@ fn write_service_frame_with_timeout(
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Service IPC frame is too large"))?;
     let deadline = Instant::now() + timeout;
     write_all_with_deadline(stream, &length.to_be_bytes(), deadline)?;
-    write_all_with_deadline(stream, payload, deadline)
+    write_all_with_deadline(stream, payload, deadline)?;
+    stream.flush()
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -664,7 +665,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         .map_err(|error| format!("Could not create service state directory: {error}"))?;
 
     let lock_path = data_dir.join(LOCK_FILE);
-    let lock_file = OpenOptions::new()
+    let mut lock_file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
@@ -673,6 +674,10 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         .map_err(|error| format!("Could not open service ownership lock: {error}"))?;
     lock_file.try_lock_exclusive()
         .map_err(|_| "Another GitManager background service instance already owns the service lock.".to_string())?;
+    lock_file.set_len(0)
+        .and_then(|_| lock_file.write_all(format!("{}\\n", std::process::id()).as_bytes()))
+        .and_then(|_| lock_file.sync_all())
+        .map_err(|error| format!("Could not publish the service lock owner PID: {error}"))?;
 
     let (socket_name, socket_directory) = service_socket_name(&data_dir);
     if let Some(directory) = &socket_directory {
@@ -1692,6 +1697,11 @@ fn handle_service_connection(
     let request_frame = read_service_frame(&mut stream);
 
     let mut shutdown_after_response = false;
+    if let Err(error) = &request_frame {
+        eprintln!(
+            "GitManager service IPC: rejected an incomplete/invalid client request: {error}"
+        );
+    }
     let response = match request_frame {
         Err(error) => ServiceResponse {
             ok: false,
@@ -1941,13 +1951,31 @@ fn handle_service_connection(
             encoded
         };
         #[cfg(windows)]
-        let response_sent = write_service_frame_with_timeout(
+        let response_sent = match write_service_frame_with_timeout(
             &mut stream,
             &response_bytes,
             Duration::from_secs(15),
-        ).is_ok();
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!(
+                    "GitManager service IPC: could not send {}-byte response frame: {error}",
+                    response_bytes.len()
+                );
+                false
+            }
+        };
         #[cfg(not(windows))]
-        let response_sent = write_service_frame(&mut stream, &response_bytes).is_ok();
+        let response_sent = match write_service_frame(&mut stream, &response_bytes) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!(
+                    "GitManager service IPC: could not send {}-byte response frame: {error}",
+                    response_bytes.len()
+                );
+                false
+            }
+        };
 
         // Do not stop the listener until the caller has received its
         // acknowledgement; then reject new work and let the service drain.
@@ -2373,7 +2401,22 @@ pub fn service_connect_git_account(payload: serde_json::Value) -> Result<serde_j
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
-    send_service_command(ServiceCommand::Status)
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match send_service_command(ServiceCommand::Status) {
+            Ok(status) => return Ok(status),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(40 * (attempt + 1) as u64));
+                }
+            }
+        }
+    }
+    Err(format!(
+        "GitManager core service did not complete its authenticated status response after 3 attempts: {}",
+        last_error.unwrap_or_else(|| "unknown service IPC error".to_string())
+    ))
 }
 
 /// Requests a graceful, authenticated service shutdown. The service closes
@@ -2890,6 +2933,37 @@ fn open_core_service_log_streams() -> Result<(Stdio, Stdio), String> {
     let errors = output.try_clone()
         .map_err(|error| format!("Could not duplicate GitManager service log handle: {error}"))?;
     Ok((Stdio::from(output), Stdio::from(errors)))
+}
+
+/// Reads the PID recorded by the process that acquired the exclusive service lock.
+/// A stale value is ignored whenever the kernel lock is not currently held.
+pub fn service_control_lock_owner_pid() -> Option<u32> {
+    let path = gitmanager_data_dir().ok()?.join(LOCK_FILE);
+    let mut value = String::new();
+    File::open(path).ok()?.read_to_string(&mut value).ok()?;
+    let pid = value.trim().parse::<u32>().ok()?;
+    (pid > 1).then_some(pid)
+}
+
+/// Checks the kernel-enforced service lock without trusting the owner PID file.
+/// Any inspection error fails closed so startup cannot create a duplicate.
+pub fn service_control_lock_is_held() -> bool {
+    let path = match gitmanager_data_dir() {
+        Ok(directory) => directory.join(LOCK_FILE),
+        Err(_) => return true,
+    };
+    let file = match OpenOptions::new().read(true).write(true).open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            let _ = FileExt::unlock(&file);
+            false
+        }
+        Err(_) => true,
+    }
 }
 
 fn core_service_ready() -> bool {
