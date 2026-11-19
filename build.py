@@ -1239,6 +1239,7 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
         return 127, "", message
 
 
+@tracked_work("Cargo dependency graph audit")
 def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
     """Count the actual build graphs for the app and its packaged sidecars.
 
@@ -2728,6 +2729,7 @@ def run_build_or_dev(
     return run_command(cmd, cwd=project_root, work=f"Cargo {mode}", progress="1/1")
 
 
+@tracked_work("Build command")
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="GitManager local dependency, architecture and installer build script"
