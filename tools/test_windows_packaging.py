@@ -390,13 +390,48 @@ class _MemoryDownloadResponse:
         return self._stream.read(size)
 
 
+class _TTYBuffer(io.StringIO):
+    def isatty(self):
+        return True
+
+
 class BuildProgressReportingTests(unittest.TestCase):
-    def test_work_indicator_includes_work_progress_and_status(self):
+    def setUp(self):
+        BUILD._LAST_NONINTERACTIVE_PROGRESS.clear()
+
+    def test_work_indicator_includes_progress_and_status(self):
         output = io.StringIO()
         with patch("sys.stdout", output):
             BUILD.log_work("CPython runtime", "2/6", "WORKING", "Checking the cached runtime...")
         self.assertIn("[ CPython runtime ] [2/6] [WORKING]", output.getvalue())
         self.assertIn("Checking the cached runtime...", output.getvalue())
+
+
+    def test_terminal_progress_updates_rewrite_one_live_row(self):
+        output = _TTYBuffer()
+        with patch("sys.stdout", output):
+            BUILD.log_work("CPython download", "0%", "PENDING", "Queued archive...")
+            BUILD.log_work("CPython download", "0%", "WORKING", "Connecting...")
+            BUILD.log_work("CPython download", "30%", "WORKING", "3.2 / 10.7 MiB")
+            BUILD.log_work("CPython download", "100%", "DONE", "Downloaded archive.")
+
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count("\\r"), 4)
+        self.assertEqual(rendered.count("\\n"), 1)
+        self.assertIn("[ CPython download ] [100%] [DONE]", rendered)
+
+    def test_noninteractive_heartbeat_repeats_are_suppressed(self):
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            BUILD.log_work("Cargo build", "1/1", "WORKING", "Compiling...")
+            BUILD.log_work("Cargo build", "1/1", "WORKING", "Still compiling (5s)...")
+            BUILD.log_work("Cargo build", "1/1", "WORKING", "Still compiling (10s)...")
+            BUILD.log_work("Cargo build", "1/1", "DONE", "Finished.")
+
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count("\\n"), 2)
+        self.assertNotIn("Still compiling", rendered)
+        self.assertIn("[ Cargo build ] [1/1] [DONE]", rendered)
 
     def test_python_runtime_download_streams_bytes_and_reports_completion(self):
         payload = b"python-embed-runtime-fixture"
