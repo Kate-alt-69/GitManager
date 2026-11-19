@@ -50,7 +50,7 @@ fn retry_cloud_archive_sync(archive_root: &str) {
 }
 
 fn repository_auto_update_enabled(repo_path: &str, repo_id: &str) -> bool {
-    crash_helper::with_repository_read_lock(repo_path, || {
+    crash_helper::with_repository_operation_lock(repo_path, || {
         gitmanager_core::repository_preferences::load_repository_preferences(
             repo_path,
             Some(repo_id),
