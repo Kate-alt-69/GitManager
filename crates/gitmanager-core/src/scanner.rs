@@ -9,7 +9,8 @@ use std::thread;
 use std::time::Duration;
 use fs2::FileExt;
 
-use crate::git_info::{extract_git_repository_summary, GitRepositoryInfo};
+use crate::git_info::extract_git_repository_summary;
+use crate::models::GitRepositoryInfo;
 use crate::repository_index::{default_scan_roots, ScanReport};
 
 const SCAN_WORKERS: usize = 2;
