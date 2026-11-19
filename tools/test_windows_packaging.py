@@ -236,10 +236,66 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
 
     def test_windows_installer_build_invokes_mpdev_for_both_formats(self):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
-        self.assertIn("build_master_packager_installers(project_root, mpdev_manifest)", source)
+        self.assertIn("build_master_packager_installers(project_root, manifest)", source)
         self.assertIn("prepare_master_packager_manifest(project_root)", source)
+        self.assertIn('command.extend(["tauri", "bundle"])', source)
         self.assertIn('package_config["outputTypes"] = ["msi", "msix"]', source)
         self.assertIn("MPDEV is the required", source)
+
+    def test_workspace_libraries_and_binaries_compile_before_sidecar_staging(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        sidecar_builder = source.split("def build_gitm_sidecar(", 1)[1].split(
+            '@tracked_work("Rust target components")', 1
+        )[0]
+        self.assertIn('command.extend(["build", "--workspace", "--lib", "--bins"])', sidecar_builder)
+        for binary in ("gitm", "gitmanager-setup", "crash_helper", "gitmanager-service"):
+            self.assertIn(binary, sidecar_builder)
+
+    def test_installer_pipeline_compiles_every_selected_target_before_packaging(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        main = source.split("def main() -> int:", 1)[1]
+        compile_phase = main.index("compile_results = []")
+        package_phase = main.index("package_results = []")
+        self.assertLess(compile_phase, package_phase)
+        self.assertIn("bundle=False", main[compile_phase:package_phase])
+        self.assertIn("package_local_target(", main[package_phase:])
+        package_function = source.split("def package_local_target(", 1)[1].split(
+            '@tracked_work("Native build pipeline")', 1
+        )[0]
+        self.assertIn('"tauri", "bundle"', package_function)
+        self.assertIn("build_master_packager_installers(project_root, manifest)", package_function)
+
+    def test_mpdev_timestamp_server_defaults_to_microsoft_and_can_be_overridden(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                BUILD.resolve_mpdev_timestamp_server(),
+                "http://timestamp.acs.microsoft.com",
+            )
+        with patch.dict(
+            os.environ,
+            {"GITMANAGER_MPDEV_TIMESTAMP_SERVER": "https://timestamp.example.test"},
+            clear=True,
+        ):
+            self.assertEqual(
+                BUILD.resolve_mpdev_timestamp_server(),
+                "https://timestamp.example.test",
+            )
+        with patch.dict(
+            os.environ,
+            {"GITMANAGER_MPDEV_TIMESTAMP_SERVER": "file:///tmp/timestamp"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "absolute HTTP or HTTPS URL"):
+                BUILD.resolve_mpdev_timestamp_server()
+
+    def test_mpdev_source_manifest_uses_the_microsoft_timestamp_authority(self):
+        config = json.loads(
+            (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            config["msix"]["digitalSignature"]["timestampServer"],
+            "http://timestamp.acs.microsoft.com",
+        )
 
     def test_docs_describe_mpdev_as_mandatory_and_nsis_as_fallback(self):
         docs = (ROOT / "docs" / "windows-packaging.md").read_text(encoding="utf-8")
