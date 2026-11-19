@@ -3478,10 +3478,140 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     }
 }
 
+fn terminate_service_process(pid: u32) -> bool {
+    if pid <= 1 || pid == std::process::id() {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    {
+        let term = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !term {
+            return false;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if request_service_status()
+                .map(|status| status.process_id != pid)
+                .unwrap_or(true)
+            {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+fn run_stop_service_command() -> i32 {
+    let initial = match request_service_status() {
+        Ok(status) => status,
+        Err(_) => {
+            eprintln!("crash_helper: no reachable GitManager core service; nothing to stop.");
+            return 0;
+        }
+    };
+
+    let pid = initial.process_id;
+    if pid <= 1 || pid == std::process::id() {
+        eprintln!(
+            "crash_helper: refusing to stop GitManager service because its authenticated status did not include a safe process ID."
+        );
+        return 1;
+    }
+
+    eprintln!("crash_helper: requesting a short service suspension before installer shutdown.");
+    let _ = request_service_suspend(30);
+
+    // Let an active repository scan or remote check finish before stopping.
+    // This is bounded; an unresponsive worker cannot block installation forever.
+    let quiesce_deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < quiesce_deadline {
+        match request_service_status() {
+            Ok(status) if status.process_id != pid => {
+                eprintln!("crash_helper: service ownership changed during installer shutdown; refusing to stop a different process.");
+                let _ = request_service_resume();
+                return 1;
+            }
+            Ok(status) if !status.indexing && !status.remote_check_running => break,
+            Ok(_) => thread::sleep(Duration::from_millis(150)),
+            Err(_) => {
+                eprintln!("crash_helper: service became unreachable while preparing to stop.");
+                let _ = request_service_resume();
+                return 0;
+            }
+        }
+    }
+
+    eprintln!("crash_helper: stopping authenticated GitManager core service PID {pid}.");
+    let _ = terminate_service_process(pid);
+
+    let stop_deadline = Instant::now() + Duration::from_secs(5);
+    let mut stopped = false;
+    while Instant::now() < stop_deadline {
+        match request_service_status() {
+            Err(_) => {
+                stopped = true;
+                break;
+            }
+            Ok(status) if status.process_id != pid => {
+                eprintln!("crash_helper: a different service process appeared during shutdown; refusing to report success.");
+                break;
+            }
+            Ok(_) => thread::sleep(Duration::from_millis(100)),
+        }
+    }
+
+    // Clear the persisted suspension intent so a later launch does not inherit
+    // an installer-only pause.
+    let _ = request_service_resume();
+
+    if stopped {
+        eprintln!("crash_helper: GitManager core service stopped.");
+        0
+    } else {
+        eprintln!("crash_helper: GitManager core service did not stop cleanly within the installer deadline.");
+        1
+    }
+}
+
 pub fn run_helper_from_args() -> i32 {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if arguments.first().is_some_and(|argument| argument.to_string_lossy() == "--supervise") {
         run_supervisor(arguments.into_iter().skip(1).collect())
+    } else if arguments.first().is_some_and(|argument| argument.to_string_lossy() == "--stop-service") {
+        run_stop_service_command()
     } else {
         2
     }
