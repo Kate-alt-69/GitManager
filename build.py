@@ -35,6 +35,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -193,6 +194,34 @@ def _download_response_to_file(response, destination: Path, work: str = "CPython
     return downloaded
 
 
+def _run_with_work_heartbeat(work: str, progress: str, message: str, operation, interval_seconds: float = 5.0) -> None:
+    """Keep a visible WORKING status while a blocking network operation waits."""
+    stop = threading.Event()
+    started_at = time.monotonic()
+
+    def report_heartbeat() -> None:
+        while not stop.wait(interval_seconds):
+            elapsed = int(time.monotonic() - started_at)
+            log_work(
+                work,
+                progress,
+                "WORKING",
+                f"{message} Still active ({elapsed}s elapsed; waiting for the next response).",
+            )
+
+    worker = threading.Thread(
+        target=report_heartbeat,
+        name="gitmanager-build-progress",
+        daemon=True,
+    )
+    worker.start()
+    try:
+        operation()
+    finally:
+        stop.set()
+        worker.join(timeout=max(interval_seconds, 1.0))
+
+
 PYTHON_EMBED_VERSION = "3.14.10"
 PYTHON_EMBED_BASE_URL = "https://www.python.org/ftp/python/3.14.10/"
 PYTHON_EMBED_PACKAGES = {
@@ -298,16 +327,29 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
         )
         log_work(
             "CPython download", "3/6", "PENDING",
-            f"Connecting to python.org for {archive_name} (connection/read timeout: 90 seconds)...",
+            f"Queued {archive_name} from python.org.",
+        )
+        log_work(
+            "CPython download", "3/6", "WORKING",
+            "Opening the HTTPS connection; request timeout is 90 seconds.",
         )
         log_debug(f"CPython download URL: {archive_url}")
-        try:
+
+        def download_package() -> None:
             with urllib.request.urlopen(request, timeout=90) as response:
                 log_debug(
                     f"python.org response status={getattr(response, 'status', 'unknown')}; "
                     f"Content-Length={response.headers.get('Content-Length', 'unknown')}."
                 )
                 _download_response_to_file(response, archive_path)
+
+        try:
+            _run_with_work_heartbeat(
+                "CPython download",
+                "3/6",
+                "Connecting to python.org or waiting for more download bytes.",
+                download_package,
+            )
         except Exception as exc:
             message = f"Could not download the official Python embeddable package: {exc}"
             log_work("CPython download", "3/6", "FAILED", message)
