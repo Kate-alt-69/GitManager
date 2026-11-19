@@ -85,6 +85,8 @@ Installer builds use two explicit passes so packaging never interrupts compilati
 
 If one architecture fails compilation, it is skipped during packaging while other successfully compiled targets can still finish. No installer is generated while another selected architecture is still compiling.
 
+Release automation can set `GITMANAGER_DEFER_MPDEV_PACKAGING=1`. In that mode the script creates the Tauri bundles and MPDEV manifest, then leaves MSI/MSIX generation to the release workflow so it can sign the staged app and NSIS payload first. Ordinary local builds do not set this variable and create MSI/MSIX immediately in the final installer pass.
+
 ## Output layout
 
 All build products remain under the repository's ignored `build/` directory:
