@@ -4155,6 +4155,7 @@ mod tests {
             child_started_at: Some(std::time::Instant::now()),
             unhealthy_since: None,
             restart_attempts: 0,
+            lock_warning_recorded: false,
             next_restart: std::time::Instant::now(),
             last_health_check: std::time::Instant::now(),
         };
