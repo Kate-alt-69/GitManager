@@ -36,7 +36,7 @@
     "packageDescription": "GitManager — a native Git workspace manager by Kastrick.",
     "digitalSignature": {
       "signWith": "GenerateTestCertificate",
-      "timestampServer": "http://timestamp.sectigo.com"
+      "timestampServer": "http://timestamp.acs.microsoft.com"
     }
   },
   "msi": {
