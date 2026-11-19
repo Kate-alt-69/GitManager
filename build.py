@@ -2614,10 +2614,15 @@ def package_local_target(
         manifest_result, manifest = prepare_master_packager_manifest(project_root)
         if manifest_result != 0 or manifest is None:
             return manifest_result or 1
-        mpdev_result, packages = build_master_packager_installers(project_root, manifest)
-        if mpdev_result != 0 or not packages:
-            return mpdev_result or 1
-        include_mpdev = True
+        if os.environ.get("GITMANAGER_DEFER_MPDEV_PACKAGING") == "1":
+            log_info(
+                "MPDEV manifest is ready; release signing runs before MSI/MSIX generation."
+            )
+        else:
+            mpdev_result, packages = build_master_packager_installers(project_root, manifest)
+            if mpdev_result != 0 or not packages:
+                return mpdev_result or 1
+            include_mpdev = True
 
     return publish_build_outputs(
         project_root,
