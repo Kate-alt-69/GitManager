@@ -619,7 +619,7 @@ function RepositoryPage({
 	setKind,
 	scanning,
 	onScan,
-	onCheckUpdates,
+	onQueueRemoteCheck,
 	onSwitchBranch,
 	preferences,
 	onRescan,
@@ -643,7 +643,7 @@ function RepositoryPage({
 	setKind: (value: RepoKind) => void;
 	scanning: boolean;
 	onScan: () => void;
-	onCheckUpdates: () => Promise<void>;
+	onQueueRemoteCheck: () => Promise<void>;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 	preferences: AppPreferences;
 	onRescan: () => void;
@@ -687,7 +687,7 @@ function RepositoryPage({
 					<p>Find, inspect and maintain the Git projects on this machine.</p>
 				</div>
 				<div className="gm-page-heading-actions">
-					<Button onClick={onCheckUpdates}><Glyph>↻</Glyph> Check remotes</Button>
+					<Button onClick={onQueueRemoteCheck}><Glyph>↻</Glyph> Check remotes</Button>
 					<Button variant="primary" onClick={onScan} disabled={scanning}><Glyph>⌕</Glyph>{scanning ? "Scanning…" : "Scan workspace"}</Button>
 				</div>
 			</div>
@@ -967,7 +967,7 @@ export function GitManagerApp() {
 							scanning={git.scanning}
 							onScan={() => void git.scan()}
 							scanTruncated={git.scanTruncated}
-							onCheckUpdates={git.checkUpdates}
+							onQueueRemoteCheck={async () => { await git.queueRemoteCheck(); }}
 							onSwitchBranch={git.switchBranch}
 							preferences={git.preferences}
 							onRescan={handleScan}
