@@ -8,7 +8,7 @@ import { invoke, openDialog } from "../lib/tauri";
 import { Button, EmptyState, Field, Glyph, ProviderMark, RepoAvatar, Switch } from "./shared-ui";
 import { parseInternalRoute, repositoryRouteForItem, repositorySubroute, routeLabel, sectionForRoute, sectionRoute } from "../lib/internal-routing";
 import type { RepositoryDestination } from "../lib/internal-routing";
-import type { AppPreferences, ArchiveSnapshot, AppNotification, BranchInfo, GitRepository, UpdateAlert } from "../lib/types";
+import type { AppPreferences, ArchiveSnapshot, AppNotification, BranchInfo, GitRepository } from "../lib/types";
 
 const BRAND_LOGO = "/image/git-managar-orange_default-white.png";
 const BRAND_RING = "/image/git-managar-orange-ring_default-white.png";
@@ -620,7 +620,6 @@ function RepositoryPage({
 	scanning,
 	onScan,
 	onCheckUpdates,
-	updates,
 	onSwitchBranch,
 	preferences,
 	onRescan,
@@ -645,8 +644,7 @@ function RepositoryPage({
 	setKind: (value: RepoKind) => void;
 	scanning: boolean;
 	onScan: () => void;
-	onCheckUpdates: () => Promise<UpdateAlert[]>;
-	updates: UpdateAlert[];
+	onCheckUpdates: () => Promise<void>;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 	preferences: AppPreferences;
 	onRescan: () => void;
@@ -707,26 +705,6 @@ function RepositoryPage({
 			</EngineGrid>
 
 			{scanTruncated && <div className="gm-scan-limit-banner">Discovery reached a safety limit. Narrow your scan folders or depth to inspect the remaining workspace.</div>}
-			{updates.length > 0 && (
-				<div className="gm-update-banner">
-					<div className="gm-update-banner-icon">↑</div>
-					<div className="gm-update-banner-copy">
-						<strong>{updates.length} remote update{updates.length === 1 ? "" : "s"} available</strong>
-						<span>Review each repository, choose how to protect local changes, and confirm every Pull.</span>
-					</div>
-					<div className="gm-update-list">
-						{updates.slice(0, 3).map((update) => (
-							<div key={update.repo_path}>
-								<span>{update.repo_name} · {update.commits_behind} behind</span>
-								<Button variant="primary" onClick={() => {
-									const target = repositories.find((item) => item.path === update.repo_path);
-									if (target) setSelectedRepo(target);
-								}}>Review Pull</Button>
-							</div>
-						))}
-					</div>
-				</div>
-			)}
 
 			<div className="gm-repo-toolbar">
 				<label className="gm-search-field">
@@ -993,7 +971,6 @@ export function GitManagerApp() {
 							onScan={() => void git.scan()}
 							scanTruncated={git.scanTruncated}
 							onCheckUpdates={git.checkUpdates}
-							updates={git.updates}
 							onSwitchBranch={git.switchBranch}
 							preferences={git.preferences}
 							onRescan={handleScan}
