@@ -389,24 +389,51 @@ fn open_service_log_streams() -> Result<(Stdio, Stdio), String> {
     Ok((Stdio::from(output), Stdio::from(errors)))
 }
 
-/// Returns the most recent 64 KiB of the required service's log for Task Center diagnostics.
-pub fn read_service_log_tail() -> Result<String, String> {
-    let path = service_log_path()?;
+fn read_bounded_log_tail(path: &Path, max_bytes: u64) -> Result<Option<String>, String> {
     if !path.is_file() {
-        return Ok("The core service has not written a log yet.".to_string());
+        return Ok(None);
     }
-    let mut file = File::open(&path)
-        .map_err(|error| format!("Could not open GitManager service log: {error}"))?;
+    let mut file = File::open(path)
+        .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
     let length = file.metadata()
-        .map_err(|error| format!("Could not inspect GitManager service log: {error}"))?
+        .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?
         .len();
-    let offset = length.saturating_sub(SERVICE_LOG_TAIL_BYTES);
+    let offset = length.saturating_sub(max_bytes);
     file.seek(SeekFrom::Start(offset))
-        .map_err(|error| format!("Could not seek GitManager service log: {error}"))?;
+        .map_err(|error| format!("Could not seek {}: {error}", path.display()))?;
     let mut bytes = Vec::with_capacity((length - offset) as usize);
     file.read_to_end(&mut bytes)
-        .map_err(|error| format!("Could not read GitManager service log: {error}"))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// Returns bounded core-service output plus recent crash_helper incidents.
+/// The existing Task Center diagnostics surface shows both without needing a
+/// separate UI command or a second log viewer.
+pub fn read_service_log_tail() -> Result<String, String> {
+    let path = service_log_path()?;
+    let mut sections = Vec::new();
+
+    match read_bounded_log_tail(&path, SERVICE_LOG_TAIL_BYTES)? {
+        Some(log) if !log.trim().is_empty() => {
+            sections.push(format!("=== GITMANAGER CORE SERVICE (latest 64 KiB) ===\n{log}"));
+        }
+        _ => sections.push("=== GITMANAGER CORE SERVICE ===\nThe core service has not written a log yet.".to_string()),
+    }
+
+    if let Some(parent) = path.parent() {
+        let incidents = parent.join("crash_helper.jsonl");
+        match read_bounded_log_tail(&incidents, 32 * 1024)? {
+            Some(log) if !log.trim().is_empty() => {
+                sections.push(format!(
+                    "=== CRASH_HELPER INCIDENTS (latest 32 KiB) ===\n{log}"
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(sections.join("\n\n"))
 }
 
 
