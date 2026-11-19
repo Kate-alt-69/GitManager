@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -377,6 +379,40 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
             service_source.index("gitmanager_core::storage::ensure_data_layout()"),
             service_source.index("let service_control = match start_service_control_server()"),
         )
+
+
+class BuildProgressReportingTests(unittest.TestCase):
+    def test_work_indicator_includes_work_progress_and_status(self):
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            BUILD.log_work("CPython runtime", "2/6", "WORKING", "Checking the cached runtime...")
+        self.assertIn("[ CPython runtime ] [2/6] [WORKING]", output.getvalue())
+        self.assertIn("Checking the cached runtime...", output.getvalue())
+
+    def test_python_runtime_download_streams_bytes_and_reports_completion(self):
+        payload = b"python-embed-runtime-fixture"
+        response = io.BytesIO(payload)
+        response.headers = {"Content-Length": str(len(payload))}
+
+        with tempfile.TemporaryDirectory(prefix="gitmanager-build-progress-test-") as temporary:
+            destination = Path(temporary) / "python-embed.zip"
+            output = io.StringIO()
+            with patch("sys.stdout", output):
+                copied = BUILD._download_response_to_file(response, destination)
+
+            self.assertEqual(copied, len(payload))
+            self.assertEqual(destination.read_bytes(), payload)
+            self.assertIn("[ CPython download ] [100%] [DONE]", output.getvalue())
+
+    def test_python_runtime_download_rejects_a_truncated_http_body(self):
+        response = io.BytesIO(b"short")
+        response.headers = {"Content-Length": "100"}
+
+        with tempfile.TemporaryDirectory(prefix="gitmanager-build-progress-test-") as temporary:
+            destination = Path(temporary) / "python-embed.zip"
+            with patch("sys.stdout", io.StringIO()):
+                with self.assertRaisesRegex(OSError, "Download ended early"):
+                    BUILD._download_response_to_file(response, destination)
 
 
 if __name__ == "__main__":
