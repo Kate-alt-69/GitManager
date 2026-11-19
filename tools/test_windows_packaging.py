@@ -534,7 +534,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         )[0]
         duplicate_monitor = service_supervisor.split(
             "if lock_file.try_lock_exclusive().is_err() {", 1
-        )[1].split("\\n    }", 1)[0]
+        )[1].split("\n    }", 1)[0]
 
         self.assertIn('println!("GITMANAGER_SERVICE_SUPERVISOR_READY")', duplicate_monitor)
         self.assertNotIn("core_service_ready()", duplicate_monitor)
