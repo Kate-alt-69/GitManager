@@ -106,25 +106,25 @@ fn write_index_generation_file(path: &Path, generation: u64) -> Result<(), Strin
 /// Returns a small monotonic generation without deserializing the repository index.
 pub fn repository_index_generation() -> Result<u64, String> {
     let generation_path = repository_index_generation_path()?;
-    match read_index_generation_file(&generation_path) {
-        Ok(Some(generation)) => return Ok(generation),
-        Ok(None) => {}
-        Err(_) => {
-            // A malformed sidecar must not hide an otherwise readable index.
-        }
-    }
+    let sidecar_generation = read_index_generation_file(&generation_path)
+        .ok()
+        .flatten()
+        .unwrap_or(0);
 
-    // One-time upgrade/recovery fallback: the current index file's timestamp is
-    // cheap to read and is used only until the service publishes the sidecar.
+    // The index timestamp remains a cheap recovery signal. Taking the maximum
+    // means a missing/stale sidecar cannot hide an index publish, while the
+    // sidecar advances generations even on filesystems with coarse timestamps.
     let index_path = repository_index_path()?;
-    if !index_path.is_file() {
-        return Ok(0);
-    }
-    let modified = fs::metadata(&index_path)
-        .map_err(|error| format!("Could not inspect repository index {}: {error}", index_path.display()))?
-        .modified()
-        .map_err(|error| format!("Could not read repository index timestamp {}: {error}", index_path.display()))?;
-    Ok(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos().min(u64::MAX as u128) as u64)
+    let file_generation = if index_path.is_file() {
+        let modified = fs::metadata(&index_path)
+            .map_err(|error| format!("Could not inspect repository index {}: {error}", index_path.display()))?
+            .modified()
+            .map_err(|error| format!("Could not read repository index timestamp {}: {error}", index_path.display()))?;
+        modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos().min(u64::MAX as u128) as u64
+    } else {
+        0
+    };
+    Ok(sidecar_generation.max(file_generation))
 }
 
 /// Compatibility alias retained for callers that used the former timestamp API.
@@ -178,13 +178,13 @@ pub fn save_persisted_repository_index(
     }
 
     let previous_generation = repository_index_generation().unwrap_or(0);
-    let next_generation = previous_generation.saturating_add(1);
-
-    let current_time = SystemTime::now()
+    let current_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64;
+        .unwrap_or_default();
+    let next_generation = previous_generation
+        .saturating_add(1)
+        .max(current_unix.as_nanos().min(u64::MAX as u128) as u64);
+    let current_time = current_unix.as_millis().min(u64::MAX as u128) as u64;
     // Keep the generation strictly increasing even when two refreshes happen
     // within the same system-clock millisecond.
     // A corrupt prior index must not prevent the service from rebuilding it.
