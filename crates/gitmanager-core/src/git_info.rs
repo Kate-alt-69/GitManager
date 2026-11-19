@@ -642,6 +642,7 @@ mod branch_switch_tests {
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("tracked.txt")).unwrap();
         let tree_id = index.write_tree().unwrap();
+        drop(index);
         let tree = repo.find_tree(tree_id).unwrap();
         let main_oid = repo.commit(
             Some("refs/heads/main"),
@@ -663,6 +664,7 @@ mod branch_switch_tests {
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("tracked.txt")).unwrap();
         let tree_id = index.write_tree().unwrap();
+        drop(index);
         let tree = repo.find_tree(tree_id).unwrap();
         let parent = repo.head().unwrap().peel_to_commit().unwrap();
         repo.commit(
