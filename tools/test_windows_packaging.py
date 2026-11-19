@@ -90,6 +90,38 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn(r"$INSTDIR\resources\python\python.exe", hooks)
         self.assertIn("NSIS_HOOK_POSTINSTALL", hooks)
 
+    def test_nsis_stops_per_user_service_after_the_ui_and_before_replacing_files(self):
+        template = (ROOT / "src-tauri" / "windows" / "installer.nsi").read_text(encoding="utf-8")
+        install_section = template.split("Section Install", 1)[1].split("SectionEnd", 1)[0]
+        uninstall_section = template.split("Section Uninstall", 1)[1].split("SectionEnd", 1)[0]
+
+        install_check = install_section.index('!insertmacro CheckIfAppIsRunning')
+        install_cleanup = install_section.index('!insertmacro NSIS_HOOK_PREINSTALL')
+        uninstall_check = uninstall_section.index('!insertmacro CheckIfAppIsRunning')
+        uninstall_cleanup = uninstall_section.index('!insertmacro NSIS_HOOK_PREUNINSTALL')
+
+        self.assertLess(install_check, install_cleanup)
+        self.assertLess(uninstall_check, uninstall_cleanup)
+
+    def test_nsis_hooks_stop_only_current_users_helper_and_service_and_verify_sidecars(self):
+        hooks = (ROOT / "src-tauri" / "windows" / "hooks.nsh").read_text(encoding="utf-8")
+
+        self.assertIn('USERNAME eq $%USERNAME%', hooks)
+        self.assertIn('schtasks.exe" /End /TN "GitManager Core Service"', hooks)
+        self.assertIn('taskkill.exe" /F /T', hooks)
+        for image in (
+            "crash_helper.exe",
+            "gitmanager.service.exe",
+            "gitmanager-service.exe",
+            "git-manager-service.exe",
+        ):
+            self.assertIn(f'/IM "{image}"', hooks)
+        self.assertIn('schtasks.exe" /Delete /TN "GitManager Core Service" /F', hooks)
+        self.assertIn('$UpdateMode <> 1', hooks)
+        self.assertIn('IfFileExists "$INSTDIR\\\\crash_helper.exe"', hooks)
+        self.assertIn('IfFileExists "$INSTDIR\\\\gitmanager.service.exe"', hooks)
+        self.assertIn('IfFileExists "$INSTDIR\\\\resources\\\\python\\\\python.exe"', hooks)
+
     def test_mpdev_desktop_manifest_builds_both_msi_and_msix(self):
         config = json.loads(
             (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
@@ -134,6 +166,10 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('"/SC", "ONLOGON"', watcher_source)
         self.assertIn("git-manager.exe", desktop["msi"]["detectRunningProcesses"])
         self.assertIn("git-manager-service.exe", desktop["msi"]["detectRunningProcesses"])
+        self.assertIn("gitmanager.exe", desktop["msi"]["detectRunningProcesses"])
+        self.assertIn("crash_helper.exe", desktop["msi"]["detectRunningProcesses"])
+        self.assertIn("gitmanager.service.exe", desktop["msi"]["detectRunningProcesses"])
+        self.assertIn("gitmanager-service.exe", desktop["msi"]["detectRunningProcesses"])
         self.assertIn("GitManager Background Service", watcher_source)
         self.assertIn("gitmanager-updater.service", watcher_source)
         self.assertIn("com.gitmanager.updater", watcher_source)
