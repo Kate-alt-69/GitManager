@@ -265,6 +265,15 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('"tauri", "bundle"', package_function)
         self.assertIn("build_master_packager_installers(project_root, manifest)", package_function)
 
+    def test_release_pipeline_can_defer_mpdev_until_after_signing(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        package_function = source.split("def package_local_target(", 1)[1].split(
+            '@tracked_work("Native build pipeline")', 1
+        )[0]
+        self.assertIn('os.environ.get("GITMANAGER_DEFER_MPDEV_PACKAGING") == "1"', package_function)
+        self.assertIn("release signing runs before MSI/MSIX generation", package_function)
+        self.assertIn("build_master_packager_installers(project_root, manifest)", package_function)
+
     def test_mpdev_timestamp_server_defaults_to_microsoft_and_can_be_overridden(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
