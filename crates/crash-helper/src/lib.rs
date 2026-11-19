@@ -694,7 +694,7 @@ fn save_account_storage(state: &ServiceState, payload: serde_json::Value) -> Ser
         let metadata: gitmanager_core::account_store::AccountMetadata =
             serde_json::from_value(metadata_value)
                 .map_err(|error| format!("Account metadata payload is invalid: {error}"))?;
-        let repositories: Vec<gitmanager_core::git_info::GitRepositoryInfo> =
+        let repositories: Vec<gitmanager_core::models::GitRepositoryInfo> =
             serde_json::from_value(repositories_value)
                 .map_err(|error| format!("Account repository cache payload is invalid: {error}"))?;
         gitmanager_core::account_store::save_account(&metadata, &repositories)
