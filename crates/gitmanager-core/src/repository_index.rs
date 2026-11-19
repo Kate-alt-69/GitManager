@@ -38,21 +38,98 @@ pub fn repository_index_path() -> Result<PathBuf, String> {
         .join("index.json"))
 }
 
-pub fn repository_index_modified_unix_nanos() -> Result<u128, String> {
-    let path = repository_index_path()?;
-    if !path.is_file() {
-        return Ok(0);
-    }
-    let modified = fs::metadata(&path)
-        .map_err(|error| format!("Could not inspect repository index {}: {error}", path.display()))?
-        .modified()
-        .map_err(|error| format!("Could not read repository index timestamp {}: {error}", path.display()))?;
-    Ok(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())
+fn repository_index_generation_path() -> Result<PathBuf, String> {
+    Ok(crate::storage::data_dir()?
+        .join("repo")
+        .join("metadata")
+        .join("index.generation"))
 }
 
-/// Returns a cheap filesystem generation stamp without deserializing the index.
+fn read_index_generation_file(path: &Path) -> Result<Option<u64>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Could not inspect repository index generation: {error}"))?;
+    if metadata.len() > 32 {
+        return Err("Repository index generation file is invalid.".to_string());
+    }
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("Could not read repository index generation: {error}"))?;
+    let generation = content.trim().parse::<u64>()
+        .map_err(|_| "Repository index generation file is invalid.".to_string())?;
+    Ok(Some(generation))
+}
+
+fn write_index_generation_file(path: &Path, generation: u64) -> Result<(), String> {
+    let parent = path.parent()
+        .ok_or_else(|| "Repository index generation path has no parent directory.".to_string())?;
+    let temporary = path.with_extension("generation.tmp");
+    let backup = path.with_extension("generation.previous");
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| format!("Could not create repository index generation: {error}"))?;
+        use std::io::Write;
+        write!(file, "{generation}\n")
+            .map_err(|error| format!("Could not write repository index generation: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Could not flush repository index generation: {error}"))?;
+    }
+
+    let had_previous = path.is_file();
+    if had_previous {
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|error| format!("Could not clear previous index generation backup: {error}"))?;
+        }
+        fs::rename(path, &backup)
+            .map_err(|error| format!("Could not stage previous index generation: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        if had_previous {
+            let _ = fs::rename(&backup, path);
+        }
+        return Err(format!("Could not publish repository index generation: {error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_file(backup);
+    }
+    // Ensure the directory entry is durable before notifying the UI.
+    let _ = OpenOptions::new().read(true).open(parent).and_then(|directory| directory.sync_all());
+    Ok(())
+}
+
+/// Returns a small monotonic generation without deserializing the repository index.
 pub fn repository_index_generation() -> Result<u64, String> {
-    Ok(repository_index_modified_unix_nanos()?.min(u64::MAX as u128) as u64)
+    let generation_path = repository_index_generation_path()?;
+    match read_index_generation_file(&generation_path) {
+        Ok(Some(generation)) => return Ok(generation),
+        Ok(None) => {}
+        Err(_) => {
+            // A malformed sidecar must not hide an otherwise readable index.
+        }
+    }
+
+    // One-time upgrade/recovery fallback: the current index file's timestamp is
+    // cheap to read and is used only until the service publishes the sidecar.
+    let index_path = repository_index_path()?;
+    if !index_path.is_file() {
+        return Ok(0);
+    }
+    let modified = fs::metadata(&index_path)
+        .map_err(|error| format!("Could not inspect repository index {}: {error}", index_path.display()))?
+        .modified()
+        .map_err(|error| format!("Could not read repository index timestamp {}: {error}", index_path.display()))?;
+    Ok(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos().min(u64::MAX as u128) as u64)
+}
+
+/// Compatibility alias retained for callers that used the former timestamp API.
+pub fn repository_index_modified_unix_nanos() -> Result<u128, String> {
+    Ok(u128::from(repository_index_generation()?))
 }
 
 pub fn load_persisted_repository_index() -> Result<Option<PersistedRepositoryIndex>, String> {
@@ -99,6 +176,9 @@ pub fn save_persisted_repository_index(
         fs::rename(&backup, &path)
             .map_err(|error| format!("Could not recover the previous repository index: {error}"))?;
     }
+
+    let previous_generation = repository_index_generation().unwrap_or(0);
+    let next_generation = previous_generation.saturating_add(1);
 
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -160,6 +240,8 @@ pub fn save_persisted_repository_index(
         let _ = fs::remove_file(&backup);
     }
 
+    let generation_path = repository_index_generation_path()?;
+    write_index_generation_file(&generation_path, next_generation)?;
     Ok(index)
 }
 
