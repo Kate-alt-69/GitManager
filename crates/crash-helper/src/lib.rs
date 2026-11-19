@@ -3616,9 +3616,11 @@ fn force_terminate_service_process(pid: u32) -> bool {
 fn run_stop_service_command() -> i32 {
     let initial = match request_service_status() {
         Ok(status) => status,
-        Err(_) => {
-            eprintln!("crash_helper: no reachable GitManager core service; nothing to stop.");
-            return 0;
+        Err(error) => {
+            eprintln!(
+                "crash_helper: no authenticated service endpoint is reachable ({error}); requesting the installer's current-user process cleanup fallback."
+            );
+            return 1;
         }
     };
 
