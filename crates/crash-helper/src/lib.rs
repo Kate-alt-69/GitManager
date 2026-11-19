@@ -2691,6 +2691,45 @@ fn core_service_log_tail() -> String {
     text.lines().rev().take(32).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
 }
 
+fn read_bounded_log_tail(path: &Path, max_bytes: u64, max_lines: usize) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let length = file.metadata()?.len();
+    let offset = length.saturating_sub(max_bytes);
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(offset))?;
+    let mut bytes = Vec::with_capacity((length - offset) as usize);
+    file.read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(text
+        .lines()
+        .rev()
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Returns the most recent bounded crash_helper incidents for Task Center →
+/// Service diagnostics. The JSONL records include the failure reason, exit
+/// code, authenticated service status and a snapshot of the service log.
+pub fn read_service_incident_tail() -> Result<String, String> {
+    let path = gitmanager_data_dir()?.join("log").join("crash_helper.jsonl");
+    match read_bounded_log_tail(&path, 16 * 1024, 24) {
+        Ok(text) if text.trim().is_empty() => {
+            Ok("No crash_helper incident records have been recorded.".to_string())
+        }
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok("No crash_helper incident records have been recorded.".to_string())
+        }
+        Err(error) => Err(format!(
+            "Could not read crash_helper incident history at {}: {error}",
+            path.display()
+        )),
+    }
+}
+
 fn open_core_service_log_streams() -> Result<(Stdio, Stdio), String> {
     let path = core_service_log_path()?;
     let directory = path.parent()
@@ -3456,6 +3495,21 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn bounded_incident_tail_returns_only_the_newest_records() {
+        let root = std::env::temp_dir()
+            .join(format!("gitmanager-incident-tail-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create incident fixture directory");
+        let path = root.join("crash_helper.jsonl");
+        fs::write(&path, "incident-one\nincident-two\nincident-three\n")
+            .expect("write incident fixture");
+
+        let tail = super::read_bounded_log_tail(&path, 1024, 2)
+            .expect("read incident tail");
+        assert_eq!(tail, "incident-two\nincident-three");
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn crash_helper_locates_the_core_service_beside_the_application() {
