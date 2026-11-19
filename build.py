@@ -87,9 +87,38 @@ def _paint(message: str, color: str, stream) -> str:
     return _ANSI_COLORS[color] + message + _ANSI_RESET
 
 
+_PROGRESS_LOCK = threading.RLock()
+_ACTIVE_PROGRESS_STREAM = None
+_ACTIVE_PROGRESS_WORK = None
+_ACTIVE_PROGRESS_WIDTH = 0
+_LAST_NONINTERACTIVE_PROGRESS = {}
+
+
+def _supports_inline_progress(stream) -> bool:
+    """Return true only when carriage-return updates can be shown in a real terminal."""
+    try:
+        return bool(stream.isatty()) and os.environ.get("TERM", "").lower() != "dumb"
+    except (AttributeError, OSError):
+        return False
+
+
+def _finish_progress_line_locked() -> None:
+    global _ACTIVE_PROGRESS_STREAM, _ACTIVE_PROGRESS_WORK, _ACTIVE_PROGRESS_WIDTH
+    if _ACTIVE_PROGRESS_STREAM is not None:
+        _ACTIVE_PROGRESS_STREAM.write("\\n")
+        _ACTIVE_PROGRESS_STREAM.flush()
+    _ACTIVE_PROGRESS_STREAM = None
+    _ACTIVE_PROGRESS_WORK = None
+    _ACTIVE_PROGRESS_WIDTH = 0
+
+
 def _emit(message: str, *, color: str = "white", stream=None) -> None:
     target = stream or sys.stdout
-    print(_paint(message, color, target), file=target, flush=True)
+    with _PROGRESS_LOCK:
+        # Any ordinary log or child-process output gets its own clean line.
+        _finish_progress_line_locked()
+        target.write(_paint(message, color, target) + "\\n")
+        target.flush()
 
 
 def log_info(msg: str) -> None:
@@ -114,17 +143,61 @@ def log_debug(msg: str) -> None:
 
 
 def log_work(work: str, progress: str, status: str, message: str) -> None:
-    """Emit a flushed, color-coded status line for a long-running build task."""
+    """Update one live terminal row; use de-duplicated lines in non-interactive logs."""
+    global _ACTIVE_PROGRESS_STREAM, _ACTIVE_PROGRESS_WORK, _ACTIVE_PROGRESS_WIDTH
     normalized = status.strip().upper()
     colors = {
         "PENDING": "yellow",
         "WORKING": "white",
         "DONE": "green",
         "FAILED": "red",
+        "CANCELLED": "red",
         "DEBUG": "gray",
+        "SKIPPED": "gray",
     }
     color = colors.get(normalized, "white")
-    _emit(f"[ {work} ] [{progress}] [{normalized}] {message}", color=color)
+    target = sys.stdout
+    rendered = f"[ {work} ] [{progress}] [{normalized}] {message}"
+    terminal = _supports_inline_progress(target)
+
+    with _PROGRESS_LOCK:
+        if not terminal:
+            previous = _LAST_NONINTERACTIVE_PROGRESS.get(work)
+            # Heartbeats with an unchanged stage are useful on a TTY but become
+            # repetitive log spam in CI and redirected output. Keep stage changes
+            # and real percentage/step updates, while dropping identical repeats.
+            if normalized == "WORKING" and previous == (normalized, progress):
+                return
+            _LAST_NONINTERACTIVE_PROGRESS[work] = (normalized, progress)
+            _finish_progress_line_locked()
+            target.write(_paint(rendered, color, target) + "\\n")
+            target.flush()
+        else:
+            if _ACTIVE_PROGRESS_STREAM is not None and _ACTIVE_PROGRESS_WORK != work:
+                _finish_progress_line_locked()
+
+            try:
+                columns = shutil.get_terminal_size(fallback=(120, 24)).columns
+            except OSError:
+                columns = 120
+            max_width = max(40, columns - 1)
+            if len(rendered) > max_width:
+                rendered = rendered[:max_width - 1] + "…"
+            padding = " " * max(0, _ACTIVE_PROGRESS_WIDTH - len(rendered))
+
+            target.write("\\r" + _paint(rendered, color, target) + padding)
+            target.flush()
+
+            if normalized in {"DONE", "FAILED", "CANCELLED", "SKIPPED"}:
+                target.write("\\n")
+                target.flush()
+                _ACTIVE_PROGRESS_STREAM = None
+                _ACTIVE_PROGRESS_WORK = None
+                _ACTIVE_PROGRESS_WIDTH = 0
+            else:
+                _ACTIVE_PROGRESS_STREAM = target
+                _ACTIVE_PROGRESS_WORK = work
+                _ACTIVE_PROGRESS_WIDTH = len(rendered)
 
 
 
