@@ -238,7 +238,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
         self.assertIn("build_master_packager_installers(project_root, manifest)", source)
         self.assertIn("prepare_master_packager_manifest(project_root)", source)
-        self.assertIn('command.extend(["tauri", "bundle"])', source)
+        self.assertIn('command.extend(["tauri", "bundle", "--target", target.triple])', source)
         self.assertIn('package_config["outputTypes"] = ["msi", "msix"]', source)
         self.assertIn("MPDEV is the required", source)
 
