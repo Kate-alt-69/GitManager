@@ -524,7 +524,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("pub fn service_control_lock_owner_pid()", helper)
         self.assertIn("pub fn service_control_lock_is_held()", helper)
         self.assertIn("if self.child.is_none() && service_control_lock_is_held()", helper)
-        self.assertIn("lock_file.write_all(format!(\\"{}\\", std::process::id()).as_bytes())", helper)
+        self.assertIn('lock_file.write_all(format!("{}", std::process::id()).as_bytes())', helper)
         self.assertIn("crash_helper::service_control_lock_owner_pid()", watcher)
 
     def test_windows_pipe_response_flushes_and_status_health_check_retries(self):
