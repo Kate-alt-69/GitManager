@@ -17,7 +17,7 @@ use fs2::FileExt;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 
 use crate::archive;
-use crate::git_info::GitRepositoryInfo;
+use gitmanager_core::models::GitRepositoryInfo;
 use crate::scanner::{scan_repositories, ScanOptions};
 use crate::AppPreferences;
 
