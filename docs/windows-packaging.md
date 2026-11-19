@@ -113,6 +113,12 @@ build/
 
 The MSI and MSIX versions are derived from `src-tauri/tauri.conf.json` and padded to four numeric components. The custom NSIS template is based on Tauri CLI 2.11.4's upstream template; update the vendored template when upgrading the CLI, preserving the Kastrick default-directory change. GitManager's CLI selector stays lowercase (`arm64`), while the generated MPDEV manifest uses the documented `Arm64` platform enum for Windows ARM64. The generated desktop MSIX uses MPDEV's development/test signing certificate for local installation testing. Do not treat that certificate as a trusted public release identity.
 
+## First-run setup companion
+
+Both Windows installers launch the packaged `gitmanager-setup.exe` companion after installation: NSIS runs its root-level sidecar, while the MPDEV MSI prompts the user to run `resources\gitmanager-setup.exe`. The companion launches the installed GUI with both `--setup` and `GITMANAGER_SETUP_MODE=1`, so the first-run wizard opens directly instead of re-triggering the launcher. The Tauri sidecar name must match the configured `binaries/gitmanager-setup` path exactly.
+
+The normal application bootstrap starts `crash_helper` before the UI. The helper starts and supervises `gitmanager.service` outside the UI's process-containment job, so the first-run wizard is reached with the required data service already starting. The optional Windows sign-in task remains an explicit user setting; setup does not silently register a permanent logon task.
+
 ## Windows background worker
 
 Both the desktop MSI/MSIX payload and the separate Store MSIX payload include `resources\\gitmanager.service.exe`. GitManager starts this executable on demand during desktop startup and waits for its authenticated readiness handshake. The Settings page can also register it as an **opt-in per-user sign-in process** through Windows Task Scheduler, allowing repository indexing and remote checks to begin before the desktop UI opens.
@@ -122,6 +128,21 @@ This is deliberately not declared in MPDEV's `services[]` section. MPDEV's servi
 The supported direction is to keep the required service in the package and launch it as the signed-in user. The current MSI/MSIX sign-in registration path still requires real-machine validation, especially for MSIX package identity and Store certification; packaging the executable alone does not prove that the scheduled launch succeeds.
 
 ## Install locations and runtime files
+
+Windows MSI and NSIS intentionally use separate install directories. The MSI installs to:
+
+```text
+%LOCALAPPDATA%\Programs\Kastrick's Software\GitManager
+```
+
+The NSIS fallback installs to:
+
+```text
+%LOCALAPPDATA%\kastrick's_software\GitManager
+```
+
+Do not point both installer formats at the same directory. They maintain separate Add/Remove Programs registrations and separate uninstallers; sharing the directory lets one format overwrite or remove the other format's `uninstall.exe`. Older builds used the NSIS directory for both formats, so upgrading from those builds may leave a second legacy registration. The new MSI path prevents future file/uninstaller collisions; remove a legacy entry only with the uninstaller belonging to that installation. Do not delete the shared config/data directories.
+
 
 The MPDEV MSI displays a branded install dialog with the GitManager description, Kastrick website/release links, an orange accent, and an optional `Launch GitManager` action after installation. The built-in layout and interaction model are provided by MPDEV; the project file customizes its supported branding fields rather than drawing arbitrary new dialogs.
 
