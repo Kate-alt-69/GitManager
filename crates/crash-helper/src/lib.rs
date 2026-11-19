@@ -2739,14 +2739,21 @@ impl CoreServiceSupervisor {
         if core_service_ready() {
             return;
         }
-        if let Some(child) = self.child.as_mut() {
-            match child.try_wait() {
+
+        // End the borrow before mutating self.child; Child::try_wait only
+        // needs to be sampled once per supervisor tick.
+        let child_state = self.child.as_mut().map(|child| {
+            let pid = child.id();
+            (pid, child.try_wait())
+        });
+        if let Some((pid, result)) = child_state {
+            match result {
                 Ok(None) => return,
                 Ok(Some(_)) => self.child = None,
                 Err(error) => {
                     append_incident(
                         &format!("Could not query GitManager core service process: {error}"),
-                        child.id(),
+                        pid,
                         None,
                         request_service_status(),
                     );
@@ -2754,6 +2761,7 @@ impl CoreServiceSupervisor {
                 }
             }
         }
+
         if Instant::now() < self.next_restart {
             return;
         }
@@ -2779,7 +2787,10 @@ impl CoreServiceSupervisor {
             }
             Err(error) => {
                 append_incident(
-                    &format!("crash_helper could not start GitManager core service during {reason}: {error}\n{}", core_service_log_tail()),
+                    &format!(
+                        "crash_helper could not start GitManager core service during {reason}: {error}\n{}",
+                        core_service_log_tail()
+                    ),
                     0,
                     None,
                     request_service_status(),
@@ -2790,10 +2801,13 @@ impl CoreServiceSupervisor {
     }
 
     fn tick(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            match child.try_wait() {
+        let child_state = self.child.as_mut().map(|child| {
+            let pid = child.id();
+            (pid, child.try_wait())
+        });
+        if let Some((pid, result)) = child_state {
+            match result {
                 Ok(Some(status)) => {
-                    let pid = child.id();
                     self.child = None;
                     if !core_service_ready() {
                         append_incident(
@@ -2810,7 +2824,6 @@ impl CoreServiceSupervisor {
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    let pid = child.id();
                     append_incident(
                         &format!(
                             "crash_helper could not query GitManager core service process: {error}\n{}",
