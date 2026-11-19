@@ -105,6 +105,11 @@ ${PREFIX}stop_cleanup_done:
 ; Tauri invokes this after files, registry entries and shortcuts are installed.
 ; Keep CPython private to the current user and verify every required sidecar.
 !macro NSIS_HOOK_POSTINSTALL
+  IfFileExists "$INSTDIR\gitmanager-setup.exe" setup_helper_payload_ready 0
+  MessageBox MB_ICONSTOP "GitManager's required setup helper is missing from the installation. This package cannot run first-run setup; rebuild the installer with all sidecars."
+  Abort
+setup_helper_payload_ready:
+
   IfFileExists "$INSTDIR\crash_helper.exe" crash_helper_payload_ready 0
   IfFileExists "$INSTDIR\crash_helper-x86_64-pc-windows-msvc.exe" crash_helper_payload_ready 0
   IfFileExists "$INSTDIR\crash_helper-i686-pc-windows-msvc.exe" crash_helper_payload_ready 0
