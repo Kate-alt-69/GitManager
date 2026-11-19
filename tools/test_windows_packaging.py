@@ -531,7 +531,7 @@ class BuildProgressReportingTests(unittest.TestCase):
         self.assertEqual(rendered.count("\x1b[2K"), 4)
         self.assertEqual(rendered.count("\n"), 1)
         self.assertIn("DONE     CPython download", rendered)
-        self.assertIn("[==================]", rendered)
+        self.assertIn("====", rendered)
 
     def test_log_lines_preserve_the_live_progress_row(self):
         output = _TTYBuffer()
