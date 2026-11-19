@@ -535,13 +535,18 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
         )
         log_debug(f"CPython download URL: {archive_url}")
 
+        progress_state = {
+            "progress": "3/6",
+            "message": "Connecting to python.org (90-second request timeout)...",
+        }
+
         def download_package() -> None:
             with urllib.request.urlopen(request, timeout=90) as response:
                 log_debug(
                     f"python.org response status={getattr(response, 'status', 'unknown')}; "
                     f"Content-Length={response.headers.get('Content-Length', 'unknown')}."
                 )
-                _download_response_to_file(response, archive_path)
+                _download_response_to_file(response, archive_path, progress_state=progress_state)
 
         try:
             _run_with_work_heartbeat(
@@ -549,6 +554,7 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
                 "3/6",
                 "Connecting to python.org or waiting for more download bytes.",
                 download_package,
+                progress_state=progress_state,
             )
         except Exception as exc:
             message = f"Could not download the official Python embeddable package: {exc}"
@@ -1147,8 +1153,10 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
     label = f"Probe {Path(str(cmd[0])).name}" if cmd else "Command probe"
     log_work(label, "1/1", "WORKING", f"Checking {' '.join(str(part) for part in cmd)}...")
     started_at = time.monotonic()
-    try:
-        proc = subprocess.run(
+    captured = {}
+
+    def capture_probe() -> None:
+        captured["process"] = subprocess.run(
             [str(part) for part in cmd],
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
@@ -1158,10 +1166,17 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
             errors="replace",
             check=False,
         )
+
+    try:
+        _run_with_work_heartbeat(
+            label, "1/1", f"Checking {' '.join(str(part) for part in cmd)}",
+            capture_probe,
+        )
+        proc = captured["process"]
         stdout = proc.stdout.strip()
         stderr = proc.stderr.strip()
         elapsed = max(time.monotonic() - started_at, 0.001)
-        log_work(label, "1/1", "DONE", f"Probe returned exit code {proc.returncode} in {elapsed:.1f}s.")
+        log_work(label, "1/1", "DONE" if proc.returncode == 0 else "FAILED", f"Probe returned exit code {proc.returncode} in {elapsed:.1f}s.")
         log_debug(f"{label} stdout: {stdout or '(empty)'}")
         if stderr:
             log_debug(f"{label} stderr: {stderr}")
