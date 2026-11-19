@@ -3603,6 +3603,14 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     }
 }
 
+fn windows_process_open_failure_means_running(error_code: u32) -> bool {
+    // OpenProcess reports ERROR_INVALID_PARAMETER for a PID that no longer
+    // exists. Access denied and other failures remain conservative: they do
+    // not prove that the target process has exited.
+    const ERROR_INVALID_PARAMETER: u32 = 87;
+    error_code != ERROR_INVALID_PARAMETER
+}
+
 fn service_process_is_running(pid: u32) -> bool {
     if pid <= 1 {
         return false;
@@ -3618,12 +3626,12 @@ fn service_process_is_running(pid: u32) -> bool {
             fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> isize;
             fn GetExitCodeProcess(process: isize, exit_code: *mut u32) -> i32;
             fn CloseHandle(handle: isize) -> i32;
+            fn GetLastError() -> u32;
         }
 
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle == 0 {
-            // Access denied is not evidence that the service has exited.
-            return true;
+            return windows_process_open_failure_means_running(unsafe { GetLastError() });
         }
         let mut exit_code = 0u32;
         let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
@@ -3966,6 +3974,22 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn windows_service_probe_distinguishes_missing_pids_from_access_denied() {
+        assert!(
+            !super::windows_process_open_failure_means_running(87),
+            "ERROR_INVALID_PARAMETER means the PID no longer exists"
+        );
+        assert!(
+            super::windows_process_open_failure_means_running(5),
+            "ERROR_ACCESS_DENIED must not be treated as proof that the process exited"
+        );
+        assert!(
+            super::windows_process_open_failure_means_running(6),
+            "unexpected OpenProcess failures remain conservative"
+        );
+    }
 
     #[test]
     fn installer_shutdown_waits_for_the_service_supervisor_lock_to_be_released() {
