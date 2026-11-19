@@ -124,9 +124,9 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
             self.assertIn(f'/IM "{image}"', hooks)
         self.assertIn('schtasks.exe" /Delete /TN "GitManager Core Service" /F', hooks)
         self.assertIn('$UpdateMode <> 1', hooks)
-        self.assertIn('IfFileExists "$INSTDIR\\\\crash_helper.exe"', hooks)
-        self.assertIn('IfFileExists "$INSTDIR\\\\gitmanager.service.exe"', hooks)
-        self.assertIn('IfFileExists "$INSTDIR\\\\resources\\\\python\\\\python.exe"', hooks)
+        self.assertIn(r'IfFileExists "$INSTDIR\crash_helper.exe"', hooks)
+        self.assertIn(r'IfFileExists "$INSTDIR\gitmanager.service.exe"', hooks)
+        self.assertIn(r'IfFileExists "$INSTDIR\resources\python\python.exe"', hooks)
 
     def test_mpdev_desktop_manifest_builds_both_msi_and_msix(self):
         config = json.loads(
