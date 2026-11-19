@@ -148,12 +148,15 @@ mod tests {
 }
 
 fn is_legacy_service_command(command: &str) -> bool {
-    let mut arguments = command.split_whitespace();
-    let executable = arguments.next().unwrap_or("");
-    let normalized = executable.replace('\\', "/");
-    let executable_name = normalized.rsplit('/').next().unwrap_or(&normalized);
-    matches!(executable_name, "git-manager-service" | "git-manager-service.exe")
-        || arguments.any(|argument| argument == "--command=git-manager-service")
+    command.split_whitespace().any(|argument| {
+        let argument = argument.trim_matches('"').trim_matches('\'');
+        if argument == "--command=git-manager-service" {
+            return true;
+        }
+        let normalized = argument.replace('\\', "/");
+        let executable_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+        matches!(executable_name, "git-manager-service" | "git-manager-service.exe")
+    })
 }
 
 #[cfg(unix)]
