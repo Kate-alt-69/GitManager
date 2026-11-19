@@ -2920,9 +2920,12 @@ impl CoreServiceSupervisor {
             return;
         }
 
-        // A stale version may still hold the one-instance lock. Its PID comes
-        // from an authenticated status response, never from a name-wide kill.
-        let _ = self.stop_obsolete_instance();
+        // A current instance may have become reachable after the first
+        // health probe timed out. Treat that authenticated response as ready;
+        // never launch a duplicate merely because the first probe was transient.
+        if self.stop_obsolete_instance() {
+            return;
+        }
 
         // End the borrow before mutating self.child; Child::try_wait only
         // needs to be sampled once per supervisor tick.
