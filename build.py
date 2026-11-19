@@ -747,7 +747,7 @@ def setup_windows_packaging_tools() -> int:
         )
         return 1
 
-    for display_name, package_id in WINDOWS_PACKAGING_WINGET_PACKAGES:
+    for package_index, (display_name, package_id) in enumerate(WINDOWS_PACKAGING_WINGET_PACKAGES, start=1):
         code, output, _ = run_capture([
             winget, "list", "--id", package_id, "--exact",
             "--accept-source-agreements",
@@ -761,7 +761,7 @@ def setup_windows_packaging_tools() -> int:
             "--silent", "--accept-package-agreements", "--accept-source-agreements",
             "--disable-interactivity",
         ]
-        result = subprocess.call(command)
+        result = run_command(command, work=f"Install {display_name}", progress=f"{package_index}/{len(WINDOWS_PACKAGING_WINGET_PACKAGES)}")
         if result != 0:
             log_err(f"WinGet could not install {display_name} (exit code {result}).")
             return result
@@ -1000,10 +1000,10 @@ def build_master_packager_installers(
         f"Master Packager Dev is building the required {package_arch} MSI and MSIX "
         "from the staged Windows application payload..."
     )
-    result = subprocess.run(command, cwd=str(project_root), env=environment, check=False)
-    if result.returncode != 0:
-        log_err(f"Master Packager Dev failed to build Windows MSI/MSIX (exit code {result.returncode}).")
-        return result.returncode, None
+    result = run_command(command, cwd=project_root, env=environment, work=f"MPDEV {package_arch} MSI/MSIX", progress="1/1")
+    if result != 0:
+        log_err(f"Master Packager Dev failed to build Windows MSI/MSIX (exit code {result}).")
+        return result, None
 
     packages: Dict[str, Path] = {}
     for extension in ("msi", "msix"):
@@ -1670,7 +1670,7 @@ def check_tauri_rust_cli(toolchain_arg: str, auto_install: bool = False) -> bool
         # CLI itself just because CARGO_BUILD_TARGET selects the app target.
         build_target = os.environ.pop("CARGO_BUILD_TARGET", None)
         try:
-            rc = subprocess.call(install_cmd)
+            rc = run_command(install_cmd, work="Install Rust Tauri CLI", progress="1/1")
         finally:
             if build_target is not None:
                 os.environ["CARGO_BUILD_TARGET"] = build_target
@@ -1771,9 +1771,13 @@ def build_gitm_sidecar(
         for _, command in commands:
             command.append("--release")
 
-    for description, command in commands:
-        log_info(f"Building {description}: {' '.join(command)}")
-        result = subprocess.call(command, cwd=str(project_root))
+    for command_index, (description, command) in enumerate(commands, start=1):
+        result = run_command(
+            command,
+            cwd=project_root,
+            work=f"Build {description}",
+            progress=f"{command_index}/{len(commands) + 1}",
+        )
         if result != 0:
             log_err(f"The {description} failed to build.")
             return result
@@ -1839,8 +1843,12 @@ def build_gitm_sidecar(
     service_cmd = common_prefix + ["build", "--package", "gitmanager-service", "--bin", "gitmanager-service"] + target_args
     if release:
         service_cmd.append("--release")
-    log_info(f"Building independent GitManager background service: {' '.join(service_cmd)}")
-    service_result = subprocess.call(service_cmd, cwd=str(project_root))
+    service_result = run_command(
+        service_cmd,
+        cwd=project_root,
+        work="Build GitManager background service",
+        progress=f"{len(commands) + 1}/{len(commands) + 1}",
+    )
     if service_result != 0 or not service_source.is_file():
         try:
             if service_sidecar.exists():
@@ -1882,13 +1890,17 @@ def build_gitm_sidecar(
     if platform.system() == "Windows" and os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
         sign_script = project_root / "tools" / "sign_windows_file.ps1"
         if sign_script.is_file():
-            for target in [*staged, setup_artifact]:
+            sign_targets = [*staged, setup_artifact]
+            for sign_index, target in enumerate(sign_targets, start=1):
                 sign_cmd = [
                     "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
                     "-ExecutionPolicy", "Bypass", "-File", str(sign_script),
                     "-FilePath", str(target),
                 ]
-                sign_rc = subprocess.call(sign_cmd, cwd=str(project_root))
+                sign_rc = run_command(
+                    sign_cmd, cwd=project_root, work=f"Sign {target.name}",
+                    progress=f"{sign_index}/{len(sign_targets)}",
+                )
                 if sign_rc != 0:
                     log_err(f"Could not sign GitManager build output: {target}")
                     return sign_rc
@@ -1928,12 +1940,12 @@ def ensure_rust_target_components(targets: List[BuildTarget], toolchain_arg: str
 
     installed = {line.strip() for line in output.splitlines() if line.strip()}
     missing = sorted({target.triple for target in targets if target.triple not in installed})
-    for triple in missing:
+    for target_index, triple in enumerate(missing, start=1):
         add_command = [rustup, "target", "add", triple]
         if selected_toolchain:
             add_command.extend(["--toolchain", selected_toolchain])
         log_info(f"Installing missing Rust target component locally: {triple}")
-        result = subprocess.call(add_command)
+        result = run_command(add_command, work=f"Install Rust target {triple}", progress=f"{target_index}/{len(missing)}")
         if result != 0:
             log_err(
                 f"Could not install Rust target {triple}. Confirm the selected toolchain supports it "
@@ -2093,7 +2105,7 @@ def build_local_store_package(
             str(debs[0]),
         ]
         log_info("Building the Flatpak bundle locally from the native Linux DEB payload...")
-        return subprocess.call(command, cwd=str(project_root))
+        return run_command(command, cwd=project_root, work="Build Flatpak bundle", progress="1/1")
 
     if store == "msix":
         if target.platform != "windows":
@@ -2126,7 +2138,7 @@ def build_local_store_package(
             "--app-dir", str(app_dir),
             "--platform", platform_name,
         ]
-        staged = subprocess.call(stage_command, cwd=str(project_root))
+        staged = run_command(stage_command, cwd=project_root, work="Stage Microsoft Store app payload", progress="1/2")
         if staged != 0:
             return staged
 
@@ -2149,7 +2161,10 @@ def build_local_store_package(
             "--use-msbuild-message-format", "true",
         ]
         log_info(f"Building the Microsoft Store {platform_name} MSIX locally with MPDEV...")
-        result = subprocess.run(command, cwd=str(project_root), env=environment, check=False).returncode
+        result = run_command(
+            command, cwd=project_root, env=environment,
+            work=f"Build Microsoft Store {platform_name} MSIX", progress="2/2",
+        )
         if result != 0:
             return result
         packages = sorted(
@@ -2327,7 +2342,7 @@ def run_build_or_dev(
         if toolchain_arg:
             cmd.append(toolchain_arg)
         cmd.extend(["check", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
-        return subprocess.call(cmd)
+        return run_command(cmd, work="Cargo check", progress="1/1")
 
     if mode == "build" and os.environ.get("GITMANAGER_SKIP_CLOUD_NODE_BUNDLE") != "1":
         cloud_node_result = prepare_cloud_node_deployment(project_root)
@@ -2399,8 +2414,7 @@ def run_build_or_dev(
                     log_err("Could not prepare an explicit Windows signing override; refusing to build with an ambiguous signing configuration.")
                     return 1
                 cmd.extend(["--config", str(signing_config.resolve())])
-        log_info(f"Running Pure-Rust Tauri CLI: {' '.join(cmd)}")
-        rc = subprocess.call(cmd, cwd=str(src_tauri_dir))
+        rc = run_command(cmd, cwd=src_tauri_dir, work=f"Tauri {mode}", progress="1/1")
         if rc != 0 or mode != "build":
             return rc
 
@@ -2451,8 +2465,7 @@ def run_build_or_dev(
         if release:
             cmd.append("--release")
 
-    log_info(f"Running Pure-Rust Cargo directly: {' '.join(cmd)}")
-    return subprocess.call(cmd, cwd=str(project_root))
+    return run_command(cmd, cwd=project_root, work=f"Cargo {mode}", progress="1/1")
 
 
 def main() -> int:
@@ -2548,13 +2561,10 @@ def main() -> int:
     if args.mode in ("frontend-build", "frontend-dev"):
         frontend_tool = project_root / "tools" / "nextjs_engine_source.py"
         frontend_mode = "build" if args.mode == "frontend-build" else "dev"
-        return subprocess.call([
-            sys.executable,
-            str(frontend_tool),
-            frontend_mode,
-            "--project-root",
-            str(project_root),
-        ])
+        return run_command(
+            [sys.executable, str(frontend_tool), frontend_mode, "--project-root", str(project_root)],
+            cwd=project_root, work=f"Frontend {frontend_mode}", progress="1/1",
+        )
 
     selected_targets = []
     if args.mode == "build":
