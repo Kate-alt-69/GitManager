@@ -121,10 +121,6 @@ export function useGitManager() {
 		setRepositories((current) => current.map((repo) => repo.id === updated.id ? updated : repo));
 	}, []);
 
-	const clearUpdate = useCallback((repoPath: string) => {
-		setUpdates((current) => current.filter((item) => item.repo_path !== repoPath));
-	}, []);
-
 	const refreshNotifications = useCallback(async () => {
 		if (!isTauriRuntime() || !inAppNotificationsEnabledRef.current) return [];
 		try {
@@ -451,7 +447,7 @@ export function useGitManager() {
 		awaitingInitialIndex: serviceReady && !indexReady,
 		version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, accountsLoading, loadAccounts, notifications, setupOpen, setSetupOpen,
-		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
+		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, connectAccount,
 		refreshNotifications, markNotificationRead, dismissNotification, markAllNotificationsRead,
 	};
 }
