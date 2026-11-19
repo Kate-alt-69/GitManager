@@ -49,20 +49,15 @@ fn retry_cloud_archive_sync(archive_root: &str) {
     }
 }
 
-fn repository_auto_update_enabled(repo_path: &str) -> bool {
-    let repo = match git2::Repository::open(repo_path) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    let settings_file = repo.path().join("info").join("gitmanager-settings.json");
-    let content = match std::fs::read_to_string(settings_file) {
-        Ok(value) if value.len() <= 64 * 1024 => value,
-        _ => return false,
-    };
-    serde_json::from_str::<serde_json::Value>(&content)
-        .ok()
-        .and_then(|value| value.get("autoUpdate").and_then(serde_json::Value::as_bool))
+fn repository_auto_update_enabled(repo_path: &str, repo_id: &str) -> bool {
+    crash_helper::with_repository_read_lock(repo_path, || {
+        gitmanager_core::repository_preferences::load_repository_preferences(
+            repo_path,
+            Some(repo_id),
+        )
+        .map(|preferences| preferences.auto_update)
         .unwrap_or(false)
+    })
 }
 
 /// Runs until the operating system stops the background process.
@@ -210,7 +205,7 @@ pub fn run() -> ! {
                         if service_control.is_suspended() {
                             break;
                         }
-                        let auto_update_allowed = repository_auto_update_enabled(&update.repo_path)
+                        let auto_update_allowed = repository_auto_update_enabled(&update.repo_path, &update.repo_id)
                             && update.working_tree_clean
                             && update.commits_ahead == 0;
 
