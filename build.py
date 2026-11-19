@@ -1642,8 +1642,10 @@ def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
     and then fail SignTool verification because it produced no signature.
     """
     if platform.system() != "Windows":
+        log_debug("Windows signing override is not required on this host.")
         return None
 
+    log_work("Windows signing config", "1/2", "WORKING", "Resolving certificate and explicit signing behavior...")
     thumbprint = re.sub(r"\s", "", os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "")).upper()
     signing_config: Dict[str, object] = {
         "bundle": {
@@ -1693,6 +1695,7 @@ def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(signing_config, indent=2) + "\n", encoding="utf-8")
+        log_work("Windows signing config", "2/2", "DONE", f"Wrote {config_path}.")
     except OSError as error:
         log_err(f"Could not write the Windows signing override {config_path}: {error}")
         return None
@@ -1707,8 +1710,10 @@ def sanitize_tauri_v2_config(project_root: Path) -> None:
     """
     conf_path = project_root / "src-tauri" / "tauri.conf.json"
     if not conf_path.is_file():
+        log_work("Tauri config", "1/1", "SKIPPED", "Shared Tauri configuration file was not found.")
         return
 
+    log_work("Tauri config", "1/1", "WORKING", "Validating Tauri v2 schema and frontend command paths...")
     try:
         data = json.loads(conf_path.read_text(encoding="utf-8"))
         changed = False
@@ -1748,7 +1753,9 @@ def sanitize_tauri_v2_config(project_root: Path) -> None:
             log_ok("`src-tauri/tauri.conf.json` verified and updated for Tauri v2 schema.")
         else:
             log_ok("`src-tauri/tauri.conf.json` matches Tauri v2 schema.")
+        log_work("Tauri config", "1/1", "DONE", "Tauri v2 configuration is ready.")
     except Exception as exc:
+        log_work("Tauri config", "1/1", "FAILED", str(exc))
         log_warn(f"Could not inspect `tauri.conf.json`: {exc}")
 
 
@@ -1799,6 +1806,7 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
     - Returns an optional `+toolchain` arg if switching to another already-installed rustup
       toolchain is needed, or "" to use the default installed `cargo`/`rustc`.
     """
+    log_work("Rust toolchain", "1/3", "WORKING", "Locating rustc, cargo and installed rustup toolchains...")
     ensure_cargo_in_path()
 
     rustc_path = shutil.which("rustc")
@@ -1811,6 +1819,7 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
             log_info("  winget install Rustlang.Rustup")
         else:
             log_info("  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
+        log_work("Rust toolchain", "1/3", "FAILED", "Rust compiler or Cargo was not found.")
         return None
 
     _, rustc_out, _ = run_capture([rustc_path, "--version"])
@@ -1819,16 +1828,19 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
 
     if not installed_ver:
         log_warn(f"Could not parse exact semver from `{rustc_out}`, proceeding with installed compiler.")
+        log_work("Rust toolchain", "3/3", "DONE", "Proceeding with the installed compiler.")
         return ""
 
     rec_str = format_semver(RECOMMENDED_RUST_VERSION)
     inst_str = format_semver(installed_ver)
 
     if installed_ver == RECOMMENDED_RUST_VERSION:
+        log_work("Rust toolchain", "3/3", "DONE", "Installed Rust matches the workspace baseline.")
         log_ok(f"Rust version matches target baseline exactly: {rustc_out} ({cargo_out})")
         return ""
 
     if installed_ver > RECOMMENDED_RUST_VERSION:
+        log_work("Rust toolchain", "3/3", "DONE", f"Using newer installed Rust {inst_str}.")
         log_ok(
             f"Different (newer) Rust version detected ({inst_str} vs baseline {rec_str}). "
             f"Using already-installed Rust {inst_str}!"
@@ -1842,6 +1854,7 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
     installed_toolchains = detect_installed_toolchains_sorted()
     for tc_name, tc_ver in installed_toolchains:
         if tc_ver >= RECOMMENDED_RUST_VERSION:
+            log_work("Rust toolchain", "3/3", "DONE", f"Selected installed rustup toolchain {tc_name}.")
             log_ok(
                 f"Found already-installed toolchain '{tc_name}' (Rust {format_semver(tc_ver)}). "
                 f"Using +{tc_name} automatically!"
@@ -1852,6 +1865,7 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
         f"No newer toolchain installed locally; adapting build to use your already-installed Rust {inst_str}."
     )
     relax_cargo_toml_rust_version(project_root / "src-tauri" / "Cargo.toml")
+    log_work("Rust toolchain", "3/3", "DONE", f"Proceeding with installed Rust {inst_str}.")
     return ""
 
 
@@ -2197,7 +2211,6 @@ def prompt_build_selection() -> str:
         else:
             unavailable.append((target, reason))
 
-    print()
     log_info(f"Detected build host: {host} ({platform.machine()})")
     log_info("Choose the local build architecture:")
     log_info("  [A] All architectures supported by this machine (default)")
@@ -2283,12 +2296,14 @@ def resolve_local_build_targets(selection: str) -> List[BuildTarget]:
 
 
 def configure_local_target(project_root: Path, target: BuildTarget) -> None:
+    log_work("Configure build target", "1/1", "WORKING", f"Setting Cargo target to {target.triple}...")
     os.environ["CARGO_BUILD_TARGET"] = target.triple
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
     os.environ["GITMANAGER_BUILD_SELECTOR"] = target.selector
     log_info(f"Selected local target: {target.selector} ({target.triple})")
     log_info(f"Rust build cache: {os.environ['CARGO_TARGET_DIR']}")
     log_info(f"Artifacts: {project_root / 'build' / 'dist' / target.output_name}")
+    log_work("Configure build target", "1/1", "DONE", f"{target.selector} is configured.")
 
 
 @tracked_work("Store package build")
