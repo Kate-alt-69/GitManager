@@ -518,7 +518,7 @@ class BuildProgressReportingTests(unittest.TestCase):
         self.assertIn("[ CPython runtime ] [2/6] [WORKING]", output.getvalue())
         self.assertIn("Checking the cached runtime...", output.getvalue())
 
-    def test_terminal_progress_uses_a_clean_animated_single_row(self):
+    def test_terminal_progress_uses_real_percentage_and_one_clean_animated_row(self):
         output = _TTYBuffer()
         with patch("sys.stdout", output):
             BUILD.log_work("CPython download", "0%", "PENDING", "Queued archive...")
@@ -528,10 +528,11 @@ class BuildProgressReportingTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertEqual(rendered.count("\r"), 4)
-        self.assertEqual(rendered.count("\x1b[2K"), 4)
         self.assertEqual(rendered.count("\n"), 1)
-        self.assertIn("DONE     CPython download", rendered)
-        self.assertIn("====", rendered)
+        self.assertNotIn("\x1b[2K", rendered)
+        self.assertIn("30% [====........]", rendered)
+        self.assertIn("100% [============]", rendered)
+        self.assertIn("OK  CPython download", rendered)
 
     def test_log_lines_preserve_the_live_progress_row(self):
         output = _TTYBuffer()
@@ -543,9 +544,36 @@ class BuildProgressReportingTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("warning: test warning", rendered)
         self.assertIn("Compiling tauri...", rendered)
-        self.assertIn("DONE     Cargo build", rendered)
+        self.assertIn("OK  Cargo build", rendered)
         self.assertEqual(rendered.count("\n"), 2)
-        self.assertGreaterEqual(rendered.count("\x1b[2K"), 4)
+        self.assertNotIn("\x1b[2K", rendered)
+        self.assertGreaterEqual(rendered.count("\r"), 4)
+
+    def test_tty_progress_never_wraps_at_narrow_terminal_width(self):
+        output = _TTYBuffer()
+        with patch("sys.stdout", output), patch.object(
+            BUILD.shutil, "get_terminal_size", return_value=os.terminal_size((44, 24))
+        ), patch.object(BUILD, "_supports_color", return_value=False):
+            BUILD.log_work("Long build task", "45%", "WORKING", "Details " * 30)
+            BUILD.log_work("Long build task", "DONE", "DONE", "Finished.")
+
+        frames = output.getvalue().split("\r")[1:]
+        self.assertTrue(frames)
+        self.assertTrue(all(len(frame.split("\n", 1)[0]) <= 43 for frame in frames))
+
+    def test_tty_spinner_falls_back_to_ascii_for_legacy_encodings(self):
+        class AsciiTTY(_TTYBuffer):
+            @property
+            def encoding(self):
+                return "ascii"
+
+        output = AsciiTTY()
+        with patch("sys.stdout", output):
+            BUILD.log_work("Legacy console", "1/2", "WORKING", "Compiling...")
+
+        rendered = output.getvalue()
+        self.assertTrue(any(frame in rendered for frame in ("|", "/", "-", "\\")))
+        self.assertFalse(any(frame in rendered for frame in BUILD._SPINNER_FRAMES))
 
     def test_cargo_status_lines_are_recognized_for_the_live_activity_row(self):
         self.assertTrue(BUILD.is_cargo_progress_line(["cargo", "build"], "   Compiling tauri v2.12.7"))
