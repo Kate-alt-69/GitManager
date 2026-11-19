@@ -3711,6 +3711,39 @@ fn clear_service_supervisor_stop() -> Result<(), String> {
     }
 }
 
+fn wait_for_exclusive_lock_release(lock_path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let lock_file = match OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+        {
+            Ok(file) => file,
+            Err(_) => return false,
+        };
+
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => {
+                let _ = FileExt::unlock(&lock_file);
+                return true;
+            }
+            Err(_) if Instant::now() >= deadline => return false,
+            Err(_) => thread::sleep(Duration::from_millis(75)),
+        }
+    }
+}
+
+fn wait_for_service_supervisor_exit(timeout: Duration) -> bool {
+    let lock_path = match gitmanager_data_dir() {
+        Ok(directory) => directory.join(SERVICE_SUPERVISOR_LOCK_FILE),
+        Err(_) => return false,
+    };
+    wait_for_exclusive_lock_release(&lock_path, timeout)
+}
+
 fn service_supervisor_stop_requested() -> bool {
     gitmanager_data_dir()
         .map(|directory| directory.join(SERVICE_SHUTDOWN_FILE).is_file())
@@ -3882,11 +3915,25 @@ fn run_stop_service_command() -> i32 {
         }
     }
 
+    if stopped {
+        // The service process has exited, but its independent crash_helper
+        // monitor may still hold this executable open until it observes the
+        // shutdown marker and releases its ownership lock. Do not tell NSIS
+        // that replacement is safe until that monitor has exited too.
+        if !wait_for_service_supervisor_exit(Duration::from_secs(5)) {
+            eprintln!(
+                "crash_helper: the core service stopped, but its supervisor did not release its lock within 5 seconds."
+            );
+            let _ = request_service_resume();
+            return 1;
+        }
+    }
+
     // Clear the temporary suspension record even after the service exits.
     let _ = request_service_resume();
 
     if stopped {
-        eprintln!("crash_helper: GitManager core service stopped.");
+        eprintln!("crash_helper: GitManager core service and monitor stopped.");
         0
     } else {
         eprintln!("crash_helper: GitManager core service did not stop within the installer deadline.");
@@ -3918,6 +3965,35 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn installer_shutdown_waits_for_the_service_supervisor_lock_to_be_released() {
+        let root = std::env::temp_dir()
+            .join(format!("gitmanager-service-supervisor-lock-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create supervisor lock fixture directory");
+        let path = root.join("service-supervisor.lock");
+        let owner = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open supervisor lock fixture");
+        owner.try_lock_exclusive().expect("acquire supervisor lock fixture");
+
+        assert!(
+            !super::wait_for_exclusive_lock_release(&path, Duration::from_millis(30)),
+            "installer shutdown must not report success while the monitor still owns its lock"
+        );
+
+        FileExt::unlock(&owner).expect("release supervisor lock fixture");
+        assert!(
+            super::wait_for_exclusive_lock_release(&path, Duration::from_millis(200)),
+            "installer shutdown should continue once the monitor releases its lock"
+        );
+        drop(owner);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn bounded_incident_tail_returns_only_the_newest_records() {
