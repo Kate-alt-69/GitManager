@@ -3758,6 +3758,46 @@ fn service_supervisor_stop_requested() -> bool {
         .unwrap_or(false)
 }
 
+fn supervised_service_process_is_running(
+    supervisor: &mut CoreServiceSupervisor,
+    pid: u32,
+) -> bool {
+    // On Unix, kill -0 can still succeed for a zombie until its parent reaps
+    // it. This monitor owns the Child handle, so poll try_wait first and reap
+    // the child before deciding whether the installer can replace crash_helper.
+    let child_state = supervisor.child.as_mut().map(|child| {
+        let child_pid = child.id();
+        (child_pid, child.try_wait())
+    });
+
+    match child_state {
+        Some((child_pid, Ok(Some(_status)))) => {
+            supervisor.child = None;
+            supervisor.child_started_at = None;
+            supervisor.unhealthy_since = None;
+            if child_pid == pid {
+                return false;
+            }
+        }
+        Some((child_pid, Ok(None))) if child_pid == pid => return true,
+        Some((child_pid, Err(error))) if child_pid == pid => {
+            append_incident(
+                &format!(
+                    "crash_helper could not reap GitManager core service PID {child_pid} during installer shutdown: {error}"
+                ),
+                child_pid,
+                None,
+                request_service_status(),
+            );
+            // An uncertain wait result is not proof that replacement is safe.
+            return true;
+        }
+        _ => {}
+    }
+
+    service_process_is_running(pid)
+}
+
 fn run_service_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     suppress_windows_application_error_dialogs();
     let Some(application) = arguments.first().map(PathBuf::from) else {
@@ -3824,7 +3864,7 @@ fn run_service_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
 
             let process_running = shutdown_pid
                 .filter(|pid| *pid > 1)
-                .map(service_process_is_running)
+                .map(|pid| supervised_service_process_is_running(&mut supervisor, pid))
                 .unwrap_or(false);
             if !process_running || started.elapsed() >= Duration::from_secs(25) {
                 return if process_running { 1 } else { 0 };
@@ -3989,6 +4029,36 @@ mod tests {
             super::windows_process_open_failure_means_running(6),
             "unexpected OpenProcess failures remain conservative"
         );
+    }
+
+    #[test]
+    fn service_supervisor_reaps_its_exited_child_during_installer_shutdown() {
+        let executable = std::env::current_exe().expect("resolve test executable");
+        let child = Command::new(executable)
+            .arg("--list")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn short-lived child process");
+        let pid = child.id();
+        thread::sleep(Duration::from_millis(300));
+
+        let mut supervisor = super::CoreServiceSupervisor {
+            executable: None,
+            child: Some(child),
+            child_started_at: Some(Instant::now()),
+            unhealthy_since: None,
+            restart_attempts: 0,
+            next_restart: Instant::now(),
+            last_health_check: Instant::now(),
+        };
+
+        assert!(
+            !super::supervised_service_process_is_running(&mut supervisor, pid),
+            "the monitor must reap its exited child instead of waiting on a Unix zombie"
+        );
+        assert!(supervisor.child.is_none());
     }
 
     #[test]
