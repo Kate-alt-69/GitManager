@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::time::Duration;
 
 use gitmanager_core::account_types::{ConnectedAccountSummary, GitHubIdentity, ProviderAccountRequest};
-use gitmanager_core::git_info::{BranchInfo, CommitNode, GitRepositoryInfo, RemoteEndpoint};
+use gitmanager_core::models::{BranchInfo, CommitNode, GitRepositoryInfo, RemoteEndpoint};
 
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
