@@ -264,6 +264,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         )[0]
         self.assertIn('"tauri", "bundle"', package_function)
         self.assertIn("build_master_packager_installers(project_root, manifest)", package_function)
+        self.assertIn("name_windows_setup_installer(project_root, release)", package_function)
 
     def test_release_pipeline_can_defer_mpdev_until_after_signing(self):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
