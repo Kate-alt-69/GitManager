@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import stat
@@ -126,6 +127,107 @@ def log_work(work: str, progress: str, status: str, message: str) -> None:
     _emit(f"[ {work} ] [{progress}] [{normalized}] {message}", color=color)
 
 
+
+def run_command(
+    command: List[str],
+    cwd: Optional[Path] = None,
+    env: Optional[Dict[str, str]] = None,
+    *,
+    work: Optional[str] = None,
+    progress: str = "1/1",
+    heartbeat_seconds: float = 5.0,
+) -> int:
+    """Run a build command with live, prefixed stdout/stderr and periodic heartbeats."""
+    args = [str(part) for part in command]
+    label = work or (Path(args[0]).name if args else "Command")
+    if not args:
+        log_work(label, progress, "FAILED", "Refusing to run an empty command.")
+        return 2
+
+    log_work(label, progress, "PENDING", "Queued command.")
+    log_work(label, progress, "WORKING", "Starting process; output will stream below.")
+    log_debug(f"Command: {' '.join(args)}")
+    if cwd is not None:
+        log_debug(f"Working directory: {cwd}")
+
+    started_at = time.monotonic()
+    try:
+        process = subprocess.Popen(
+            args,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except OSError as error:
+        message = f"Could not start {label}: {error}"
+        log_work(label, progress, "FAILED", message)
+        log_err(message)
+        return 127
+
+    output_queue = queue.Queue()
+
+    def forward_output(channel: str, stream) -> None:
+        try:
+            for raw_line in iter(stream.readline, ""):
+                output_queue.put((channel, raw_line.rstrip("\r\n")))
+        finally:
+            stream.close()
+            output_queue.put((channel, None))
+
+    readers = [
+        threading.Thread(target=forward_output, args=("stdout", process.stdout), name="gitmanager-build-stdout", daemon=True),
+        threading.Thread(target=forward_output, args=("stderr", process.stderr), name="gitmanager-build-stderr", daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    remaining_streams = {"stdout", "stderr"}
+    heartbeat_seconds = max(float(heartbeat_seconds), 0.25)
+    try:
+        while remaining_streams:
+            try:
+                channel, line = output_queue.get(timeout=heartbeat_seconds)
+            except queue.Empty:
+                elapsed = int(time.monotonic() - started_at)
+                log_work(
+                    label, progress, "WORKING",
+                    f"Process is still running ({elapsed}s elapsed); waiting for tool output.",
+                )
+                continue
+            if line is None:
+                remaining_streams.discard(channel)
+                continue
+            if channel == "stderr":
+                _emit(f"[ {label} ] [ERR ] {line}", color="red", stream=sys.stderr)
+            else:
+                _emit(f"[ {label} ] {line}", color="white")
+        return_code = process.wait()
+    except KeyboardInterrupt:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        log_work(label, progress, "CANCELLED", "Process stopped after user cancellation.")
+        raise
+    finally:
+        for reader in readers:
+            reader.join(timeout=1.0)
+
+    elapsed = max(time.monotonic() - started_at, 0.001)
+    if return_code == 0:
+        log_work(label, progress, "DONE", f"Process completed successfully in {elapsed:.1f}s.")
+    else:
+        log_work(label, progress, "FAILED", f"Process exited with code {return_code} after {elapsed:.1f}s.")
+    return return_code
+
+
 def _download_response_to_file(response, destination: Path, work: str = "CPython download") -> int:
     """Stream a download to disk and report byte progress instead of silently waiting."""
     raw_length = response.headers.get("Content-Length", "")
@@ -216,7 +318,7 @@ def _run_with_work_heartbeat(work: str, progress: str, message: str, operation, 
     )
     worker.start()
     try:
-        operation()
+        return operation()
     finally:
         stop.set()
         worker.join(timeout=max(interval_seconds, 1.0))
@@ -943,18 +1045,33 @@ def format_semver(ver: Tuple[int, int, int]) -> str:
 
 
 def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
+    """Capture a short probe while still reporting when it starts and finishes."""
+    label = f"Probe {Path(str(cmd[0])).name}" if cmd else "Command probe"
+    log_work(label, "1/1", "WORKING", f"Checking {' '.join(str(part) for part in cmd)}...")
+    started_at = time.monotonic()
     try:
         proc = subprocess.run(
-            cmd,
+            [str(part) for part in cmd],
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
-    except FileNotFoundError:
-        return 127, "", f"Command not found: {cmd[0]}"
+        stdout = proc.stdout.strip()
+        stderr = proc.stderr.strip()
+        elapsed = max(time.monotonic() - started_at, 0.001)
+        log_work(label, "1/1", "DONE", f"Probe returned exit code {proc.returncode} in {elapsed:.1f}s.")
+        log_debug(f"{label} stdout: {stdout or '(empty)'}")
+        if stderr:
+            log_debug(f"{label} stderr: {stderr}")
+        return proc.returncode, stdout, stderr
+    except OSError as error:
+        message = f"Could not run {cmd[0] if cmd else 'command'}: {error}"
+        log_work(label, "1/1", "FAILED", message)
+        return 127, "", message
 
 
 def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
