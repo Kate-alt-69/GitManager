@@ -624,7 +624,6 @@ function RepositoryPage({
 	preferences,
 	onRescan,
 	onRepositoryLoaded,
-	onPullCompleted,
 	onOpenCleaner,
 	scanTruncated,
 	destination,
@@ -649,7 +648,6 @@ function RepositoryPage({
 	preferences: AppPreferences;
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
-	onPullCompleted: (repoPath: string) => void;
 	onOpenCleaner: () => void;
 	scanTruncated: boolean;
 }) {
@@ -675,7 +673,6 @@ function RepositoryPage({
 				onOpenWebsite={(url) => { void invoke("open_external_url", { url }).catch((error) => window.alert(String(error))); }}
 				onRescan={onRescan}
 				onRepositoryLoaded={onRepositoryLoaded}
-				onPullCompleted={onPullCompleted}
 				onOpenCleaner={onOpenCleaner}
 			/>
 		);
@@ -975,7 +972,6 @@ export function GitManagerApp() {
 							preferences={git.preferences}
 							onRescan={handleScan}
 							onRepositoryLoaded={git.updateRepository}
-							onPullCompleted={git.clearUpdate}
 							onOpenCleaner={handleOpenCleaner}
 						/>
 					)}
