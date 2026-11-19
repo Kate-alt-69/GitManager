@@ -150,6 +150,12 @@ For a Microsoft Store submission, use the separate local command `py build.py --
 
 A locally generated development/test-signed MSIX is for validation only, not direct public distribution.
 
+## Per-user service shutdown during install and removal
+
+The NSIS hook and MPDEV MSI both prefer the installed `crash_helper.exe --stop-service` command before replacing or removing application files. The helper authenticates against the per-user service endpoint, requests a short suspension, waits briefly for active indexing and remote checks to become idle, then stops only the process ID returned by that authenticated endpoint. It clears the temporary suspension record afterward.
+
+NSIS retains a current-user-scoped process-name fallback for older installations whose helper does not implement `--stop-service`. The MSI custom action is sequenced at `StartOfExecution` and is conditional on an existing installation; if it cannot stop an older service, the MSI's running-process detection remains available as a manual fallback. MSIX does not support this MSI custom action and still requires separate upgrade/removal validation.
+
 ## Fallback and verification
 
 NSIS remains the fallback when an MSI/MSIX package cannot be installed or tested. Its post-install hook verifies that the bundled private Python runtime starts successfully and aborts an incomplete install.
