@@ -56,7 +56,8 @@
       "crash_helper.exe",
       "gitmanager.service.exe",
       "git-manager.exe",
-      "git-manager-service.exe"
+      "git-manager-service.exe",
+      "gitmanager-service.exe"
     ],
     "packageDependencies": [
       {
