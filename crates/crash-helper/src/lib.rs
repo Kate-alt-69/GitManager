@@ -3043,6 +3043,12 @@ fn stop_obsolete_service_process(pid: u32) -> bool {
     }
 }
 
+const EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE: Duration = Duration::from_secs(45);
+
+fn external_service_lock_recovery_due(since: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(since) >= EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE
+}
+
 fn restart_delay(attempts: u32) -> Duration {
     // Bound exponential backoff so a repeatedly failing worker cannot spin.
     let seconds = 2u64.saturating_pow(attempts.min(4)).min(30);
@@ -3054,6 +3060,8 @@ struct CoreServiceSupervisor {
     child: Option<Child>,
     child_started_at: Option<Instant>,
     unhealthy_since: Option<Instant>,
+    lock_unhealthy_since: Option<Instant>,
+    lock_owner_pid: Option<u32>,
     restart_attempts: u32,
     lock_warning_recorded: bool,
     next_restart: Instant,
@@ -3067,6 +3075,8 @@ impl CoreServiceSupervisor {
             child: None,
             child_started_at: None,
             unhealthy_since: None,
+            lock_unhealthy_since: None,
+            lock_owner_pid: None,
             restart_attempts: 0,
             lock_warning_recorded: false,
             next_restart: std::time::Instant::now(),
@@ -3129,20 +3139,32 @@ impl CoreServiceSupervisor {
     fn ensure_started(&mut self, reason: &str) {
         if core_service_ready() {
             self.unhealthy_since = None;
+            self.lock_unhealthy_since = None;
+            self.lock_owner_pid = None;
             self.restart_attempts = 0;
             self.lock_warning_recorded = false;
             return;
         }
 
         // A separately launched or previous-install service may still own
-        // the OS lock while its named-pipe response is transiently broken.
-        // Do not create an endless series of duplicate exit-code-2 workers.
+        // the OS lock while its named-pipe response is broken. Do not spawn a
+        // duplicate; give the owner a recovery grace, then terminate only the
+        // PID recorded under that same kernel-enforced lock.
         if self.child.is_none() && service_control_lock_is_held() {
+            let owner_pid = service_control_lock_owner_pid();
+            if self.lock_owner_pid != owner_pid {
+                self.lock_owner_pid = owner_pid;
+                self.lock_unhealthy_since = Some(Instant::now());
+                self.lock_warning_recorded = false;
+            }
+            let unhealthy_since = *self
+                .lock_unhealthy_since
+                .get_or_insert_with(Instant::now);
+
             if !self.lock_warning_recorded {
-                let owner_pid = service_control_lock_owner_pid();
                 append_incident(
                     &format!(
-                        "The GitManager core-service lock is held by an existing process (PID {}). Its authenticated IPC endpoint is not completing status responses. crash_helper will wait and will not spawn a duplicate service.",
+                        "The GitManager core-service lock is held by an existing process (PID {}). Its authenticated IPC endpoint is not completing status responses. crash_helper will wait before attempting bounded recovery.",
                         owner_pid.map(|pid| pid.to_string()).unwrap_or_else(|| "unknown".to_string())
                     ),
                     owner_pid.unwrap_or(0),
@@ -3151,8 +3173,77 @@ impl CoreServiceSupervisor {
                 );
                 self.lock_warning_recorded = true;
             }
+
+            if let Some(pid) = owner_pid.filter(|pid| *pid > 1 && *pid != std::process::id()) {
+                if external_service_lock_recovery_due(unhealthy_since, Instant::now())
+                    && Instant::now() >= self.next_restart
+                {
+                    // The PID file is only trusted while the kernel lock is
+                    // held. Re-read both immediately before terminating to
+                    // avoid acting on a stale PID after an ownership change.
+                    let same_owner = service_control_lock_is_held()
+                        && service_control_lock_owner_pid() == Some(pid);
+                    if same_owner {
+                        append_incident(
+                            &format!(
+                                "The external GitManager core service PID {pid} held the exclusive service lock for at least {} seconds without answering authenticated IPC. Attempting bounded recovery.\n{}",
+                                unhealthy_since.elapsed().as_secs(),
+                                core_service_log_tail()
+                            ),
+                            pid,
+                            None,
+                            request_service_status(),
+                        );
+
+                        let termination_requested = stop_obsolete_service_process(pid);
+                        let lock_path = gitmanager_data_dir()
+                            .ok()
+                            .map(|directory| directory.join(LOCK_FILE));
+                        let lock_released = lock_path.as_deref().is_some_and(|path| {
+                            wait_for_exclusive_lock_release(path, Duration::from_secs(4))
+                        });
+
+                        if lock_released {
+                            append_incident(
+                                &format!(
+                                    "The unresponsive external GitManager service PID {pid} released its lock; crash_helper will start a fresh service instance. Termination command accepted: {termination_requested}."
+                                ),
+                                pid,
+                                None,
+                                Err("External service was stopped after its IPC health grace expired.".to_string()),
+                            );
+                            self.lock_owner_pid = None;
+                            self.lock_unhealthy_since = None;
+                            self.lock_warning_recorded = false;
+                            self.restart_attempts = self.restart_attempts.saturating_add(1);
+                            self.next_restart = Instant::now() + Duration::from_secs(2);
+                        } else {
+                            append_incident(
+                                &format!(
+                                    "crash_helper could not release the service lock held by external PID {pid}. It will not start a duplicate. Termination command accepted: {termination_requested}.\n{}",
+                                    core_service_log_tail()
+                                ),
+                                pid,
+                                None,
+                                request_service_status(),
+                            );
+                            self.lock_unhealthy_since = Some(Instant::now());
+                            self.restart_attempts = self.restart_attempts.saturating_add(1);
+                            self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+                        }
+                    } else {
+                        // Another process released or replaced the lock while
+                        // the health check was in flight. Never kill that PID.
+                        self.lock_owner_pid = None;
+                        self.lock_unhealthy_since = None;
+                        self.lock_warning_recorded = false;
+                    }
+                }
+            }
             return;
         }
+        self.lock_owner_pid = None;
+        self.lock_unhealthy_since = None;
         self.lock_warning_recorded = false;
 
         // A current instance may have become reachable after the first
@@ -3931,19 +4022,13 @@ fn run_service_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
         }
     };
     if lock_file.try_lock_exclusive().is_err() {
-        // Another helper owns the monitor. Wait for its service to be healthy
-        // rather than creating a second monitor or racing a service start.
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            if core_service_ready() {
-                println!("GITMANAGER_SERVICE_SUPERVISOR_READY");
-                let _ = std::io::stdout().flush();
-                return 0;
-            }
-            thread::sleep(Duration::from_millis(150));
-        }
-        eprintln!("crash_helper: an existing service supervisor owns the lock but did not publish a healthy service.");
-        return 1;
+        // The kernel lock proves another service monitor is alive. Its child
+        // health is a separate concern: the existing monitor owns recovery,
+        // and this launcher must not time out and fall back to spawning a
+        // duplicate service from the UI process.
+        println!("GITMANAGER_SERVICE_SUPERVISOR_READY");
+        let _ = std::io::stdout().flush();
+        return 0;
     }
 
     if let Err(error) = clear_service_supervisor_stop() {
@@ -4154,6 +4239,8 @@ mod tests {
             child: Some(child),
             child_started_at: Some(std::time::Instant::now()),
             unhealthy_since: None,
+            lock_unhealthy_since: None,
+            lock_owner_pid: None,
             restart_attempts: 0,
             lock_warning_recorded: false,
             next_restart: std::time::Instant::now(),
@@ -4209,6 +4296,25 @@ mod tests {
             .expect("read incident tail");
         assert_eq!(tail, "incident-two\nincident-three");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_service_lock_recovery_waits_for_the_full_health_grace() {
+        let started = Instant::now();
+        assert!(
+            !super::external_service_lock_recovery_due(
+                started,
+                started + Duration::from_secs(44),
+            ),
+            "an external service must not be terminated before its recovery grace expires"
+        );
+        assert!(
+            super::external_service_lock_recovery_due(
+                started,
+                started + Duration::from_secs(45),
+            ),
+            "a persistently unresponsive lock owner becomes recoverable after the grace"
+        );
     }
 
     #[test]
