@@ -126,7 +126,9 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('$UpdateMode <> 1', hooks)
         self.assertIn(r'IfFileExists "$INSTDIR\crash_helper.exe"', hooks)
         self.assertIn(r'IfFileExists "$INSTDIR\gitmanager.service.exe"', hooks)
-        self.assertIn(r'IfFileExists "$INSTDIR\resources\python\python.exe"', hooks)
+        self.assertIn(r'StrCpy $0 "$INSTDIR\resources\python\python.exe"', hooks)
+        self.assertIn('IfFileExists "$0" 0 python_runtime_missing', hooks)
+        self.assertIn('"$R7" --stop-service', hooks)
 
     def test_mpdev_desktop_manifest_builds_both_msi_and_msix(self):
         config = json.loads(
