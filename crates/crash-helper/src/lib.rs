@@ -675,7 +675,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     lock_file.try_lock_exclusive()
         .map_err(|_| "Another GitManager background service instance already owns the service lock.".to_string())?;
     lock_file.set_len(0)
-        .and_then(|_| lock_file.write_all(format!("{}\\n", std::process::id()).as_bytes()))
+        .and_then(|_| lock_file.write_all(format!("{}", std::process::id()).as_bytes()))
         .and_then(|_| lock_file.sync_all())
         .map_err(|error| format!("Could not publish the service lock owner PID: {error}"))?;
 
@@ -3049,6 +3049,7 @@ struct CoreServiceSupervisor {
     child_started_at: Option<Instant>,
     unhealthy_since: Option<Instant>,
     restart_attempts: u32,
+    lock_warning_recorded: bool,
     next_restart: Instant,
     last_health_check: Instant,
 }
@@ -3061,6 +3062,7 @@ impl CoreServiceSupervisor {
             child_started_at: None,
             unhealthy_since: None,
             restart_attempts: 0,
+            lock_warning_recorded: false,
             next_restart: std::time::Instant::now(),
             last_health_check: std::time::Instant::now(),
         };
@@ -3122,8 +3124,30 @@ impl CoreServiceSupervisor {
         if core_service_ready() {
             self.unhealthy_since = None;
             self.restart_attempts = 0;
+            self.lock_warning_recorded = false;
             return;
         }
+
+        // A separately launched or previous-install service may still own
+        // the OS lock while its named-pipe response is transiently broken.
+        // Do not create an endless series of duplicate exit-code-2 workers.
+        if self.child.is_none() && service_control_lock_is_held() {
+            if !self.lock_warning_recorded {
+                let owner_pid = service_control_lock_owner_pid();
+                append_incident(
+                    &format!(
+                        "The GitManager core-service lock is held by an existing process (PID {}). Its authenticated IPC endpoint is not completing status responses. crash_helper will wait and will not spawn a duplicate service.",
+                        owner_pid.map(|pid| pid.to_string()).unwrap_or_else(|| "unknown".to_string())
+                    ),
+                    owner_pid.unwrap_or(0),
+                    None,
+                    request_service_status(),
+                );
+                self.lock_warning_recorded = true;
+            }
+            return;
+        }
+        self.lock_warning_recorded = false;
 
         // A current instance may have become reachable after the first
         // health probe timed out. Treat that authenticated response as ready;
@@ -3257,6 +3281,7 @@ impl CoreServiceSupervisor {
             if core_service_ready() {
                 self.unhealthy_since = None;
                 self.restart_attempts = 0;
+                self.lock_warning_recorded = false;
                 return;
             }
 
