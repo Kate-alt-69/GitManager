@@ -28,7 +28,7 @@ The Windows installer also closes the old `git-manager.exe` and `git-manager-ser
 
 ## Repository workspace ownership
 
-All Git worktree operations now run in the required service through authenticated protocol-v3 IPC: repository status, diffs, fetch, stage/unstage, commit preview/create, safe path deletion, pull preview/preparation/execution, and branch list/switch. The shared gitmanager-core crate owns the implementation and keeps the existing path validation and recovery checks. The Tauri process forwards user intents and displays results; it does not open the working repository for these operations.
+All Git worktree operations now run in the required service through authenticated protocol-v4 local IPC (Windows Named Pipe or Unix Domain Socket): repository status, diffs, fetch, stage/unstage, commit preview/create, safe path deletion, pull preview/preparation/execution, and branch list/switch. The shared gitmanager-core crate owns the implementation and keeps the existing path validation and recovery checks. The Tauri process forwards user intents and displays results; it does not open the working repository for these operations.
 
 The service control listener has a hard cap of eight concurrent requests. This keeps status/health requests responsive during a longer history or Git operation without allowing unbounded request threads. Each repository uses a read/write lock: read-only history, file and status requests may run concurrently, while stage/unstage, commit, fetch, pull, delete and branch mutations take an exclusive lock. Archive capture takes a shared repository read lock plus a separate per-repository archive lock, so it cannot overlap a Git write but does not block ordinary reads.
 
@@ -56,7 +56,7 @@ The required service owns archive capture, archive listing, restore, Cloud Node 
 
 ## Notification lifecycle
 
-The required service is the only process that publishes and mutates persistent notification history. The Tauri UI requests the history, mark-read, bulk mark-read and dismiss operations through authenticated protocol-v4 IPC. The notification file is capped at 200 records and 2 MiB; deterministic repository-update IDs prevent duplicate records across service restarts. A separate monotonic generation sidecar lets the native event monitor detect rapid history changes without reading or deserializing the notification file.
+The required service is the only process that publishes and mutates persistent notification history. The Tauri UI requests the history, mark-read, bulk mark-read and dismiss operations through authenticated protocol-v4 IPC. The notification file is capped at 200 records and 2 MiB; deterministic repository-update IDs prevent duplicate records across service restarts. A separate `notifications.generation` sidecar lets the native event monitor detect rapid history changes without reading or deserializing the notification file.
 
 The In-app notifications and Operating system notifications preferences are independent. The service stores a repository-update notification once, then sends the same persisted title/body record to the OS only when OS notifications are enabled and that record was newly created. If persistence fails, the service logs the error and retries on the next remote-check cycle instead of emitting an OS toast without a matching in-app record. Disabling in-app notifications hides the in-app panel but does not implicitly disable OS notifications.
 
@@ -91,7 +91,7 @@ On Windows this is under `%LOCALAPPDATA%\\kastrick's_software\\data\\GitManager`
 
 The repository index is an atomic, versioned snapshot at `repo/metadata/index.json`. Existing working copies and their `.git` directories remain the source of truth; GitManager does not duplicate those repositories into its data directory.
 
-Account identity metadata and cached provider repository lists are stored separately under `account/metadata` and `account/git_data`. The Tauri coordinator sends the non-secret account summary and repository cache to `gitmanager.service` over authenticated protocol-v3 IPC; the service owns persistent reads and writes. Provider API requests remain in the coordinator for this iteration. Personal access tokens are not written to either location or included in account-cache IPC. GitHub CLI credentials remain managed by `gh`. On a later launch, cached identities are shown as cached until the user reconnects.
+Account identity metadata and cached provider repository lists are stored separately under `account/metadata` and `account/git_data`. Account reads/writes and GitHub/GitLab provider synchronization run in `gitmanager.service` over authenticated protocol-v4 local IPC. The desktop forwards one connect request; an optional personal access token is used in memory for that provider request only, is never written to account metadata/cache or service logs, and GitHub CLI credentials remain managed by `gh`. On a later launch, cached identities are shown as cached until the user reconnects.
 
 ## Windows MSI and MSIX
 
