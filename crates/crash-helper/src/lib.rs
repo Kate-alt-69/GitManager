@@ -2760,9 +2760,51 @@ fn spawn_core_service_process(executable: &Path) -> Result<Child, String> {
     })
 }
 
+fn stop_obsolete_service_process(pid: u32) -> bool {
+    if pid <= 1 || pid == std::process::id() {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+fn restart_delay(attempts: u32) -> Duration {
+    // Bound exponential backoff so a repeatedly failing worker cannot spin.
+    let seconds = 2u64.saturating_pow(attempts.min(4)).min(30);
+    Duration::from_secs(seconds)
+}
+
 struct CoreServiceSupervisor {
     executable: Option<PathBuf>,
     child: Option<Child>,
+    child_started_at: Option<Instant>,
+    unhealthy_since: Option<Instant>,
+    restart_attempts: u32,
     next_restart: Instant,
     last_health_check: Instant,
 }
@@ -2772,6 +2814,9 @@ impl CoreServiceSupervisor {
         let mut supervisor = Self {
             executable: find_core_service_executable(application),
             child: None,
+            child_started_at: None,
+            unhealthy_since: None,
+            restart_attempts: 0,
             next_restart: Instant::now(),
             last_health_check: Instant::now(),
         };
@@ -2779,10 +2824,66 @@ impl CoreServiceSupervisor {
         supervisor
     }
 
+    fn stop_obsolete_instance(&mut self) -> bool {
+        let status = match request_service_status() {
+            Ok(status) => status,
+            Err(_) => return false,
+        };
+
+        if status.service_generation >= SERVICE_GENERATION
+            && status.protocol_version >= SERVICE_PROTOCOL_VERSION
+        {
+            return true;
+        }
+
+        if status.process_id <= 1 || status.process_id == std::process::id() {
+            return false;
+        }
+
+        let pid = status.process_id;
+        append_incident(
+            &format!(
+                "Found an older GitManager core service (generation {}, protocol {}). Replacing authenticated process {pid}.",
+                status.service_generation,
+                status.protocol_version,
+            ),
+            pid,
+            None,
+            Ok(status),
+        );
+
+        if !stop_obsolete_service_process(pid) {
+            return false;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            match request_service_status() {
+                Ok(current)
+                    if current.service_generation >= SERVICE_GENERATION
+                        && current.protocol_version >= SERVICE_PROTOCOL_VERSION =>
+                {
+                    return true;
+                }
+                Ok(current) if current.process_id == pid => {}
+                Err(_) => return false,
+                _ => {}
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
     fn ensure_started(&mut self, reason: &str) {
         if core_service_ready() {
+            self.unhealthy_since = None;
+            self.restart_attempts = 0;
             return;
         }
+
+        // A stale version may still hold the one-instance lock. Its PID comes
+        // from an authenticated status response, never from a name-wide kill.
+        let _ = self.stop_obsolete_instance();
 
         // End the borrow before mutating self.child; Child::try_wait only
         // needs to be sampled once per supervisor tick.
@@ -2793,7 +2894,11 @@ impl CoreServiceSupervisor {
         if let Some((pid, result)) = child_state {
             match result {
                 Ok(None) => return,
-                Ok(Some(_)) => self.child = None,
+                Ok(Some(_)) => {
+                    self.child = None;
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
+                }
                 Err(error) => {
                     append_incident(
                         &format!("Could not query GitManager core service process: {error}"),
@@ -2802,6 +2907,10 @@ impl CoreServiceSupervisor {
                         request_service_status(),
                     );
                     self.child = None;
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
+                    self.restart_attempts = self.restart_attempts.saturating_add(1);
+                    self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
                 }
             }
         }
@@ -2816,7 +2925,8 @@ impl CoreServiceSupervisor {
                 None,
                 request_service_status(),
             );
-            self.next_restart = Instant::now() + Duration::from_secs(15);
+            self.restart_attempts = self.restart_attempts.saturating_add(1);
+            self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
             return;
         };
 
@@ -2827,6 +2937,8 @@ impl CoreServiceSupervisor {
                     child.id()
                 );
                 self.child = Some(child);
+                self.child_started_at = Some(Instant::now());
+                self.unhealthy_since = None;
                 self.next_restart = Instant::now() + Duration::from_secs(3);
             }
             Err(error) => {
@@ -2839,7 +2951,8 @@ impl CoreServiceSupervisor {
                     None,
                     request_service_status(),
                 );
-                self.next_restart = Instant::now() + Duration::from_secs(15);
+                self.restart_attempts = self.restart_attempts.saturating_add(1);
+                self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
             }
         }
     }
@@ -2853,6 +2966,8 @@ impl CoreServiceSupervisor {
             match result {
                 Ok(Some(status)) => {
                     self.child = None;
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
                     if !core_service_ready() {
                         append_incident(
                             &format!(
@@ -2863,7 +2978,10 @@ impl CoreServiceSupervisor {
                             status.code(),
                             request_service_status(),
                         );
-                        self.next_restart = Instant::now() + Duration::from_secs(2);
+                        self.restart_attempts = self.restart_attempts.saturating_add(1);
+                        self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+                    } else {
+                        self.restart_attempts = 0;
                     }
                 }
                 Ok(None) => {}
@@ -2878,14 +2996,55 @@ impl CoreServiceSupervisor {
                         request_service_status(),
                     );
                     self.child = None;
-                    self.next_restart = Instant::now() + Duration::from_secs(3);
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
+                    self.restart_attempts = self.restart_attempts.saturating_add(1);
+                    self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
                 }
             }
         }
 
         if self.last_health_check.elapsed() >= Duration::from_secs(5) {
             self.last_health_check = Instant::now();
-            if !core_service_ready() && self.child.is_none() {
+
+            if core_service_ready() {
+                self.unhealthy_since = None;
+                self.restart_attempts = 0;
+                return;
+            }
+
+            if let Some(pid) = self.child.as_ref().map(Child::id) {
+                let since = *self.unhealthy_since.get_or_insert_with(Instant::now);
+                let started = self.child_started_at.unwrap_or(since);
+                let grace = if started.elapsed() < Duration::from_secs(45) {
+                    Duration::from_secs(45)
+                } else {
+                    Duration::from_secs(20)
+                };
+
+                if since.elapsed() >= grace {
+                    let mut child = match self.child.take() {
+                        Some(child) => child,
+                        None => return,
+                    };
+                    append_incident(
+                        &format!(
+                            "GitManager core service PID {pid} remained alive but did not answer authenticated health checks for {} seconds. Terminating the unresponsive child.\n{}",
+                            since.elapsed().as_secs(),
+                            core_service_log_tail()
+                        ),
+                        pid,
+                        None,
+                        request_service_status(),
+                    );
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
+                    self.restart_attempts = self.restart_attempts.saturating_add(1);
+                    self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+                }
+            } else {
                 self.ensure_started("service health recovery");
             }
         }
