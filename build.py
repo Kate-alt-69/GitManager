@@ -105,7 +105,7 @@ def _supports_inline_progress(stream) -> bool:
 def _finish_progress_line_locked() -> None:
     global _ACTIVE_PROGRESS_STREAM, _ACTIVE_PROGRESS_WORK, _ACTIVE_PROGRESS_WIDTH
     if _ACTIVE_PROGRESS_STREAM is not None:
-        _ACTIVE_PROGRESS_STREAM.write("\\n")
+        _ACTIVE_PROGRESS_STREAM.write("\n")
         _ACTIVE_PROGRESS_STREAM.flush()
     _ACTIVE_PROGRESS_STREAM = None
     _ACTIVE_PROGRESS_WORK = None
@@ -189,7 +189,7 @@ def log_work(work: str, progress: str, status: str, message: str) -> None:
             target.flush()
 
             if normalized in {"DONE", "FAILED", "CANCELLED", "SKIPPED"}:
-                target.write("\\n")
+                target.write("\n")
                 target.flush()
                 _ACTIVE_PROGRESS_STREAM = None
                 _ACTIVE_PROGRESS_WORK = None
