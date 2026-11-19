@@ -1291,11 +1291,58 @@ def read_bounded_url(url: str, limit: int, *, headers: Optional[Dict[str, str]] 
             declared_size = response.headers.get("Content-Length")
             if declared_size and int(declared_size) > limit:
                 raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
-            data = response.read(limit + 1)
+            raw_length = response.headers.get("Content-Length", "")
+            try:
+                total_bytes = int(raw_length) if raw_length else 0
+            except (TypeError, ValueError):
+                total_bytes = 0
+
+            chunks = []
+            downloaded = 0
+            last_bucket = -10
+            progress_state = {
+                "progress": "0%",
+                "message": f"Receiving a bounded response from {parsed.hostname}...",
+            }
+            log_work("RBE download", "0%", "WORKING", progress_state["message"])
+
+            def receive_chunks() -> None:
+                nonlocal downloaded, last_bucket
+                while True:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    downloaded += len(chunk)
+                    if downloaded > limit:
+                        raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
+                    chunks.append(chunk)
+                    if total_bytes:
+                        percentage = min(100, int(downloaded * 100 / total_bytes))
+                        progress_value = f"{percentage}%"
+                        detail = f"{downloaded:,} / {total_bytes:,} bytes"
+                        bucket = (percentage // 10) * 10
+                    else:
+                        progress_value = f"{downloaded:,} bytes"
+                        detail = "received (server did not provide Content-Length)"
+                        bucket = downloaded // (1024 * 1024)
+                    progress_state["progress"] = progress_value
+                    progress_state["message"] = detail
+                    if bucket >= last_bucket + (10 if total_bytes else 1):
+                        log_work("RBE download", progress_value, "WORKING", detail)
+                        last_bucket = bucket
+
+            _run_with_work_heartbeat(
+                "RBE download", "0%", progress_state["message"], receive_chunks,
+                progress_state=progress_state,
+            )
+            data = b"".join(chunks)
     except (urllib.error.URLError, TimeoutError) as error:
+        log_work("RBE download", "FAILED", "FAILED", str(error))
         raise RuntimeError(f"Could not download {url}: {error}") from error
     if len(data) > limit:
+        log_work("RBE download", "FAILED", "FAILED", f"Remote file exceeded {limit:,} bytes.")
         raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
+    log_work("RBE download", "100%", "DONE", f"Received {len(data):,} bytes from {parsed.hostname}.")
     return data
 
 
@@ -1338,6 +1385,7 @@ def download_verified_rbe_asset(
     if not download_url.startswith("https://github.com/Kastrick8/RBE/releases/download/"):
         raise ValueError(f"RBE asset {name} points to an unexpected download URL.")
 
+    log_work("RBE asset", "1/3", "WORKING", f"Validating release asset metadata for {name}...")
     cache_dir.mkdir(parents=True, exist_ok=True)
     destination = cache_dir / name
     if destination.is_file() and not destination.is_symlink():
@@ -1350,8 +1398,10 @@ def download_verified_rbe_asset(
     payload = read_bounded_url(download_url, max_bytes)
     if len(payload) != expected_size:
         raise ValueError(f"RBE asset {name} size mismatch: expected {expected_size}, received {len(payload)}.")
+    log_work("RBE asset", "2/3", "WORKING", f"Verifying byte count and SHA-256 for {name}...")
     actual_hash = hashlib.sha256(payload).hexdigest()
     if actual_hash != expected_hash:
+        log_work("RBE asset", "2/3", "FAILED", f"SHA-256 mismatch for {name}.")
         raise ValueError(f"RBE asset {name} failed GitHub Release SHA-256 verification.")
     temporary = destination.with_name(destination.name + ".part")
     try:
@@ -1363,6 +1413,7 @@ def download_verified_rbe_asset(
     finally:
         if temporary.exists():
             temporary.unlink()
+    log_work("RBE asset", "3/3", "DONE", f"Downloaded and verified {name}.")
     log_ok(f"Downloaded and SHA-256 verified: {name}")
     return destination, actual_hash
 
@@ -1373,6 +1424,7 @@ def extract_rbe_cloud_node_archive(
     binary_name: str,
     destination: Path,
 ) -> Tuple[int, str]:
+    log_work("RBE extraction", "1/2", "WORKING", f"Validating {archive_path.name}...")
     max_binary_bytes = 256 * 1024 * 1024
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".part")
@@ -1391,15 +1443,23 @@ def extract_rbe_cloud_node_archive(
                 if item.file_size <= 0 or item.file_size > max_binary_bytes:
                     raise ValueError(f"RBE asset {binary_name} has an invalid size.")
                 with archive.open(item, "r") as source, temporary.open("wb") as output:
+                    extracted = 0
+                    last_bucket = -10
                     while True:
                         chunk = source.read(1024 * 1024)
                         if not chunk:
                             break
                         count += len(chunk)
+                        extracted += len(chunk)
                         if count > max_binary_bytes:
                             raise ValueError(f"RBE asset {binary_name} exceeded the extraction size limit.")
                         digest.update(chunk)
                         output.write(chunk)
+                        percentage = min(100, int(extracted * 100 / max(item.file_size, 1)))
+                        bucket = (percentage // 10) * 10
+                        if bucket >= last_bucket + 10 or percentage == 100:
+                            log_work("RBE extraction", f"{percentage}%", "WORKING", f"Extracted {extracted:,} of {item.file_size:,} bytes.")
+                            last_bucket = max(last_bucket, bucket)
         elif archive_kind == "tar.gz":
             with tarfile.open(archive_path, "r:gz") as archive:
                 matches = [item for item in archive.getmembers() if item.name == binary_name]
@@ -1412,21 +1472,30 @@ def extract_rbe_cloud_node_archive(
                 if source is None:
                     raise ValueError(f"Could not read {binary_name} from {archive_path.name}.")
                 with source, temporary.open("wb") as output:
+                    extracted = 0
+                    last_bucket = -10
                     while True:
                         chunk = source.read(1024 * 1024)
                         if not chunk:
                             break
                         count += len(chunk)
+                        extracted += len(chunk)
                         if count > max_binary_bytes:
                             raise ValueError(f"RBE asset {binary_name} exceeded the extraction size limit.")
                         digest.update(chunk)
                         output.write(chunk)
+                        percentage = min(100, int(extracted * 100 / max(item.size, 1)))
+                        bucket = (percentage // 10) * 10
+                        if bucket >= last_bucket + 10 or percentage == 100:
+                            log_work("RBE extraction", f"{percentage}%", "WORKING", f"Extracted {extracted:,} of {item.size:,} bytes.")
+                            last_bucket = max(last_bucket, bucket)
         else:
             raise ValueError(f"Unsupported RBE archive format: {archive_kind}")
 
         if count <= 0:
             raise ValueError(f"RBE asset contained an empty {binary_name}.")
         os.replace(temporary, destination)
+        log_work("RBE extraction", "2/2", "DONE", f"Extracted and validated {count:,} bytes.")
         return count, digest.hexdigest()
     finally:
         if temporary.exists():
