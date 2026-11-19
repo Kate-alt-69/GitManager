@@ -1,6 +1,6 @@
 # GitManager Core Service packaging
 
-GitManager's `gitmanager.service` executable is the **required independent per-user data engine**, not a machine-wide Windows Service. The desktop app starts it on demand and waits for an authenticated readiness handshake before using the repository index. It remains outside the Tauri UI/crash-helper process tree and uses the signed-in user's permissions.
+GitManager's `gitmanager.service` executable is the **required independent per-user data engine**, not a machine-wide Windows Service. `crash_helper` starts it before launching the desktop UI, monitors its process and authenticated health endpoint, and restarts it after an unexpected exit. The service is launched outside the UI's kill-on-close Job Object so it survives normal UI shutdown and uses the signed-in user's permissions. Direct debug launches without the supervisor retain a fallback readiness/start path in the Tauri host.
 
 ## Why this distinction matters
 
@@ -14,7 +14,7 @@ The OS logon-registration option also runs it as the signed-in user:
 | Linux desktop packages | systemd **user** unit | Current user |
 | macOS | launchd LaunchAgent | Current user |
 
-The desktop app always starts the service when the UI opens. Separate OS logon registration remains opt-in, allowing the service to run before the desktop UI is opened. Do not convert it into a machine-wide privileged service.
+`crash_helper` starts and monitors the service during a normal desktop launch. Separate OS logon registration remains opt-in, allowing the service to run before the desktop UI is opened. Do not convert it into a machine-wide privileged service.
 
 ## Upgrade migration from the legacy worker
 
@@ -28,7 +28,7 @@ The Windows installer also closes the old `git-manager.exe` and `git-manager-ser
 
 ## Repository workspace ownership
 
-All Git worktree operations now run in the required service through authenticated protocol-v4 local IPC (Windows Named Pipe or Unix Domain Socket): repository status, diffs, fetch, stage/unstage, commit preview/create, safe path deletion, pull preview/preparation/execution, and branch list/switch. The shared gitmanager-core crate owns the implementation and keeps the existing path validation and recovery checks. The Tauri process forwards user intents and displays results; it does not open the working repository for these operations.
+All Git worktree operations now run in the required service through authenticated protocol-v4 local IPC (Windows Named Pipe or Unix Domain Socket). On Windows, named-pipe streams use nonblocking reads/writes with explicit deadlines; they do not use socket receive/send timeout APIs, which are unsupported by this transport. The client and server both bound frame transfer and preserve partial reads/writes. Operations include: repository status, diffs, fetch, stage/unstage, commit preview/create, safe path deletion, pull preview/preparation/execution, and branch list/switch. The shared gitmanager-core crate owns the implementation and keeps the existing path validation and recovery checks. The Tauri process forwards user intents and displays results; it does not open the working repository for these operations.
 
 The service control listener has a hard cap of eight concurrent requests. This keeps status/health requests responsive during a longer history or Git operation without allowing unbounded request threads. Each repository uses a read/write lock: read-only history, file and status requests may run concurrently, while stage/unstage, commit, fetch, pull, delete and branch mutations take an exclusive lock. Archive capture takes a shared repository read lock plus a separate per-repository archive lock, so it cannot overlap a Git write but does not block ordinary reads.
 
@@ -64,7 +64,7 @@ The top-right Notifications popover supports All/Unread filters, per-item open/r
 
 ## Native runtime monitoring and idle behavior
 
-The Tauri host owns one lightweight native monitor thread. It watches the repository-index and notification-history generation stamps and emits Tauri events when those files change. It checks the authenticated core-service endpoint every five seconds and reports the native host heartbeat every three seconds to crash_helper. The React/WebView frontend subscribes to these events rather than polling on intervals.
+The Tauri host owns one lightweight native monitor thread. It watches the repository-index and notification-history generation stamps and emits Tauri events when those files change. It checks the authenticated core-service endpoint every five seconds and reports the native host heartbeat every three seconds to crash_helper. `crash_helper` separately polls the service process and health endpoint; service exits and restart failures are recorded with a bounded tail of `data/GitManager/log/service.log` in its incident records. The React/WebView frontend subscribes to these events rather than polling on intervals.
 
 The monitor does not scan repository roots, enumerate Git history or query provider APIs. Those operations remain service/feature work and are started only when requested. The commit-history view loads 50 results per request through the shared Git history API; opening a repository overview loads branch metadata and HEAD without walking the history.
 
@@ -97,7 +97,7 @@ Account identity metadata and cached provider repository lists are stored separa
 
 The Windows desktop and Store package payloads include `gitmanager.service.exe` alongside the other application binaries. Packaging the executable does not mean registering it with the Windows Service Control Manager.
 
-**Do not add this worker to MPDEV's top-level `services[]` definition.** MPDEV's Windows-service definition defaults to `LocalSystem`; its other built-in accounts are `LocalService` and `NetworkService`. None is the interactive user's profile. The MSI is deliberately per-user, and installing an always-on privileged service whose executable lives in that user's install tree would create an unsafe privilege boundary.
+**Do not add this worker to MPDEV's top-level `services[]` definition.** MPDEV's Windows-service definition defaults to `LocalSystem`; its other built-in accounts are `LocalService` and `NetworkService`. None is the interactive user's profile. The MSI is deliberately per-user, and installing an always-on privileged service whose executable lives in that user's install tree would create an unsafe privilege boundary. Its NSIS upgrade/uninstall hooks stop the current user's detached helper and service only after the desktop has exited, release sidecar file locks before replacement/deletion, and remove the optional `GitManager Core Service` logon task only on a true uninstall (not an update). The post-install hook verifies that both `crash_helper.exe` and `gitmanager.service.exe` are present alongside the bundled Python runtime.
 
 Keep the current per-user Task Scheduler registration for MSI as an optional sign-in action. Validate that registration, shutdown, uninstall and upgrade behavior on a clean Windows machine.
 
@@ -130,7 +130,7 @@ For direct-download MSIX distribution outside the Store, use a certificate trust
 
 ## Acceptance checks
 
-- MSI carries the required service and installs it only for the current user; the desktop starts it on demand, while sign-in registration can install the current-user Task Scheduler task. A complete disable/uninstall lifecycle must remove only that named task without touching unrelated tasks.
+- MSI carries the required service and `crash_helper`, and installs them only for the current user; `crash_helper` supervises service startup/recovery, while sign-in registration can install the current-user Task Scheduler task. Upgrade shutdown must release detached process handles before replacing sidecars. A complete disable/uninstall lifecycle must remove only that named task without touching unrelated tasks or user data.
 - Store MSIX carries the required service but does not declare MPDEV `services[]` or restricted packaged-service capabilities.
 - Store MSIX can be installed locally with the Partner Center identity and test certificate, and can be submitted without a CA-issued PFX; Microsoft signs it after certification.
 - Native DEB/RPM sign-in user-unit lifecycle is validated on supported distributions.
