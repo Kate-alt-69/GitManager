@@ -417,6 +417,26 @@ mod tests {
     }
 
     #[test]
+    fn notification_store_write_advances_generation() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("gitmanager-notification-store-{nonce}"));
+        fs::create_dir_all(&directory).expect("create notification store fixture");
+        let path = directory.join("notifications.json");
+        let store = NotificationStore { schema_version: 1, notifications: Vec::new() };
+
+        super::write_store(&path, &store).expect("write initial notification store");
+        let first = notification_generation_for_path(&path).expect("read first generation");
+        super::write_store(&path, &store).expect("write updated notification store");
+        let second = notification_generation_for_path(&path).expect("read second generation");
+        assert!(second > first);
+
+        fs::remove_dir_all(directory).expect("remove notification store fixture");
+    }
+
+    #[test]
     fn notification_store_schema_defaults_and_round_trips() {
         let store = NotificationStore {
             schema_version: 1,
