@@ -303,6 +303,7 @@ fn write_service_frame_with_timeout(
 #[serde(tag = "action", rename_all = "snake_case")]
 enum ServiceCommand {
     Status,
+    Shutdown,
     Suspend { seconds: u64 },
     Resume,
     RequestScan,
@@ -556,6 +557,8 @@ pub struct ServiceControlServer {
     remote_check_requested: Arc<AtomicBool>,
     remote_check_running: Arc<AtomicBool>,
     indexing: Arc<AtomicBool>,
+    shutdown_requested: Arc<AtomicBool>,
+    active_requests: Arc<AtomicUsize>,
     _lock_file: File,
 }
 
@@ -608,6 +611,16 @@ impl ServiceControlServer {
 
     pub fn indexing(&self) -> bool {
         self.indexing.load(Ordering::Acquire)
+    }
+
+    /// True after an authenticated shutdown response was written to the client.
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire)
+    }
+
+    /// Active IPC handlers include the shutdown acknowledgement until it returns.
+    pub fn active_request_count(&self) -> usize {
+        self.active_requests.load(Ordering::Acquire)
     }
 }
 
@@ -682,6 +695,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     let remote_check_requested = Arc::new(AtomicBool::new(false));
     let remote_check_running = Arc::new(AtomicBool::new(false));
     let indexing = Arc::new(AtomicBool::new(false));
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
     let active_requests = Arc::new(AtomicUsize::new(0));
     let thread_state = Arc::clone(&state);
     let thread_running = Arc::clone(&running);
@@ -689,6 +703,7 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     let thread_remote_check_requested = Arc::clone(&remote_check_requested);
     let thread_remote_check_running = Arc::clone(&remote_check_running);
     let thread_indexing = Arc::clone(&indexing);
+    let thread_shutdown_requested = Arc::clone(&shutdown_requested);
     let thread_active_requests = Arc::clone(&active_requests);
     let token = endpoint.token.clone();
 
@@ -711,6 +726,8 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
                         let request_remote_check = Arc::clone(&thread_remote_check_requested);
                         let request_remote_running = Arc::clone(&thread_remote_check_running);
                         let request_indexing = Arc::clone(&thread_indexing);
+                        let request_shutdown = Arc::clone(&thread_shutdown_requested);
+                        let request_running = Arc::clone(&thread_running);
                         let request_counter = Arc::clone(&thread_active_requests);
                         if let Err(error) = thread::Builder::new()
                             .name("gitmanager-service-request".to_string())
@@ -723,6 +740,8 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
                                     &request_remote_check,
                                     &request_remote_running,
                                     &request_indexing,
+                                    &request_shutdown,
+                                    &request_running,
                                 );
                                 request_counter.fetch_sub(1, Ordering::Release);
                             })
@@ -750,6 +769,8 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         remote_check_requested,
         remote_check_running,
         indexing,
+        shutdown_requested,
+        active_requests,
         _lock_file: lock_file,
     })
 }
@@ -1649,6 +1670,8 @@ fn handle_service_connection(
     remote_check_requested: &AtomicBool,
     remote_check_running: &AtomicBool,
     indexing: &AtomicBool,
+    shutdown_requested: &AtomicBool,
+    running: &AtomicBool,
 ) {
     #[cfg(windows)]
     if let Err(error) = stream.set_nonblocking(true) {
@@ -1666,6 +1689,7 @@ fn handle_service_connection(
     #[cfg(not(windows))]
     let request_frame = read_service_frame(&mut stream);
 
+    let mut shutdown_after_response = false;
     let response = match request_frame {
         Err(error) => ServiceResponse {
             ok: false,
@@ -1675,6 +1699,15 @@ fn handle_service_connection(
         },
         Ok(bytes) => match serde_json::from_slice::<ServiceRequest>(&bytes) {
             Ok(request) if request.token == token => match request.command {
+                ServiceCommand::Shutdown => {
+                    shutdown_after_response = true;
+                    ServiceResponse {
+                        ok: true,
+                        status: state.status("Graceful service shutdown acknowledged"),
+                        error: None,
+                        data: None,
+                    }
+                },
                 ServiceCommand::Status => {
                     let mut status = state.status("Background service status");
                     status.remote_check_pending = remote_check_requested.load(Ordering::Acquire);
@@ -1906,13 +1939,20 @@ fn handle_service_connection(
             encoded
         };
         #[cfg(windows)]
-        let _ = write_service_frame_with_timeout(
+        let response_sent = write_service_frame_with_timeout(
             &mut stream,
             &response_bytes,
             Duration::from_secs(15),
-        );
+        ).is_ok();
         #[cfg(not(windows))]
-        let _ = write_service_frame(&mut stream, &response_bytes);
+        let response_sent = write_service_frame(&mut stream, &response_bytes).is_ok();
+
+        // Do not stop the listener until the caller has received its
+        // acknowledgement; then reject new work and let the service drain.
+        if response_sent && shutdown_after_response {
+            shutdown_requested.store(true, Ordering::Release);
+            running.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -1998,6 +2038,7 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
 
     let (connect_timeout, read_timeout) = match &command {
         ServiceCommand::Status
+        | ServiceCommand::Shutdown
         | ServiceCommand::Suspend { .. }
         | ServiceCommand::Resume
         | ServiceCommand::RequestScan
@@ -2331,6 +2372,12 @@ pub fn service_connect_git_account(payload: serde_json::Value) -> Result<serde_j
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
     send_service_command(ServiceCommand::Status)
+}
+
+/// Requests a graceful, authenticated service shutdown. The service closes
+/// its listener after acknowledging and exits after active IPC handlers drain.
+pub fn request_service_shutdown() -> Result<ServiceStatus, String> {
+    send_service_command(ServiceCommand::Shutdown)
 }
 
 /// Asks the required service process to refresh the persisted repository index.
@@ -3478,6 +3525,49 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     }
 }
 
+fn service_process_is_running(pid: u32) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> isize;
+            fn GetExitCodeProcess(process: isize, exit_code: *mut u32) -> i32;
+            fn CloseHandle(handle: isize) -> i32;
+        }
+
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle == 0 {
+            // Access denied is not evidence that the service has exited.
+            return true;
+        }
+        let mut exit_code = 0u32;
+        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+        unsafe {
+            CloseHandle(handle);
+        }
+        !queried || exit_code == STILL_ACTIVE
+    }
+
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(true)
+    }
+}
+
 fn terminate_service_process(pid: u32) -> bool {
     if pid <= 1 || pid == std::process::id() {
         return false;
@@ -3500,31 +3590,8 @@ fn terminate_service_process(pid: u32) -> bool {
 
     #[cfg(unix)]
     {
-        let term = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false);
-        if !term {
-            return false;
-        }
-
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if request_service_status()
-                .map(|status| status.process_id != pid)
-                .unwrap_or(true)
-            {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-
         Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
+            .args(["-TERM", &pid.to_string()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -3532,6 +3599,18 @@ fn terminate_service_process(pid: u32) -> bool {
             .map(|status| status.success())
             .unwrap_or(false)
     }
+}
+
+#[cfg(unix)]
+fn force_terminate_service_process(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn run_stop_service_command() -> i32 {
@@ -3566,42 +3645,57 @@ fn run_stop_service_command() -> i32 {
             }
             Ok(status) if !status.indexing && !status.remote_check_running => break,
             Ok(_) => thread::sleep(Duration::from_millis(150)),
-            Err(_) => {
-                eprintln!("crash_helper: service became unreachable while preparing to stop.");
-                let _ = request_service_resume();
-                return 0;
-            }
+            Err(_) => break,
         }
     }
 
-    eprintln!("crash_helper: stopping authenticated GitManager core service PID {pid}.");
-    let _ = terminate_service_process(pid);
-
-    let stop_deadline = Instant::now() + Duration::from_secs(5);
     let mut stopped = false;
-    while Instant::now() < stop_deadline {
-        match request_service_status() {
-            Err(_) => {
+    if request_service_shutdown().is_ok() {
+        eprintln!("crash_helper: graceful shutdown acknowledged; waiting for service requests to drain.");
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < deadline {
+            if !service_process_is_running(pid) {
                 stopped = true;
                 break;
             }
-            Ok(status) if status.process_id != pid => {
-                eprintln!("crash_helper: a different service process appeared during shutdown; refusing to report success.");
-                break;
-            }
-            Ok(_) => thread::sleep(Duration::from_millis(100)),
+            thread::sleep(Duration::from_millis(100));
         }
     }
 
-    // Clear the persisted suspension intent so a later launch does not inherit
-    // an installer-only pause.
+    if !stopped {
+        eprintln!("crash_helper: graceful shutdown was unsupported or timed out; terminating authenticated service PID {pid}.");
+        let _ = terminate_service_process(pid);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if !service_process_is_running(pid) {
+                stopped = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        #[cfg(unix)]
+        if !stopped {
+            let _ = force_terminate_service_process(pid);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if !service_process_is_running(pid) {
+                    stopped = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    // Clear the temporary suspension record even after the service exits.
     let _ = request_service_resume();
 
     if stopped {
         eprintln!("crash_helper: GitManager core service stopped.");
         0
     } else {
-        eprintln!("crash_helper: GitManager core service did not stop cleanly within the installer deadline.");
+        eprintln!("crash_helper: GitManager core service did not stop within the installer deadline.");
         1
     }
 }
@@ -3685,6 +3779,17 @@ mod tests {
         let status = ServiceState::load(path.clone()).status("test");
         assert_eq!(status.service_generation, SERVICE_GENERATION);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn graceful_shutdown_uses_the_authenticated_service_protocol() {
+        let request = ServiceRequest {
+            token: "installer-token".to_string(),
+            command: ServiceCommand::Shutdown,
+        };
+        let encoded = serde_json::to_value(request).expect("encode shutdown request");
+        assert_eq!(encoded["token"], "installer-token");
+        assert_eq!(encoded["command"]["action"], "shutdown");
     }
 
     #[test]
