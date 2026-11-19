@@ -291,7 +291,8 @@ def run_command(
         reader.start()
 
     remaining_streams = {"stdout", "stderr"}
-    heartbeat_seconds = max(float(heartbeat_seconds), 0.25)
+    heartbeat_frame = 0
+    heartbeat_seconds = max(float(heartbeat_seconds), 0.12)
     try:
         while remaining_streams:
             try:
@@ -299,7 +300,8 @@ def run_command(
             except queue.Empty:
                 elapsed = int(time.monotonic() - started_at)
                 spinner_frames = ("|", "/", "-", "\\\\")
-                frame = int(elapsed / heartbeat_seconds) % len(spinner_frames)
+                frame = heartbeat_frame % len(spinner_frames)
+                heartbeat_frame += 1
                 log_work(label, progress, "WORKING", f"Process is still running {spinner_frames[frame]} ({elapsed}s elapsed).")
                 continue
             if line is None:
@@ -1223,7 +1225,6 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
         return 127, "", message
 
 
-@tracked_work("Cargo dependency audit")
 def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
     """Count the actual build graphs for the app and its packaged sidecars.
 
@@ -1457,7 +1458,6 @@ def download_verified_rbe_asset(
     return destination, actual_hash
 
 
-@tracked_work("RBE binary extraction")
 def extract_rbe_cloud_node_archive(
     archive_path: Path,
     archive_kind: str,
@@ -2198,13 +2198,13 @@ def prompt_build_selection() -> str:
             unavailable.append((target, reason))
 
     print()
-    print(f"Detected build host: {host} ({platform.machine()})")
-    print("Choose the local build architecture:")
-    print("  [A] All architectures supported by this machine (default)")
+    log_info(f"Detected build host: {host} ({platform.machine()})")
+    log_info("Choose the local build architecture:")
+    log_info("  [A] All architectures supported by this machine (default)")
     for index, target in enumerate(available, start=1):
-        print(f"  [{index}] {target.selector}  [{target.triple}]")
+        log_info(f"  [{index}] {target.selector}  [{target.triple}]")
     for target, reason in unavailable:
-        print(f"  [-] {target.selector}  [not available locally: {reason}]")
+        log_warn(f"  [-] {target.selector}  [not available locally: {reason}]")
 
     if not available:
         raise RuntimeError(f"No supported {host} target can be built on this machine.")
@@ -2216,7 +2216,7 @@ def prompt_build_selection() -> str:
     try:
         choice = input("Architecture selection [A]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        print()
+        log_warn("Architecture selection was cancelled.")
         raise RuntimeError("Build selection was cancelled.")
 
     if not choice or choice in {"a", "all"}:
@@ -2780,7 +2780,10 @@ def main() -> int:
     if args.mode == "setup-packaging-tools":
         return setup_windows_packaging_tools()
     if args.mode == "setup-build-tools":
-        return setup_build_environment(args.build_target, args.store_target)
+        log_work("Build environment", "1/1", "WORKING", "Preparing requested local build dependencies...")
+        result = setup_build_environment(args.build_target, args.store_target)
+        log_work("Build environment", "1/1", "DONE" if result == 0 else "FAILED", "Build environment setup finished.")
+        return result
     if args.mode == "prepare-runtime":
         return prepare_windows_python_runtime(project_root)
     if args.install_packaging_tools:
@@ -2799,9 +2802,11 @@ def main() -> int:
 
     selected_targets = []
     if args.mode == "build":
+        log_work("Build selection", "1/2", "WORKING", "Resolving the requested local architectures...")
         try:
             selection = args.build_target or prompt_build_selection()
             selected_targets = resolve_local_build_targets(selection)
+            log_work("Build selection", "2/2", "DONE", f"Selected {len(selected_targets)} local target(s).")
         except (RuntimeError, ValueError) as error:
             log_err(str(error))
             return 2
@@ -2822,9 +2827,9 @@ def main() -> int:
                 )
                 return 2
 
-    print("=" * 72)
-    print(" GitManager — Local Tauri v2 Dependency & Toolchain Manager")
-    print("=" * 72)
+    log_info("=" * 72)
+    log_info("GitManager — Local Tauri v2 Dependency & Toolchain Manager")
+    log_info("=" * 72)
 
     check_os_system_dependencies()
     sanitize_tauri_v2_config(project_root)
