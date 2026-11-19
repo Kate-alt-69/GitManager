@@ -136,11 +136,7 @@ fn bind_service_local_listener(name: &str) -> io::Result<Listener> {
     {
         use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
 
-        match options.try_clone()?.mode(0o600).create_sync() {
-            Ok(listener) => Ok(listener),
-            Err(error) if error.kind() == io::ErrorKind::Unsupported => options.create_sync(),
-            Err(error) => Err(error),
-        }
+        options.mode(0o600).create_sync()
     }
 }
 
