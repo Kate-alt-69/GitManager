@@ -262,7 +262,11 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         package_function = source.split("def package_local_target(", 1)[1].split(
             '@tracked_work("Native build pipeline")', 1
         )[0]
-        self.assertIn('"tauri", "bundle"', package_function)
+        self.assertIn("run_tauri_bundle(", package_function)
+        bundle_helper = source.split("def run_tauri_bundle(", 1)[1].split(
+            '@tracked_work("Store package build")', 1
+        )[0]
+        self.assertIn('command.extend(["tauri", "bundle", "--target", target.triple])', bundle_helper)
         self.assertIn("build_master_packager_installers(project_root, manifest)", package_function)
         self.assertIn("name_windows_setup_installer(project_root, release)", package_function)
 
