@@ -140,22 +140,30 @@ pub fn repository_index_modified_unix_nanos() -> Result<u128, String> {
 
 pub fn load_persisted_repository_index() -> Result<Option<PersistedRepositoryIndex>, String> {
     let path = repository_index_path()?;
-    if !path.is_file() {
+    // The writer stages the previous valid file as a backup before replacing
+    // the primary path. Readers may observe that brief rename window; read the
+    // backup in place rather than returning an empty inventory or mutating it.
+    let backup = path.with_extension("json.previous");
+    let read_path = if path.is_file() {
+        &path
+    } else if backup.is_file() {
+        &backup
+    } else {
         return Ok(None);
-    }
-    let metadata = fs::metadata(&path)
-        .map_err(|error| format!("Could not inspect repository index {}: {error}", path.display()))?;
+    };
+    let metadata = fs::metadata(read_path)
+        .map_err(|error| format!("Could not inspect repository index {}: {error}", read_path.display()))?;
     if metadata.len() > MAX_REPOSITORY_INDEX_BYTES {
         return Err(format!(
             "Repository index {} exceeds the {} MiB safety limit.",
-            path.display(),
+            read_path.display(),
             MAX_REPOSITORY_INDEX_BYTES / (1024 * 1024)
         ));
     }
-    let bytes = fs::read(&path)
-        .map_err(|error| format!("Could not read repository index {}: {error}", path.display()))?;
+    let bytes = fs::read(read_path)
+        .map_err(|error| format!("Could not read repository index {}: {error}", read_path.display()))?;
     let index: PersistedRepositoryIndex = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Repository index {} is invalid: {error}", path.display()))?;
+        .map_err(|error| format!("Repository index {} is invalid: {error}", read_path.display()))?;
     if index.schema_version != REPOSITORY_INDEX_VERSION {
         return Err(format!(
             "Repository index schema {} is unsupported; expected {}.",
