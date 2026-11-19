@@ -36,17 +36,94 @@ fn notification_file() -> Result<PathBuf, String> {
         .join("notifications.json"))
 }
 
-/// Returns a lightweight generation stamp for native change monitoring.
-pub fn notification_store_modified_unix_nanos() -> Result<u128, String> {
-    let path = notification_file()?;
-    let metadata = match fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(format!("Could not inspect notification history: {error}")),
+fn notification_generation_path(store_path: &PathBuf) -> PathBuf {
+    store_path.with_extension("generation")
+}
+
+fn read_notification_generation_file(path: &Path) -> Result<Option<u64>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Could not inspect notification generation: {error}"))?;
+    if metadata.len() > 32 {
+        return Err("Notification generation file is invalid.".to_string());
+    }
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("Could not read notification generation: {error}"))?;
+    content.trim().parse::<u64>().map(Some)
+        .map_err(|_| "Notification generation file is invalid.".to_string())
+}
+
+fn notification_generation_for_path(store_path: &Path) -> Result<u64, String> {
+    let sidecar = notification_generation_path(&store_path.to_path_buf());
+    let sidecar_generation = read_notification_generation_file(&sidecar)
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    let file_generation = if store_path.is_file() {
+        let modified = fs::metadata(store_path)
+            .map_err(|error| format!("Could not inspect notification history: {error}"))?
+            .modified()
+            .map_err(|error| format!("Could not read notification history timestamp: {error}"))?;
+        modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
+            .min(u64::MAX as u128) as u64
+    } else {
+        0
     };
-    let modified = metadata.modified()
-        .map_err(|error| format!("Could not read notification history timestamp: {error}"))?;
-    Ok(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())
+    Ok(sidecar_generation.max(file_generation))
+}
+
+fn next_notification_generation(previous: u64, current_unix_ns: u128) -> u64 {
+    previous.saturating_add(1).max(current_unix_ns.min(u64::MAX as u128) as u64)
+}
+
+fn write_notification_generation_file(path: &Path, generation: u64) -> Result<(), String> {
+    let temporary = path.with_extension("generation.tmp");
+    let backup = path.with_extension("generation.previous");
+    {
+        let mut output = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| format!("Could not create notification generation: {error}"))?;
+        write!(output, "{generation}\\n")
+            .map_err(|error| format!("Could not write notification generation: {error}"))?;
+        output.sync_all()
+            .map_err(|error| format!("Could not flush notification generation: {error}"))?;
+    }
+    let had_previous = path.is_file();
+    if had_previous {
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|error| format!("Could not clear notification generation backup: {error}"))?;
+        }
+        fs::rename(path, &backup)
+            .map_err(|error| format!("Could not stage notification generation: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        if had_previous {
+            let _ = fs::rename(&backup, path);
+        }
+        return Err(format!("Could not publish notification generation: {error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_file(backup);
+    }
+
+    // History is already committed at this point. A generation-sidecar failure
+    // must not suppress a matching OS toast; file-mtime fallback remains.
+    let generation_path = notification_generation_path(path);
+    if let Err(error) = write_notification_generation_file(&generation_path, next_generation) {
+        eprintln!("GitManager notification generation could not be published: {error}");
+    }
+    Ok(())
+}
+
+/// Returns a small monotonic notification generation for native event monitoring.
+pub fn notification_store_modified_unix_nanos() -> Result<u128, String> {
+    Ok(u128::from(notification_generation_for_path(&notification_file()?)?))
 }
 
 fn lock_file(path: &PathBuf) -> Result<File, String> {
@@ -92,6 +169,12 @@ fn read_store(path: &PathBuf) -> Result<NotificationStore, String> {
 }
 
 fn write_store(path: &PathBuf, store: &NotificationStore) -> Result<(), String> {
+    let previous_generation = notification_generation_for_path(path).unwrap_or(0);
+    let current_unix_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let next_generation = next_notification_generation(previous_generation, current_unix_ns);
     let bytes = serde_json::to_vec(store)
         .map_err(|error| format!("Could not encode notification history: {error}"))?;
     if bytes.len() as u64 > MAX_NOTIFICATION_FILE_BYTES {
@@ -258,6 +341,41 @@ fn mutate_notification(
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        next_notification_generation, notification_generation_for_path,
+        read_notification_generation_file, write_notification_generation_file,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn notification_generation_advances_even_when_the_clock_does_not() {
+        assert_eq!(next_notification_generation(100, 100), 101);
+        assert_eq!(next_notification_generation(100, 99), 101);
+        assert_eq!(next_notification_generation(100, 150), 150);
+    }
+
+    #[test]
+    fn notification_generation_sidecar_round_trips() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("gitmanager-notification-generation-{nonce}"));
+        fs::create_dir_all(&directory).expect("create notification generation test directory");
+        let store_path = directory.join("notifications.json");
+        let generation_path = PathBuf::from(directory.join("notifications.generation"));
+
+        fs::write(&store_path, "{}").expect("create notification history fixture");
+        write_notification_generation_file(&generation_path, 200).expect("publish notification generation");
+        assert_eq!(read_notification_generation_file(&generation_path).unwrap(), Some(200));
+        assert_eq!(notification_generation_for_path(&store_path).unwrap(), 200);
+        write_notification_generation_file(&generation_path, 201).expect("replace notification generation");
+        assert_eq!(notification_generation_for_path(&store_path).unwrap(), 201);
+
+        fs::remove_dir_all(directory).expect("remove notification generation fixture");
+    }
+
     use super::{
         mark_store_notifications_read, repository_update_notification_id, AppNotification,
         NotificationStore, MAX_NOTIFICATION_COUNT,
