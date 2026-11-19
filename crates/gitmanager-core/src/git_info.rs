@@ -670,7 +670,7 @@ mod branch_switch_tests {
         let tree = repo.find_tree(tree_id).unwrap();
         let parent = repo.head().unwrap().peel_to_commit().unwrap();
         repo.commit(
-            Some("HEAD"),
+            Some("refs/heads/feature"),
             &signature,
             &signature,
             "feature commit",
@@ -680,10 +680,15 @@ mod branch_switch_tests {
         drop(tree);
         drop(parent);
 
+        // Restore the fixture to a clean main worktree without invoking a
+        // second checkout operation. The branch-switch API below is the
+        // behavior these tests are intended to exercise.
         repo.set_head("refs/heads/main").unwrap();
-        let mut checkout = CheckoutBuilder::new();
-        checkout.force();
-        repo.checkout_head(Some(&mut checkout)).unwrap();
+        fs::write(path.join("tracked.txt"), "main\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("tracked.txt")).unwrap();
+        index.write().unwrap();
+        drop(index);
         drop(main_commit);
         drop(repo);
         path
