@@ -84,6 +84,19 @@ pub fn run() -> ! {
     let mut last_cloud_archive_sync = Instant::now() - CLOUD_ARCHIVE_SYNC_INTERVAL;
 
     loop {
+        if service_control.shutdown_requested() {
+            if service_control.active_request_count() == 0 {
+                archive_watcher::stop_archive_watchers();
+                eprintln!("GitManager core service: graceful installer shutdown completed.");
+                drop(service_control);
+                std::process::exit(0);
+            }
+            // Let already-acknowledged IPC operations finish before releasing
+            // the endpoint and single-instance ownership lock.
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+
         if service_control.is_suspended() {
             if !was_suspended {
                 archive_watcher::stop_archive_watchers();
