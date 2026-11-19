@@ -857,6 +857,21 @@ function SetupDialog({
 const MemoRepositoryPage = memo(RepositoryPage);
 
 export function GitManagerApp() {
+	// This heartbeat runs on the WebView/React event loop. A separate Rust
+	// thread would keep reporting healthy even if the actual UI froze.
+	useEffect(() => {
+		let active = true;
+		const reportHeartbeat = () => {
+			if (active) void invoke("report_ui_heartbeat").catch(() => undefined);
+		};
+		reportHeartbeat();
+		const heartbeat = window.setInterval(reportHeartbeat, 3000);
+		return () => {
+			active = false;
+			window.clearInterval(heartbeat);
+		};
+	}, []);
+
 	const git = useGitManager();
 	const [internalRoute, setInternalRoute] = useState("/r");
 	const [query, setQuery] = useState("");
