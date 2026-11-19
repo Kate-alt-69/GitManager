@@ -27,6 +27,12 @@ py build.py setup-packaging-tools
 
 MPDEV must be available as `mpdev.exe` on PATH or in its standard installation directory. The build fails clearly when MPDEV is missing; it never silently substitutes WiX or skips MSI/MSIX creation.
 
+### MPDEV Free edition and internet access
+
+MPDEV Free is suitable for qualifying personal non-commercial use and open-source projects, and does not require license activation for those use cases. It still needs to stay online for license validation: **Offline Mode is an Enterprise feature**, not a requirement for ordinary local MSI/MSIX builds.
+
+GitManager does not enable MPDEV Offline Mode or add an offline-build flag to the command. When MPDEV reports `Offline mode is only supported with "Enterprise" license`, check that `mpdev.exe` can reach the internet. Review Windows Firewall, VPN, proxy, DNS filtering and endpoint-security rules, then return MPDEV to online mode and retry. An Enterprise license is only needed when you actually require MPDEV's offline operation.
+
 ## Build locally
 
 Run the interactive build selector:
