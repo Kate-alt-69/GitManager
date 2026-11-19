@@ -90,35 +90,88 @@ def _paint(message: str, color: str, stream) -> str:
 
 _PROGRESS_LOCK = threading.RLock()
 _ACTIVE_PROGRESS_STREAM = None
-_ACTIVE_PROGRESS_WORK = None
-_ACTIVE_PROGRESS_WIDTH = 0
+_ACTIVE_PROGRESS_STATE = None
 _LAST_NONINTERACTIVE_PROGRESS = {}
+_PROGRESS_BAR_WIDTH = 18
+_PROGRESS_BAR_BLOCK = 4
 
 
 def _supports_inline_progress(stream) -> bool:
-    """Return true only when carriage-return updates can be shown in a real terminal."""
+    """Enable the live renderer only when stdout is attached to a real terminal."""
     try:
         return bool(stream.isatty()) and os.environ.get("TERM", "").lower() != "dumb"
     except (AttributeError, OSError):
         return False
 
 
+def _progress_bar(frame: int) -> str:
+    """Build a width-stable ASCII marquee that works in legacy Windows consoles."""
+    travel = _PROGRESS_BAR_WIDTH - _PROGRESS_BAR_BLOCK
+    offset = frame % (travel * 2)
+    if offset > travel:
+        offset = travel * 2 - offset
+    return (
+        "." * offset
+        + "=" * _PROGRESS_BAR_BLOCK
+        + "." * (travel - offset)
+    )
+
+
+def _render_progress_locked(state, *, advance: bool = True) -> None:
+    """Paint one complete frame atomically; never leave remnants from a longer frame."""
+    if advance:
+        state["frame"] += 1
+
+    status = state["status"]
+    elapsed_seconds = max(0, int(time.monotonic() - state["started_at"]))
+    elapsed = f"{elapsed_seconds // 60:02d}:{elapsed_seconds % 60:02d}"
+    bar = f"[{_progress_bar(state['frame'])}]" if status == "WORKING" else ""
+    message = state["message"].strip()
+    rendered = (
+        f"  {status:<8} {state['work']}  {state['progress']}  "
+        f"{bar}  {elapsed}  {message}"
+    ).rstrip()
+
+    try:
+        columns = shutil.get_terminal_size(fallback=(120, 24)).columns
+    except OSError:
+        columns = 120
+    max_width = max(1, columns - 1)
+    if len(rendered) > max_width:
+        rendered = rendered[:max(1, max_width - 3)] + "..."
+
+    target = state["stream"]
+    color = state["color"]
+    # CSI 2K clears the whole row, avoiding stale characters when text shrinks.
+    target.write("\r\x1b[2K" + _paint(rendered, color, target))
+    target.flush()
+
+
 def _finish_progress_line_locked() -> None:
-    global _ACTIVE_PROGRESS_STREAM, _ACTIVE_PROGRESS_WORK, _ACTIVE_PROGRESS_WIDTH
+    global _ACTIVE_PROGRESS_STREAM, _ACTIVE_PROGRESS_STATE
     if _ACTIVE_PROGRESS_STREAM is not None:
-        _ACTIVE_PROGRESS_STREAM.write("\n")
+        _ACTIVE_PROGRESS_STREAM.write("\r\x1b[2K\n")
         _ACTIVE_PROGRESS_STREAM.flush()
     _ACTIVE_PROGRESS_STREAM = None
-    _ACTIVE_PROGRESS_WORK = None
-    _ACTIVE_PROGRESS_WIDTH = 0
+    _ACTIVE_PROGRESS_STATE = None
 
 
 def _emit(message: str, *, color: str = "white", stream=None) -> None:
-    target = stream or sys.stdout
+    """Write a log line without destroying the live status row."""
+    target = sys.stdout if stream is None else stream
     with _PROGRESS_LOCK:
-        # Any ordinary log or child-process output gets its own clean line.
-        _finish_progress_line_locked()
+        active = (
+            _ACTIVE_PROGRESS_STATE
+            if _ACTIVE_PROGRESS_STREAM is target
+            else None
+        )
+        if active is not None:
+            # Temporarily clear the row, print the log, then restore the same
+            # status row beneath it. The animation state and elapsed clock survive.
+            target.write("\r\x1b[2K")
         target.write(_paint(message, color, target) + "\n")
+        if active is not None:
+            _render_progress_locked(active, advance=False)
         target.flush()
 
 
@@ -144,8 +197,8 @@ def log_debug(msg: str) -> None:
 
 
 def log_work(work: str, progress: str, status: str, message: str) -> None:
-    """Update one live terminal row; use de-duplicated lines in non-interactive logs."""
-    global _ACTIVE_PROGRESS_STREAM, _ACTIVE_PROGRESS_WORK, _ACTIVE_PROGRESS_WIDTH
+    """Render a stable animated TTY row and concise, non-animated redirected logs."""
+    global _ACTIVE_PROGRESS_STREAM, _ACTIVE_PROGRESS_STATE
     normalized = status.strip().upper()
     colors = {
         "PENDING": "yellow",
@@ -158,48 +211,61 @@ def log_work(work: str, progress: str, status: str, message: str) -> None:
     }
     color = colors.get(normalized, "white")
     target = sys.stdout
-    rendered = f"[ {work} ] [{progress}] [{normalized}] {message}"
-    terminal = _supports_inline_progress(target)
 
     with _PROGRESS_LOCK:
-        if not terminal:
+        if not _supports_inline_progress(target):
             previous = _LAST_NONINTERACTIVE_PROGRESS.get(work)
-            # Heartbeats with an unchanged stage are useful on a TTY but become
-            # repetitive log spam in CI and redirected output. Keep stage changes
-            # and real percentage/step updates, while dropping identical repeats.
+            # Redirected output receives stage transitions, never periodic heartbeats.
             if normalized == "WORKING" and previous == (normalized, progress):
                 return
             _LAST_NONINTERACTIVE_PROGRESS[work] = (normalized, progress)
+            target.write(_paint(
+                f"[ {work} ] [{progress}] [{normalized}] {message}",
+                color,
+                target,
+            ) + "\n")
+            target.flush()
+            return
+
+        if _ACTIVE_PROGRESS_STATE is not None and _ACTIVE_PROGRESS_STATE["work"] != work:
             _finish_progress_line_locked()
-            target.write(_paint(rendered, color, target) + "\n")
+
+        previous_state = _ACTIVE_PROGRESS_STATE
+        started_at = (
+            previous_state["started_at"]
+            if previous_state is not None
+            else time.monotonic()
+        )
+        frame = previous_state["frame"] if previous_state is not None else 0
+        state = {
+            "stream": target,
+            "work": work,
+            "progress": progress,
+            "status": normalized,
+            "message": message,
+            "color": color,
+            "started_at": started_at,
+            "frame": frame,
+        }
+        _ACTIVE_PROGRESS_STREAM = target
+        _ACTIVE_PROGRESS_STATE = state
+        _render_progress_locked(state)
+
+        if normalized in {"DONE", "FAILED", "CANCELLED", "SKIPPED"}:
+            target.write("\n")
             target.flush()
-        else:
-            if _ACTIVE_PROGRESS_STREAM is not None and _ACTIVE_PROGRESS_WORK != work:
-                _finish_progress_line_locked()
+            _ACTIVE_PROGRESS_STREAM = None
+            _ACTIVE_PROGRESS_STATE = None
 
-            try:
-                columns = shutil.get_terminal_size(fallback=(120, 24)).columns
-            except OSError:
-                columns = 120
-            max_width = max(40, columns - 1)
-            if len(rendered) > max_width:
-                rendered = rendered[:max_width - 1] + "…"
-            padding = " " * max(0, _ACTIVE_PROGRESS_WIDTH - len(rendered))
 
-            target.write("\r" + _paint(rendered, color, target) + padding)
-            target.flush()
-
-            if normalized in {"DONE", "FAILED", "CANCELLED", "SKIPPED"}:
-                target.write("\n")
-                target.flush()
-                _ACTIVE_PROGRESS_STREAM = None
-                _ACTIVE_PROGRESS_WORK = None
-                _ACTIVE_PROGRESS_WIDTH = 0
-            else:
-                _ACTIVE_PROGRESS_STREAM = target
-                _ACTIVE_PROGRESS_WORK = work
-                _ACTIVE_PROGRESS_WIDTH = len(rendered)
-
+def is_cargo_progress_line(command: List[str], output_line: str) -> bool:
+    """Recognize routine Cargo status lines that belong in the TUI, not the log."""
+    if not command or Path(str(command[0])).stem.casefold() != "cargo":
+        return False
+    return bool(re.match(
+        r"^(Compiling|Checking|Downloading|Downloaded|Fresh|Building|Running|Finished)\b",
+        output_line.strip(),
+    ))
 
 
 def tracked_work(work: str):
@@ -252,9 +318,9 @@ def run_command(
     *,
     work: Optional[str] = None,
     progress: str = "1/1",
-    heartbeat_seconds: float = 0.2,
+    heartbeat_seconds: float = 0.12,
 ) -> int:
-    """Run a build command with live, prefixed stdout/stderr and periodic heartbeats."""
+    """Run a command with a single animated TTY row and readable process output."""
     args = [str(part) for part in command]
     label = work or (Path(args[0]).name if args else "Command")
     if not args:
@@ -262,7 +328,7 @@ def run_command(
         return 2
 
     log_work(label, progress, "PENDING", "Queued command.")
-    log_work(label, progress, "WORKING", "Starting process; output will stream below.")
+    log_work(label, progress, "WORKING", "Starting process...")
     log_debug(f"Command: {' '.join(args)}")
     if cwd is not None:
         log_debug(f"Working directory: {cwd}")
@@ -304,22 +370,28 @@ def run_command(
         reader.start()
 
     remaining_streams = {"stdout", "stderr"}
-    heartbeat_frame = 0
-    heartbeat_seconds = max(float(heartbeat_seconds), 0.12)
+    heartbeat_seconds = max(float(heartbeat_seconds), 0.08)
+    terminal_progress = _supports_inline_progress(sys.stdout)
     try:
         while remaining_streams:
             try:
                 channel, line = output_queue.get(timeout=heartbeat_seconds)
             except queue.Empty:
-                elapsed = int(time.monotonic() - started_at)
-                spinner_frames = ("|", "/", "-", "\\\\")
-                frame = heartbeat_frame % len(spinner_frames)
-                heartbeat_frame += 1
-                log_work(label, progress, "WORKING", f"Process is still running {spinner_frames[frame]} ({elapsed}s elapsed).")
+                # A live TTY needs frames; redirected logs deliberately get no
+                # heartbeat lines at all, which prevents the old spam regression.
+                if terminal_progress:
+                    log_work(label, progress, "WORKING", "Waiting for process output...")
                 continue
             if line is None:
                 remaining_streams.discard(channel)
                 continue
+
+            if terminal_progress and channel == "stdout" and is_cargo_progress_line(args, line):
+                # Cargo's repetitive Compiling/Checking lines update the current
+                # activity text instead of pushing dozens of lines through the TUI.
+                log_work(label, progress, "WORKING", line.strip())
+                continue
+
             lowered = line.lower()
             if re.search(r"\b(error|fatal)\b", lowered):
                 line_color = "red"
@@ -434,27 +506,15 @@ def _download_response_to_file(response, destination: Path, work: str = "CPython
     return downloaded
 
 
-def _run_with_work_heartbeat(work: str, progress: str, message: str, operation, interval_seconds: float = 0.2, progress_state: Optional[Dict[str, str]] = None):
-    """Keep one animated status row current while a blocking operation waits."""
+def _run_with_work_heartbeat(work: str, progress: str, message: str, operation, interval_seconds: float = 0.12, progress_state: Optional[Dict[str, str]] = None):
+    """Keep the TTY animation moving while a blocking operation waits."""
     stop = threading.Event()
-    started_at = time.monotonic()
-    spinner_frames = ("|", "/", "-", "\\\\")
-    frame = 0
 
     def report_heartbeat() -> None:
-        nonlocal frame
         while not stop.wait(interval_seconds):
-            elapsed = int(time.monotonic() - started_at)
             current_progress = progress_state.get("progress", progress) if progress_state else progress
             current_message = progress_state.get("message", message) if progress_state else message
-            spinner = spinner_frames[frame % len(spinner_frames)]
-            frame += 1
-            log_work(
-                work,
-                current_progress,
-                "WORKING",
-                f"{current_message} {spinner} ({elapsed}s elapsed)",
-            )
+            log_work(work, current_progress, "WORKING", current_message)
 
     worker = threading.Thread(
         target=report_heartbeat,
