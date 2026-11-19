@@ -3,7 +3,7 @@
 //! Provider access tokens are request-only values. They must never be included
 //! in account metadata or written to persistent storage.
 
-use crate::git_info::GitRepositoryInfo;
+use crate::models::GitRepositoryInfo;
 use serde::{Deserialize, Serialize};
 
 /// Ephemeral provider sync request. The access token is consumed in memory by
