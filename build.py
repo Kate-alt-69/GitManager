@@ -2580,7 +2580,7 @@ def package_local_target(
     command = ["cargo"]
     if toolchain_arg:
         command.append(toolchain_arg)
-    command.extend(["tauri", "bundle"])
+    command.extend(["tauri", "bundle", "--target", target.triple])
 
     if target.platform == "linux" and target.triple == "armv7-unknown-linux-gnueabihf":
         command.extend(["--bundles", "deb,rpm"])
