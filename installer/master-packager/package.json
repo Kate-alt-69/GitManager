@@ -11,7 +11,7 @@
   "publisher": "Kastrick",
   "version": "1.0.0.0",
   "platform": "x64",
-  "installDir": "%LOCALAPPDATA%\\kastrick's_software\\GitManager",
+  "installDir": "%LOCALAPPDATA%\\Programs\\Kastrick's Software\\GitManager",
   "icon": "frontend/static/image/git-managar-orange_default-black.png",
   "fileSystemEntries": [
     {
@@ -84,7 +84,7 @@
       "promptAppsAfterInstall": [
         {
           "displayName": "Launch GitManager",
-          "file": "$.installDir\\gitmanager.exe"
+          "file": "$.installDir\\resources\\gitmanager-setup.exe"
         }
       ]
     },
