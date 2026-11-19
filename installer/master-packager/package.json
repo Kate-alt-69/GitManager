@@ -87,6 +87,18 @@
           "file": "$.installDir\\gitmanager.exe"
         }
       ]
+    },
+    "customActions": {
+      "exe": [
+        {
+          "name": "StopGitManagerCoreService",
+          "filePath": "$.installDir\\crash_helper.exe",
+          "arguments": "--stop-service",
+          "condition": "Installed",
+          "sequence": "StartOfExecution",
+          "continueOnError": true
+        }
+      ]
     }
   }
 }
