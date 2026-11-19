@@ -56,7 +56,7 @@ The required service owns archive capture, archive listing, restore, Cloud Node 
 
 ## Notification lifecycle
 
-The required service is the only process that publishes and mutates persistent notification history. The Tauri UI requests the history, mark-read, bulk mark-read and dismiss operations through authenticated protocol-v3 IPC. The notification file is capped at 200 records and 2 MiB; deterministic repository-update IDs prevent duplicate records across service restarts.
+The required service is the only process that publishes and mutates persistent notification history. The Tauri UI requests the history, mark-read, bulk mark-read and dismiss operations through authenticated protocol-v4 IPC. The notification file is capped at 200 records and 2 MiB; deterministic repository-update IDs prevent duplicate records across service restarts. A separate monotonic generation sidecar lets the native event monitor detect rapid history changes without reading or deserializing the notification file.
 
 The In-app notifications and Operating system notifications preferences are independent. The service stores a repository-update notification once, then sends the same persisted title/body record to the OS only when OS notifications are enabled and that record was newly created. If persistence fails, the service logs the error and retries on the next remote-check cycle instead of emitting an OS toast without a matching in-app record. Disabling in-app notifications hides the in-app panel but does not implicitly disable OS notifications.
 
