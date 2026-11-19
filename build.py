@@ -2304,6 +2304,41 @@ def configure_local_target(project_root: Path, target: BuildTarget) -> None:
     log_work("Configure build target", "1/1", "DONE", f"{target.selector} is configured.")
 
 
+@tracked_work("Tauri bundle")
+def run_tauri_bundle(
+    project_root: Path,
+    target: BuildTarget,
+    toolchain_arg: str,
+    release: bool,
+    bundle_formats: Optional[str] = None,
+) -> int:
+    """Bundle an already-compiled target without invoking Cargo compilation again."""
+    command = ["cargo"]
+    if toolchain_arg:
+        command.append(toolchain_arg)
+    command.extend(["tauri", "bundle", "--target", target.triple])
+
+    if bundle_formats:
+        command.extend(["--bundles", bundle_formats])
+    elif target.platform == "linux" and target.triple == "armv7-unknown-linux-gnueabihf":
+        command.extend(["--bundles", "deb,rpm"])
+    if not release:
+        command.append("--debug")
+    if target.platform == "windows" and release:
+        signing_config = prepare_windows_tauri_signing_config(project_root)
+        if signing_config is None:
+            log_err("Could not prepare the Windows signing override for installer generation.")
+            return 1
+        command.extend(["--config", str(signing_config.resolve())])
+
+    return run_command(
+        command,
+        cwd=project_root / "src-tauri",
+        work=f"Bundle {target.selector}",
+        progress="1/1",
+    )
+
+
 @tracked_work("Store package build")
 def build_local_store_package(
     project_root: Path,
@@ -2312,8 +2347,9 @@ def build_local_store_package(
     toolchain_arg: str,
     has_cargo_tauri: bool,
     release: bool,
+    already_compiled: bool = False,
 ) -> int:
-    """Build Flatpak or Store MSIX on the native local host, without workflow dispatch."""
+    """Package Flatpak or Store MSIX from a completed app compile pass when requested."""
     if store == "flatpak":
         if target.platform != "linux":
             log_err("Flatpak packaging is supported only from a native Linux build host.")
@@ -2324,15 +2360,25 @@ def build_local_store_package(
                 f"{target.architecture} is available as a DEB/RPM desktop build, not a Flatpak target."
             )
             return 2
-        result = run_build_or_dev(
-            project_root=project_root,
-            mode="build",
-            toolchain_arg=toolchain_arg,
-            has_cargo_tauri=has_cargo_tauri,
-            release=release,
-            bundle=True,
-            bundle_formats="deb",
-        )
+        if already_compiled:
+            result = run_tauri_bundle(
+                project_root, target, toolchain_arg, release, bundle_formats="deb"
+            )
+            if result != 0:
+                return result
+            result = publish_build_outputs(
+                project_root, release, True, bundle_formats="deb"
+            )
+        else:
+            result = run_build_or_dev(
+                project_root=project_root,
+                mode="build",
+                toolchain_arg=toolchain_arg,
+                has_cargo_tauri=has_cargo_tauri,
+                release=release,
+                bundle=True,
+                bundle_formats="deb",
+            )
         if result != 0:
             return result
         deb_dir = project_root / "build" / "dist" / target.output_name / "installer"
@@ -2360,16 +2406,17 @@ def build_local_store_package(
                 "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
             )
             return 1
-        result = run_build_or_dev(
-            project_root=project_root,
-            mode="build",
-            toolchain_arg=toolchain_arg,
-            has_cargo_tauri=has_cargo_tauri,
-            release=release,
-            bundle=False,
-        )
-        if result != 0:
-            return result
+        if not already_compiled:
+            result = run_build_or_dev(
+                project_root=project_root,
+                mode="build",
+                toolchain_arg=toolchain_arg,
+                has_cargo_tauri=has_cargo_tauri,
+                release=release,
+                bundle=False,
+            )
+            if result != 0:
+                return result
 
         app_dir = project_root / "build" / "dist" / target.output_name / "app"
         platform_name = target.architecture
@@ -2576,32 +2623,32 @@ def package_local_target(
     release: bool,
 ) -> int:
     """Create installers for one already-compiled target; never compile its app again."""
-    src_tauri_dir = project_root / "src-tauri"
-    command = ["cargo"]
-    if toolchain_arg:
-        command.append(toolchain_arg)
-    command.extend(["tauri", "bundle", "--target", target.triple])
+    if target.platform == "windows":
+        # CPython is staged in a shared source directory. Restore the selected
+        # target's runtime after the whole compile matrix, before Tauri bundles
+        # or MPDEV copies resources for this architecture.
+        runtime_result = prepare_windows_python_runtime(project_root)
+        if runtime_result != 0:
+            return runtime_result
+        packaging_inputs_result = verify_windows_packaging_inputs(project_root)
+        if packaging_inputs_result != 0:
+            return packaging_inputs_result
 
-    if target.platform == "linux" and target.triple == "armv7-unknown-linux-gnueabihf":
-        command.extend(["--bundles", "deb,rpm"])
-    if not release:
-        command.append("--debug")
-    if target.platform == "windows" and release:
-        signing_config = prepare_windows_tauri_signing_config(project_root)
-        if signing_config is None:
-            log_err("Could not prepare the Windows signing override for installer generation.")
-            return 1
-        command.extend(["--config", str(signing_config.resolve())])
-
+    bundle_formats = (
+        "deb,rpm"
+        if target.platform == "linux" and target.triple == "armv7-unknown-linux-gnueabihf"
+        else None
+    )
     log_info(
         f"Installer phase: generating Tauri bundles for {target.selector}; "
         "the workspace binaries were compiled in the previous phase."
     )
-    bundle_result = run_command(
-        command,
-        cwd=src_tauri_dir,
-        work=f"Bundle {target.selector}",
-        progress="1/3",
+    bundle_result = run_tauri_bundle(
+        project_root,
+        target,
+        toolchain_arg,
+        release,
+        bundle_formats=bundle_formats,
     )
     if bundle_result != 0:
         return bundle_result
@@ -2954,31 +3001,84 @@ def main() -> int:
     if args.mode == "prepare-sidecar":
         return build_gitm_sidecar(project_root, toolchain_arg, is_release)
 
+    if args.mode == "build" and os.environ.get("GITMANAGER_SKIP_CLOUD_NODE_BUNDLE") != "1":
+        cloud_node_result = prepare_cloud_node_deployment(project_root)
+        if cloud_node_result != 0:
+            return cloud_node_result
+        # The bootstrap is architecture-independent; prepare it once, before
+        # either compile matrix, instead of rebuilding the same ZIP per target.
+        os.environ["GITMANAGER_SKIP_CLOUD_NODE_BUNDLE"] = "1"
+
     if args.mode == "build":
         if args.store_target:
-            results = []
-            for target in selected_targets:
+            if args.store_target == "msix":
+                refresh_windows_packaging_path()
+                if find_master_packager_dev_cli() is None:
+                    log_err(
+                        "Master Packager Dev is required for Microsoft Store MSIX packaging. "
+                        "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
+                    )
+                    return 1
+
+            compile_results = []
+            log_work(
+                "Store build pipeline",
+                "1/2",
+                "WORKING",
+                f"Compiling all selected targets ({len(selected_targets)}) before Store packaging...",
+            )
+            for index, target in enumerate(selected_targets, start=1):
                 configure_local_target(project_root, target)
-                result = build_local_store_package(
+                result = run_build_or_dev(
                     project_root=project_root,
-                    store=args.store_target,
-                    target=target,
+                    mode="build",
                     toolchain_arg=toolchain_arg,
                     has_cargo_tauri=has_cargo_tauri,
                     release=is_release,
+                    bundle=False,
                 )
-                results.append((target, result))
+                compile_results.append((target, result))
                 if result == 0:
-                    log_ok(f"Completed local store build: {target.selector}")
+                    log_ok(f"Compiled Store app payload: {target.selector} ({index}/{len(selected_targets)}).")
                 else:
-                    log_err(f"Local store build failed for {target.selector} (exit code {result}).")
-            failed = [(target, result) for target, result in results if result != 0]
+                    log_err(f"Store app compilation failed for {target.selector} (exit code {result}).")
+
+            successful_targets = [target for target, result in compile_results if result == 0]
+            package_results = []
+            if successful_targets:
+                log_work(
+                    "Store build pipeline",
+                    "2/2",
+                    "WORKING",
+                    f"All Store app compilation passes finished; packaging {len(successful_targets)} target(s)...",
+                )
+                for index, target in enumerate(successful_targets, start=1):
+                    configure_local_target(project_root, target)
+                    result = build_local_store_package(
+                        project_root=project_root,
+                        store=args.store_target,
+                        target=target,
+                        toolchain_arg=toolchain_arg,
+                        has_cargo_tauri=has_cargo_tauri,
+                        release=is_release,
+                        already_compiled=True,
+                    )
+                    package_results.append((target, result))
+                    if result == 0:
+                        log_ok(f"Completed Store package: {target.selector} ({index}/{len(successful_targets)}).")
+                    else:
+                        log_err(f"Store packaging failed for {target.selector} (exit code {result}).")
+
+            failed = [(target, result) for target, result in compile_results + package_results if result != 0]
             if failed:
                 log_err(
-                    f"{len(failed)} of {len(results)} selected local store target(s) failed: "
-                    + ", ".join(target.selector for target, _ in failed)
+                    f"{len(failed)} of {len(compile_results) + len(package_results)} Store build phase(s) failed: "
+                    + ", ".join(f"{target.selector} (exit {result})" for target, result in failed)
                 )
+                log_work("Store build pipeline", "2/2", "FAILED", "One or more Store compilation or packaging phases failed.")
                 return failed[0][1] or 1
+
+            log_work("Store build pipeline", "2/2", "DONE", "Every selected Store target compiled before packaging completed.")
             return 0
 
         if args.build_type == "installer":
