@@ -1,8 +1,8 @@
-//! Cross-platform GitManager UI supervision and background-service control.
+//! Cross-platform GitManager UI and core-service supervision.
 //!
-//! crash_helper supervises the desktop UI only. The independent
-//! gitmanager.service process is controlled over a loopback-only authenticated
-//! endpoint and is never placed in the UI's process tree or termination scope.
+//! crash_helper supervises the desktop UI and independently starts/restarts
+//! gitmanager.service. The service is always launched outside the UI's
+//! kill-on-close process job and communicates over authenticated local IPC.
 
 use fs2::FileExt;
 use interprocess::local_socket::{
@@ -2550,6 +2550,291 @@ fn find_crash_helper(current_exe: &Path) -> Option<PathBuf> {
     None
 }
 
+fn find_core_service_executable(application: &Path) -> Option<PathBuf> {
+    let executable_dir = application.parent()?;
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let triple = host_target_triple();
+    let mut directories = vec![
+        executable_dir.to_path_buf(),
+        executable_dir.join("resources"),
+        executable_dir.join("Resources"),
+        executable_dir.join("../Resources"),
+        executable_dir.join("../resources"),
+    ];
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(prefix) = executable_dir.parent() {
+            for product in ["GitManager", "gitmanager", "git-manager"] {
+                directories.push(prefix.join("lib").join(product));
+            }
+        }
+        if let Some(app_dir) = std::env::var_os("APPDIR") {
+            let libraries = PathBuf::from(app_dir).join("usr").join("lib");
+            for product in ["GitManager", "gitmanager", "git-manager"] {
+                directories.push(libraries.join(product));
+            }
+        }
+    }
+
+    let names = [
+        format!("gitmanager.service{suffix}"),
+        format!("gitmanager.service-{triple}{suffix}"),
+        format!("gitmanager-service{suffix}"),
+        format!("gitmanager-service-{triple}{suffix}"),
+    ];
+    for directory in directories {
+        for name in &names {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        if let Ok(entries) = fs::read_dir(&directory) {
+            let mut candidates = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.is_file()
+                        && path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                (name.starts_with("gitmanager.service-")
+                                    || name.starts_with("gitmanager-service-"))
+                                    && name.ends_with(suffix)
+                            })
+                })
+                .collect::<Vec<_>>();
+            candidates.sort();
+            if let Some(candidate) = candidates.into_iter().next() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn core_service_log_path() -> Result<PathBuf, String> {
+    Ok(gitmanager_data_dir()?.join("log").join("service.log"))
+}
+
+fn core_service_log_tail() -> String {
+    const MAX_TAIL_BYTES: u64 = 16 * 1024;
+    let path = match core_service_log_path() {
+        Ok(path) => path,
+        Err(error) => return format!("Service log path unavailable: {error}"),
+    };
+    let mut file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return "The core service has not written a log yet.".to_string();
+        }
+        Err(error) => return format!("Could not open service log: {error}"),
+    };
+    let length = match file.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => return format!("Could not inspect service log: {error}"),
+    };
+    let offset = length.saturating_sub(MAX_TAIL_BYTES);
+    if let Err(error) = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(offset)) {
+        return format!("Could not seek service log: {error}");
+    }
+    let mut bytes = Vec::with_capacity((length - offset) as usize);
+    if let Err(error) = file.read_to_end(&mut bytes) {
+        return format!("Could not read service log: {error}");
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    text.lines().rev().take(32).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
+fn open_core_service_log_streams() -> Result<(Stdio, Stdio), String> {
+    let path = core_service_log_path()?;
+    let directory = path.parent()
+        .ok_or_else(|| "GitManager service log path has no parent directory.".to_string())?;
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("Could not create GitManager service log directory: {error}"))?;
+
+    const SERVICE_LOG_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
+    if fs::metadata(&path)
+        .map(|metadata| metadata.len() > SERVICE_LOG_LIMIT_BYTES)
+        .unwrap_or(false)
+    {
+        let rotated = path.with_extension("log.1");
+        if rotated.exists() {
+            fs::remove_file(&rotated)
+                .map_err(|error| format!("Could not remove previous service log: {error}"))?;
+        }
+        fs::rename(&path, &rotated)
+            .map_err(|error| format!("Could not rotate GitManager service log: {error}"))?;
+    }
+
+    let output = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| format!("Could not open GitManager service log: {error}"))?;
+    let errors = output.try_clone()
+        .map_err(|error| format!("Could not duplicate GitManager service log handle: {error}"))?;
+    Ok((Stdio::from(output), Stdio::from(errors)))
+}
+
+fn core_service_ready() -> bool {
+    request_service_status()
+        .map(|status| {
+            status.service_generation >= SERVICE_GENERATION
+                && status.protocol_version >= SERVICE_PROTOCOL_VERSION
+        })
+        .unwrap_or(false)
+}
+
+fn spawn_core_service_process(executable: &Path) -> Result<Child, String> {
+    let (stdout, stderr) = open_core_service_log_streams()?;
+    let mut command = Command::new(executable);
+    command.stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        // The service must survive UI containment and UI shutdown.
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    command.spawn().map_err(|error| {
+        format!(
+            "Could not start GitManager core service at {}: {error}",
+            executable.display()
+        )
+    })
+}
+
+struct CoreServiceSupervisor {
+    executable: Option<PathBuf>,
+    child: Option<Child>,
+    next_restart: Instant,
+    last_health_check: Instant,
+}
+
+impl CoreServiceSupervisor {
+    fn new(application: &Path) -> Self {
+        let mut supervisor = Self {
+            executable: find_core_service_executable(application),
+            child: None,
+            next_restart: Instant::now(),
+            last_health_check: Instant::now(),
+        };
+        supervisor.ensure_started("GitManager startup");
+        supervisor
+    }
+
+    fn ensure_started(&mut self, reason: &str) {
+        if core_service_ready() {
+            return;
+        }
+        if let Some(child) = self.child.as_mut() {
+            match child.try_wait() {
+                Ok(None) => return,
+                Ok(Some(_)) => self.child = None,
+                Err(error) => {
+                    append_incident(
+                        &format!("Could not query GitManager core service process: {error}"),
+                        child.id(),
+                        None,
+                        request_service_status(),
+                    );
+                    self.child = None;
+                }
+            }
+        }
+        if Instant::now() < self.next_restart {
+            return;
+        }
+        let Some(executable) = self.executable.as_ref() else {
+            append_incident(
+                "crash_helper could not locate the packaged gitmanager.service executable",
+                0,
+                None,
+                request_service_status(),
+            );
+            self.next_restart = Instant::now() + Duration::from_secs(15);
+            return;
+        };
+
+        match spawn_core_service_process(executable) {
+            Ok(child) => {
+                eprintln!(
+                    "crash_helper: started GitManager core service (pid {}).",
+                    child.id()
+                );
+                self.child = Some(child);
+                self.next_restart = Instant::now() + Duration::from_secs(3);
+            }
+            Err(error) => {
+                append_incident(
+                    &format!("crash_helper could not start GitManager core service during {reason}: {error}\n{}", core_service_log_tail()),
+                    0,
+                    None,
+                    request_service_status(),
+                );
+                self.next_restart = Instant::now() + Duration::from_secs(15);
+            }
+        }
+    }
+
+    fn tick(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let pid = child.id();
+                    self.child = None;
+                    if !core_service_ready() {
+                        append_incident(
+                            &format!(
+                                "GitManager core service exited unexpectedly ({status}).\n{}",
+                                core_service_log_tail()
+                            ),
+                            pid,
+                            status.code(),
+                            request_service_status(),
+                        );
+                        self.next_restart = Instant::now() + Duration::from_secs(2);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let pid = child.id();
+                    append_incident(
+                        &format!(
+                            "crash_helper could not query GitManager core service process: {error}\n{}",
+                            core_service_log_tail()
+                        ),
+                        pid,
+                        None,
+                        request_service_status(),
+                    );
+                    self.child = None;
+                    self.next_restart = Instant::now() + Duration::from_secs(3);
+                }
+            }
+        }
+
+        if self.last_health_check.elapsed() >= Duration::from_secs(5) {
+            self.last_health_check = Instant::now();
+            if !core_service_ready() && self.child.is_none() {
+                self.ensure_started("service health recovery");
+            }
+        }
+    }
+}
+
 fn host_target_triple() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => "x86_64-pc-windows-msvc",
@@ -2708,7 +2993,8 @@ fn append_incident(reason: &str, pid: u32, exit_code: Option<i32>, service_resul
         "process": { "pid": pid, "executable": "git-manager" },
         "reason": reason,
         "exitCode": exit_code.map(|code| format!("0x{:08X}", code as u32)),
-        "service": service
+        "service": service,
+        "serviceLogTail": core_service_log_tail()
     });
 
     if let Ok(data_dir) = gitmanager_data_dir() {
@@ -2776,6 +3062,10 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
         .unwrap_or_default();
     let disable_webview_gpu = take_disable_webview_gpu_flag(&mut app_args);
 
+    // Start the per-user data engine independently before the UI requests its
+    // first readiness probe. The child is explicitly outside the UI Job Object.
+    let mut core_service_supervisor = CoreServiceSupervisor::new(&application);
+
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(listener) => listener,
         Err(error) => {
@@ -2835,6 +3125,8 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     let mut clean_shutdown = false;
 
     loop {
+        core_service_supervisor.tick();
+
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -2948,6 +3240,26 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn crash_helper_locates_the_core_service_beside_the_application() {
+        let root = std::env::temp_dir()
+            .join(format!("gitmanager-core-sidecar-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create sidecar fixture");
+        let application = root.join(if cfg!(windows) { "gitmanager.exe" } else { "gitmanager" });
+        let sidecar = root.join(if cfg!(windows) {
+            "gitmanager.service.exe"
+        } else {
+            "gitmanager.service"
+        });
+        fs::write(&sidecar, b"fixture").expect("write service sidecar fixture");
+
+        assert_eq!(
+            super::find_core_service_executable(&application),
+            Some(sidecar.clone()),
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn legacy_service_status_defaults_to_generation_zero() {
