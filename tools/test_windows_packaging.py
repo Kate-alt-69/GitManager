@@ -146,7 +146,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertNotIn("installDir", config["msi"])
         stop_action = config["msi"]["customActions"]["exe"][0]
         self.assertEqual(stop_action["name"], "StopGitManagerCoreService")
-        self.assertEqual(stop_action["filePath"], r"$.installDir\crash_helper.exe")
+        self.assertEqual(stop_action["filePath"], r"$.installDir\resources\crash_helper.exe")
         self.assertEqual(stop_action["arguments"], "--stop-service")
         self.assertEqual(stop_action["condition"], "Installed")
         self.assertEqual(stop_action["sequence"], "StartOfExecution")
