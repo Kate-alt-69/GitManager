@@ -3962,7 +3962,8 @@ mod tests {
         MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS, SERVICE_GENERATION,
     };
     use super::Uuid;
-    use std::fs;
+    use fs2::FileExt;
+    use std::fs::{self, OpenOptions};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime};
 
