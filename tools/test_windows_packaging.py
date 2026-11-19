@@ -461,6 +461,64 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
             "http://timestamp.acs.microsoft.com",
         )
 
+    def test_first_run_setup_sidecar_matches_tauri_config_and_enters_setup_mode(self):
+        tauri = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
+        capability = json.loads((ROOT / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8"))
+        app = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+        setup = (ROOT / "crates" / "gitmanager-setup" / "src" / "main.rs").read_text(encoding="utf-8")
+
+        self.assertIn("binaries/gitmanager-setup", tauri["bundle"]["externalBin"])
+        sidecar_permission = capability["permissions"][2]["allow"][0]
+        self.assertEqual(sidecar_permission["name"], "binaries/gitmanager-setup")
+        self.assertIn('.sidecar("binaries/gitmanager-setup")', app)
+        setup_mode = app.split("fn is_setup_mode", 1)[1].split("}", 1)[0]
+        self.assertIn('GITMANAGER_SETUP_MODE', setup_mode)
+        self.assertIn('"--setup"', setup_mode)
+        self.assertIn('.arg("--setup")', setup)
+        self.assertIn('.env("GITMANAGER_SETUP_MODE", "1")', setup)
+
+    def test_installers_launch_the_setup_companion_and_require_it(self):
+        manifest = json.loads(
+            (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
+        )
+        prompt = manifest["msi"]["installDialog"]["promptAppsAfterInstall"][0]
+        self.assertEqual(prompt["file"], r"$.installDir\resources\gitmanager-setup.exe")
+
+        template = (ROOT / "src-tauri" / "windows" / "installer.nsi").read_text(encoding="utf-8")
+        hooks = (ROOT / "src-tauri" / "windows" / "hooks.nsh").read_text(encoding="utf-8")
+        run_main = template.split("Function RunMainBinary", 1)[1].split("FunctionEnd", 1)[0]
+        self.assertIn(r'$INSTDIR\gitmanager-setup.exe', run_main)
+        self.assertIn(r'IfFileExists "$INSTDIR\gitmanager-setup.exe"', hooks)
+        self.assertIn("setup_helper_payload_ready:", hooks)
+
+    def test_msi_and_nsis_installers_do_not_share_the_uninstaller_directory(self):
+        manifest = json.loads(
+            (ROOT / "installer" / "master-packager" / "package.json").read_text(encoding="utf-8")
+        )
+        msi_install_dir = manifest["installDir"].replace("/", "\\\\").lower()
+        self.assertIn(r"\programs\kastrick's software\gitmanager", msi_install_dir)
+
+        template = (ROOT / "src-tauri" / "windows" / "installer.nsi").read_text(encoding="utf-8")
+        self.assertIn(r'$LOCALAPPDATA\kastrick''s_software\${PRODUCTNAME}', template.lower())
+        self.assertNotEqual(msi_install_dir, r"%localappdata%\kastrick's_software\gitmanager")
+
+    def test_service_lock_ownership_prevents_duplicate_supervisor_spawns(self):
+        helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
+        watcher = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
+        self.assertIn("pub fn service_control_lock_owner_pid()", helper)
+        self.assertIn("pub fn service_control_lock_is_held()", helper)
+        self.assertIn("if self.child.is_none() && service_control_lock_is_held()", helper)
+        self.assertIn("lock_file.write_all(format!(\\"{}\\", std::process::id()).as_bytes())", helper)
+        self.assertIn("crash_helper::service_control_lock_owner_pid()", watcher)
+
+    def test_windows_pipe_response_flushes_and_status_health_check_retries(self):
+        helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
+        frame_writer = helper.split("fn write_service_frame_with_timeout", 1)[1].split("\\n}", 1)[0]
+        status_request = helper.split("pub fn request_service_status", 1)[1].split("\\n}", 1)[0]
+        self.assertIn("stream.flush()", frame_writer)
+        self.assertIn("for attempt in 0..3", status_request)
+        self.assertIn("could not send", helper.lower())
+
     def test_docs_explain_msi_and_msix_service_shutdown_differences(self):
         docs = (ROOT / "docs" / "windows-packaging.md").read_text(encoding="utf-8")
 
