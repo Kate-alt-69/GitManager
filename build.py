@@ -2608,6 +2608,8 @@ def package_local_target(
 
     include_mpdev = False
     if target.platform == "windows":
+        if name_windows_setup_installer(project_root, release) is None:
+            return 1
         stage_result = stage_windows_mpdev_package(project_root, toolchain_arg, release)
         if stage_result != 0:
             return stage_result
