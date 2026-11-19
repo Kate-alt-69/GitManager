@@ -1052,6 +1052,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 fn is_setup_mode() -> bool {
     std::env::var_os("GITMANAGER_SETUP_MODE").is_some()
+        || std::env::args_os().any(|argument| argument == "--setup")
 }
 
 /// Start the packaged setup companion and close the bootstrap window.
@@ -1063,7 +1064,7 @@ fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
     // that sibling itself, so the WebView cannot supply an arbitrary program path.
     let command = app_handle
         .shell()
-        .sidecar("gitmanager-setup")
+        .sidecar("binaries/gitmanager-setup")
         .map_err(|error| format!("GitManager Setup helper is unavailable: {error}"))?;
 
     let (_events, child) = command.spawn()
