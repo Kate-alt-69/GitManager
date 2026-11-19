@@ -658,8 +658,10 @@ mod branch_switch_tests {
         let main_commit = repo.find_commit(main_oid).unwrap();
         repo.branch("feature", &main_commit, false).unwrap();
 
+        // The feature branch initially points to the same commit and tree
+        // as main. Changing HEAD is sufficient; asking libgit2 to check out
+        // that identical tree can report a spurious conflict with the index.
         repo.set_head("refs/heads/feature").unwrap();
-        repo.checkout_head(None).unwrap();
         fs::write(path.join("tracked.txt"), "feature\n").unwrap();
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("tracked.txt")).unwrap();
