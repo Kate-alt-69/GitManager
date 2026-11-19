@@ -564,7 +564,7 @@ def _run_with_work_heartbeat(work: str, progress: str, message: str, operation, 
     stop = threading.Event()
 
     def report_heartbeat() -> None:
-        while not stop.wait(max(float(interval_seconds), 0.08))
+        while not stop.wait(max(float(interval_seconds), 0.08)):
             current_progress = progress_state.get("progress", progress) if progress_state else progress
             current_message = progress_state.get("message", message) if progress_state else message
             log_work(work, current_progress, "WORKING", current_message)
