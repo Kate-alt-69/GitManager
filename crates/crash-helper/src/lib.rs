@@ -15,7 +15,7 @@ use interprocess::local_socket::{
 };
 #[cfg(unix)]
 use interprocess::local_socket::ConnectOptions;
-use interprocess::{ConnectWaitMode, TryClone as _};
+use interprocess::ConnectWaitMode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -158,7 +158,7 @@ fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<Loc
             name,
             ConnectWaitMode::Timeout(timeout),
         )?;
-        Ok(local_socket::Stream::from(pipe))
+        Ok(LocalSocketStream::NamedPipe(local_socket::Stream::from(pipe)))
     }
 
     #[cfg(unix)]
@@ -277,6 +277,7 @@ enum ServiceCommand {
     ConfigureArchiveCloudStorage { archive_root: String, provider_json: String },
     DisableArchiveCloudStorage { archive_root: String },
     SyncArchiveCloudStorage { archive_root: String },
+    #[serde(rename = "detect_github_identity")]
     DetectGitHubIdentity,
     ConnectGitAccount { payload: serde_json::Value },
 }
