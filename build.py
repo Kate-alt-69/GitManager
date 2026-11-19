@@ -208,7 +208,7 @@ def run_command(
     *,
     work: Optional[str] = None,
     progress: str = "1/1",
-    heartbeat_seconds: float = 5.0,
+    heartbeat_seconds: float = 0.2,
 ) -> int:
     """Run a build command with live, prefixed stdout/stderr and periodic heartbeats."""
     args = [str(part) for part in command]
@@ -267,18 +267,30 @@ def run_command(
                 channel, line = output_queue.get(timeout=heartbeat_seconds)
             except queue.Empty:
                 elapsed = int(time.monotonic() - started_at)
-                log_work(
-                    label, progress, "WORKING",
-                    f"Process is still running ({elapsed}s elapsed); waiting for tool output.",
-                )
+                spinner_frames = ("|", "/", "-", "\\\\")
+                frame = int(elapsed / heartbeat_seconds) % len(spinner_frames)
+                log_work(label, progress, "WORKING", f"Process is still running {spinner_frames[frame]} ({elapsed}s elapsed).")
                 continue
             if line is None:
                 remaining_streams.discard(channel)
                 continue
-            if channel == "stderr":
-                _emit(f"[ {label} ] [ERR ] {line}", color="red", stream=sys.stderr)
+            lowered = line.lower()
+            if re.search(r"\b(error|fatal)\b", lowered):
+                line_color = "red"
+            elif re.search(r"\b(warn|warning)\b", lowered):
+                line_color = "yellow"
+            elif re.search(r"\b(debug|trace)\b", lowered):
+                line_color = "gray"
             else:
-                _emit(f"[ {label} ] {line}", color="white")
+                line_color = "red" if channel == "stderr" else "white"
+
+            if "offline mode is only supported" in lowered and "enterprise" in lowered:
+                _emit(f"[ {label} ] [ERR ] {line}", color="red", stream=sys.stderr)
+                log_warn("MPDEV reports that Offline Mode is enabled. Its Free tier supports online local builds for non-commercial/open-source use; Offline Mode itself requires Enterprise.")
+                log_info("No Enterprise upgrade is required for the documented Free use case: switch MPDEV back to online mode, restore internet access for MPDEV, and retry.")
+            else:
+                output_stream = sys.stderr if channel == "stderr" else sys.stdout
+                _emit(f"[ {label} ] {line}", color=line_color, stream=output_stream)
         return_code = process.wait()
     except KeyboardInterrupt:
         process.terminate()
@@ -301,7 +313,7 @@ def run_command(
     return return_code
 
 
-def _download_response_to_file(response, destination: Path, work: str = "CPython download") -> int:
+def _download_response_to_file(response, destination: Path, work: str = "CPython download", progress_state: Optional[Dict[str, str]] = None) -> int:
     """Stream a download to disk and report byte progress instead of silently waiting."""
     raw_length = response.headers.get("Content-Length", "")
     try:
@@ -319,6 +331,9 @@ def _download_response_to_file(response, destination: Path, work: str = "CPython
     detail = "Waiting for the first response bytes..."
     if total_bytes:
         detail = f"Receiving {total_bytes / (1024 * 1024):.1f} MiB from python.org..."
+    if progress_state is not None:
+        progress_state["progress"] = "0%"
+        progress_state["message"] = detail
     log_work(work, "0%", "WORKING", detail)
 
     with destination.open("wb") as output:
@@ -348,6 +363,9 @@ def _download_response_to_file(response, destination: Path, work: str = "CPython
                 progress = f"{downloaded / (1024 * 1024):.1f} MiB"
                 status_detail = "received (server did not provide Content-Length)"
 
+            if progress_state is not None:
+                progress_state["progress"] = progress
+                progress_state["message"] = status_detail
             if should_report:
                 log_work(work, progress, "WORKING", status_detail)
                 last_reported_bytes = downloaded
@@ -369,19 +387,26 @@ def _download_response_to_file(response, destination: Path, work: str = "CPython
     return downloaded
 
 
-def _run_with_work_heartbeat(work: str, progress: str, message: str, operation, interval_seconds: float = 5.0) -> None:
-    """Keep a visible WORKING status while a blocking network operation waits."""
+def _run_with_work_heartbeat(work: str, progress: str, message: str, operation, interval_seconds: float = 0.2, progress_state: Optional[Dict[str, str]] = None):
+    """Keep one animated status row current while a blocking operation waits."""
     stop = threading.Event()
     started_at = time.monotonic()
+    spinner_frames = ("|", "/", "-", "\\\\")
+    frame = 0
 
     def report_heartbeat() -> None:
+        nonlocal frame
         while not stop.wait(interval_seconds):
             elapsed = int(time.monotonic() - started_at)
+            current_progress = progress_state.get("progress", progress) if progress_state else progress
+            current_message = progress_state.get("message", message) if progress_state else message
+            spinner = spinner_frames[frame % len(spinner_frames)]
+            frame += 1
             log_work(
                 work,
-                progress,
+                current_progress,
                 "WORKING",
-                f"{message} Still active ({elapsed}s elapsed; waiting for the next response).",
+                f"{current_message} {spinner} ({elapsed}s elapsed)",
             )
 
     worker = threading.Thread(
