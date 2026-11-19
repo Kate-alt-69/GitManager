@@ -24,6 +24,7 @@ Features:
 """
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -199,6 +200,36 @@ def log_work(work: str, progress: str, status: str, message: str) -> None:
                 _ACTIVE_PROGRESS_WORK = work
                 _ACTIVE_PROGRESS_WIDTH = len(rendered)
 
+
+
+def tracked_work(work: str):
+    """Log a consistent start/end status around a complete build stage."""
+    def decorate(function):
+        @functools.wraps(function)
+        def wrapped(*args, **kwargs):
+            started_at = time.monotonic()
+            log_work(work, "1/1", "WORKING", f"Starting {function.__name__.replace('_', ' ')}...")
+            try:
+                result = function(*args, **kwargs)
+            except Exception as error:
+                elapsed = max(time.monotonic() - started_at, 0.001)
+                log_work(work, "1/1", "FAILED", f"{error} (after {elapsed:.1f}s).")
+                raise
+
+            return_code = None
+            if type(result) is int:
+                return_code = result
+            elif isinstance(result, tuple) and result and type(result[0]) is int:
+                return_code = result[0]
+
+            elapsed = max(time.monotonic() - started_at, 0.001)
+            if return_code not in (None, 0):
+                log_work(work, "1/1", "FAILED", f"Stage returned exit code {return_code} after {elapsed:.1f}s.")
+            else:
+                log_work(work, "1/1", "DONE", f"Finished in {elapsed:.1f}s.")
+            return result
+        return wrapped
+    return decorate
 
 
 def run_command(
@@ -663,6 +694,7 @@ def cargo_target_root(project_root: Path) -> Path:
     return value if value.is_absolute() else project_root / value
 
 
+@tracked_work("Windows app staging")
 def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release: bool = True) -> int:
     """Stage the raw Windows app and every runtime/sidecar for MPDEV packaging."""
     if platform.system() != "Windows":
@@ -838,6 +870,7 @@ def find_master_packager_dev_cli() -> Optional[Path]:
     return None
 
 
+@tracked_work("Windows packaging tools")
 def setup_windows_packaging_tools() -> int:
     """Install the required MPDEV packager and NSIS fallback using exact WinGet package IDs."""
     if platform.system() != "Windows":
@@ -898,6 +931,7 @@ def setup_windows_packaging_tools() -> int:
     return 0
 
 
+@tracked_work("Windows package preflight")
 def verify_windows_packaging_inputs(project_root: Path) -> int:
     """Fail before Tauri bundling if the Python resource or installer hook is misconfigured."""
     runtime_dir = project_root / "tools" / "runtime" / "python"
@@ -972,6 +1006,7 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
     return 0
 
 
+@tracked_work("MPDEV manifest")
 def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[Path]]:
     """Generate the architecture-specific MPDEV manifest from the staged Windows payload."""
     if platform.system() != "Windows":
@@ -1054,6 +1089,7 @@ def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[
     return 0, generated_manifest
 
 
+@tracked_work("MPDEV installers")
 def build_master_packager_installers(
     project_root: Path,
     generated_manifest: Path,
@@ -1187,6 +1223,7 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
         return 127, "", message
 
 
+@tracked_work("Cargo dependency audit")
 def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
     """Count the actual build graphs for the app and its packaged sidecars.
 
@@ -1267,6 +1304,7 @@ RBE_CLOUD_NODE_TARGETS = {
 }
 
 
+@tracked_work("Verified network download")
 def read_bounded_url(url: str, limit: int, *, headers: Optional[Dict[str, str]] = None) -> bytes:
     request = urllib.request.Request(
         url,
@@ -1368,6 +1406,7 @@ def fetch_rbe_cloud_node_release(tag: str) -> Dict[str, object]:
     return release
 
 
+@tracked_work("RBE asset download")
 def download_verified_rbe_asset(
     asset: Dict[str, object],
     cache_dir: Path,
@@ -1418,6 +1457,7 @@ def download_verified_rbe_asset(
     return destination, actual_hash
 
 
+@tracked_work("RBE binary extraction")
 def extract_rbe_cloud_node_archive(
     archive_path: Path,
     archive_kind: str,
@@ -1502,6 +1542,7 @@ def extract_rbe_cloud_node_archive(
             temporary.unlink()
 
 
+@tracked_work("Cloud node bundle")
 def prepare_cloud_node_deployment(project_root: Path) -> int:
     """Build a small bootstrap ZIP; setup.py downloads only the host's RBE runtime."""
     try:
@@ -1814,6 +1855,7 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
     return ""
 
 
+@tracked_work("Tauri CLI setup")
 def check_tauri_rust_cli(toolchain_arg: str, auto_install: bool = False) -> bool:
     """
     Checks for the Rust `tauri-cli` crate (`cargo tauri --version`).
@@ -1867,6 +1909,7 @@ def check_tauri_rust_cli(toolchain_arg: str, auto_install: bool = False) -> bool
     return False
 
 
+@tracked_work("Platform dependency check")
 def check_os_system_dependencies() -> None:
     sys_name = platform.system()
     log_info(f"Checking native platform dependencies for {sys_name} ({platform.release()})...")
@@ -1922,6 +1965,7 @@ def resolve_rust_target_triple(toolchain_arg: str) -> str:
     raise RuntimeError("Could not determine the Rust target triple for the gitm sidecar.")
 
 
+@tracked_work("Sidecar build and staging")
 def build_gitm_sidecar(
     project_root: Path,
     toolchain_arg: str,
@@ -2092,6 +2136,7 @@ def build_gitm_sidecar(
 
 
 
+@tracked_work("Rust target components")
 def ensure_rust_target_components(targets: List[BuildTarget], toolchain_arg: str) -> int:
     """Install missing Rust target std components with the already-selected rustup toolchain."""
     rustup = shutil.which("rustup")
@@ -2183,6 +2228,7 @@ def prompt_build_selection() -> str:
     raise ValueError("Invalid architecture selection. Choose A or one of the listed numbers.")
 
 
+@tracked_work("Local build target selection")
 def resolve_local_build_targets(selection: str) -> List[BuildTarget]:
     """Resolve a selector into targets that the current machine can actually build."""
     kind, selected = parse_build_selection(selection)
@@ -2245,6 +2291,7 @@ def configure_local_target(project_root: Path, target: BuildTarget) -> None:
     log_info(f"Artifacts: {project_root / 'build' / 'dist' / target.output_name}")
 
 
+@tracked_work("Store package build")
 def build_local_store_package(
     project_root: Path,
     store: str,
@@ -2365,6 +2412,7 @@ def build_local_store_package(
     return 2
 
 
+@tracked_work("Publish build outputs")
 def publish_build_outputs(
     project_root: Path,
     release: bool,
@@ -2507,6 +2555,7 @@ def publish_build_outputs(
         return 1
     return 0
 
+@tracked_work("Native build pipeline")
 def run_build_or_dev(
     project_root: Path,
     mode: str,
