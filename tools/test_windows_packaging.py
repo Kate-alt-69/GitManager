@@ -502,6 +502,8 @@ class _TTYBuffer(io.StringIO):
 class BuildProgressReportingTests(unittest.TestCase):
     def setUp(self):
         BUILD._LAST_NONINTERACTIVE_PROGRESS.clear()
+        BUILD._ACTIVE_PROGRESS_STREAM = None
+        BUILD._ACTIVE_PROGRESS_STATE = None
 
     def test_mpdev_free_offline_rejection_is_classified_only_for_mpdev(self):
         message = 'mpdev: error: Offline mode is only supported with "Enterprise" license.'
@@ -516,8 +518,7 @@ class BuildProgressReportingTests(unittest.TestCase):
         self.assertIn("[ CPython runtime ] [2/6] [WORKING]", output.getvalue())
         self.assertIn("Checking the cached runtime...", output.getvalue())
 
-
-    def test_terminal_progress_updates_rewrite_one_live_row(self):
+    def test_terminal_progress_uses_a_clean_animated_single_row(self):
         output = _TTYBuffer()
         with patch("sys.stdout", output):
             BUILD.log_work("CPython download", "0%", "PENDING", "Queued archive...")
@@ -527,8 +528,30 @@ class BuildProgressReportingTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertEqual(rendered.count("\r"), 4)
+        self.assertEqual(rendered.count("\x1b[2K"), 4)
         self.assertEqual(rendered.count("\n"), 1)
-        self.assertIn("[ CPython download ] [100%] [DONE]", rendered)
+        self.assertIn("DONE     CPython download", rendered)
+        self.assertIn("[==================]", rendered)
+
+    def test_log_lines_preserve_the_live_progress_row(self):
+        output = _TTYBuffer()
+        with patch("sys.stdout", output):
+            BUILD.log_work("Cargo build", "1/1", "WORKING", "Compiling tauri...")
+            BUILD._emit("[ Cargo build ] warning: test warning", color="yellow")
+            BUILD.log_work("Cargo build", "1/1", "DONE", "Finished.")
+
+        rendered = output.getvalue()
+        self.assertIn("warning: test warning", rendered)
+        self.assertIn("Compiling tauri...", rendered)
+        self.assertIn("DONE     Cargo build", rendered)
+        self.assertEqual(rendered.count("\n"), 2)
+        self.assertGreaterEqual(rendered.count("\x1b[2K"), 4)
+
+    def test_cargo_status_lines_are_recognized_for_the_live_activity_row(self):
+        self.assertTrue(BUILD.is_cargo_progress_line(["cargo", "build"], "   Compiling tauri v2.12.7"))
+        self.assertTrue(BUILD.is_cargo_progress_line(["cargo.exe", "check"], "    Checking gitmanager-core"))
+        self.assertFalse(BUILD.is_cargo_progress_line(["rustc"], "Compiling tauri"))
+        self.assertFalse(BUILD.is_cargo_progress_line(["cargo", "build"], "error: could not compile"))
 
     def test_noninteractive_heartbeat_repeats_are_suppressed(self):
         output = io.StringIO()
@@ -543,6 +566,26 @@ class BuildProgressReportingTests(unittest.TestCase):
         self.assertNotIn("Still compiling", rendered)
         self.assertIn("[ Cargo build ] [1/1] [DONE]", rendered)
 
+    def test_redirected_command_output_never_gets_periodic_heartbeat_spam(self):
+        output = io.StringIO()
+        command = [
+            BUILD.sys.executable,
+            "-c",
+            "import time; time.sleep(0.35); print('child finished')",
+        ]
+        with patch("sys.stdout", output):
+            result = BUILD.run_command(
+                command,
+                work="Quiet redirected command",
+                heartbeat_seconds=0.08,
+            )
+
+        rendered = output.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("child finished", rendered)
+        self.assertNotIn("Waiting for process output", rendered)
+        self.assertNotIn("Process is still running", rendered)
+
     def test_python_runtime_download_streams_bytes_and_reports_completion(self):
         payload = b"python-embed-runtime-fixture"
         response = _MemoryDownloadResponse(payload, len(payload))
@@ -555,7 +598,8 @@ class BuildProgressReportingTests(unittest.TestCase):
 
             self.assertEqual(copied, len(payload))
             self.assertEqual(destination.read_bytes(), payload)
-            self.assertIn("[ CPython download ] [100%] [DONE]", output.getvalue())
+            self.assertIn("CPython download", output.getvalue())
+            self.assertIn("DONE", output.getvalue())
 
     def test_python_runtime_download_rejects_a_truncated_http_body(self):
         response = _MemoryDownloadResponse(b"short", 100)
