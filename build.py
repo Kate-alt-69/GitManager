@@ -1023,6 +1023,20 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
 
 
 @tracked_work("MPDEV manifest")
+def resolve_mpdev_timestamp_server() -> str:
+    """Resolve and validate the timestamp authority used for development MSIX signing."""
+    value = os.environ.get(
+        "GITMANAGER_MPDEV_TIMESTAMP_SERVER",
+        "http://timestamp.acs.microsoft.com",
+    ).strip()
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(
+            "GITMANAGER_MPDEV_TIMESTAMP_SERVER must be an absolute HTTP or HTTPS URL."
+        )
+    return value
+
+
 def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[Path]]:
     """Generate the architecture-specific MPDEV manifest from the staged Windows payload."""
     if platform.system() != "Windows":
@@ -1083,12 +1097,14 @@ def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[
             package_config.setdefault("msix", {}).pop("digitalSignature", None)
             log_info("Partner Center identity detected; MPDEV will create an unsigned Store-ready MSIX.")
         else:
-            package_config.setdefault("msix", {}).setdefault(
+            signature = package_config.setdefault("msix", {}).setdefault(
                 "digitalSignature",
-                {
-                    "signWith": "GenerateTestCertificate",
-                    "timestampServer": "http://timestamp.sectigo.com",
-                },
+                {"signWith": "GenerateTestCertificate"},
+            )
+            signature["timestampServer"] = resolve_mpdev_timestamp_server()
+            log_info(
+                "MPDEV development MSIX signing will use timestamp authority: "
+                + signature["timestampServer"]
             )
             log_warn("MPDEV MSIX will use its development certificate; configure Partner Center identity for Store submission.")
         generated_manifest = cargo_target_root(project_root) / "windows-package" / "mpdev-package.json"
@@ -2000,45 +2016,11 @@ def build_gitm_sidecar(
     toolchain_arg: str,
     release: bool,
 ) -> int:
-    """Build and stage gitm, first-run setup, crash_helper and the independent service."""
+    """Compile every workspace library/binary once, then stage Tauri's target sidecars."""
     profile = "release" if release else "debug"
-    common_prefix = ["cargo"]
-    if toolchain_arg:
-        common_prefix.append(toolchain_arg)
     target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
-    target_args = ["--target", target_triple] if target_triple else []
-
-    commands = [
-        (
-            "native gitm CLI",
-            common_prefix + ["build", "--package", "gitm-cli", "--bin", "gitm"] + target_args,
-        ),
-        (
-            "GitManager first-run setup companion",
-            common_prefix + ["build", "--package", "gitmanager-setup", "--bin", "gitmanager-setup"] + target_args,
-        ),
-        (
-            "crash_helper UI supervisor",
-            common_prefix + ["build", "--package", "crash-helper", "--bin", "crash_helper"] + target_args,
-        ),
-    ]
-    if release:
-        for _, command in commands:
-            command.append("--release")
-
-    for command_index, (description, command) in enumerate(commands, start=1):
-        result = run_command(
-            command,
-            cwd=project_root,
-            work=f"Build {description}",
-            progress=f"{command_index}/{len(commands) + 1}",
-        )
-        if result != 0:
-            log_err(f"The {description} failed to build.")
-            return result
-
     try:
-        host_triple = resolve_rust_target_triple(toolchain_arg)
+        binary_triple = target_triple or resolve_rust_target_triple(toolchain_arg)
     except RuntimeError as error:
         log_err(str(error))
         return 1
@@ -2046,92 +2028,94 @@ def build_gitm_sidecar(
     target_dir = cargo_target_root(project_root)
     if not target_dir.is_absolute():
         target_dir = project_root / target_dir
-    binary_triple = target_triple or host_triple
-    binary_dir = target_dir / target_triple / profile if target_triple else target_dir / profile
-
+    binary_dir = target_dir / binary_triple / profile if target_triple else target_dir / profile
     executable_suffix = ".exe" if "windows" in binary_triple else ""
     sidecar_dir = project_root / "src-tauri" / "binaries"
     sidecar_dir.mkdir(parents=True, exist_ok=True)
 
     artifacts = [
         (binary_dir / f"gitm{executable_suffix}", f"gitm-{binary_triple}{executable_suffix}"),
-        (binary_dir / f"gitmanager-setup{executable_suffix}", f"gitmanager-setup-{binary_triple}{executable_suffix}"),
-        (binary_dir / f"crash_helper{executable_suffix}", f"crash_helper-{binary_triple}{executable_suffix}"),
+        (
+            binary_dir / f"gitmanager-setup{executable_suffix}",
+            f"gitmanager-setup-{binary_triple}{executable_suffix}",
+        ),
+        (
+            binary_dir / f"crash_helper{executable_suffix}",
+            f"crash_helper-{binary_triple}{executable_suffix}",
+        ),
+        (
+            binary_dir / f"gitmanager-service{executable_suffix}",
+            f"gitmanager.service-{binary_triple}{executable_suffix}",
+        ),
     ]
-    staged: List[Path] = []
 
-    # The service is compiled independently from Tauri. A placeholder is kept
-    # only so the separate desktop build can validate its declared externalBin.
-    for source_path, filename in artifacts:
-        if not source_path.is_file():
-            log_err(f"Cargo completed but the expected sidecar binary is missing: {source_path}")
-            return 1
-        destination = sidecar_dir / filename
-        try:
-            shutil.copy2(source_path, destination)
-        except OSError as error:
-            log_err(f"Could not stage sidecar at {destination}: {error}")
-            return 1
-        staged.append(destination)
-        log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
-
-    service_filename = f"gitmanager.service-{binary_triple}{executable_suffix}"
-    service_sidecar = sidecar_dir / service_filename
-    service_source = binary_dir / f"gitmanager-service{executable_suffix}"
-
-    # The service is a binary in the Tauri package, whose build script itself
-    # requires every declared externalBin file to exist. Keep any previous
-    # working sidecar as a backup, then supply a temporary placeholder so the
-    # first service build can run. The real Cargo output replaces it immediately.
-    service_backup: Optional[Path] = None
+    # tauri-build validates every externalBin path while compiling the desktop
+    # crate. Keep existing sidecars intact and create only missing placeholders;
+    # real Cargo outputs replace these as soon as the workspace build succeeds.
+    placeholders: List[Path] = []
     try:
-        if service_sidecar.is_file():
-            service_backup = service_sidecar.with_name(service_sidecar.name + ".previous-build")
-            if service_backup.exists():
-                service_backup.unlink()
-            shutil.copy2(service_sidecar, service_backup)
-        service_sidecar.write_bytes(b"")
+        for _, filename in artifacts:
+            destination = sidecar_dir / filename
+            if not destination.exists():
+                destination.write_bytes(b"")
+                placeholders.append(destination)
     except OSError as error:
-        log_err(f"Could not prepare the service sidecar build placeholder: {error}")
+        for placeholder in placeholders:
+            try:
+                placeholder.unlink(missing_ok=True)
+            except OSError:
+                pass
+        log_err(f"Could not prepare Tauri sidecar placeholders: {error}")
         return 1
 
-    service_cmd = common_prefix + ["build", "--package", "gitmanager-service", "--bin", "gitmanager-service"] + target_args
+    command = ["cargo"]
+    if toolchain_arg:
+        command.append(toolchain_arg)
+    command.extend(["build", "--workspace", "--lib", "--bins"])
+    if target_triple:
+        command.extend(["--target", target_triple])
     if release:
-        service_cmd.append("--release")
-    service_result = run_command(
-        service_cmd,
-        cwd=project_root,
-        work="Build GitManager background service",
-        progress=f"{len(commands) + 1}/{len(commands) + 1}",
+        command.append("--release")
+
+    log_info(
+        "Compiling every workspace crate library and binary before any installer is created."
     )
-    if service_result != 0 or not service_source.is_file():
-        try:
-            if service_sidecar.exists():
-                service_sidecar.unlink()
-            if service_backup and service_backup.is_file():
-                shutil.copy2(service_backup, service_sidecar)
-                service_backup.unlink()
-        except OSError as error:
-            log_warn(f"Could not restore the previous service sidecar after a failed build: {error}")
-        if service_result != 0:
-            log_err("The standalone GitManager background service failed to build.")
-            return service_result
-        log_err(f"Cargo completed but the expected service binary is missing: {service_source}")
+    result = run_command(
+        command,
+        cwd=project_root,
+        work=f"Build workspace ({binary_triple})",
+        progress="1/1",
+    )
+    if result != 0:
+        for placeholder in placeholders:
+            try:
+                placeholder.unlink(missing_ok=True)
+            except OSError as error:
+                log_warn(f"Could not remove temporary sidecar placeholder {placeholder}: {error}")
+        return result
+
+    missing = [
+        str(source)
+        for source, _ in artifacts
+        if not source.is_file() or source.stat().st_size == 0
+    ]
+    if missing:
+        log_err("Cargo completed but workspace binaries are missing or empty: " + ", ".join(missing))
         return 1
 
+    staged: List[Path] = []
     try:
-        shutil.copy2(service_source, service_sidecar)
-        if service_backup and service_backup.is_file():
-            service_backup.unlink()
+        for source_path, filename in artifacts:
+            destination = sidecar_dir / filename
+            temporary = destination.with_name(destination.name + ".staging")
+            shutil.copy2(source_path, temporary)
+            os.replace(temporary, destination)
+            staged.append(destination)
+            log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
     except OSError as error:
-        log_err(f"Could not stage the built background service at {service_sidecar}: {error}")
+        log_err(f"Could not stage a workspace binary for Tauri: {error}")
         return 1
 
-    staged.append(service_sidecar)
-    log_ok(f"Prepared Tauri sidecar: {service_sidecar} ({service_sidecar.stat().st_size:,} bytes)")
-
-    # Publish a predictable standalone setup helper beside the Cargo outputs:
-    # GitManager-Setup.exe on Windows and GitManager-Setup on Linux/macOS.
     setup_artifact_name = "GitManager-Setup.exe" if executable_suffix else "GitManager-Setup"
     setup_artifact = binary_dir / setup_artifact_name
     try:
@@ -2140,8 +2124,6 @@ def build_gitm_sidecar(
         log_err(f"Could not stage the standalone setup helper at {setup_artifact}: {error}")
         return 1
 
-    # When CI has imported a production signing certificate, sign every sidecar
-    # and the predictable setup-helper output before Tauri bundles the sidecars.
     if platform.system() == "Windows" and os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
         sign_script = project_root / "tools" / "sign_windows_file.ps1"
         if sign_script.is_file():
@@ -2153,7 +2135,9 @@ def build_gitm_sidecar(
                     "-FilePath", str(target),
                 ]
                 sign_rc = run_command(
-                    sign_cmd, cwd=project_root, work=f"Sign {target.name}",
+                    sign_cmd,
+                    cwd=project_root,
+                    work=f"Sign {target.name}",
                     progress=f"{sign_index}/{len(sign_targets)}",
                 )
                 if sign_rc != 0:
@@ -2162,7 +2146,6 @@ def build_gitm_sidecar(
 
     log_ok(f"Created standalone setup helper: {setup_artifact} ({setup_artifact.stat().st_size:,} bytes)")
     return 0
-
 
 
 @tracked_work("Rust target components")
@@ -2585,7 +2568,94 @@ def publish_build_outputs(
         return 1
     return 0
 
+@tracked_work("Package local target")
+def package_local_target(
+    project_root: Path,
+    target: BuildTarget,
+    toolchain_arg: str,
+    release: bool,
+) -> int:
+    """Create installers for one already-compiled target; never compile its app again."""
+    src_tauri_dir = project_root / "src-tauri"
+    command = ["cargo"]
+    if toolchain_arg:
+        command.append(toolchain_arg)
+    command.extend(["tauri", "bundle"])
+
+    if target.platform == "linux" and target.triple == "armv7-unknown-linux-gnueabihf":
+        command.extend(["--bundles", "deb,rpm"])
+    if not release:
+        command.append("--debug")
+    if target.platform == "windows" and release:
+        signing_config = prepare_windows_tauri_signing_config(project_root)
+        if signing_config is None:
+            log_err("Could not prepare the Windows signing override for installer generation.")
+            return 1
+        command.extend(["--config", str(signing_config.resolve())])
+
+    log_info(
+        f"Installer phase: generating Tauri bundles for {target.selector}; "
+        "the workspace binaries were compiled in the previous phase."
+    )
+    bundle_result = run_command(
+        command,
+        cwd=src_tauri_dir,
+        work=f"Bundle {target.selector}",
+        progress="1/3",
+    )
+    if bundle_result != 0:
+        return bundle_result
+
+    include_mpdev = False
+    if target.platform == "windows":
+        stage_result = stage_windows_mpdev_package(project_root, toolchain_arg, release)
+        if stage_result != 0:
+            return stage_result
+        manifest_result, manifest = prepare_master_packager_manifest(project_root)
+        if manifest_result != 0 or manifest is None:
+            return manifest_result or 1
+        mpdev_result, packages = build_master_packager_installers(project_root, manifest)
+        if mpdev_result != 0 or not packages:
+            return mpdev_result or 1
+        include_mpdev = True
+
+    return publish_build_outputs(
+        project_root,
+        release,
+        True,
+        include_mpdev,
+        bundle_formats="deb,rpm" if target.platform == "linux" and target.triple == "armv7-unknown-linux-gnueabihf" else None,
+    )
+
+
 @tracked_work("Native build pipeline")
+def verify_windows_installer_tools() -> int:
+    """Fail before compilation when a required Windows installer tool is unavailable."""
+    if platform.system() != "Windows":
+        return 0
+
+    refresh_windows_packaging_path()
+    mpdev_cli = find_master_packager_dev_cli()
+    if mpdev_cli is None:
+        log_err(
+            "Master Packager Dev is mandatory for Windows MSI/MSIX builds. "
+            "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
+        )
+        return 1
+    nsis_available = bool(shutil.which("makensis")) or any(
+        (directory / "makensis.exe").is_file()
+        for directory in windows_packaging_search_directories()
+    )
+    if not nsis_available:
+        log_err(
+            "NSIS is required as the fallback Windows setup installer. "
+            "Install it with 'winget install --id NSIS.NSIS --exact' "
+            "or run 'py build.py setup-packaging-tools'."
+        )
+        return 1
+    return 0
+
+
 def run_build_or_dev(
     project_root: Path,
     mode: str,
@@ -2610,26 +2680,10 @@ def run_build_or_dev(
         if cloud_node_result != 0:
             return cloud_node_result
 
-    if mode == "build" and platform.system() == "Windows" and bundle:
-        refresh_windows_packaging_path()
-        mpdev_cli = find_master_packager_dev_cli()
-        if mpdev_cli is None:
-            log_err(
-                "Master Packager Dev is mandatory for Windows MSI/MSIX builds. "
-                "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
-            )
-            return 1
-        nsis_available = bool(shutil.which("makensis")) or any(
-            (directory / "makensis.exe").is_file()
-            for directory in windows_packaging_search_directories()
-        )
-        if not nsis_available:
-            log_err(
-                "NSIS is required as the fallback Windows setup installer. "
-                "Install it with 'winget install --id NSIS.NSIS --exact' "
-                "or run 'py build.py setup-packaging-tools'."
-            )
-            return 1
+    if mode == "build" and bundle:
+        prerequisite_result = verify_windows_installer_tools()
+        if prerequisite_result != 0:
+            return prerequisite_result
 
     if mode == "build" and platform.system() == "Windows":
         runtime_result = prepare_windows_python_runtime(project_root)
@@ -2894,10 +2948,10 @@ def main() -> int:
         return build_gitm_sidecar(project_root, toolchain_arg, is_release)
 
     if args.mode == "build":
-        results = []
-        for target in selected_targets:
-            configure_local_target(project_root, target)
-            if args.store_target:
+        if args.store_target:
+            results = []
+            for target in selected_targets:
+                configure_local_target(project_root, target)
                 result = build_local_store_package(
                     project_root=project_root,
                     store=args.store_target,
@@ -2906,29 +2960,110 @@ def main() -> int:
                     has_cargo_tauri=has_cargo_tauri,
                     release=is_release,
                 )
-            else:
+                results.append((target, result))
+                if result == 0:
+                    log_ok(f"Completed local store build: {target.selector}")
+                else:
+                    log_err(f"Local store build failed for {target.selector} (exit code {result}).")
+            failed = [(target, result) for target, result in results if result != 0]
+            if failed:
+                log_err(
+                    f"{len(failed)} of {len(results)} selected local store target(s) failed: "
+                    + ", ".join(target.selector for target, _ in failed)
+                )
+                return failed[0][1] or 1
+            return 0
+
+        if args.build_type == "installer":
+            if any(target.platform == "windows" for target in selected_targets):
+                prerequisite_result = verify_windows_installer_tools()
+                if prerequisite_result != 0:
+                    return prerequisite_result
+
+            compile_results = []
+            log_work(
+                "Build pipeline",
+                "1/2",
+                "WORKING",
+                f"Compiling all selected targets ({len(selected_targets)}) before creating installers...",
+            )
+            for index, target in enumerate(selected_targets, start=1):
+                configure_local_target(project_root, target)
                 result = run_build_or_dev(
                     project_root=project_root,
                     mode="build",
                     toolchain_arg=toolchain_arg,
                     has_cargo_tauri=has_cargo_tauri,
                     release=is_release,
-                    bundle=args.build_type == "installer",
+                    bundle=False,
                 )
+                compile_results.append((target, result))
+                if result == 0:
+                    log_ok(f"Compiled workspace crates and application binaries: {target.selector} ({index}/{len(selected_targets)}).")
+                else:
+                    log_err(f"Compilation failed for {target.selector} (exit code {result}).")
+
+            successful_targets = [target for target, result in compile_results if result == 0]
+            package_results = []
+            if successful_targets:
+                log_work(
+                    "Build pipeline",
+                    "2/2",
+                    "WORKING",
+                    f"All compilation passes finished; now creating installers for {len(successful_targets)} target(s)...",
+                )
+                for index, target in enumerate(successful_targets, start=1):
+                    configure_local_target(project_root, target)
+                    result = package_local_target(
+                        project_root=project_root,
+                        target=target,
+                        toolchain_arg=toolchain_arg,
+                        release=is_release,
+                    )
+                    package_results.append((target, result))
+                    if result == 0:
+                        log_ok(f"Created all installers for {target.selector} ({index}/{len(successful_targets)}).")
+                    else:
+                        log_err(f"Installer generation failed for {target.selector} (exit code {result}).")
+
+            failed = [(target, result) for target, result in compile_results + package_results if result != 0]
+            if failed:
+                log_err(
+                    f"{len(failed)} of {len(compile_results) + len(package_results)} build phase(s) failed: "
+                    + ", ".join(f"{target.selector} (exit {result})" for target, result in failed)
+                )
+                log_work("Build pipeline", "2/2", "FAILED", "One or more compilation or installer phases failed.")
+                return failed[0][1] or 1
+
+            log_work("Build pipeline", "2/2", "DONE", "Every selected target compiled before installer generation completed.")
+            log_ok(f"Completed {len(selected_targets)} local installer target(s).")
+            return 0
+
+        results = []
+        for target in selected_targets:
+            configure_local_target(project_root, target)
+            result = run_build_or_dev(
+                project_root=project_root,
+                mode="build",
+                toolchain_arg=toolchain_arg,
+                has_cargo_tauri=has_cargo_tauri,
+                release=is_release,
+                bundle=False,
+            )
             results.append((target, result))
             if result == 0:
-                log_ok(f"Completed local build: {target.selector}")
+                log_ok(f"Completed app-only build: {target.selector}")
             else:
-                log_err(f"Local build failed for {target.selector} (exit code {result}).")
+                log_err(f"App-only build failed for {target.selector} (exit code {result}).")
 
         failed = [(target, result) for target, result in results if result != 0]
         if failed:
             log_err(
-                f"{len(failed)} of {len(results)} selected local target(s) failed: "
+                f"{len(failed)} of {len(results)} selected local app target(s) failed: "
                 + ", ".join(target.selector for target, _ in failed)
             )
             return failed[0][1] or 1
-        log_ok(f"Completed {len(results)} local build target(s).")
+        log_ok(f"Completed {len(results)} local app-only target(s).")
         return 0
 
     return run_build_or_dev(
