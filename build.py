@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tarfile
 import urllib.error
 import urllib.parse
@@ -56,21 +57,139 @@ RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
 
 
+_ANSI_COLORS = {
+    "white": "\\033[97m",
+    "green": "\\033[92m",
+    "yellow": "\\033[93m",
+    "red": "\\033[91m",
+    "gray": "\\033[90m",
+}
+_ANSI_RESET = "\\033[0m"
+VERBOSE_LOGGING = os.environ.get("GITMANAGER_BUILD_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _supports_color(stream) -> bool:
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("FORCE_COLOR", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    try:
+        return bool(stream.isatty()) and os.environ.get("TERM", "").lower() != "dumb"
+    except (AttributeError, OSError):
+        return False
+
+
+def _paint(message: str, color: str, stream) -> str:
+    if not _supports_color(stream):
+        return message
+    return _ANSI_COLORS[color] + message + _ANSI_RESET
+
+
+def _emit(message: str, *, color: str = "white", stream=None) -> None:
+    target = stream or sys.stdout
+    print(_paint(message, color, target), file=target, flush=True)
+
+
 def log_info(msg: str) -> None:
-    print(f"[INFO] {msg}")
+    _emit(f"[INFO] {msg}", color="white")
 
 
 def log_ok(msg: str) -> None:
-    print(f"[ OK ] {msg}")
+    _emit(f"[ OK ] {msg}", color="green")
 
 
 def log_warn(msg: str) -> None:
-    print(f"[WARN] {msg}")
+    _emit(f"[WARN] {msg}", color="yellow")
 
 
 def log_err(msg: str) -> None:
-    print(f"[ERR ] {msg}", file=sys.stderr)
+    _emit(f"[ERR ] {msg}", color="red", stream=sys.stderr)
 
+
+def log_debug(msg: str) -> None:
+    if VERBOSE_LOGGING:
+        _emit(f"[DBG ] {msg}", color="gray")
+
+
+def log_work(work: str, progress: str, status: str, message: str) -> None:
+    """Emit a flushed, color-coded status line for a long-running build task."""
+    normalized = status.strip().upper()
+    colors = {
+        "PENDING": "yellow",
+        "WORKING": "white",
+        "DONE": "green",
+        "FAILED": "red",
+        "DEBUG": "gray",
+    }
+    color = colors.get(normalized, "white")
+    _emit(f"[ {work} ] [{progress}] [{normalized}] {message}", color=color)
+
+
+def _download_response_to_file(response, destination: Path, work: str = "CPython download") -> int:
+    """Stream a download to disk and report byte progress instead of silently waiting."""
+    raw_length = response.headers.get("Content-Length", "")
+    try:
+        total_bytes = int(raw_length) if raw_length else 0
+    except (TypeError, ValueError):
+        total_bytes = 0
+
+    downloaded = 0
+    last_percentage_bucket = -10
+    last_reported_bytes = 0
+    last_reported_at = time.monotonic()
+    chunk_size = 256 * 1024
+
+    detail = "Waiting for the first response bytes..."
+    if total_bytes:
+        detail = f"Receiving {total_bytes / (1024 * 1024):.1f} MiB from python.org..."
+    log_work(work, "0%", "WORKING", detail)
+
+    with destination.open("wb") as output:
+        while True:
+            chunk = response.read(chunk_size)
+            if not chunk:
+                break
+            output.write(chunk)
+            downloaded += len(chunk)
+
+            now = time.monotonic()
+            if total_bytes:
+                percentage = min(100, int(downloaded * 100 / total_bytes))
+                bucket = (percentage // 10) * 10
+                should_report = bucket >= last_percentage_bucket + 10 or percentage == 100
+                progress = f"{percentage}%"
+                last_percentage_bucket = max(last_percentage_bucket, bucket)
+                status_detail = (
+                    f"{downloaded / (1024 * 1024):.1f} / "
+                    f"{total_bytes / (1024 * 1024):.1f} MiB"
+                )
+            else:
+                should_report = (
+                    downloaded - last_reported_bytes >= 1024 * 1024
+                    or now - last_reported_at >= 2.0
+                )
+                progress = f"{downloaded / (1024 * 1024):.1f} MiB"
+                status_detail = "received (server did not provide Content-Length)"
+
+            if should_report:
+                log_work(work, progress, "WORKING", status_detail)
+                last_reported_bytes = downloaded
+                last_reported_at = now
+
+    if total_bytes and downloaded != total_bytes:
+        raise OSError(
+            f"Download ended early: received {downloaded:,} of {total_bytes:,} bytes."
+        )
+
+    elapsed = max(time.monotonic() - last_reported_at, 0.001)
+    log_work(
+        work,
+        "100%",
+        "DONE",
+        f"Downloaded {downloaded:,} bytes ({downloaded / (1024 * 1024):.1f} MiB).",
+    )
+    log_debug(f"{work} transfer completed in approximately {elapsed:.1f}s.")
+    return downloaded
 
 
 PYTHON_EMBED_VERSION = "3.14.10"
@@ -123,11 +242,15 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
         log_info("Windows CPython runtime preparation runs only on a Windows build runner; skipping.")
         return 0
 
+    log_work("CPython runtime", "1/6", "WORKING", "Resolving the Windows target architecture...")
     target_arch = windows_target_architecture()
     package = PYTHON_EMBED_PACKAGES.get(target_arch)
     if package is None:
-        log_err(f"No pinned Windows Python runtime is available for target architecture {target_arch}.")
+        message = f"No pinned Windows Python runtime is available for target architecture {target_arch}."
+        log_work("CPython runtime", "1/6", "FAILED", message)
+        log_err(message)
         return 1
+
     archive_name, expected_sha256, expected_machine = package
     runtime_dir = project_root / "tools" / "runtime" / "python"
     python_exe = runtime_dir / "python.exe"
@@ -139,6 +262,13 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
         "arm64": "aarch64", "aarch64": "aarch64",
     }.get(machine, "")
 
+    target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip() or "(native target)"
+    log_debug(
+        f"Windows host={host_arch or machine}; target={target_arch}; "
+        f"Rust target={target_triple}; runtime directory={runtime_dir}."
+    )
+
+    log_work("CPython runtime", "2/6", "WORKING", "Checking whether a verified private runtime can be reused...")
     if python_exe.is_file() and windows_pe_machine(python_exe) == expected_machine:
         if host_arch == target_arch or (host_arch == "x86_64" and target_arch == "x86"):
             code, out, err = run_capture([
@@ -146,64 +276,114 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
                 "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
             ])
             if code == 0 and out.startswith(PYTHON_EMBED_VERSION):
-                log_ok(f"Private CPython {out} ({target_arch}) runtime is already prepared.")
+                log_work("CPython runtime", "2/6", "DONE", f"Reusing prepared CPython {out} ({target_arch}).")
                 return 0
+            log_debug(f"Existing Python runtime failed its reuse check: {err or out or code}")
         elif all((runtime_dir / name).is_file() for name in ("python314.zip", "python314._pth")):
-            log_ok(f"Verified existing CPython {PYTHON_EMBED_VERSION} PE runtime for {target_arch} without executing a foreign-architecture binary.")
+            log_work(
+                "CPython runtime", "2/6", "DONE",
+                f"Reusing verified {PYTHON_EMBED_VERSION} PE runtime for {target_arch}; foreign binaries are not executed.",
+            )
             return 0
 
-    log_info(f"Preparing isolated CPython {PYTHON_EMBED_VERSION} ({target_arch}) runtime for the Windows installer...")
+    log_work("CPython runtime", "2/6", "DONE", "No reusable target runtime found; a fresh pinned package is required.")
+
     with tempfile.TemporaryDirectory(prefix="gitmanager-python-") as temporary:
         archive_path = Path(temporary) / "python-embed.zip"
+        archive_url = PYTHON_EMBED_BASE_URL + archive_name
         request = urllib.request.Request(
-            PYTHON_EMBED_BASE_URL + archive_name,
+            archive_url,
             headers={"User-Agent": "GitManager-Build/1.0"},
         )
+        log_work(
+            "CPython download", "3/6", "PENDING",
+            f"Connecting to python.org for {archive_name} (connection/read timeout: 90 seconds)...",
+        )
+        log_debug(f"CPython download URL: {archive_url}")
         try:
-            with urllib.request.urlopen(request, timeout=90) as response, archive_path.open("wb") as output:
-                shutil.copyfileobj(response, output)
+            with urllib.request.urlopen(request, timeout=90) as response:
+                log_debug(
+                    f"python.org response status={getattr(response, 'status', 'unknown')}; "
+                    f"Content-Length={response.headers.get('Content-Length', 'unknown')}."
+                )
+                _download_response_to_file(response, archive_path)
         except Exception as exc:
-            log_err(f"Could not download the official Python embeddable package: {exc}")
+            message = f"Could not download the official Python embeddable package: {exc}"
+            log_work("CPython download", "3/6", "FAILED", message)
+            log_err(message)
             return 1
 
+        log_work("CPython checksum", "4/6", "WORKING", "Computing SHA-256 for the downloaded archive...")
         digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
         if digest.lower() != expected_sha256:
-            log_err(
+            message = (
                 "Python embeddable package checksum did not match the pinned python.org SHA-256. "
                 f"Expected {expected_sha256}, received {digest}."
             )
+            log_work("CPython checksum", "4/6", "FAILED", message)
+            log_err(message)
             return 1
+        log_work("CPython checksum", "4/6", "DONE", "Pinned SHA-256 verified.")
 
+        log_work("CPython extraction", "5/6", "WORKING", "Validating ZIP entries before touching the runtime directory...")
         try:
             with zipfile.ZipFile(archive_path) as archive:
+                members = archive.infolist()
                 root = runtime_dir.resolve()
-                for member in archive.infolist():
+                for member in members:
                     target = (runtime_dir / member.filename).resolve()
                     try:
                         target.relative_to(root)
                     except ValueError:
-                        log_err(f"Python runtime archive contains an unsafe path: {member.filename}")
+                        message = f"Python runtime archive contains an unsafe path: {member.filename}"
+                        log_work("CPython extraction", "5/6", "FAILED", message)
+                        log_err(message)
                         return 1
+
                 runtime_dir.mkdir(parents=True, exist_ok=True)
-                for existing in runtime_dir.iterdir():
+                existing_entries = list(runtime_dir.iterdir())
+                log_debug(f"Replacing {len(existing_entries)} existing entries in the private runtime directory.")
+                for existing in existing_entries:
                     if existing.name == ".keep":
                         continue
                     if existing.is_dir() and not existing.is_symlink():
                         shutil.rmtree(existing)
                     else:
                         existing.unlink()
-                archive.extractall(runtime_dir)
-        except (OSError, zipfile.BadZipFile) as exc:
-            log_err(f"Could not extract the verified Python runtime: {exc}")
-            return 1
 
+                total_members = max(len(members), 1)
+                last_extraction_bucket = -10
+                for index, member in enumerate(members, start=1):
+                    archive.extract(member, runtime_dir)
+                    percentage = int(index * 100 / total_members)
+                    bucket = (percentage // 10) * 10
+                    if bucket >= last_extraction_bucket + 10 or index == total_members:
+                        log_work(
+                            "CPython extraction",
+                            f"{percentage}%",
+                            "WORKING",
+                            f"Extracted {index} of {len(members)} archive entries.",
+                        )
+                        last_extraction_bucket = max(last_extraction_bucket, bucket)
+        except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+            message = f"Could not extract the verified Python runtime: {exc}"
+            log_work("CPython extraction", "5/6", "FAILED", message)
+            log_err(message)
+            return 1
+    log_work("CPython extraction", "5/6", "DONE", "Runtime archive extracted.")
+
+    log_work("CPython verification", "6/6", "WORKING", "Checking required files and PE architecture...")
     required = [python_exe, runtime_dir / "python314.zip", runtime_dir / "python314._pth"]
     missing = [path.name for path in required if not path.is_file()]
     if missing:
-        log_err("Python runtime is incomplete; missing: " + ", ".join(missing))
+        message = "Python runtime is incomplete; missing: " + ", ".join(missing)
+        log_work("CPython verification", "6/6", "FAILED", message)
+        log_err(message)
         return 1
     if windows_pe_machine(python_exe) != expected_machine:
-        log_err(f"The bundled Python executable is not the expected {target_arch} PE architecture.")
+        message = f"The bundled Python executable is not the expected {target_arch} PE architecture."
+        log_work("CPython verification", "6/6", "FAILED", message)
+        log_err(message)
         return 1
 
     if host_arch == target_arch or (host_arch == "x86_64" and target_arch == "x86"):
@@ -212,15 +392,20 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
             "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
         ])
         if code != 0 or not out.startswith(PYTHON_EMBED_VERSION):
-            log_err(f"Bundled Python failed its isolated startup check: {err or out or code}")
+            message = f"Bundled Python failed its isolated startup check: {err or out or code}"
+            log_work("CPython verification", "6/6", "FAILED", message)
+            log_err(message)
             return 1
         version_label = out
     else:
-        log_info("The target Python runtime is foreign to this build host; archive checksum and PE architecture were verified without executing it.")
+        log_debug("Target Python is foreign to this host; runtime will be validated by archive hash and PE headers only.")
         version_label = PYTHON_EMBED_VERSION
 
     runtime_bytes = sum(path.stat().st_size for path in runtime_dir.iterdir() if path.is_file())
-    log_ok(f"Verified python.org CPython {version_label} ({target_arch}) embeddable runtime ({runtime_bytes:,} bytes extracted).")
+    log_work(
+        "CPython verification", "6/6", "DONE",
+        f"Verified python.org CPython {version_label} ({target_arch}); {runtime_bytes:,} bytes extracted.",
+    )
     return 0
 
 
@@ -2133,6 +2318,11 @@ def main() -> int:
         help="Build in debug mode instead of release mode.",
     )
     parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show gray diagnostic/debug lines during the build.",
+    )
+    parser.add_argument(
         "--install-tauri-cli",
         action="store_true",
         help="Install the Rust tauri-cli crate if it is not already present.",
@@ -2168,6 +2358,8 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    global VERBOSE_LOGGING
+    VERBOSE_LOGGING = VERBOSE_LOGGING or bool(args.verbose)
     project_root = Path(__file__).resolve().parent
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
 
