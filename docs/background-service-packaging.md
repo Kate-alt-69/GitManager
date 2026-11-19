@@ -40,7 +40,7 @@ The required service performs Git repository overview reads, paginated commit-hi
 
 The service owns the global preferences file at the existing per-user config path and validates its persisted bounds. The desktop performs a one-time migration from the former Tauri app-config location before service startup; normal preference loads and saves use authenticated IPC. Writes are serialized and use a recoverable temporary/previous file.
 
-Repository discovery, indexing, the authoritative index snapshot and index generation all belong to the service. The UI requests a grouped snapshot and generation through IPC. The native Tauri monitor reads only the index file's metadata timestamp to emit change events; it does not deserialize the index. Manual Check remotes requests are queued to the service loop and use the same notification/OS delivery path as scheduled checks.
+Repository discovery, indexing, the authoritative index snapshot and index generation all belong to the service. The UI requests a grouped snapshot and generation through IPC. The native Tauri monitor reads only the tiny monotonic `repo/metadata/index.generation` sidecar to emit change events; it does not deserialize the repository index. The service publishes the generation after each successful index replacement, and the desktop compares the integer to detect changes even on filesystems with coarse timestamp precision. Manual Check remotes requests are queued to the service loop and use the same notification/OS delivery path as scheduled checks.
 
 ## Account provider synchronization
 
