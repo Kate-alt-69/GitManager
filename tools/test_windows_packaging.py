@@ -381,6 +381,15 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         )
 
 
+class _MemoryDownloadResponse:
+    def __init__(self, payload, content_length):
+        self._stream = io.BytesIO(payload)
+        self.headers = {"Content-Length": str(content_length)}
+
+    def read(self, size=-1):
+        return self._stream.read(size)
+
+
 class BuildProgressReportingTests(unittest.TestCase):
     def test_work_indicator_includes_work_progress_and_status(self):
         output = io.StringIO()
@@ -391,8 +400,7 @@ class BuildProgressReportingTests(unittest.TestCase):
 
     def test_python_runtime_download_streams_bytes_and_reports_completion(self):
         payload = b"python-embed-runtime-fixture"
-        response = io.BytesIO(payload)
-        response.headers = {"Content-Length": str(len(payload))}
+        response = _MemoryDownloadResponse(payload, len(payload))
 
         with tempfile.TemporaryDirectory(prefix="gitmanager-build-progress-test-") as temporary:
             destination = Path(temporary) / "python-embed.zip"
@@ -405,8 +413,7 @@ class BuildProgressReportingTests(unittest.TestCase):
             self.assertIn("[ CPython download ] [100%] [DONE]", output.getvalue())
 
     def test_python_runtime_download_rejects_a_truncated_http_body(self):
-        response = io.BytesIO(b"short")
-        response.headers = {"Content-Length": "100"}
+        response = _MemoryDownloadResponse(b"short", 100)
 
         with tempfile.TemporaryDirectory(prefix="gitmanager-build-progress-test-") as temporary:
             destination = Path(temporary) / "python-embed.zip"
