@@ -57,7 +57,13 @@
       "gitmanager.service.exe",
       "git-manager.exe",
       "git-manager-service.exe",
-      "gitmanager-service.exe"
+      "gitmanager-service.exe",
+      "crash_helper-x86_64-pc-windows-msvc.exe",
+      "crash_helper-i686-pc-windows-msvc.exe",
+      "crash_helper-aarch64-pc-windows-msvc.exe",
+      "gitmanager.service-x86_64-pc-windows-msvc.exe",
+      "gitmanager.service-i686-pc-windows-msvc.exe",
+      "gitmanager.service-aarch64-pc-windows-msvc.exe"
     ],
     "packageDependencies": [
       {
