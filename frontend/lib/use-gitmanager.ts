@@ -9,7 +9,6 @@ import type {
 	AppNotification,
 	GitRepository,
 	ScanSummary,
-	UpdateAlert,
 } from "./types";
 
 const DEFAULT_PREFERENCES: AppPreferences = {
@@ -52,7 +51,6 @@ export function useGitManager() {
 	const [accountsLoaded, setAccountsLoaded] = useState(false);
 	const [accountsLoading, setAccountsLoading] = useState(false);
 	const accountsLoadInFlight = useRef<Promise<ConnectedAccount[]> | null>(null);
-	const [updates, setUpdates] = useState<UpdateAlert[]>([]);
 	const [notifications, setNotifications] = useState<AppNotification[]>([]);
 	const [setupOpen, setSetupOpen] = useState(false);
 	const [status, setStatus] = useState("Ready");
@@ -224,21 +222,18 @@ export function useGitManager() {
 		return saved;
 	}, [performScan]);
 
-	const checkUpdates = useCallback(async () => {
+	const checkUpdates = useCallback(async (): Promise<void> => {
 		setStatus("Queuing remote check in GitManager Core Service…");
 		try {
 			await invoke("check_repo_updates_now", {
 				rootPaths: preferences.scanRoots,
 			});
-			setUpdates([]);
 			void refreshNotifications();
 			setStatus("Remote check queued · results will appear in Notifications");
-			return [];
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			setError(message);
 			setStatus("Remote check could not be queued");
-			return [];
 		}
 	}, [preferences.scanRoots, refreshNotifications]);
 
@@ -308,7 +303,6 @@ export function useGitManager() {
 
 	useEffect(() => {
 		let active = true;
-		let unlistenUpdate: (() => void) | undefined;
 		let unlistenState: (() => void) | undefined;
 		let unlistenNotifications: (() => void) | undefined;
 		let unlistenServiceHealth: (() => void) | undefined;
@@ -416,12 +410,6 @@ export function useGitManager() {
 		}
 
 		void initialize();
-		void listen<UpdateAlert>("gitmanager://repo-update-available", (payload) => {
-			if (active) setUpdates((current) => [
-				...current.filter((item) => item.repo_path !== payload.repo_path),
-				payload,
-			]);
-		}).then((unlisten) => { unlistenUpdate = unlisten; });
 		void listen<{ checking?: boolean; status?: string }>("gitmanager://update-check-state", (payload) => {
 			if (active && payload.status) setStatus(payload.status);
 		}).then((unlisten) => { unlistenState = unlisten; });
@@ -452,7 +440,6 @@ export function useGitManager() {
 
 		return () => {
 			active = false;
-			unlistenUpdate?.();
 			unlistenState?.();
 			unlistenNotifications?.();
 			unlistenServiceHealth?.();
@@ -463,7 +450,7 @@ export function useGitManager() {
 		available, serviceReady, remoteCheckPending, remoteCheckRunning, serviceIndexing, loading, scanning, scanTruncated, indexReady,
 		awaitingInitialIndex: serviceReady && !indexReady,
 		version, preferences, setPreferences, directories,
-		repositories, dependencies, accounts, accountsLoading, loadAccounts, updates, notifications, setupOpen, setSetupOpen,
+		repositories, dependencies, accounts, accountsLoading, loadAccounts, notifications, setupOpen, setSetupOpen,
 		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
 		refreshNotifications, markNotificationRead, dismissNotification, markAllNotificationsRead,
 	};
