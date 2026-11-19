@@ -506,7 +506,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         app = (ROOT / "frontend" / "components" / "gitmanager-app.tsx").read_text(encoding="utf-8")
         watcher = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
         setup_dialog = app.split("function SetupDialog", 1)[1].split("const MemoRepositoryPage", 1)[0]
-        windows_registration = watcher.split("#[cfg(target_os = \\"windows\\")]", 1)[1].split("#[cfg(target_os = \\"linux\\")]", 1)[0]
+        windows_registration = watcher.split('#[cfg(target_os = "windows")]', 1)[1].split('#[cfg(target_os = "linux")]', 1)[0]
 
         self.assertIn("const [startServiceAtSignIn, setStartServiceAtSignIn] = useState(true)", setup_dialog)
         self.assertIn('invoke("control_background_service", { installOsService: true })', setup_dialog)
