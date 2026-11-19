@@ -725,8 +725,10 @@ async fn ensure_required_service(app_handle: AppHandle) -> Result<String, String
 }
 
 #[tauri::command]
-fn get_core_service_status() -> Result<crash_helper::ServiceStatus, String> {
-    crash_helper::request_service_status()
+async fn get_core_service_status() -> Result<crash_helper::ServiceStatus, String> {
+    tokio::task::spawn_blocking(crash_helper::request_service_status)
+        .await
+        .map_err(|error| format!("Core service status task failed: {error}"))?
 }
 
 #[tauri::command]
