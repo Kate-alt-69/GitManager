@@ -198,6 +198,61 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertNotIn("packagedServices", store_capabilities)
         self.assertNotIn("localSystemServices", store_capabilities)
 
+    def test_supervised_ui_waits_for_helper_service_instead_of_spawning_a_duplicate(self):
+        watcher = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
+        startup = watcher.split("pub fn ensure_required_service", 1)[1].split(
+            "pub fn register_os_background_service", 1
+        )[0]
+
+        self.assertIn('var_os("GITMANAGER_CRASH_HELPER_ADDRESS")', startup)
+        self.assertIn("let startup_wait = if supervisor_managed", startup)
+        self.assertIn("Duration::from_secs(30)", startup)
+        self.assertIn("The UI will not launch a duplicate service process", startup)
+        self.assertLess(
+            startup.index("if supervisor_managed {"),
+            startup.index("let service_exe = resolve_background_service_executable"),
+        )
+
+    def test_debugger_attaches_to_the_real_ui_and_status_ipc_is_offloaded(self):
+        helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
+        main = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        app = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+
+        self.assertIn("pub fn supervisor_should_bypass()", helper)
+        self.assertIn("IsDebuggerPresent", helper)
+        self.assertIn("GITMANAGER_DISABLE_CRASH_SUPERVISOR", helper)
+        self.assertIn("crash_helper::supervisor_should_bypass()", main)
+        status_command = app.split("async fn get_core_service_status", 1)[1].split(
+            "async fn inspect_repository", 1
+        )[0]
+        self.assertIn("spawn_blocking(crash_helper::request_service_status)", status_command)
+
+    def test_service_diagnostics_include_crash_helper_incident_history(self):
+        helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
+        app = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+        ui = (ROOT / "frontend" / "components" / "service-manager-page.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("pub fn read_service_incident_tail()", helper)
+        self.assertIn("crash_helper.jsonl", helper)
+        diagnostics = app.split("async fn read_service_log_tail", 1)[1].split(
+            "async fn list_app_notifications", 1
+        )[0]
+        self.assertIn("crash_helper::read_service_incident_tail()", diagnostics)
+        self.assertIn("CRASH_HELPER INCIDENT HISTORY", diagnostics)
+        self.assertIn("crash_helper incident history", ui.lower())
+
+    def test_crash_helper_replaces_obsolete_services_and_recovers_unresponsive_children(self):
+        helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
+        supervisor = helper.split("struct CoreServiceSupervisor", 1)[1].split(
+            "fn host_target_triple", 1
+        )[0]
+
+        self.assertIn("stop_obsolete_service_process", helper)
+        self.assertIn("fn restart_delay", helper)
+        self.assertIn("unhealthy_since", supervisor)
+        self.assertIn("core service PID", supervisor)
+        self.assertIn("core_service_log_tail()", supervisor)
+
     def test_store_msix_requires_both_partner_center_identity_values(self):
         package = {"msix": {"digitalSignature": {"signWith": "GenerateTestCertificate"}}}
         with self.assertRaisesRegex(ValueError, "Set both MSIX_PUBLISHER"):
