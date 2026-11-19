@@ -709,7 +709,12 @@ mod branch_switch_tests {
         let path = repository_fixture();
         let updated = switch_repository_branch(&path, "feature").unwrap();
         assert_eq!(updated.current_branch, "feature");
-        assert_eq!(fs::read_to_string(path.join("tracked.txt")).unwrap(), "feature\n");
+        assert_eq!(
+            fs::read_to_string(path.join("tracked.txt"))
+                .unwrap()
+                .trim_end_matches(&['\r', '\n'][..]),
+            "feature"
+        );
         fs::remove_dir_all(path).unwrap();
     }
 
