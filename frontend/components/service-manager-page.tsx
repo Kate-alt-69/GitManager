@@ -105,7 +105,7 @@ export function ServiceManagerPage({
 
 			<div className="gm-diagnostics-grid">
 				<section className="gm-panel gm-diagnostic-panel">
-					<div className="gm-panel-heading"><div><h2>Service process</h2><p>Runs under the current user's permissions, separately from the WebView.</p></div></div>
+					<div className="gm-panel-heading"><div><h2>Service process</h2><p>Runs under the current user's permissions, outside the UI's kill-on-exit job; crash_helper monitors its health.</p></div></div>
 					<dl className="gm-diagnostics-facts">
 						<div><dt>Process ID</dt><dd>{details?.process_id || "—"}</dd></div>
 						<div><dt>Protocol version</dt><dd>{details?.protocol_version || "—"}</dd></div>
@@ -122,9 +122,9 @@ export function ServiceManagerPage({
 				</section>
 
 				<section className="gm-panel gm-diagnostic-panel">
-					<div className="gm-panel-heading"><div><h2>Service diagnostics</h2><p>Read the latest bounded service log output.</p></div></div>
+					<div className="gm-panel-heading"><div><h2>Service diagnostics</h2><p>Read the latest bounded service log and crash_helper incident history.</p></div></div>
 					<div className="gm-diagnostic-message">
-						The service owns repository discovery, indexing and persistent account/cache operations. The UI does not run a fallback scan when the service is unavailable.
+						The service owns repository discovery, indexing and persistent account/cache operations. crash_helper records unexpected exits, startup failures and recent service-log output here.
 					</div>
 					<div className="gm-panel-actions">
 						<Button onClick={() => void toggleLogs()} disabled={logsLoading}>{logsLoading ? "Loading…" : logs !== null ? "Hide service log" : "View service log"}</Button>
