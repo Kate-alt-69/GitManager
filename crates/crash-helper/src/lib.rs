@@ -4118,7 +4118,7 @@ mod tests {
         assert_eq!(first.0, same.0);
         assert_ne!(first.0, other.0);
         #[cfg(windows)]
-        assert!(first.0.starts_with(r"\.pipekastrick-gitmanager-"));
+        assert!(first.0.starts_with(r"\\.\pipe\kastrick-gitmanager-"));
         #[cfg(unix)]
         {
             assert!(first.0.starts_with("/tmp/kastrick-gitmanager-"));
