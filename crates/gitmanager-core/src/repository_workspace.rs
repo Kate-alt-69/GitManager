@@ -1,5 +1,4 @@
 use git2::{BranchType, ObjectType, Repository, Status, StatusOptions};
-use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -25,56 +24,14 @@ fn hidden_command(program: impl AsRef<OsStr>) -> Command {
 const MAX_PREVIEW_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 2_000;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepositoryFileEntry {
-    pub name: String,
-    pub path: String,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub size_bytes: u64,
-}
+use crate::models::{
+    PullExecutionResult,
+    PullPreview,
+    RepositoryCommitPreview,
+    RepositoryFileEntry,
+    WorktreeChange,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorktreeChange {
-    pub path: String,
-    pub index_status: String,
-    pub worktree_status: String,
-    pub staged: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PullPreview {
-    pub repo_name: String,
-    pub branch: String,
-    pub remote_name: String,
-    pub remote_branch: String,
-    pub local_oid: String,
-    pub remote_oid: String,
-    pub commits_ahead: usize,
-    pub commits_behind: usize,
-    pub changes: Vec<WorktreeChange>,
-    pub status_token: String,
-    pub can_pull: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PullExecutionResult {
-    pub message: String,
-    pub commit_created: bool,
-    pub stash_created: bool,
-    pub rebased: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepositoryCommitPreview {
-    pub changes: Vec<WorktreeChange>,
-    pub index_tree: String,
-}
 
 fn validate_relative_path(value: &str) -> Result<PathBuf, String> {
     let normalized = value.replace('\\', "/");
