@@ -266,6 +266,39 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("build_master_packager_installers(project_root, manifest)", package_function)
         self.assertIn("name_windows_setup_installer(project_root, release)", package_function)
 
+    def test_windows_installer_pass_restores_target_python_before_bundling(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        package_function = source.split("def package_local_target(", 1)[1].split(
+            '@tracked_work("Native build pipeline")', 1
+        )[0]
+        runtime_check = package_function.index("prepare_windows_python_runtime(project_root)")
+        config_check = package_function.index("verify_windows_packaging_inputs(project_root)")
+        bundle_step = package_function.index("run_tauri_bundle(")
+        self.assertLess(runtime_check, bundle_step)
+        self.assertLess(config_check, bundle_step)
+
+    def test_store_pipeline_compiles_every_selected_target_before_packaging(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        main = source.split("def main() -> int:", 1)[1]
+        store_branch = main.split("if args.store_target:", 1)[1].split(
+            "if args.build_type == \"installer\":", 1
+        )[0]
+        compile_phase = store_branch.index("compile_results = []")
+        package_phase = store_branch.index("package_results = []")
+        self.assertLess(compile_phase, package_phase)
+        self.assertIn("bundle=False", store_branch[compile_phase:package_phase])
+        self.assertIn("already_compiled=True", store_branch[package_phase:])
+
+    def test_store_packager_can_bundle_or_package_without_recompiling(self):
+        source = (ROOT / "build.py").read_text(encoding="utf-8")
+        store_function = source.split("def build_local_store_package(", 1)[1].split(
+            '@tracked_work("Publish build outputs")', 1
+        )[0]
+        self.assertIn("already_compiled: bool = False", store_function)
+        self.assertIn("run_tauri_bundle(", store_function)
+        self.assertIn("publish_build_outputs(", store_function)
+        self.assertIn("if not already_compiled:", store_function)
+
     def test_release_pipeline_can_defer_mpdev_until_after_signing(self):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
         package_function = source.split("def package_local_target(", 1)[1].split(
