@@ -154,7 +154,30 @@ A locally generated development/test-signed MSIX is for validation only, not dir
 
 The NSIS hook and MPDEV MSI both prefer the installed `crash_helper.exe --stop-service` command before replacing or removing application files. The helper authenticates against the per-user service endpoint, requests a short suspension, waits briefly for active indexing and remote checks to become idle, then stops only the process ID returned by that authenticated endpoint. It clears the temporary suspension record afterward.
 
-NSIS retains a current-user-scoped process-name fallback for older installations whose helper does not implement `--stop-service`. The MSI custom action is sequenced at `StartOfExecution` and is conditional on an existing installation; if it cannot stop an older service, the MSI's running-process detection remains available as a manual fallback. MSIX does not support this MSI custom action and still requires separate upgrade/removal validation.
+NSIS retains a current-user-scoped process-name fallback for older installations whose helper does not implement --stop-service. The MSI custom action is sequenced at StartOfExecution and is conditional on an existing installation; if it cannot stop an older service, the MSI's running-process detection remains available as a manual fallback.
+
+MPDEV custom actions and detectRunningProcesses are MSI-only. A raw MSIX install therefore cannot run GitManager's graceful-stop helper before deployment. Microsoft documents ERROR_PACKAGES_IN_USE (0x80073D02) when an MSIX update or removal would modify files still mapped by a running process. For a local desktop MSIX update, close GitManager first, then run the following from PowerShell in the directory containing the new package:
+
+\`\`\`powershell
+$packagePath = (Resolve-Path .\GitManager_1.0.0.0_x64.msix).Path
+$installed = Get-AppxPackage -Name GitManager -ErrorAction SilentlyContinue |
+    Sort-Object Version -Descending |
+    Select-Object -First 1
+
+if ($installed) {
+    $helper = Join-Path $installed.InstallLocation "resources\crash_helper.exe"
+    if (Test-Path $helper) {
+        & $helper --stop-service
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "The graceful service stop did not complete; Windows will close remaining processes associated with this package."
+        }
+    }
+}
+
+Add-AppxPackage -Path $packagePath -ForceTargetApplicationShutdown
+\`\`\`
+
+The helper gets the first chance to quiesce repository work and stop the service. ForceTargetApplicationShutdown is the bounded OS fallback for remaining processes associated with the package; it can forcibly close the app, so do not use it while unsaved UI work is open. Change the package filename and Name filter to match the identity of the package being updated. Store/MSIX identity updates still need validation through the Store's own deployment flow.
 
 ## Fallback and verification
 
