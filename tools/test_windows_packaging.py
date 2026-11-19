@@ -111,7 +111,13 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn('taskkill.exe" /F /T', hooks)
         for image in (
             "crash_helper.exe",
+            "crash_helper-x86_64-pc-windows-msvc.exe",
+            "crash_helper-i686-pc-windows-msvc.exe",
+            "crash_helper-aarch64-pc-windows-msvc.exe",
             "gitmanager.service.exe",
+            "gitmanager.service-x86_64-pc-windows-msvc.exe",
+            "gitmanager.service-i686-pc-windows-msvc.exe",
+            "gitmanager.service-aarch64-pc-windows-msvc.exe",
             "gitmanager-service.exe",
             "git-manager-service.exe",
         ):
@@ -170,6 +176,15 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("crash_helper.exe", desktop["msi"]["detectRunningProcesses"])
         self.assertIn("gitmanager.service.exe", desktop["msi"]["detectRunningProcesses"])
         self.assertIn("gitmanager-service.exe", desktop["msi"]["detectRunningProcesses"])
+        for sidecar in (
+            "crash_helper-x86_64-pc-windows-msvc.exe",
+            "crash_helper-i686-pc-windows-msvc.exe",
+            "crash_helper-aarch64-pc-windows-msvc.exe",
+            "gitmanager.service-x86_64-pc-windows-msvc.exe",
+            "gitmanager.service-i686-pc-windows-msvc.exe",
+            "gitmanager.service-aarch64-pc-windows-msvc.exe",
+        ):
+            self.assertIn(sidecar, desktop["msi"]["detectRunningProcesses"])
         self.assertIn("GitManager Background Service", watcher_source)
         self.assertIn("gitmanager-updater.service", watcher_source)
         self.assertIn("com.gitmanager.updater", watcher_source)
