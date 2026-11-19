@@ -368,11 +368,29 @@ mod tests {
         let generation_path = PathBuf::from(directory.join("notifications.generation"));
 
         fs::write(&store_path, "{}").expect("create notification history fixture");
-        write_notification_generation_file(&generation_path, 200).expect("publish notification generation");
-        assert_eq!(read_notification_generation_file(&generation_path).unwrap(), Some(200));
-        assert_eq!(notification_generation_for_path(&store_path).unwrap(), 200);
-        write_notification_generation_file(&generation_path, 201).expect("replace notification generation");
-        assert_eq!(notification_generation_for_path(&store_path).unwrap(), 201);
+        // Filesystem mtimes can be much larger than small synthetic generation
+        // values, especially on macOS. Advance from the observed baseline so
+        // this assertion tests the sidecar rather than assuming clock units.
+        let first_generation = notification_generation_for_path(&store_path)
+            .unwrap()
+            .saturating_add(1);
+        write_notification_generation_file(&generation_path, first_generation)
+            .expect("publish notification generation");
+        assert_eq!(
+            read_notification_generation_file(&generation_path).unwrap(),
+            Some(first_generation),
+        );
+        assert_eq!(
+            notification_generation_for_path(&store_path).unwrap(),
+            first_generation,
+        );
+        let second_generation = first_generation.saturating_add(1);
+        write_notification_generation_file(&generation_path, second_generation)
+            .expect("replace notification generation");
+        assert_eq!(
+            notification_generation_for_path(&store_path).unwrap(),
+            second_generation,
+        );
 
         fs::remove_dir_all(directory).expect("remove notification generation fixture");
     }
