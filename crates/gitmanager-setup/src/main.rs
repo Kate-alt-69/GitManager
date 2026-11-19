@@ -12,7 +12,11 @@ fn main() -> ExitCode {
         }
     };
 
-    match Command::new(&app_path).arg("--setup").spawn() {
+    match Command::new(&app_path)
+        .arg("--setup")
+        .env("GITMANAGER_SETUP_MODE", "1")
+        .spawn()
+    {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             show_error(&format!(
