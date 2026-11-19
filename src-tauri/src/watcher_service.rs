@@ -703,27 +703,40 @@ pub fn register_os_background_service(app_handle: AppHandle) -> Result<String, S
             return Err(format!("Could not register GitManager Core Service: {}", detail.trim()));
         }
 
-        let start = hidden_command("schtasks.exe")
-            .args(["/Run", "/TN", task_name])
-            .output()
-            .map_err(|error| format!("Could not start GitManager Core Service: {error}"))?;
-        if !start.status.success() {
-            let detail = String::from_utf8_lossy(&start.stderr);
-            let detail = if detail.trim().is_empty() {
-                String::from_utf8_lossy(&start.stdout).into_owned()
-            } else {
-                detail.into_owned()
-            };
-            return Err(format!("GitManager Core Service was registered but could not start: {}", detail.trim()));
+        // Setup normally runs while crash_helper already has the required
+        // service alive. Register the logon task without launching a second
+        // copy that would immediately fail the exclusive service lock.
+        let service_already_running = crash_helper::service_control_lock_is_held();
+        if !service_already_running {
+            let start = hidden_command("schtasks.exe")
+                .args(["/Run", "/TN", task_name])
+                .output()
+                .map_err(|error| format!("Could not start GitManager Core Service: {error}"))?;
+            if !start.status.success() {
+                let detail = String::from_utf8_lossy(&start.stderr);
+                let detail = if detail.trim().is_empty() {
+                    String::from_utf8_lossy(&start.stdout).into_owned()
+                } else {
+                    detail.into_owned()
+                };
+                return Err(format!("GitManager Core Service was registered but could not start: {}", detail.trim()));
+            }
         }
 
         let _ = hidden_command("sc.exe").args(["stop", "GitManagerUpdateSvc"]).output();
         let _ = hidden_command("sc.exe").args(["delete", "GitManagerUpdateSvc"]).output();
 
-        return Ok(format!(
-            "Registered and started the independent Windows background service at {}.",
-            service_exe.display()
-        ));
+        return Ok(if service_already_running {
+            format!(
+                "Registered GitManager Core Service for sign-in. The existing service instance is already running at {}.",
+                service_exe.display()
+            )
+        } else {
+            format!(
+                "Registered and started the independent Windows background service at {}.",
+                service_exe.display()
+            )
+        });
     }
 
     #[cfg(target_os = "linux")]
