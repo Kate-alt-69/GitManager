@@ -1,7 +1,6 @@
 mod process_utils;
 pub use gitmanager_core::notification_center;
 pub use gitmanager_core::{AppPreferences, RepositoryPreferences};
-pub use gitmanager_core::git_info;
 pub mod remote_providers;
 pub use gitmanager_core::repository_index;
 pub mod watcher_service;
@@ -23,7 +22,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::ShellExt;
 
-use git_info::GitRepositoryInfo;
+use gitmanager_core::models::GitRepositoryInfo;
 use remote_providers::{ConnectedAccountSummary, ProviderAccountRequest};
 use repository_index::{default_scan_roots, IndexedRepoSummary};
 use watcher_service::{
@@ -152,7 +151,7 @@ async fn save_repository_settings(
 }
 
 #[tauri::command]
-async fn get_commit_details(repo_path: String, oid: String) -> Result<git_info::CommitDetails, String> {
+async fn get_commit_details(repo_path: String, oid: String) -> Result<gitmanager_core::models::CommitDetails, String> {
     let data = tokio::task::spawn_blocking(move || {
         crash_helper::load_service_commit_details(repo_path, oid)
     })
@@ -744,7 +743,7 @@ async fn load_repository_commit_history(
     limit: usize,
     branch_filter: Option<String>,
     search_query: Option<String>,
-) -> Result<git_info::CommitHistoryPage, String> {
+) -> Result<gitmanager_core::models::CommitHistoryPage, String> {
     let data = tokio::task::spawn_blocking(move || {
         crash_helper::load_service_commit_history(
             repo_path,
@@ -767,7 +766,7 @@ async fn list_repository_files(
     relative_path: Option<String>,
     source: Option<String>,
     branch: Option<String>,
-) -> Result<Vec<gitmanager_core::repository_browser::RepositoryFileEntry>, String> {
+) -> Result<Vec<gitmanager_core::models::RepositoryFileEntry>, String> {
     let data = tokio::task::spawn_blocking(move || {
         crash_helper::load_service_repository_files(
             repo_path,
@@ -831,7 +830,7 @@ async fn save_conflict_resolution(
 #[tauri::command]
 async fn preview_repository_pull(
     repo_path: String,
-) -> Result<gitmanager_core::repository_workspace::PullPreview, String> {
+) -> Result<gitmanager_core::models::PullPreview, String> {
     request_core_service(
         move || crash_helper::service_preview_repository_pull(repo_path),
         "pull preview",
@@ -841,7 +840,7 @@ async fn preview_repository_pull(
 #[tauri::command]
 async fn get_repository_changes(
     repo_path: String,
-) -> Result<Vec<gitmanager_core::repository_workspace::WorktreeChange>, String> {
+) -> Result<Vec<gitmanager_core::models::WorktreeChange>, String> {
     request_core_service(
         move || crash_helper::service_get_repository_changes(repo_path),
         "repository changes",
@@ -871,7 +870,7 @@ async fn fetch_repository_remote(
 #[tauri::command]
 async fn stage_repository_paths(
     repo_path: String, paths: Vec<String>,
-) -> Result<Vec<gitmanager_core::repository_workspace::WorktreeChange>, String> {
+) -> Result<Vec<gitmanager_core::models::WorktreeChange>, String> {
     request_core_service(
         move || crash_helper::service_stage_repository_paths(repo_path, paths),
         "stage",
@@ -881,7 +880,7 @@ async fn stage_repository_paths(
 #[tauri::command]
 async fn unstage_repository_paths(
     repo_path: String, paths: Vec<String>,
-) -> Result<Vec<gitmanager_core::repository_workspace::WorktreeChange>, String> {
+) -> Result<Vec<gitmanager_core::models::WorktreeChange>, String> {
     request_core_service(
         move || crash_helper::service_unstage_repository_paths(repo_path, paths),
         "unstage",
@@ -891,7 +890,7 @@ async fn unstage_repository_paths(
 #[tauri::command]
 async fn preview_repository_commit(
     repo_path: String,
-) -> Result<gitmanager_core::repository_workspace::RepositoryCommitPreview, String> {
+) -> Result<gitmanager_core::models::RepositoryCommitPreview, String> {
     request_core_service(
         move || crash_helper::service_preview_repository_commit(repo_path),
         "commit preview",
@@ -901,7 +900,7 @@ async fn preview_repository_commit(
 #[tauri::command]
 async fn create_repository_commit(
     repo_path: String, message: String, expected_index_tree: String,
-) -> Result<(String, Vec<gitmanager_core::repository_workspace::WorktreeChange>), String> {
+) -> Result<(String, Vec<gitmanager_core::models::WorktreeChange>), String> {
     request_core_service(
         move || crash_helper::service_create_repository_commit(repo_path, message, expected_index_tree),
         "commit",
@@ -928,7 +927,7 @@ async fn prepare_and_pull_repository_update(
     mode: String,
     stage_paths: Vec<String>,
     commit_message: Option<String>,
-) -> Result<gitmanager_core::repository_workspace::PullExecutionResult, String> {
+) -> Result<gitmanager_core::models::PullExecutionResult, String> {
     request_core_service(
         move || crash_helper::service_prepare_and_pull_repository_update(
             repo_path,
@@ -947,7 +946,7 @@ async fn prepare_and_pull_repository_update(
 #[tauri::command]
 async fn list_local_repository_branches(
     repo_path: String,
-) -> Result<Vec<git_info::BranchInfo>, String> {
+) -> Result<Vec<gitmanager_core::models::BranchInfo>, String> {
     request_core_service(
         move || crash_helper::service_list_local_repository_branches(repo_path),
         "branch list",
