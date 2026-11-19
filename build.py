@@ -30,16 +30,16 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
-import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-import stat
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
@@ -58,13 +58,13 @@ RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
 
 
 _ANSI_COLORS = {
-    "white": "\\033[97m",
-    "green": "\\033[92m",
-    "yellow": "\\033[93m",
-    "red": "\\033[91m",
-    "gray": "\\033[90m",
+    "white": "\033[97m",
+    "green": "\033[92m",
+    "yellow": "\033[93m",
+    "red": "\033[91m",
+    "gray": "\033[90m",
 }
-_ANSI_RESET = "\\033[0m"
+_ANSI_RESET = "\033[0m"
 VERBOSE_LOGGING = os.environ.get("GITMANAGER_BUILD_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
 
 
