@@ -3199,9 +3199,20 @@ impl CoreServiceSupervisor {
                         let lock_path = gitmanager_data_dir()
                             .ok()
                             .map(|directory| directory.join(LOCK_FILE));
-                        let lock_released = lock_path.as_deref().is_some_and(|path| {
+                        let mut lock_released = lock_path.as_deref().is_some_and(|path| {
                             wait_for_exclusive_lock_release(path, Duration::from_secs(4))
                         });
+
+                        #[cfg(unix)]
+                        if !lock_released
+                            && service_control_lock_is_held()
+                            && service_control_lock_owner_pid() == Some(pid)
+                        {
+                            let _ = force_terminate_service_process(pid);
+                            lock_released = lock_path.as_deref().is_some_and(|path| {
+                                wait_for_exclusive_lock_release(path, Duration::from_secs(2))
+                            });
+                        }
 
                         if lock_released {
                             append_incident(
@@ -3377,6 +3388,8 @@ impl CoreServiceSupervisor {
 
             if core_service_ready() {
                 self.unhealthy_since = None;
+                self.lock_unhealthy_since = None;
+                self.lock_owner_pid = None;
                 self.restart_attempts = 0;
                 self.lock_warning_recorded = false;
                 return;
