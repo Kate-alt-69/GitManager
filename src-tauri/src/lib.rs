@@ -1174,9 +1174,17 @@ async fn check_repo_updates_now(
 
 #[tauri::command]
 async fn read_service_log_tail() -> Result<String, String> {
-    tokio::task::spawn_blocking(watcher_service::read_service_log_tail)
-        .await
-        .map_err(|error| format!("Service log read task failed: {error}"))?
+    tokio::task::spawn_blocking(|| -> Result<String, String> {
+        let service_log = watcher_service::read_service_log_tail()?;
+        let incidents = crash_helper::read_service_incident_tail()?;
+        Ok(format!(
+            "GITMANAGER CORE SERVICE LOG\n{}\n\nCRASH_HELPER INCIDENT HISTORY\n{}",
+            service_log.trim_end(),
+            incidents.trim_end(),
+        ))
+    })
+    .await
+    .map_err(|error| format!("Service diagnostics read task failed: {error}"))?
 }
 
 #[tauri::command]
