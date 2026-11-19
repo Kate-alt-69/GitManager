@@ -767,6 +767,7 @@ function SetupDialog({
 	const [draft, setDraft] = useState(preferences);
 	const [newRoot, setNewRoot] = useState("");
 	const [saving, setSaving] = useState(false);
+	const [startServiceAtSignIn, setStartServiceAtSignIn] = useState(true);
 	const [error, setError] = useState("");
 	function patch(values: Partial<AppPreferences>) {
 		setDraft((current) => ({ ...current, ...values }));
@@ -793,6 +794,12 @@ function SetupDialog({
 		setSaving(true);
 		setError("");
 		try {
+			// The bootstrap setup companion owns OS integration. Register the
+			// per-user service task before closing the wizard so failures are
+			// visible and the user can retry or opt out.
+			if (startServiceAtSignIn) {
+				await invoke("control_background_service", { installOsService: true });
+			}
 			await onSave({ ...draft, firstRunComplete: true });
 			onClose();
 		} catch (cause) {
@@ -828,6 +835,14 @@ function SetupDialog({
 						<input value={draft.archiveRoot} onChange={(event) => patch({ archiveRoot: event.target.value })} placeholder="Default application archive folder" />
 						<Button onClick={() => void chooseSetupArchiveRoot()}>Browse…</Button>
 					</div>
+				</div>
+				<div className="gm-field">
+					<Switch
+						label="Start the GitManager core service when I sign in"
+						checked={startServiceAtSignIn}
+						onChange={setStartServiceAtSignIn}
+					/>
+					<p className="gm-muted-copy">Registers a per-user background task with Windows Task Scheduler, systemd, or LaunchAgents. GitManager can keep indexing and checking repositories before you open the desktop app.</p>
 				</div>
 				{error && <div className="gm-inline-error">{error}</div>}
 				<div className="gm-modal-actions">
