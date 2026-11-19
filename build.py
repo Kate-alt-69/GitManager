@@ -232,6 +232,19 @@ def tracked_work(work: str):
     return decorate
 
 
+def is_mpdev_offline_mode_error(command: List[str], output_line: str) -> bool:
+    """Recognize MPDEV's Free-tier offline-mode rejection without masking other tools."""
+    if not command:
+        return False
+    executable = Path(str(command[0])).stem.casefold()
+    lowered = output_line.casefold()
+    return (
+        executable == "mpdev"
+        and "offline mode is only supported" in lowered
+        and "enterprise" in lowered
+    )
+
+
 def run_command(
     command: List[str],
     cwd: Optional[Path] = None,
@@ -317,10 +330,11 @@ def run_command(
             else:
                 line_color = "red" if channel == "stderr" else "white"
 
-            if "offline mode is only supported" in lowered and "enterprise" in lowered:
+            if is_mpdev_offline_mode_error(args, line):
                 _emit(f"[ {label} ] [ERR ] {line}", color="red", stream=sys.stderr)
-                log_warn("MPDEV reports that Offline Mode is enabled. Its Free tier supports online local builds for non-commercial/open-source use; Offline Mode itself requires Enterprise.")
-                log_info("No Enterprise upgrade is required for the documented Free use case: switch MPDEV back to online mode, restore internet access for MPDEV, and retry.")
+                log_warn("MPDEV has entered Offline Mode, which its Free tier does not support.")
+                log_info("GitManager does not enable Offline Mode or pass an offline build option. MPDEV Free can be used without activation for qualifying personal non-commercial and open-source work, but it must remain online for license validation.")
+                log_info("Check outbound internet access for mpdev.exe and any Windows Firewall, VPN, proxy or DNS filtering. Return MPDEV to online mode and retry; Enterprise is only needed when offline operation is required.")
             else:
                 output_stream = sys.stderr if channel == "stderr" else sys.stdout
                 _emit(f"[ {label} ] {line}", color=line_color, stream=output_stream)
