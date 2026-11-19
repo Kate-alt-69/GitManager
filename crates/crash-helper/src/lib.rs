@@ -4050,8 +4050,8 @@ mod tests {
             child_started_at: Some(std::time::Instant::now()),
             unhealthy_since: None,
             restart_attempts: 0,
-            next_restart: Instant::now(),
-            last_health_check: Instant::now(),
+            next_restart: std::time::Instant::now(),
+            last_health_check: std::time::Instant::now(),
         };
 
         assert!(
