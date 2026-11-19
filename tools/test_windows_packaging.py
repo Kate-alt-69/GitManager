@@ -461,6 +461,16 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
             "http://timestamp.acs.microsoft.com",
         )
 
+    def test_docs_explain_msi_and_msix_service_shutdown_differences(self):
+        docs = (ROOT / "docs" / "windows-packaging.md").read_text(encoding="utf-8")
+
+        self.assertIn("MPDEV custom actions and detectRunningProcesses are MSI-only", docs)
+        self.assertIn("ERROR_PACKAGES_IN_USE", docs)
+        self.assertIn("crash_helper.exe", docs)
+        self.assertIn("--stop-service", docs)
+        self.assertIn("Add-AppxPackage -Path $packagePath -ForceTargetApplicationShutdown", docs)
+        self.assertIn("do not use it while unsaved UI work is open", docs)
+
     def test_docs_describe_mpdev_as_mandatory_and_nsis_as_fallback(self):
         docs = (ROOT / "docs" / "windows-packaging.md").read_text(encoding="utf-8")
         self.assertIn("required Windows MSI/MSIX packager", docs)
