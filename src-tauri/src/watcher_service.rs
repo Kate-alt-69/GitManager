@@ -519,10 +519,16 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
     // service is already running, so the old worker cannot return next login.
     stop_legacy_background_service();
 
-    // crash_helper starts the service before launching the UI. Give that
-    // independent child time to publish its authenticated endpoint instead of
-    // starting a second instance merely because its first probe raced startup.
-    let initial_deadline = Instant::now() + Duration::from_secs(3);
+    // crash_helper owns the service lifecycle for a supervised UI child.
+    // Starting another copy here races the helper's child and produces a
+    // misleading exit-code-2 failure when the first process owns the lock.
+    let supervisor_managed = std::env::var_os("GITMANAGER_CRASH_HELPER_ADDRESS").is_some();
+    let startup_wait = if supervisor_managed {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(3)
+    };
+    let initial_deadline = Instant::now() + startup_wait;
     let mut last_probe_error = None;
     while Instant::now() < initial_deadline {
         match crash_helper::request_service_status() {
@@ -533,21 +539,47 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
                 return Ok(status.message);
             }
             Ok(status) if status.service_generation > 0 || status.protocol_version > 0 => {
+                last_probe_error = Some(format!(
+                    "A service answered with generation {} and protocol {}; required {} and {}.",
+                    status.service_generation,
+                    status.protocol_version,
+                    crash_helper::SERVICE_GENERATION,
+                    crash_helper::SERVICE_PROTOCOL_VERSION,
+                ));
                 stop_outdated_core_service(status.process_id);
-                break;
+                if !supervisor_managed {
+                    break;
+                }
             }
             Ok(_) => {
                 last_probe_error = Some(
                     "A legacy service answered, but it does not implement the required core-service generation."
                         .to_string(),
                 );
-                break;
+                if supervisor_managed {
+                    // The helper will retry after the legacy process is stopped.
+                    thread::sleep(Duration::from_millis(250));
+                } else {
+                    break;
+                }
             }
             Err(error) => last_probe_error = Some(error),
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(150));
     }
 
+    if supervisor_managed {
+        let error = format!(
+            "crash_helper did not publish a ready GitManager core service within {} seconds.\n\n{}\n\nThe UI will not launch a duplicate service process.",
+            startup_wait.as_secs(),
+            service_startup_diagnostics(last_probe_error.as_deref()),
+        );
+        crash_helper::report_service_start_failure(&error);
+        return Err(error);
+    }
+
+    // Only direct development/debug launches without the supervisor may own
+    // the fallback service process themselves.
     let service_exe = resolve_background_service_executable(&app_handle)?;
     let (service_stdout, service_stderr) = open_service_log_streams()?;
     let mut command = Command::new(&service_exe);
@@ -616,17 +648,21 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
                 thread::sleep(Duration::from_millis(100));
             }
 
-            return Err(format!(
+            let error = format!(
                 "GitManager core service process exited before becoming ready ({exit}).\n\n{}\n\nOpen Task Center → Service diagnostics for the full incident record.",
                 service_startup_diagnostics(last_probe_error.as_deref()),
-            ));
+            );
+            crash_helper::report_service_start_failure(&error);
+            return Err(error);
         }
 
         if Instant::now() >= deadline {
-            return Err(format!(
+            let error = format!(
                 "GitManager core service did not become ready within 20 seconds.\n\n{}\n\nThe UI will keep its existing repository index and allow a service retry.",
                 service_startup_diagnostics(last_probe_error.as_deref()),
-            ));
+            );
+            crash_helper::report_service_start_failure(&error);
+            return Err(error);
         }
         thread::sleep(Duration::from_millis(150));
     }
