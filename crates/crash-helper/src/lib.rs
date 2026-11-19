@@ -196,6 +196,109 @@ fn read_service_frame(stream: &mut impl Read) -> io::Result<Vec<u8>> {
     Ok(payload)
 }
 
+/// Read an exact byte count from a nonblocking stream without losing partial data.
+/// Windows named pipes do not implement socket receive timeouts, so callers enable
+/// nonblocking mode and use this deadline-aware loop instead.
+fn read_exact_with_deadline(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < buffer.len() {
+        match reader.read(&mut buffer[offset..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Service IPC stream closed before the complete frame arrived",
+                ));
+            }
+            Ok(read) => offset += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Service IPC receive deadline expired",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Send all bytes through a nonblocking stream until the complete write or deadline.
+fn write_all_with_deadline(
+    writer: &mut impl Write,
+    buffer: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < buffer.len() {
+        match writer.write(&buffer[offset..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "Service IPC stream accepted zero bytes",
+                ));
+            }
+            Ok(written) => offset += written,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Service IPC send deadline expired",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn read_service_frame_with_timeout(
+    stream: &mut impl Read,
+    timeout: Duration,
+) -> io::Result<Vec<u8>> {
+    let deadline = Instant::now() + timeout;
+    let mut header = [0u8; 4];
+    read_exact_with_deadline(stream, &mut header, deadline)?;
+    let length = u32::from_be_bytes(header) as u64;
+    if length == 0 || length >= MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Service IPC frame has an invalid length",
+        ));
+    }
+    let mut payload = vec![0u8; length as usize];
+    read_exact_with_deadline(stream, &mut payload, deadline)?;
+    Ok(payload)
+}
+
+fn write_service_frame_with_timeout(
+    stream: &mut impl Write,
+    payload: &[u8],
+    timeout: Duration,
+) -> io::Result<()> {
+    if payload.is_empty() || payload.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Service IPC frame is empty or exceeds the message limit",
+        ));
+    }
+    let length = u32::try_from(payload.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Service IPC frame is too large"))?;
+    let deadline = Instant::now() + timeout;
+    write_all_with_deadline(stream, &length.to_be_bytes(), deadline)?;
+    write_all_with_deadline(stream, payload, deadline)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum ServiceCommand {
@@ -1547,10 +1650,23 @@ fn handle_service_connection(
     remote_check_running: &AtomicBool,
     indexing: &AtomicBool,
 ) {
-    let _ = stream.set_recv_timeout(Some(Duration::from_secs(5)));
-    let _ = stream.set_send_timeout(Some(Duration::from_secs(15)));
+    #[cfg(windows)]
+    if let Err(error) = stream.set_nonblocking(true) {
+        eprintln!("GitManager service could not enable bounded named-pipe I/O: {error}");
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = stream.set_recv_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_send_timeout(Some(Duration::from_secs(15)));
+    }
 
-    let response = match read_service_frame(&mut stream) {
+    #[cfg(windows)]
+    let request_frame = read_service_frame_with_timeout(&mut stream, Duration::from_secs(5));
+    #[cfg(not(windows))]
+    let request_frame = read_service_frame(&mut stream);
+
+    let response = match request_frame {
         Err(error) => ServiceResponse {
             ok: false,
             status: state.status("Invalid service-control request"),
@@ -1789,6 +1905,13 @@ fn handle_service_connection(
         } else {
             encoded
         };
+        #[cfg(windows)]
+        let _ = write_service_frame_with_timeout(
+            &mut stream,
+            &response_bytes,
+            Duration::from_secs(15),
+        );
+        #[cfg(not(windows))]
         let _ = write_service_frame(&mut stream, &response_bytes);
     }
 }
@@ -1907,10 +2030,17 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
     }
     let mut stream = connect_service_local_socket(&endpoint.name, connect_timeout)
         .map_err(|error| format!("Could not connect to GitManager core service: {error}"))?;
-    stream.set_recv_timeout(Some(read_timeout))
-        .map_err(|error| format!("Could not set service IPC receive timeout: {error}"))?;
-    stream.set_send_timeout(Some(Duration::from_secs(15)))
-        .map_err(|error| format!("Could not set service IPC send timeout: {error}"))?;
+
+    #[cfg(windows)]
+    stream.set_nonblocking(true)
+        .map_err(|error| format!("Could not enable bounded Windows named-pipe IPC: {error}"))?;
+    #[cfg(not(windows))]
+    {
+        stream.set_recv_timeout(Some(read_timeout))
+            .map_err(|error| format!("Could not set service IPC receive timeout: {error}"))?;
+        stream.set_send_timeout(Some(Duration::from_secs(15)))
+            .map_err(|error| format!("Could not set service IPC send timeout: {error}"))?;
+    }
 
     let request = ServiceRequest { token: endpoint.token, command };
     let encoded = serde_json::to_vec(&request)
@@ -1918,10 +2048,22 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
     if encoded.is_empty() || encoded.len() as u64 >= MAX_MESSAGE_BYTES {
         return Err("Service-control request exceeded its size limit.".to_string());
     }
-    write_service_frame(&mut stream, &encoded)
-        .map_err(|error| format!("Could not send service-control request: {error}"))?;
-    let response_bytes = read_service_frame(&mut stream)
-        .map_err(|error| format!("Could not read service-control response: {error}"))?;
+
+    #[cfg(windows)]
+    let response_bytes = {
+        write_service_frame_with_timeout(&mut stream, &encoded, Duration::from_secs(15))
+            .map_err(|error| format!("Could not send service-control request: {error}"))?;
+        read_service_frame_with_timeout(&mut stream, read_timeout)
+            .map_err(|error| format!("Could not read service-control response: {error}"))?
+    };
+    #[cfg(not(windows))]
+    let response_bytes = {
+        write_service_frame(&mut stream, &encoded)
+            .map_err(|error| format!("Could not send service-control request: {error}"))?;
+        read_service_frame(&mut stream)
+            .map_err(|error| format!("Could not read service-control response: {error}"))?
+    };
+
     finish_service_response(endpoint.version, &response_bytes)
 }
 
@@ -2872,6 +3014,64 @@ mod tests {
         assert!(endpoint.name.is_empty());
         assert_eq!(endpoint.address, "127.0.0.1:41234");
         assert_eq!(endpoint.token, "legacy-token");
+    }
+
+    #[test]
+    fn windows_style_nonblocking_frame_reader_preserves_partial_reads() {
+        struct IntermittentReader {
+            bytes: Vec<u8>,
+            offset: usize,
+            block_next: bool,
+        }
+
+        impl std::io::Read for IntermittentReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.block_next {
+                    self.block_next = false;
+                    return Err(std::io::ErrorKind::WouldBlock.into());
+                }
+                self.block_next = true;
+                let remaining = &self.bytes[self.offset..];
+                let count = remaining.len().min(buffer.len()).min(3);
+                if count == 0 {
+                    return Ok(0);
+                }
+                buffer[..count].copy_from_slice(&remaining[..count]);
+                self.offset += count;
+                Ok(count)
+            }
+        }
+
+        let payload = br#"{"action":"status"}"#;
+        let mut encoded = Vec::new();
+        super::write_service_frame(&mut encoded, payload).expect("encode test frame");
+        let mut reader = IntermittentReader {
+            bytes: encoded,
+            offset: 0,
+            block_next: true,
+        };
+
+        let decoded = super::read_service_frame_with_timeout(
+            &mut reader,
+            Duration::from_secs(1),
+        ).expect("read frame despite temporary WouldBlock");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn nonblocking_service_ipc_returns_a_bounded_timeout() {
+        struct StalledReader;
+        impl std::io::Read for StalledReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::WouldBlock.into())
+            }
+        }
+
+        let error = super::read_service_frame_with_timeout(
+            &mut StalledReader,
+            Duration::from_millis(20),
+        ).expect_err("a stalled pipe must time out instead of hanging");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     }
 
     #[test]
