@@ -2987,8 +2987,8 @@ impl CoreServiceSupervisor {
             child_started_at: None,
             unhealthy_since: None,
             restart_attempts: 0,
-            next_restart: Instant::now(),
-            last_health_check: Instant::now(),
+            next_restart: std::time::Instant::now(),
+            last_health_check: std::time::Instant::now(),
         };
         supervisor.ensure_started("GitManager startup");
         supervisor
@@ -4034,20 +4034,20 @@ mod tests {
     #[test]
     fn service_supervisor_reaps_its_exited_child_during_installer_shutdown() {
         let executable = std::env::current_exe().expect("resolve test executable");
-        let child = Command::new(executable)
+        let child = std::process::Command::new(executable)
             .arg("--list")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .expect("spawn short-lived child process");
         let pid = child.id();
-        thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(500));
 
         let mut supervisor = super::CoreServiceSupervisor {
             executable: None,
             child: Some(child),
-            child_started_at: Some(Instant::now()),
+            child_started_at: Some(std::time::Instant::now()),
             unhealthy_since: None,
             restart_attempts: 0,
             next_restart: Instant::now(),
