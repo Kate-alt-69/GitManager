@@ -448,12 +448,20 @@ def run_command(
                 line_color = "red" if channel == "stderr" else "white"
 
             if is_mpdev_offline_mode_error(args, line):
-                _emit(f"[ {label} ] [ERR ] {line}", color="red", stream=sys.stderr)
+                error_stream = sys.stdout if terminal_progress else sys.stderr
+                _emit(f"[ {label} ] [ERR ] {line}", color="red", stream=error_stream)
                 log_warn("MPDEV has entered Offline Mode, which its Free tier does not support.")
                 log_info("GitManager does not enable Offline Mode or pass an offline build option. MPDEV Free can be used without activation for qualifying personal non-commercial and open-source work, but it must remain online for license validation.")
                 log_info("Check outbound internet access for mpdev.exe and any Windows Firewall, VPN, proxy or DNS filtering. Return MPDEV to online mode and retry; Enterprise is only needed when offline operation is required.")
             else:
-                output_stream = sys.stderr if channel == "stderr" else sys.stdout
+                # TTY stdout/stderr normally share one console cursor. Keep both
+                # channels on the coordinated stream so neither can overwrite the
+                # live progress row; preserve stream separation in redirected logs.
+                output_stream = (
+                    sys.stdout
+                    if terminal_progress or channel == "stdout"
+                    else sys.stderr
+                )
                 _emit(f"[ {label} ] {line}", color=line_color, stream=output_stream)
         return_code = process.wait()
     except KeyboardInterrupt:
