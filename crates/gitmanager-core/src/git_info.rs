@@ -1,88 +1,18 @@
 use git2::build::CheckoutBuilder;
 use git2::{BranchType, Oid, Repository, RepositoryState, Sort, StatusOptions};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommitNode {
-    pub oid: String,
-    pub short_oid: String,
-    pub message: String,
-    pub summary: String,
-    pub author_name: String,
-    pub author_email: String,
-    pub timestamp: i64,
-    pub date_iso: String,
-    pub parents: Vec<String>,
-    pub branches: Vec<String>,
-    pub tags: Vec<String>,
-    pub is_head: bool,
-    pub lane: usize,
-}
+use crate::models::{
+    BranchInfo,
+    CommitDetails,
+    CommitHistoryPage,
+    CommitNode,
+    GitRepositoryInfo,
+    RemoteEndpoint,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BranchInfo {
-    pub name: String,
-    pub is_head: bool,
-    pub is_remote: bool,
-    pub target_oid: String,
-    pub upstream: Option<String>,
-    pub is_default: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoteEndpoint {
-    pub name: String,
-    pub url: String,
-    pub provider: String, // "github", "gitlab", "custom", "none"
-    pub host: String,
-    pub owner: Option<String>,
-    pub repo_slug: Option<String>,
-    pub web_url: Option<String>,
-    pub icon_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommitDetails {
-    pub oid: String,
-    pub short_oid: String,
-    pub summary: String,
-    pub message: String,
-    pub author_name: String,
-    pub author_email: String,
-    pub authored_at: String,
-    pub files_changed: usize,
-    pub insertions: usize,
-    pub deletions: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitRepositoryInfo {
-    pub id: String,
-    pub name: String,
-    pub path: String,
-    pub git_dir: String,
-    pub parent_folder: String,
-    pub owner_name: String,
-    pub owner_email: String,
-    pub current_branch: String,
-    pub has_remote: bool,
-    pub primary_provider: String, // "github" | "gitlab" | "custom" | "local"
-    pub primary_remote_url: Option<String>,
-    pub web_url: Option<String>,
-    pub icon_url: String,
-    pub remotes: Vec<RemoteEndpoint>,
-    pub branches: Vec<BranchInfo>,
-    pub commits: Vec<CommitNode>,
-    pub dirty_files_count: usize,
-    pub total_commits_loaded: usize,
-    pub source_kind: String, // "local_scan" | "remote_account" | "synced"
-    #[serde(default)]
-    pub details_loaded: bool,
-}
 
 /// Parses a Git remote URL (SSH or HTTPS) to extract host, provider, owner, repo slug, and avatar/icon URL
 pub fn parse_remote_url(remote_name: &str, raw_url: &str) -> RemoteEndpoint {
@@ -397,17 +327,6 @@ fn extract_git_repository_info_with_detail(
 }
 
 
-
-/// A bounded page of Git commit history. has_more is computed from one
-/// additional matching commit, so the caller does not need an expensive count.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommitHistoryPage {
-    pub commits: Vec<CommitNode>,
-    pub offset: usize,
-    pub limit: usize,
-    pub has_more: bool,
-}
 
 /// Reads a page of commit history on demand, optionally scoped to one local or
 /// remote branch and/or a case-insensitive SHA/message/author search.
