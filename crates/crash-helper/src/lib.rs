@@ -55,7 +55,7 @@ const UI_RECOVERY_GRACE: Duration = Duration::from_secs(15);
 const SUPERVISOR_POLL: Duration = Duration::from_millis(400);
 const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 pub const SERVICE_PROTOCOL_VERSION: u32 = 4;
-const MAX_CONCURRENT_SERVICE_REQUESTS: usize = 8;
+const MAX_CONCURRENT_SERVICE_REQUESTS: usize = 32;
 pub const SERVICE_GENERATION: u32 = 5;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -721,8 +721,14 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
                 match listener.accept() {
                     Ok(stream) => {
                         if !reserve_service_request_slot(&thread_active_requests) {
-                            // Reject excess work instead of creating unbounded
-                            // threads or blocking the accept loop.
+                            // Keep request handling bounded, but make overload
+                            // visible. Closing a pipe without a response looks
+                            // like a dead service to clients and can trigger
+                            // duplicate launch attempts.
+                            eprintln!(
+                                "GitManager service IPC: rejected a request because all {} handler slots are occupied.",
+                                MAX_CONCURRENT_SERVICE_REQUESTS
+                            );
                             drop(stream);
                             continue;
                         }
