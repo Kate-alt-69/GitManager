@@ -548,7 +548,8 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
 
         self.assertIn("EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE: Duration = Duration::from_secs(45)", helper)
         self.assertIn("external_service_lock_recovery_due(unhealthy_since, Instant::now())", supervisor)
-        self.assertIn("service_control_lock_is_held() && service_control_lock_owner_pid() == Some(pid)", supervisor)
+        self.assertIn("let same_owner = service_control_lock_is_held()", supervisor)
+        self.assertIn("&& service_control_lock_owner_pid() == Some(pid)", supervisor)
         self.assertIn("stop_obsolete_service_process(pid)", supervisor)
         self.assertIn("wait_for_exclusive_lock_release(path, Duration::from_secs(4))", supervisor)
         self.assertIn("owner_pid.filter(|pid| *pid > 1 && *pid != std::process::id())", supervisor)
