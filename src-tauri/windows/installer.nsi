@@ -420,6 +420,12 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_FINISH
 
 Function RunMainBinary
+  ; Start the bootstrap helper so first-run setup runs through the same
+  ; service-aware flow as a first launch from Explorer.
+  IfFileExists "$INSTDIR\gitmanager-setup.exe" 0 run_main_binary
+  nsis_tauri_utils::RunAsUser "$INSTDIR\gitmanager-setup.exe" ""
+  Return
+run_main_binary:
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
 FunctionEnd
 
@@ -753,7 +759,12 @@ Function .onInstSuccess
     ${GetOptions} $CMDLINE "/R" $R0
     ${IfNot} ${Errors}
       ${GetOptions} $CMDLINE "/ARGS" $R0
+      IfFileExists "$INSTDIR\gitmanager-setup.exe" 0 run_main_after_install
+      nsis_tauri_utils::RunAsUser "$INSTDIR\gitmanager-setup.exe" ""
+      Goto run_after_install_done
+run_main_after_install:
       nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" "$R0"
+run_after_install_done:
     ${EndIf}
   ${EndIf}
 FunctionEnd
