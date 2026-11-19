@@ -713,11 +713,15 @@ async fn scan_machine_repositories(
 }
 
 #[tauri::command]
-fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> {
-    // Preserve the one-time migration from Tauri's former app-config location.
-    // All normal preference reads and writes happen through gitmanager.service.
-    let _ = preferences_file(&app_handle)?;
-    watcher_service::ensure_required_service(app_handle)
+async fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        // Preserve the one-time migration from Tauri's former app-config location.
+        // All normal preference reads and writes happen through gitmanager.service.
+        let _ = preferences_file(&app_handle)?;
+        watcher_service::ensure_required_service(app_handle)
+    })
+    .await
+    .map_err(|error| format!("Core service startup task failed: {error}"))?
 }
 
 #[tauri::command]
