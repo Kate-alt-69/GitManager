@@ -85,7 +85,7 @@ fn watcher_config_signature(
     preferences: &AppPreferences,
     repositories: Option<&[GitRepositoryInfo]>,
 ) -> String {
-    let repository_paths = repositories.map(|items| {
+    let repository_paths = repositories.map(|items: &[GitRepositoryInfo]| {
         items.iter().map(|repository| repository.path.as_str()).collect::<Vec<_>>()
     });
     serde_json::to_string(&(
