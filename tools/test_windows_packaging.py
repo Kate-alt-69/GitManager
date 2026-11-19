@@ -499,8 +499,24 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn(r"\programs\kastrick's software\gitmanager", msi_install_dir)
 
         template = (ROOT / "src-tauri" / "windows" / "installer.nsi").read_text(encoding="utf-8")
-        self.assertIn(r'$LOCALAPPDATA\kastrick''s_software\${PRODUCTNAME}', template.lower())
+        self.assertIn(r"$LOCALAPPDATA\kastrick's_software\${PRODUCTNAME}", template.lower())
         self.assertNotEqual(msi_install_dir, r"%localappdata%\kastrick's_software\gitmanager")
+
+    def test_first_run_setup_registers_the_per_user_service_task_without_duplicate_launch(self):
+        app = (ROOT / "frontend" / "components" / "gitmanager-app.tsx").read_text(encoding="utf-8")
+        watcher = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
+        setup_dialog = app.split("function SetupDialog", 1)[1].split("const MemoRepositoryPage", 1)[0]
+        windows_registration = watcher.split("#[cfg(target_os = \\"windows\\")]", 1)[1].split("#[cfg(target_os = \\"linux\\")]", 1)[0]
+
+        self.assertIn("const [startServiceAtSignIn, setStartServiceAtSignIn] = useState(true)", setup_dialog)
+        self.assertIn('invoke("control_background_service", { installOsService: true })', setup_dialog)
+        self.assertIn("Start the GitManager core service when I sign in", setup_dialog)
+        self.assertIn("service_control_lock_is_held()", windows_registration)
+        self.assertLess(
+            windows_registration.index("let service_already_running"),
+            windows_registration.index('args(["/Run", "/TN", task_name])'),
+        )
+        self.assertIn("if !service_already_running", windows_registration)
 
     def test_service_lock_ownership_prevents_duplicate_supervisor_spawns(self):
         helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
@@ -513,8 +529,8 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
 
     def test_windows_pipe_response_flushes_and_status_health_check_retries(self):
         helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
-        frame_writer = helper.split("fn write_service_frame_with_timeout", 1)[1].split("\\n}", 1)[0]
-        status_request = helper.split("pub fn request_service_status", 1)[1].split("\\n}", 1)[0]
+        frame_writer = helper.split("fn write_service_frame_with_timeout", 1)[1].split("\n}", 1)[0]
+        status_request = helper.split("pub fn request_service_status", 1)[1].split("\n}", 1)[0]
         self.assertIn("stream.flush()", frame_writer)
         self.assertIn("for attempt in 0..3", status_request)
         self.assertIn("could not send", helper.lower())
