@@ -112,12 +112,6 @@ fn write_notification_generation_file(path: &Path, generation: u64) -> Result<()
         let _ = fs::remove_file(backup);
     }
 
-    // History is already committed at this point. A generation-sidecar failure
-    // must not suppress a matching OS toast; file-mtime fallback remains.
-    let generation_path = notification_generation_path(path);
-    if let Err(error) = write_notification_generation_file(&generation_path, next_generation) {
-        eprintln!("GitManager notification generation could not be published: {error}");
-    }
     Ok(())
 }
 
@@ -212,6 +206,13 @@ fn write_store(path: &PathBuf, store: &NotificationStore) -> Result<(), String> 
     }
     if backup.exists() {
         let _ = fs::remove_file(backup);
+    }
+
+    // History is already committed at this point. A generation-sidecar failure
+    // must not suppress a matching OS toast; file-mtime fallback remains.
+    let generation_path = notification_generation_path(path);
+    if let Err(error) = write_notification_generation_file(&generation_path, next_generation) {
+        eprintln!("GitManager notification generation could not be published: {error}");
     }
     Ok(())
 }
