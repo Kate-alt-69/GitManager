@@ -108,6 +108,8 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
 
         self.assertIn(r'USERNAME eq $%USERDOMAIN%\$%USERNAME%', hooks)
         self.assertIn('schtasks.exe" /End /TN "GitManager Core Service"', hooks)
+        self.assertIn('"$R7" --stop-service', hooks)
+        self.assertLess(hooks.index('"$R7" --stop-service'), hooks.index("legacy_process_cleanup:"))
         self.assertIn('taskkill.exe" /F /T', hooks)
         for image in (
             "crash_helper.exe",
@@ -142,6 +144,13 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
             "%LOCALAPPDATA%\\kastrick's_software\\GitManager",
         )
         self.assertNotIn("installDir", config["msi"])
+        stop_action = config["msi"]["customActions"]["exe"][0]
+        self.assertEqual(stop_action["name"], "StopGitManagerCoreService")
+        self.assertEqual(stop_action["filePath"], "$.installDir\\\\crash_helper.exe")
+        self.assertEqual(stop_action["arguments"], "--stop-service")
+        self.assertEqual(stop_action["condition"], "Installed")
+        self.assertEqual(stop_action["sequence"], "StartOfExecution")
+        self.assertTrue(stop_action["continueOnError"])
         msi_properties = {item["name"]: item["value"] for item in config["msi"]["properties"]}
         self.assertEqual(msi_properties["ALLUSERS"], "2")
         self.assertEqual(msi_properties["MSIINSTALLPERUSER"], "1")
