@@ -88,7 +88,7 @@ fn write_notification_generation_file(path: &Path, generation: u64) -> Result<()
             .write(true)
             .open(&temporary)
             .map_err(|error| format!("Could not create notification generation: {error}"))?;
-        write!(output, "{generation}\\n")
+        write!(output, "{generation}\n")
             .map_err(|error| format!("Could not write notification generation: {error}"))?;
         output.sync_all()
             .map_err(|error| format!("Could not flush notification generation: {error}"))?;
