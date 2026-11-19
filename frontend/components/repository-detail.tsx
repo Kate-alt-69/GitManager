@@ -55,7 +55,6 @@ export function RepositoryDetail({
 	onOpenWebsite,
 	onRescan,
 	onRepositoryLoaded,
-	onPullCompleted,
 	onOpenCleaner,
 }: {
 	repo: GitRepository;
@@ -66,7 +65,6 @@ export function RepositoryDetail({
 	onOpenWebsite: (url: string) => void;
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
-	onPullCompleted: (repoPath: string) => void;
 	onOpenCleaner: () => void;
 }) {
 	const [archives, setArchives] = useState<ArchiveSnapshot[]>([]);
@@ -382,7 +380,6 @@ export function RepositoryDetail({
 					repo={displayRepo}
 					focus={destination.kind === "conflicts" || destination.kind === "pull-conflicts" ? "conflicts" : "all"}
 					onRepositoryUpdated={onRepositoryLoaded}
-					onPullCompleted={onPullCompleted}
 					onOpenCleaner={onOpenCleaner}
 				/>
 			)}
