@@ -238,6 +238,22 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         )[0]
         self.assertIn("spawn_blocking(crash_helper::request_service_status)", status_command)
 
+    def test_ui_watchdog_heartbeat_runs_on_the_webview_event_loop(self):
+        ui = (ROOT / "frontend" / "components" / "gitmanager-app.tsx").read_text(encoding="utf-8")
+        app = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+
+        gitmanager_app = ui.split("export function GitManagerApp()", 1)[1]
+        self.assertIn('invoke("report_ui_heartbeat")', gitmanager_app)
+        self.assertIn("window.setInterval(reportHeartbeat, 3000)", gitmanager_app)
+        self.assertIn("window.clearInterval(heartbeat)", gitmanager_app)
+
+        heartbeat_command = app.split("async fn report_ui_heartbeat", 1)[1].split(
+            "fn resume_background_service", 1
+        )[0]
+        self.assertIn("spawn_blocking(crash_helper::report_ui_heartbeat_from_env)", heartbeat_command)
+        self.assertNotIn("gitmanager-native-supervisor-heartbeat", app)
+        self.assertIn("frozen WebView cannot keep the watchdog falsely healthy", app)
+
     def test_service_diagnostics_include_crash_helper_incident_history(self):
         helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
         app = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
