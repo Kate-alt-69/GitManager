@@ -6,7 +6,7 @@
 
 !include LogicLib.nsh
 
-!define MUI_FINISHPAGE_RUN_TEXT "Continue using GitManager"
+!define MUI_FINISHPAGE_RUN_TEXT "Finish GitManager setup"
 
 ; The service is a detached per-user process and does not close with the UI.
 ; Stop only processes belonging to the interactive account, never every user's
