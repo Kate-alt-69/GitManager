@@ -230,7 +230,7 @@ export function useGitManager() {
 			await performScan(saved);
 		}
 		return saved;
-	}, [performScan, refreshNotifications]);
+	}, [performScan, preferences, refreshNotifications]);
 
 	const checkUpdates = useCallback(async (): Promise<void> => {
 		setStatus("Queuing remote check in GitManager Core Service…");
