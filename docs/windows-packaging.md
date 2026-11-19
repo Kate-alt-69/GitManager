@@ -87,6 +87,10 @@ If one architecture fails compilation, it is skipped during packaging while othe
 
 Release automation can set `GITMANAGER_DEFER_MPDEV_PACKAGING=1`. In that mode the script creates the Tauri bundles and MPDEV manifest, then leaves MSI/MSIX generation to the release workflow so it can sign the staged app and NSIS payload first. Ordinary local builds do not set this variable and create MSI/MSIX immediately in the final installer pass.
 
+Store-package builds follow the same order. Flatpak builds compile every selected target before generating any DEB/Flatpak output; Store MSIX builds compile all selected Windows app payloads before MPDEV starts creating MSIX files.
+
+On multi-architecture Windows builds, the shared private CPython staging runtime is reselected and verified for each target immediately before its Tauri bundle is created. This prevents an x86 build pass from leaving an x86 interpreter in the later x64 NSIS/MSI/MSIX output (or vice versa).
+
 ## Output layout
 
 All build products remain under the repository's ignored `build/` directory:
