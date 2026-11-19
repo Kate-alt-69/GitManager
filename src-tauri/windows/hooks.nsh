@@ -11,7 +11,7 @@
 ; The service is a detached per-user process and does not close with the UI.
 ; Stop only processes belonging to the interactive account, never every user's
 ; GitManager instance on a shared Windows machine.
-!macro StopGitManagerPerUserProcesses
+!macro StopGitManagerPerUserProcesses PREFIX
   SetShellVarContext current
   DetailPrint "Stopping GitManager's per-user service before replacing files..."
 
@@ -24,33 +24,33 @@
   ; Prefer crash_helper's authenticated, PID-specific shutdown command. It
   ; pauses repository work briefly, waits for active indexing/remote checks,
   ; then stops only the process returned by this user's authenticated endpoint.
-  IfFileExists "$INSTDIR\crash_helper.exe" helper_sidecar_found 0
-  IfFileExists "$INSTDIR\crash_helper-x86_64-pc-windows-msvc.exe" helper_sidecar_x64 0
-  IfFileExists "$INSTDIR\crash_helper-i686-pc-windows-msvc.exe" helper_sidecar_x86 0
-  IfFileExists "$INSTDIR\crash_helper-aarch64-pc-windows-msvc.exe" helper_sidecar_arm64 0
-  Goto legacy_process_cleanup
-helper_sidecar_x64:
+  IfFileExists "$INSTDIR\crash_helper.exe" ${PREFIX}helper_sidecar_found 0
+  IfFileExists "$INSTDIR\crash_helper-x86_64-pc-windows-msvc.exe" ${PREFIX}helper_sidecar_x64 0
+  IfFileExists "$INSTDIR\crash_helper-i686-pc-windows-msvc.exe" ${PREFIX}helper_sidecar_x86 0
+  IfFileExists "$INSTDIR\crash_helper-aarch64-pc-windows-msvc.exe" ${PREFIX}helper_sidecar_arm64 0
+  Goto ${PREFIX}legacy_process_cleanup
+${PREFIX}helper_sidecar_x64:
   StrCpy $R7 "$INSTDIR\crash_helper-x86_64-pc-windows-msvc.exe"
-  Goto invoke_helper_shutdown
-helper_sidecar_x86:
+  Goto ${PREFIX}invoke_helper_shutdown
+${PREFIX}helper_sidecar_x86:
   StrCpy $R7 "$INSTDIR\crash_helper-i686-pc-windows-msvc.exe"
-  Goto invoke_helper_shutdown
-helper_sidecar_arm64:
+  Goto ${PREFIX}invoke_helper_shutdown
+${PREFIX}helper_sidecar_arm64:
   StrCpy $R7 "$INSTDIR\crash_helper-aarch64-pc-windows-msvc.exe"
-  Goto invoke_helper_shutdown
-helper_sidecar_found:
+  Goto ${PREFIX}invoke_helper_shutdown
+${PREFIX}helper_sidecar_found:
   StrCpy $R7 "$INSTDIR\crash_helper.exe"
-invoke_helper_shutdown:
+${PREFIX}invoke_helper_shutdown:
   DetailPrint "Requesting authenticated GitManager core-service shutdown..."
   nsExec::ExecToLog '"$R7" --stop-service'
   Pop $R9
-  StrCmp $R9 "0" helper_shutdown_complete
+  StrCmp $R9 "0" ${PREFIX}helper_shutdown_complete
   DetailPrint "The installed crash_helper could not stop the service cleanly; using the legacy per-user cleanup fallback."
-  Goto legacy_process_cleanup
-helper_shutdown_complete:
-  Goto stop_cleanup_done
+  Goto ${PREFIX}legacy_process_cleanup
+${PREFIX}helper_shutdown_complete:
+  Goto ${PREFIX}stop_cleanup_done
 
-legacy_process_cleanup:
+${PREFIX}legacy_process_cleanup:
   ; Old installations may have a helper without --stop-service. Keep this
   ; fallback narrowly scoped to the current account.
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "crash_helper.exe"'
@@ -76,13 +76,13 @@ legacy_process_cleanup:
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "git-manager-service.exe"'
   Pop $R9
   Sleep 500
-stop_cleanup_done:
+${PREFIX}stop_cleanup_done:
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
   ; The directory page and Tauri's .onInit have already selected $INSTDIR.
   ; Respect a user's Browse selection instead of replacing it here.
-  !insertmacro StopGitManagerPerUserProcesses
+  !insertmacro StopGitManagerPerUserProcesses "install_"
   SetShellVarContext current
   StrCpy $0 "$LOCALAPPDATA\kastrick's_software"
   CreateDirectory "$INSTDIR"
@@ -95,7 +95,7 @@ stop_cleanup_done:
 ; Uninstall the optional logon task only for a real uninstall, not an update.
 ; Do not delete user data or the user's scan/index configuration.
 !macro NSIS_HOOK_PREUNINSTALL
-  !insertmacro StopGitManagerPerUserProcesses
+  !insertmacro StopGitManagerPerUserProcesses "uninstall_"
   ${If} $UpdateMode <> 1
     nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "GitManager Core Service" /F'
     Pop $R9
