@@ -106,7 +106,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
     def test_nsis_hooks_stop_only_current_users_helper_and_service_and_verify_sidecars(self):
         hooks = (ROOT / "src-tauri" / "windows" / "hooks.nsh").read_text(encoding="utf-8")
 
-        self.assertIn('USERNAME eq $%USERNAME%', hooks)
+        self.assertIn(r'USERNAME eq $%USERDOMAIN%\$%USERNAME%', hooks)
         self.assertIn('schtasks.exe" /End /TN "GitManager Core Service"', hooks)
         self.assertIn('taskkill.exe" /F /T', hooks)
         for image in (
