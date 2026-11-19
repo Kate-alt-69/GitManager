@@ -33,6 +33,21 @@ MPDEV Free is suitable for qualifying personal non-commercial use and open-sourc
 
 GitManager does not enable MPDEV Offline Mode or add an offline-build flag to the command. When MPDEV reports `Offline mode is only supported with "Enterprise" license`, check that `mpdev.exe` can reach the internet. Review Windows Firewall, VPN, proxy, DNS filtering and endpoint-security rules, then return MPDEV to online mode and retry. An Enterprise license is only needed when you actually require MPDEV's offline operation.
 
+### MSIX timestamp server
+
+The development MSIX uses MPDEV's test certificate and the Microsoft timestamp authority by default:
+
+`http://timestamp.acs.microsoft.com`
+
+MPDEV validates that the configured timestamp server is reachable and responds successfully before signing. If your network blocks that endpoint, select another reachable RFC 3161 timestamp service with the `GITMANAGER_MPDEV_TIMESTAMP_SERVER` environment variable:
+
+```powershell
+$env:GITMANAGER_MPDEV_TIMESTAMP_SERVER = "http://timestamp.acs.microsoft.com"
+py build.py
+```
+
+The default is used whenever the variable is unset. The build rejects non-HTTP(S) values rather than passing an invalid URL to MPDEV. Warnings about unsigned development executables or missing PE file-version metadata are separate from a timestamp-server error; the timestamp validation failure is the blocking issue in the reported log.
+
 ## Build locally
 
 Run the interactive build selector:
@@ -60,6 +75,15 @@ py build.py --store=msix
 ```
 
 The normal Windows build creates MPDEV MSI and MSIX packages plus the NSIS fallback. It does not use GitHub Actions to compile or package your local build.
+
+### Build order
+
+Installer builds use two explicit passes so packaging never interrupts compilation:
+
+1. **Compile pass:** for every selected architecture, build all workspace library and binary targets, build the Tauri desktop executable without bundling, and stage the complete app payload.
+2. **Installer pass:** only after every selected target has finished its compile pass, run Tauri's bundle-only command for each successful target. On Windows, MPDEV then creates that target's MSI and MSIX; Tauri supplies the NSIS fallback.
+
+If one architecture fails compilation, it is skipped during packaging while other successfully compiled targets can still finish. No installer is generated while another selected architecture is still compiling.
 
 ## Output layout
 
