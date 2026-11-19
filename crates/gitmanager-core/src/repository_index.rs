@@ -61,6 +61,12 @@ fn read_index_generation_file(path: &Path) -> Result<Option<u64>, String> {
     Ok(Some(generation))
 }
 
+fn next_index_generation(previous: u64, current_unix_ns: u128) -> u64 {
+    previous
+        .saturating_add(1)
+        .max(current_unix_ns.min(u64::MAX as u128) as u64)
+}
+
 fn write_index_generation_file(path: &Path, generation: u64) -> Result<(), String> {
     let parent = path.parent()
         .ok_or_else(|| "Repository index generation path has no parent directory.".to_string())?;
@@ -181,9 +187,7 @@ pub fn save_persisted_repository_index(
     let current_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let next_generation = previous_generation
-        .saturating_add(1)
-        .max(current_unix.as_nanos().min(u64::MAX as u128) as u64);
+    let next_generation = next_index_generation(previous_generation, current_unix.as_nanos());
     let current_time = current_unix.as_millis().min(u64::MAX as u128) as u64;
     // Keep the generation strictly increasing even when two refreshes happen
     // within the same system-clock millisecond.
@@ -323,6 +327,33 @@ pub fn build_indexed_summary_with_scan_status(
 
 #[cfg(test)]
 mod tests {
+    use super::{next_index_generation, read_index_generation_file, write_index_generation_file};
+    use std::fs;
+
+    #[test]
+    fn index_generation_advances_even_when_the_clock_does_not() {
+        assert_eq!(next_index_generation(100, 100), 101);
+        assert_eq!(next_index_generation(100, 99), 101);
+        assert_eq!(next_index_generation(100, 150), 150);
+    }
+
+    #[test]
+    fn index_generation_sidecar_round_trips_and_replaces_atomically() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after the epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("gitmanager-index-generation-{nonce}"));
+        fs::create_dir_all(&directory).expect("create generation test directory");
+        let path = directory.join("index.generation");
+
+        write_index_generation_file(&path, 100).expect("write initial generation");
+        assert_eq!(read_index_generation_file(&path).unwrap(), Some(100));
+        write_index_generation_file(&path, 101).expect("replace generation");
+        assert_eq!(read_index_generation_file(&path).unwrap(), Some(101));
+
+        fs::remove_dir_all(directory).expect("remove generation test directory");
+    }
     use super::{is_dependency_repository_path, PersistedRepositoryIndex};
 
     #[test]
