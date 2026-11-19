@@ -221,7 +221,14 @@ export function useGitManager() {
 		}
 		setSetupOpen(false);
 		setStatus("Preferences saved");
-		await performScan(saved);
+		const scanSettingsChanged = !preferences.firstRunComplete
+			|| JSON.stringify(preferences.scanRoots) !== JSON.stringify(saved.scanRoots)
+			|| preferences.maxScanDepth !== saved.maxScanDepth
+			|| preferences.includeHiddenDirs !== saved.includeHiddenDirs
+			|| preferences.indexDependencyRepositories !== saved.indexDependencyRepositories;
+		if (scanSettingsChanged) {
+			await performScan(saved);
+		}
 		return saved;
 	}, [performScan, refreshNotifications]);
 
