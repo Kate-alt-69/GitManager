@@ -117,7 +117,7 @@ def _emit(message: str, *, color: str = "white", stream=None) -> None:
     with _PROGRESS_LOCK:
         # Any ordinary log or child-process output gets its own clean line.
         _finish_progress_line_locked()
-        target.write(_paint(message, color, target) + "\\n")
+        target.write(_paint(message, color, target) + "\n")
         target.flush()
 
 
@@ -170,7 +170,7 @@ def log_work(work: str, progress: str, status: str, message: str) -> None:
                 return
             _LAST_NONINTERACTIVE_PROGRESS[work] = (normalized, progress)
             _finish_progress_line_locked()
-            target.write(_paint(rendered, color, target) + "\\n")
+            target.write(_paint(rendered, color, target) + "\n")
             target.flush()
         else:
             if _ACTIVE_PROGRESS_STREAM is not None and _ACTIVE_PROGRESS_WORK != work:
@@ -185,7 +185,7 @@ def log_work(work: str, progress: str, status: str, message: str) -> None:
                 rendered = rendered[:max_width - 1] + "…"
             padding = " " * max(0, _ACTIVE_PROGRESS_WIDTH - len(rendered))
 
-            target.write("\\r" + _paint(rendered, color, target) + padding)
+            target.write("\r" + _paint(rendered, color, target) + padding)
             target.flush()
 
             if normalized in {"DONE", "FAILED", "CANCELLED", "SKIPPED"}:
