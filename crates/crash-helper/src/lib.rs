@@ -2462,8 +2462,52 @@ pub fn report_supervisor_launch_failure(reason: &str) {
     record_supervisor_start_failure(reason);
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ))
+        .unwrap_or(false)
+}
+
+/// Bypass the second-process UI supervisor in an explicitly requested or
+/// debugger-attached session. This keeps Visual Studio attached to the real
+/// WebView host instead of the launcher process waiting on crash_helper.
+pub fn supervisor_should_bypass() -> bool {
+    if env_flag_enabled("GITMANAGER_DISABLE_CRASH_SUPERVISOR") {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn IsDebuggerPresent() -> i32;
+        }
+        unsafe { IsDebuggerPresent() != 0 }
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Persist a service startup/readiness failure in crash_helper's incident
+/// stream, including the latest service log tail.
+pub fn report_service_start_failure(reason: &str) {
+    append_incident(
+        reason,
+        std::process::id(),
+        None,
+        request_service_status(),
+    );
+}
+
 pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Result<bool, String> {
-    if is_supervised_child(args) {
+    if is_supervised_child(args) || supervisor_should_bypass() {
         return Ok(false);
     }
     let helper = match find_crash_helper(current_exe) {
