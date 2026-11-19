@@ -13,16 +13,46 @@
 ; GitManager instance on a shared Windows machine.
 !macro StopGitManagerPerUserProcesses
   SetShellVarContext current
-  DetailPrint "Stopping GitManager's per-user service and supervisor before replacing files..."
+  DetailPrint "Stopping GitManager's per-user service before replacing files..."
 
   ; Prevent an optional logon task from relaunching the service mid-upgrade.
   ; Keep the task itself on install/update; it is user-configured state.
   nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /End /TN "GitManager Core Service"'
   Pop $R9
+  Sleep 500
 
-  ; The UI has already been closed by CheckIfAppIsRunning. Let crash_helper
-  ; observe that exit first, then terminate a stale helper if it remains.
-  Sleep 700
+  ; Prefer crash_helper's authenticated, PID-specific shutdown command. It
+  ; pauses repository work briefly, waits for active indexing/remote checks,
+  ; then stops only the process returned by this user's authenticated endpoint.
+  IfFileExists "$INSTDIR\crash_helper.exe" helper_sidecar_found 0
+  IfFileExists "$INSTDIR\crash_helper-x86_64-pc-windows-msvc.exe" helper_sidecar_x64 0
+  IfFileExists "$INSTDIR\crash_helper-i686-pc-windows-msvc.exe" helper_sidecar_x86 0
+  IfFileExists "$INSTDIR\crash_helper-aarch64-pc-windows-msvc.exe" helper_sidecar_arm64 0
+  Goto legacy_process_cleanup
+helper_sidecar_x64:
+  StrCpy $R7 "$INSTDIR\crash_helper-x86_64-pc-windows-msvc.exe"
+  Goto invoke_helper_shutdown
+helper_sidecar_x86:
+  StrCpy $R7 "$INSTDIR\crash_helper-i686-pc-windows-msvc.exe"
+  Goto invoke_helper_shutdown
+helper_sidecar_arm64:
+  StrCpy $R7 "$INSTDIR\crash_helper-aarch64-pc-windows-msvc.exe"
+  Goto invoke_helper_shutdown
+helper_sidecar_found:
+  StrCpy $R7 "$INSTDIR\crash_helper.exe"
+invoke_helper_shutdown:
+  DetailPrint "Requesting authenticated GitManager core-service shutdown..."
+  nsExec::ExecToLog '"$R7" --stop-service'
+  Pop $R9
+  StrCmp $R9 "0" helper_shutdown_complete
+  DetailPrint "The installed crash_helper could not stop the service cleanly; using the legacy per-user cleanup fallback."
+  Goto legacy_process_cleanup
+helper_shutdown_complete:
+  Goto stop_cleanup_done
+
+legacy_process_cleanup:
+  ; Old installations may have a helper without --stop-service. Keep this
+  ; fallback narrowly scoped to the current account.
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "crash_helper.exe"'
   Pop $R9
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "crash_helper-x86_64-pc-windows-msvc.exe"'
@@ -33,7 +63,6 @@
   Pop $R9
   Sleep 250
 
-  ; Current dotted sidecar and historical Cargo executable names.
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "gitmanager.service.exe"'
   Pop $R9
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "gitmanager.service-x86_64-pc-windows-msvc.exe"'
@@ -47,6 +76,7 @@
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "USERNAME eq $%USERDOMAIN%\$%USERNAME%" /IM "git-manager-service.exe"'
   Pop $R9
   Sleep 500
+stop_cleanup_done:
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
