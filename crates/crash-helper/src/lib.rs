@@ -4300,7 +4300,7 @@ mod tests {
 
     #[test]
     fn external_service_lock_recovery_waits_for_the_full_health_grace() {
-        let started = Instant::now();
+        let started = std::time::Instant::now();
         assert!(
             !super::external_service_lock_recovery_due(
                 started,
