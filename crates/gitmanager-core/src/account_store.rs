@@ -3,7 +3,7 @@
 //! Access tokens are deliberately excluded. Provider credentials remain in the
 //! active connection flow (or in the provider CLI's own credential manager).
 
-use crate::git_info::GitRepositoryInfo;
+use crate::models::GitRepositoryInfo;
 use crate::storage::data_dir;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
