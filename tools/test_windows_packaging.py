@@ -141,7 +141,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertEqual(config["outputDirectory"], "build/.rcache/windows-installers")
         self.assertEqual(
             config["installDir"],
-            "%LOCALAPPDATA%\\kastrick's_software\\GitManager",
+            "%LOCALAPPDATA%\\Programs\\Kastrick's Software\\GitManager",
         )
         self.assertNotIn("installDir", config["msi"])
         stop_action = config["msi"]["customActions"]["exe"][0]
@@ -163,7 +163,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("Git workspace manager", dialog["packageDescription"])
         self.assertEqual(dialog["publisherUrl"], "https://kastrick.vercel.app")
         self.assertEqual(dialog["primaryAccent"], "#F97316")
-        self.assertEqual(dialog["promptAppsAfterInstall"][0]["file"], "$.installDir\\gitmanager.exe")
+        self.assertEqual(dialog["promptAppsAfterInstall"][0]["file"], r"$.installDir\resources\gitmanager-setup.exe")
 
     def test_service_worker_is_packaged_but_not_registered_as_a_machine_service(self):
         desktop = json.loads(
@@ -499,7 +499,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn(r"\programs\kastrick's software\gitmanager", msi_install_dir)
 
         template = (ROOT / "src-tauri" / "windows" / "installer.nsi").read_text(encoding="utf-8")
-        self.assertIn(r"$LOCALAPPDATA\kastrick's_software\${PRODUCTNAME}", template.lower())
+        self.assertIn(r"$localappdata\kastrick's_software\${productname}", template.lower())
         self.assertNotEqual(msi_install_dir, r"%localappdata%\kastrick's_software\gitmanager")
 
     def test_first_run_setup_registers_the_per_user_service_task_without_duplicate_launch(self):
