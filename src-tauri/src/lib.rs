@@ -1874,7 +1874,7 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
         .name("gitmanager-native-runtime-monitor".to_string())
         .spawn(move || {
             let mut index_generation =
-                repository_index::repository_index_modified_unix_nanos().unwrap_or_default();
+                repository_index::repository_index_generation().unwrap_or_default();
             let mut notification_generation =
                 notification_center::notification_store_modified_unix_nanos().unwrap_or_default();
             let mut last_service_check = Instant::now();
@@ -1883,7 +1883,7 @@ fn start_native_runtime_monitor(app_handle: AppHandle) {
             loop {
                 std::thread::sleep(Duration::from_secs(1));
 
-                if let Ok(generation) = repository_index::repository_index_modified_unix_nanos() {
+                if let Ok(generation) = repository_index::repository_index_generation() {
                     if generation != index_generation {
                         index_generation = generation;
                         let _ = app_handle.emit(
