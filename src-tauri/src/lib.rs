@@ -1221,8 +1221,10 @@ async fn mark_all_app_notifications_read() -> Result<usize, String> {
 }
 
 #[tauri::command]
-fn report_ui_heartbeat() -> Result<(), String> {
-    crash_helper::report_ui_heartbeat_from_env()
+async fn report_ui_heartbeat() -> Result<(), String> {
+    tokio::task::spawn_blocking(crash_helper::report_ui_heartbeat_from_env)
+        .await
+        .map_err(|error| format!("UI heartbeat task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1870,20 +1872,6 @@ async fn capture_idle_performance() -> Result<IdlePerformanceCapture, String> {
 /// Keeps low-frequency health and file-change monitoring outside the WebView.
 /// The frontend sleeps until one of these native events reports a real change.
 fn start_native_runtime_monitor(app_handle: AppHandle) {
-    let heartbeat_spawn = std::thread::Builder::new()
-        .name("gitmanager-native-supervisor-heartbeat".to_string())
-        .spawn(|| {
-            loop {
-                std::thread::sleep(Duration::from_secs(3));
-                // This updates the native supervisor heartbeat directly;
-                // it no longer requires waking the React/WebView runtime.
-                let _ = crash_helper::report_ui_heartbeat_from_env();
-            }
-        });
-    if let Err(error) = heartbeat_spawn {
-        eprintln!("GitManager native supervisor heartbeat could not start: {error}");
-    }
-
     let monitor_spawn = std::thread::Builder::new()
         .name("gitmanager-native-runtime-monitor".to_string())
         .spawn(move || {
@@ -1987,7 +1975,8 @@ pub fn run() {
         .setup(|app| {
             // Discovery, remote polling and indexing stay in the service.
             // This native monitor only relays lightweight state changes to
-            // the WebView and maintains the crash-supervisor heartbeat.
+            // the WebView. The UI heartbeat is intentionally emitted by React,
+            // so a frozen WebView cannot keep the watchdog falsely healthy.
             start_native_runtime_monitor(app.handle().clone());
             Ok(())
         })
