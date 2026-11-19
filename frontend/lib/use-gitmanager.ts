@@ -211,12 +211,19 @@ export function useGitManager() {
 		const saved = await invoke<AppPreferences>("save_app_preferences", {
 			preferences: { ...next, firstRunComplete: true },
 		});
+		const inAppEnabled = saved.inAppNotificationsEnabled !== false;
+		inAppNotificationsEnabledRef.current = inAppEnabled;
 		setPreferences(saved);
+		if (inAppEnabled) {
+			await refreshNotifications();
+		} else {
+			setNotifications([]);
+		}
 		setSetupOpen(false);
 		setStatus("Preferences saved");
 		await performScan(saved);
 		return saved;
-	}, [performScan]);
+	}, [performScan, refreshNotifications]);
 
 	const checkUpdates = useCallback(async (): Promise<void> => {
 		setStatus("Queuing remote check in GitManager Core Service…");
