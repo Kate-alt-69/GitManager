@@ -201,7 +201,8 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
         self.assertIn('environment["GITMANAGER_APP_SOURCE"] = str(', source)
         self.assertIn('str(mpdev), "build", str(manifest)', source)
-        self.assertIn('env=environment, check=False', source)
+        self.assertIn('cwd=project_root, env=environment', source)
+        self.assertIn('work=f"Build Microsoft Store {platform_name} MSIX"', source)
 
     def test_windows_installer_preflights_mpdev_and_nsis_before_compiling(self):
         source = (ROOT / "build.py").read_text(encoding="utf-8")
@@ -399,6 +400,12 @@ class BuildProgressReportingTests(unittest.TestCase):
     def setUp(self):
         BUILD._LAST_NONINTERACTIVE_PROGRESS.clear()
 
+    def test_mpdev_free_offline_rejection_is_classified_only_for_mpdev(self):
+        message = 'mpdev: error: Offline mode is only supported with "Enterprise" license.'
+        self.assertTrue(BUILD.is_mpdev_offline_mode_error(["C:/Tools/mpdev.exe"], message))
+        self.assertFalse(BUILD.is_mpdev_offline_mode_error(["cargo"], message))
+        self.assertFalse(BUILD.is_mpdev_offline_mode_error(["mpdev.exe"], "network connection failed"))
+
     def test_work_indicator_includes_progress_and_status(self):
         output = io.StringIO()
         with patch("sys.stdout", output):
@@ -416,8 +423,8 @@ class BuildProgressReportingTests(unittest.TestCase):
             BUILD.log_work("CPython download", "100%", "DONE", "Downloaded archive.")
 
         rendered = output.getvalue()
-        self.assertEqual(rendered.count("\\r"), 4)
-        self.assertEqual(rendered.count("\\n"), 1)
+        self.assertEqual(rendered.count("\r"), 4)
+        self.assertEqual(rendered.count("\n"), 1)
         self.assertIn("[ CPython download ] [100%] [DONE]", rendered)
 
     def test_noninteractive_heartbeat_repeats_are_suppressed(self):
@@ -429,7 +436,7 @@ class BuildProgressReportingTests(unittest.TestCase):
             BUILD.log_work("Cargo build", "1/1", "DONE", "Finished.")
 
         rendered = output.getvalue()
-        self.assertEqual(rendered.count("\\n"), 2)
+        self.assertEqual(rendered.count("\n"), 2)
         self.assertNotIn("Still compiling", rendered)
         self.assertIn("[ Cargo build ] [1/1] [DONE]", rendered)
 
