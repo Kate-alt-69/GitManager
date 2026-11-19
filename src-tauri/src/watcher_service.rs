@@ -569,8 +569,18 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
     }
 
     if supervisor_managed {
+        let ownership = if crash_helper::service_control_lock_is_held() {
+            let owner = crash_helper::service_control_lock_owner_pid()
+                .map(|pid| format!("PID {pid}"))
+                .unwrap_or_else(|| "PID unavailable (service predates owner metadata)".to_string());
+            format!(
+                "The exclusive service lock is held by {owner}, but its authenticated status pipe is not completing responses. This indicates an existing service process, not a missing executable. crash_helper will not start a duplicate."
+            )
+        } else {
+            "No process currently owns the service lock; crash_helper can retry service startup.".to_string()
+        };
         let error = format!(
-            "crash_helper did not publish a ready GitManager core service within {} seconds.\n\n{}\n\nThe UI will not launch a duplicate service process.",
+            "GitManager core service did not become IPC-ready within {} seconds.\n\n{ownership}\n\n{}\n\nThe UI will not launch a duplicate service process.",
             startup_wait.as_secs(),
             service_startup_diagnostics(last_probe_error.as_deref()),
         );
