@@ -232,7 +232,7 @@ export function useGitManager() {
 		return saved;
 	}, [performScan, preferences, refreshNotifications]);
 
-	const checkUpdates = useCallback(async (): Promise<void> => {
+	const queueRemoteCheck = useCallback(async (): Promise<void> => {
 		setStatus("Queuing remote check in GitManager Core Service…");
 		try {
 			await invoke("check_repo_updates_now", {
@@ -461,7 +461,7 @@ export function useGitManager() {
 		awaitingInitialIndex: serviceReady && !indexReady,
 		version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, accountsLoading, loadAccounts, notifications, setupOpen, setSetupOpen,
-		status, error, setError, scan, retryService, savePreferences, checkUpdates, switchBranch, updateRepository, connectAccount,
+		status, error, setError, scan, retryService, savePreferences, queueRemoteCheck, switchBranch, updateRepository, connectAccount,
 		refreshNotifications, markNotificationRead, dismissNotification, markAllNotificationsRead,
 	};
 }
