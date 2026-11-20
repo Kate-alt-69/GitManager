@@ -290,6 +290,19 @@ fn remove_flatpak_gitm_cli() -> Result<(), String> {
         .map_err(|error| format!("Could not remove {}: {error}", path.display()))
 }
 
+fn scan_roots_match(left: &str, right: &str) -> bool {
+    #[cfg(windows)]
+    {
+        left.eq_ignore_ascii_case(right)
+    }
+    #[cfg(not(windows))]
+    {
+        // Unix paths are case-sensitive. Do not discard a distinct directory
+        // such as /home/user/Projects when /home/user/projects is also selected.
+        left == right
+    }
+}
+
 fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     if roots.len() > 32 {
         return Err("GitManager supports up to 32 scan roots.".to_string());
@@ -308,7 +321,7 @@ fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
         let canonical = fs::canonicalize(&path)
             .map_err(|error| format!("Could not resolve scan root {raw}: {error}"))?;
         let value = canonical.to_string_lossy().to_string();
-        if !normalized.iter().any(|existing: &String| existing.eq_ignore_ascii_case(&value)) {
+        if !normalized.iter().any(|existing: &String| scan_roots_match(existing, &value)) {
             normalized.push(value);
         }
     }
@@ -317,6 +330,28 @@ fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
         return Err("Add at least one directory to scan.".to_string());
     }
     Ok(normalized)
+}
+
+#[cfg(test)]
+mod scan_root_comparison_tests {
+    use super::scan_roots_match;
+
+    #[test]
+    fn identical_scan_roots_are_always_deduplicated() {
+        assert!(scan_roots_match("/workspace/Projects", "/workspace/Projects"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_scan_roots_are_compared_case_insensitively() {
+        assert!(scan_roots_match(r"C:\\Users\\Kate\\Projects", r"c:\\users\\kate\\projects"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_scan_roots_preserve_case_distinct_directories() {
+        assert!(!scan_roots_match("/home/kate/Projects", "/home/kate/projects"));
+    }
 }
 
 #[tauri::command]
