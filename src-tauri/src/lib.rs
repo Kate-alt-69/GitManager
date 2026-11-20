@@ -344,7 +344,7 @@ mod scan_root_comparison_tests {
     #[cfg(windows)]
     #[test]
     fn windows_scan_roots_are_compared_case_insensitively() {
-        assert!(scan_roots_match(r"C:\\Users\\Kate\\Projects", r"c:\\users\\kate\\projects"));
+        assert!(scan_roots_match(r"C:\Users\Kate\Projects", r"c:\users\kate\projects"));
     }
 
     #[cfg(not(windows))]
