@@ -334,7 +334,13 @@ function TopBar({
 											<p>{item.body}</p>
 										</div>
 										<div className="gm-notification-actions">
-											{item.repositoryPath && <button type="button" onClick={() => onOpenNotification(item)}>Open repository</button>}
+											{item.repositoryPath && <button
+								type="button"
+								onClick={() => {
+									setOpenPanel(null);
+									onOpenNotification(item);
+								}}
+							>Open repository</button>}
 											{!item.read && <button type="button" onClick={() => void onMarkNotificationRead(item.id)}>Mark read</button>}
 											<button type="button" onClick={() => void onDismissNotification(item.id)}>Dismiss</button>
 										</div>
