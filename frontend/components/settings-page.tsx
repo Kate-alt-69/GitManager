@@ -5,6 +5,17 @@ import { invoke, openDialog } from "../lib/tauri";
 import type { AppPreferences, ApplicationDirectories } from "../lib/types";
 import { Button, Field, Glyph, Switch } from "./shared-ui";
 
+function sameScanRootPath(left: string, right: string): boolean {
+	const leftPath = left.trim();
+	const rightPath = right.trim();
+	// Windows filesystem paths are case-insensitive; Unix paths are not.
+	// The Rust settings validator canonicalizes paths again before saving.
+	if (typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent)) {
+		return leftPath.toLowerCase() === rightPath.toLowerCase();
+	}
+	return leftPath === rightPath;
+}
+
 type SettingsTab = "general" | "cloud" | "about";
 
 export function SettingsPage({
@@ -97,7 +108,7 @@ export function SettingsPage({
 
 	function addRoot() {
 		const value = newRoot.trim();
-		if (!value || draft.scanRoots.some((root) => root.toLowerCase() === value.toLowerCase())) return;
+		if (!value || draft.scanRoots.some((root) => sameScanRootPath(root, value))) return;
 		patch({ scanRoots: [...draft.scanRoots, value] });
 		setNewRoot("");
 	}
@@ -107,7 +118,7 @@ export function SettingsPage({
 			const selected = await openDialog({ title: "Choose a repository scan folder", directory: true, multiple: false });
 			const path = Array.isArray(selected) ? selected[0] : selected;
 			if (path) {
-				patch({ scanRoots: draft.scanRoots.some((root) => root.toLowerCase() === path.toLowerCase()) ? draft.scanRoots : [...draft.scanRoots, path] });
+				patch({ scanRoots: draft.scanRoots.some((root) => sameScanRootPath(root, path)) ? draft.scanRoots : [...draft.scanRoots, path] });
 			}
 		} catch (cause) {
 			setMessage(cause instanceof Error ? cause.message : String(cause));
