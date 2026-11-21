@@ -11,7 +11,7 @@ The service supervisor is started before the UI supervisor. It launches `gitmana
 
 Optional sign-in registration (Task Scheduler on Windows, a systemd user unit on Linux, or a LaunchAgent on macOS) can start the service before the desktop opens. It shares the service's per-user single-instance lock; the service supervisor detects an already-running instance instead of starting a duplicate.
 
-**Expected Windows Task Manager entries:** one `gitmanager.exe`, two `crash_helper.exe` processes (UI supervisor and service supervisor), and one `gitmanager.service.exe`. The two helpers are intentional; they perform different jobs. Cloud Node keeps using its existing RBE Error Reporter; this feature does not duplicate it.
+**Expected Windows Task Manager entries:** two `crash_helper.exe` processes (UI supervisor and service supervisor) and one `gitmanager.service.exe`. A normal supervised desktop launch can also show two `gitmanager.exe` processes: the original launcher waiting for the UI supervisor, and the supervised Tauri UI child. The two helpers are intentional; they perform different jobs. Cloud Node keeps using its existing RBE Error Reporter; this feature does not duplicate it.
 
 ## UI health and recovery
 
