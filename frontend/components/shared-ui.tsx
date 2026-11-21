@@ -1,8 +1,85 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { GitRepository } from "../lib/types";
 
+export type ContextMenuAction = {
+	label: string;
+	onSelect: () => void;
+	disabled?: boolean;
+	danger?: boolean;
+};
+
+export function ContextMenu({
+	x,
+	y,
+	items,
+	onClose,
+}: {
+	x: number;
+	y: number;
+	items: ContextMenuAction[];
+	onClose: () => void;
+}) {
+	const menuRef = useRef<HTMLDivElement | null>(null);
+	const [position, setPosition] = useState({ left: x, top: y });
+
+	useEffect(() => {
+		const closeOnOutsidePointer = (event: PointerEvent) => {
+			if (event.target instanceof Node && !menuRef.current?.contains(event.target)) onClose();
+		};
+		const closeOnEscape = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				event.preventDefault();
+				onClose();
+			}
+		};
+		const closeOnViewportChange = () => onClose();
+		document.addEventListener("pointerdown", closeOnOutsidePointer);
+		document.addEventListener("keydown", closeOnEscape);
+		window.addEventListener("resize", closeOnViewportChange);
+		const frame = window.requestAnimationFrame(() => {
+			const bounds = menuRef.current?.getBoundingClientRect();
+			if (!bounds) return;
+			setPosition({
+				left: Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8)),
+				top: Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8)),
+			});
+			menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+		});
+		return () => {
+			window.cancelAnimationFrame(frame);
+			document.removeEventListener("pointerdown", closeOnOutsidePointer);
+			document.removeEventListener("keydown", closeOnEscape);
+			window.removeEventListener("resize", closeOnViewportChange);
+		};
+	}, [x, y, onClose]);
+
+	return (
+		<div
+			ref={menuRef}
+			className="gm-context-menu"
+			role="menu"
+			aria-label="Context actions"
+			style={{ left: position.left, top: position.top }}
+			onPointerDown={(event) => event.stopPropagation()}
+			onContextMenu={(event) => event.preventDefault()}
+		>
+			{items.map((item) => (
+				<button
+					key={item.label}
+					type="button"
+					role="menuitem"
+					className={item.danger ? "danger" : ""}
+					disabled={item.disabled}
+					onClick={() => { onClose(); item.onSelect(); }}
+				>
+					{item.label}
+				</button>
+			))}
+		</div>
+	);
+}
 export function Glyph({ children }: { children: string }) {
 	return <span className="gm-glyph" aria-hidden="true">{children}</span>;
 }
