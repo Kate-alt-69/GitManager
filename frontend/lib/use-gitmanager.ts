@@ -145,11 +145,15 @@ export function useGitManager() {
 		setStatus("Reloading saved workspace data…");
 
 		const readIndex = async () => {
-			const [generation, summary] = await Promise.all([
-				invoke<string>("get_repository_index_generation"),
-				invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" }),
-			]);
-			return { generation, summary };
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				const generationBefore = await invoke<string>("get_repository_index_generation");
+				const summary = await invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" });
+				const generationAfter = await invoke<string>("get_repository_index_generation");
+				if (generationBefore === generationAfter) {
+					return { generation: generationAfter, summary };
+				}
+			}
+			throw new Error("The repository index changed during refresh. Try again after indexing finishes.");
 		};
 
 		try {
@@ -168,6 +172,7 @@ export function useGitManager() {
 				? snapshot.summary.repositories.filter((repo) => repo.source_kind === "local_scan")
 				: [];
 			indexGeneration.current = snapshot.generation;
+			setServiceReady(true);
 			setRepositories(local);
 			setDependencies(snapshot.summary.dependency_repo_ids ?? []);
 			setScanTruncated(Boolean(snapshot.summary.scan_truncated));
