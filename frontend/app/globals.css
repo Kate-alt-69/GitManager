@@ -2189,3 +2189,49 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 		justify-content: flex-end;
 	}
 }
+
+/* Native-style right-click actions for repository and notification surfaces. */
+.gm-context-menu {
+	position: fixed;
+	z-index: 1200;
+	min-width: 196px;
+	max-width: min(260px, calc(100vw - 16px));
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 4px;
+	border: 1px solid #3a4653;
+	background: #111922;
+	box-shadow: 0 12px 32px rgba(0, 0, 0, .48);
+}
+.gm-context-menu button {
+	width: 100%;
+	min-height: 31px;
+	padding: 6px 9px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: #cbd8e5;
+	font-size: 10px;
+	font-weight: 550;
+	text-align: left;
+	cursor: pointer;
+}
+.gm-context-menu button:hover:not(:disabled),
+.gm-context-menu button:focus-visible {
+	border-color: #354a60;
+	background: #1c2b3a;
+	color: #f0f6fc;
+	outline: none;
+}
+.gm-context-menu button.danger {
+	color: #f0a19b;
+}
+.gm-context-menu button.danger:hover:not(:disabled) {
+	border-color: #684442;
+	background: #2a1b1c;
+	color: #ffc4bf;
+}
+.gm-context-menu button:disabled {
+	cursor: not-allowed;
+	opacity: .45;
+}
