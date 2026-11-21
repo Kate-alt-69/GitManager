@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import {
-	EngineBox,
-	EngineGrid,
-} from "@/engine";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { EngineBox, EngineGrid } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
+import { invoke, openDialog } from "../lib/tauri";
+import { Button, ContextMenu, EmptyState, Field, Glyph, ProviderMark, RepoAvatar, Switch } from "./shared-ui";
+import { parseInternalRoute, repositoryRouteForItem, repositorySubroute, routeLabel, sectionForRoute, sectionRoute } from "../lib/internal-routing";
+import type { RepositoryDestination } from "../lib/internal-routing";
+import type { AppPreferences, ArchiveSnapshot, AppNotification, BranchInfo, GitRepository } from "../lib/types";
 
 const BRAND_LOGO = "/image/git-managar-orange_default-white.png";
 const BRAND_RING = "/image/git-managar-orange-ring_default-white.png";
@@ -27,130 +30,37 @@ function LoadingLogo({ size = 76 }: { size?: number }) {
 		</span>
 	);
 }
-import { invoke, openDialog } from "../lib/tauri";
-import { RepositoryWorkspace } from "./repository-workspace";
-import type {
-	ApplicationDirectories,
-	AppPreferences,
-	ArchiveSnapshot,
-	BranchInfo,
-	ConnectedAccount,
-	GitRepository,
-	UpdateAlert,
-} from "../lib/types";
+
+const RepositoryDetail = dynamic(
+	() => import("./repository-detail").then((module) => module.RepositoryDetail),
+	{ ssr: false, loading: () => <div className="gm-workspace-loading">Loading repository details…</div> },
+);
+const AccountsPage = dynamic(
+	() => import("./accounts-page").then((module) => module.AccountsPage),
+	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Accounts…</div> },
+);
+const SettingsPage = dynamic(
+	() => import("./settings-page").then((module) => module.SettingsPage),
+	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Settings…</div> },
+);
+const ServiceManagerPage = dynamic(
+	() => import("./service-manager-page").then((module) => module.ServiceManagerPage),
+	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Service Manager…</div> },
+);
+const PerformancePage = dynamic(
+	() => import("./performance-page").then((module) => module.PerformancePage),
+	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Performance Center…</div> },
+);
+const CleanerPage = dynamic(
+	() => import("./cleaner-page").then((module) => module.CleanerPage),
+	{ ssr: false, loading: () => <div className="gm-page-chunk-loading">Loading Developer Cleaner…</div> },
+);
 
 type PageKey = "repositories" | "accounts" | "settings" | "cleaner";
 type RepoFilter = "all" | "remote" | "local";
 type RepoKind = "projects" | "dependencies" | "all";
-type SettingsTab = "general" | "cloud" | "about";
-type CleanerScope = "repository" | "system" | "remote";
 
-function Glyph({ children }: { children: string }) {
-	return <span className="gm-glyph" aria-hidden="true">{children}</span>;
-}
-
-function Button({
-	children,
-	onClick,
-	variant = "secondary",
-	disabled = false,
-	className = "",
-	type = "button",
-}: {
-	children: ReactNode;
-	onClick?: () => void;
-	variant?: "primary" | "secondary" | "ghost" | "danger";
-	disabled?: boolean;
-	className?: string;
-	type?: "button" | "submit";
-}) {
-	return (
-		<button
-			type={type}
-			className={`gm-button gm-button-${variant} ${className}`}
-			onClick={onClick}
-			disabled={disabled}
-		>
-			{children}
-		</button>
-	);
-}
-
-function Field({
-	label,
-	value,
-	onChange,
-	placeholder,
-	type = "text",
-}: {
-	label: string;
-	value: string | number;
-	onChange: (value: string) => void;
-	placeholder?: string;
-	type?: string;
-}) {
-	return (
-		<label className="gm-field">
-			<span>{label}</span>
-			<input
-				type={type}
-				value={value}
-				onChange={(event) => onChange(event.target.value)}
-				placeholder={placeholder}
-			/>
-		</label>
-	);
-}
-
-function Switch({
-	label,
-	checked,
-	onChange,
-	description,
-}: {
-	label: string;
-	checked: boolean;
-	onChange: (checked: boolean) => void;
-	description?: string;
-}) {
-	return (
-		<label className="gm-switch-row">
-			<span className="gm-switch-copy">
-				<strong>{label}</strong>
-				{description && <small>{description}</small>}
-			</span>
-			<input
-				type="checkbox"
-				checked={checked}
-				onChange={(event) => onChange(event.target.checked)}
-			/>
-			<span className="gm-switch-track" aria-hidden="true"><i /></span>
-		</label>
-	);
-}
-
-function ProviderMark({ provider }: { provider: string }) {
-	const value = provider.toLowerCase();
-	const label = value === "github" ? "GH" : value === "gitlab" ? "GL" : value === "local" ? "L" : "↗";
-	return <span className={`gm-provider-mark gm-provider-${value}`}>{label}</span>;
-}
-
-function RepoAvatar({ repo }: { repo: GitRepository }) {
-	const letter = (repo.name?.trim().charAt(0) || "R").toUpperCase();
-	let image = "";
-	try {
-		const url = new URL(repo.icon_url || "");
-		const allowed = ["github.com", "gitlab.com", "avatars.githubusercontent.com"];
-		if (url.protocol === "https:" && allowed.includes(url.hostname.toLowerCase())) image = url.href;
-	} catch {
-		image = "";
-	}
-	return (
-		<span className="gm-repo-avatar">
-			{image ? <img src={image} alt="" /> : <span>{letter}</span>}
-		</span>
-	);
-}
+const OVERVIEW_DESTINATION: RepositoryDestination = { kind: "overview" };
 
 function relativeDate(timestamp: number): string {
 	if (!timestamp) return "No commit date";
@@ -164,26 +74,7 @@ function relativeDate(timestamp: number): string {
 	return new Date(timestamp * 1000).toLocaleDateString();
 }
 
-function EmptyState({
-	icon,
-	title,
-	body,
-	action,
-}: {
-	icon: string;
-	title: string;
-	body: string;
-	action?: ReactNode;
-}) {
-	return (
-		<div className="gm-empty-state">
-			<div className="gm-empty-icon">{icon}</div>
-			<h3>{title}</h3>
-			<p>{body}</p>
-			{action}
-		</div>
-	);
-}
+
 
 function Sidebar({
 	page,
@@ -247,25 +138,98 @@ function Sidebar({
 }
 
 function TopBar({
-	page,
+	internalRoute,
 	version,
 	status,
 	query,
 	setQuery,
 	scanning,
+	serviceReady,
+	remoteCheckPending,
+	remoteCheckRunning,
+	serviceIndexing,
+	awaitingInitialIndex,
+	repositoryCount,
+	scanTruncated,
+	notifications,
+	inAppNotificationsEnabled,
+	onRefreshNotifications,
+	onMarkNotificationRead,
+	onMarkAllNotificationsRead,
+	reloadingData,
+	onReloadData,
+	onDismissNotification,
+	onOpenNotification,
 	onScan,
+	onRetryService,
 }: {
-	page: PageKey;
+	internalRoute: string;
 	version: string;
 	status: string;
 	query: string;
 	setQuery: (value: string) => void;
 	scanning: boolean;
+	serviceReady: boolean;
+	remoteCheckPending: boolean;
+	remoteCheckRunning: boolean;
+	serviceIndexing: boolean;
+	awaitingInitialIndex: boolean;
+	repositoryCount: number;
+	scanTruncated: boolean;
+	notifications: AppNotification[];
+	inAppNotificationsEnabled: boolean;
+	onRefreshNotifications: () => Promise<unknown>;
+	onMarkNotificationRead: (id: string) => Promise<void>;
+	onMarkAllNotificationsRead: () => Promise<number>;
+	reloadingData: boolean;
+	onReloadData: () => Promise<void>;
+	onDismissNotification: (id: string) => Promise<void>;
+	onOpenNotification: (item: AppNotification) => void;
 	onScan: () => void;
+	onRetryService: () => void;
 }) {
-	const label = page === "repositories" ? "Repositories"
-		: page === "accounts" ? "Accounts"
-		: page === "cleaner" ? "Developer Cleaner" : "Settings";
+	const [openPanel, setOpenPanel] = useState<"tasks" | "notifications" | null>(null);
+	const panelHostRef = useRef<HTMLDivElement | null>(null);
+	const [serviceLog, setServiceLog] = useState<string | null>(null);
+	const [serviceLogBusy, setServiceLogBusy] = useState(false);
+	const [notificationFilter, setNotificationFilter] = useState<"all" | "unread">("all");
+	const [notificationContextMenu, setNotificationContextMenu] = useState<{ x: number; y: number; item: AppNotification } | null>(null);
+	const unreadCount = inAppNotificationsEnabled ? notifications.filter((item) => !item.read).length : 0;
+	const visibleNotifications = useMemo(
+		() => notificationFilter === "unread" ? notifications.filter((item) => !item.read) : notifications,
+		[notificationFilter, notifications],
+	);
+	const currentRoute = parseInternalRoute(internalRoute);
+	const label = routeLabel(currentRoute);
+
+	useEffect(() => {
+		if (openPanel !== "notifications") setNotificationContextMenu(null);
+	}, [openPanel]);
+
+	useEffect(() => {
+		if (openPanel === "notifications" && inAppNotificationsEnabled) {
+			void onRefreshNotifications();
+		}
+	}, [openPanel, inAppNotificationsEnabled, onRefreshNotifications]);
+
+	useEffect(() => {
+		if (!openPanel) return;
+		const closeOnEscape = (event: KeyboardEvent) => {
+			if (event.key === "Escape") setOpenPanel(null);
+		};
+		const closeOnOutsidePointer = (event: PointerEvent) => {
+			if (event.target instanceof Node && !panelHostRef.current?.contains(event.target)) {
+				setOpenPanel(null);
+			}
+		};
+		document.addEventListener("keydown", closeOnEscape);
+		document.addEventListener("pointerdown", closeOnOutsidePointer);
+		return () => {
+			document.removeEventListener("keydown", closeOnEscape);
+			document.removeEventListener("pointerdown", closeOnOutsidePointer);
+		};
+	}, [openPanel]);
+
 	return (
 		<header className="gm-topbar">
 			<div className="gm-breadcrumb">
@@ -285,13 +249,162 @@ function TopBar({
 					<kbd>Ctrl K</kbd>
 				</label>
 				<span className="gm-version-pill">v{version}</span>
-				<Button onClick={onScan} disabled={scanning} variant="secondary" className="gm-top-scan">
+				<div className="gm-topbar-popover-host" ref={panelHostRef}>
+					<div className="gm-topbar-panel-triggers">
+						<button
+							type="button"
+							className={openPanel === "tasks" ? "gm-topbar-panel-trigger active" : "gm-topbar-panel-trigger"}
+							aria-expanded={openPanel === "tasks"}
+							aria-controls="gm-task-center-popover"
+							onClick={() => setOpenPanel((current) => current === "tasks" ? null : "tasks")}
+						>
+							<span aria-hidden="true">≡</span> Tasks
+							<span className={(scanning || serviceIndexing) ? "gm-panel-indicator busy" : serviceReady ? "gm-panel-indicator ready" : "gm-panel-indicator offline"} />
+						</button>
+						<button
+							type="button"
+							className={openPanel === "notifications" ? "gm-topbar-panel-trigger active" : "gm-topbar-panel-trigger"}
+							aria-expanded={openPanel === "notifications"}
+							aria-controls="gm-notifications-popover"
+							onClick={() => setOpenPanel((current) => current === "notifications" ? null : "notifications")}
+						>
+							<span aria-hidden="true">♢</span> Notifications
+							{unreadCount > 0 && <span className="gm-topbar-unread-count">{unreadCount > 99 ? "99+" : unreadCount}</span>}
+						</button>
+					</div>
+					{openPanel === "tasks" && (
+						<section id="gm-task-center-popover" className="gm-topbar-popover gm-task-center" role="dialog" aria-label="Task Center">
+							<div className="gm-popover-heading">
+								<div><strong>Task Center</strong><small>Background activity and service health</small></div>
+								<button type="button" onClick={() => setOpenPanel(null)} aria-label="Close Task Center">×</button>
+							</div>
+							<div className="gm-task-list">
+								<div className="gm-task-row">
+									<span className={serviceReady ? "gm-task-state ready" : "gm-task-state offline"} />
+									<div><strong>GitManager Core Service</strong><small>{serviceReady ? "Connected · required engine ready" : "Not connected · application features are unavailable"}</small></div>
+									<span className="gm-task-meta">{serviceReady ? "Ready" : "Offline"}</span>
+								</div>
+								<div className="gm-task-row">
+									<span className={(scanning || serviceIndexing) ? "gm-task-state busy" : awaitingInitialIndex ? "gm-task-state idle" : "gm-task-state ready"} />
+									<div><strong>Repository index</strong><small>{(scanning || serviceIndexing) ? "Discovering repositories in the service process…" : awaitingInitialIndex ? "Waiting for the service to publish its first repository snapshot…" : scanTruncated ? "Index ready · safety limit reached" : `${repositoryCount} repositories indexed`}</small></div>
+									<span className="gm-task-meta">{(scanning || serviceIndexing) ? "Running" : awaitingInitialIndex ? "Waiting" : "Ready"}</span>
+								</div>
+								<div className="gm-task-row">
+									<span className={remoteCheckRunning ? "gm-task-state busy" : remoteCheckPending ? "gm-task-state idle" : "gm-task-state ready"} />
+									<div><strong>Remote repository check</strong><small>{remoteCheckRunning ? "Checking remote branches and publishing notifications…" : remoteCheckPending ? "Queued in the core service…" : "No remote check is running"}</small></div>
+									<span className="gm-task-meta">{remoteCheckRunning ? "Running" : remoteCheckPending ? "Queued" : "Idle"}</span>
+								</div>
+								<div className="gm-task-row">
+									<span className="gm-task-state idle" />
+									<div><strong>Service status</strong><small>{status}</small></div>
+								</div>
+							</div>
+							{serviceLog !== null && <pre className="gm-service-log">{serviceLog || "No service log output yet."}</pre>}
+							<div className="gm-popover-actions">
+								<button type="button" onClick={() => void onReloadData()} disabled={reloadingData}>{reloadingData ? "Reloading data…" : "Reload saved data"}</button>
+								<button type="button" onClick={onScan} disabled={!serviceReady || scanning || serviceIndexing}>{scanning || serviceIndexing ? "Indexing…" : "Rebuild repository index"}</button>
+								<button type="button" disabled={serviceLogBusy} onClick={async () => {
+									if (serviceLog !== null) { setServiceLog(null); return; }
+									setServiceLogBusy(true);
+									try { setServiceLog(await invoke<string>("read_service_log_tail")); }
+									catch (cause) { setServiceLog(cause instanceof Error ? cause.message : String(cause)); }
+									finally { setServiceLogBusy(false); }
+								}}>{serviceLogBusy ? "Loading log…" : serviceLog !== null ? "Hide service log" : "View service log"}</button>
+								{!serviceReady && <button type="button" className="primary" onClick={onRetryService}>Start service</button>}
+							</div>
+						</section>
+					)}
+					{openPanel === "notifications" && (
+						<section id="gm-notifications-popover" className="gm-topbar-popover gm-notifications-panel" role="dialog" aria-label="Notifications">
+							<div className="gm-popover-heading">
+								<div><strong>Notifications</strong><small>{unreadCount} unread · {notifications.length} saved</small></div>
+								<button type="button" onClick={() => setOpenPanel(null)} aria-label="Close Notifications">×</button>
+							</div>
+							<div className="gm-notification-filters" role="tablist" aria-label="Notification filter">
+								<button type="button" role="tab" aria-selected={notificationFilter === "all"} className={notificationFilter === "all" ? "active" : ""} onClick={() => setNotificationFilter("all")}>
+									All <span>{notifications.length}</span>
+								</button>
+								<button type="button" role="tab" aria-selected={notificationFilter === "unread"} className={notificationFilter === "unread" ? "active" : ""} onClick={() => setNotificationFilter("unread")}>
+									Unread <span>{unreadCount}</span>
+								</button>
+							</div>
+							<div className="gm-notification-list">
+								{!inAppNotificationsEnabled ? (
+									<div className="gm-notification-empty"><strong>In-app notifications are disabled</strong><span>Enable them in Settings to show saved activity here. Operating system notifications remain independently configurable.</span></div>
+								) : visibleNotifications.length === 0 ? (
+									<div className="gm-notification-empty"><strong>{notificationFilter === "unread" ? "No unread notifications" : "You're all caught up"}</strong><span>{notificationFilter === "unread" ? "Everything has been read. Switch to All to review recent activity." : "Repository updates and GitManager activity will appear here."}</span></div>
+								) : visibleNotifications.map((item) => (
+									<article
+										className={item.read ? "gm-notification-item read" : "gm-notification-item unread"}
+										key={item.id}
+										onContextMenu={(event) => {
+											event.preventDefault();
+											setNotificationContextMenu({ x: event.clientX, y: event.clientY, item });
+										}}
+									>
+										<div className="gm-notification-copy">
+											<div className="gm-notification-title">
+												<strong>{item.title}</strong>
+												<time title={new Date(item.createdAtUnixMs).toLocaleString()}>{new Date(item.createdAtUnixMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+											</div>
+											<span className="gm-notification-kind">{item.kind.replace(/-/g, " ")}</span>
+											<p>{item.body}</p>
+										</div>
+										<div className="gm-notification-actions">
+											{item.repositoryPath && (
+											<button
+												type="button"
+												onClick={() => {
+													setOpenPanel(null);
+													onOpenNotification(item);
+												}}
+											>Open repository</button>
+										)}
+											{!item.read && <button type="button" onClick={() => void onMarkNotificationRead(item.id)}>Mark read</button>}
+											<button type="button" onClick={() => void onDismissNotification(item.id)}>Dismiss</button>
+										</div>
+									</article>
+								))}
+							</div>
+							<div className="gm-popover-actions gm-notification-footer">
+								<button type="button" onClick={() => void onMarkAllNotificationsRead()} disabled={!inAppNotificationsEnabled || unreadCount === 0}>Mark all read</button>
+								<button type="button" onClick={() => void onRefreshNotifications()} disabled={!inAppNotificationsEnabled}>Refresh</button>
+							</div>
+						</section>
+					)}
+					{notificationContextMenu && openPanel === "notifications" && (
+						<ContextMenu
+							x={notificationContextMenu.x}
+							y={notificationContextMenu.y}
+							onClose={() => setNotificationContextMenu(null)}
+							items={[
+								...(notificationContextMenu.item.repositoryPath ? [{
+									label: "Open repository",
+									onSelect: () => {
+										setOpenPanel(null);
+										onOpenNotification(notificationContextMenu.item);
+									},
+								}] : []),
+								...(!notificationContextMenu.item.read ? [{
+									label: "Mark as read",
+									onSelect: () => { void onMarkNotificationRead(notificationContextMenu.item.id); },
+								}] : []),
+								{
+									label: "Dismiss notification",
+									danger: true,
+									onSelect: () => { void onDismissNotification(notificationContextMenu.item.id); },
+								},
+							]}
+						/>
+					)}
+				</div>
+				<Button onClick={onScan} disabled={!serviceReady || scanning} variant="secondary" className="gm-top-scan">
 					<Glyph>↻</Glyph>{scanning ? "Scanning" : "Scan"}
 				</Button>
 			</div>
 			<div className="gm-topbar-status">
-				<span className="gm-status-dot" />
-				<span>{status}</span>
+				<span className={serviceReady ? "gm-status-dot" : "gm-status-dot offline"} />
+				<span>{serviceReady ? status : "Core service unavailable"}</span>
 			</div>
 		</header>
 	);
@@ -305,6 +418,8 @@ function RepositoryCard({
 	canSnapshot,
 	onSelect,
 	onSwitchBranch,
+	onReloadData,
+	onQueueRemoteCheck,
 }: {
 	repo: GitRepository;
 	selected: boolean;
@@ -313,6 +428,8 @@ function RepositoryCard({
 	canSnapshot: boolean;
 	onSelect: () => void;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
+	onReloadData: () => Promise<void>;
+	onQueueRemoteCheck: () => Promise<void>;
 }) {
 	const currentBranchTip = repo.branches?.find((branch) => branch.name === repo.current_branch && !branch.is_remote)?.target_oid;
 	const latest = (currentBranchTip && repo.commits?.find((commit) => commit.oid === currentBranchTip))
@@ -334,6 +451,7 @@ function RepositoryCard({
 	const [branchMessage, setBranchMessage] = useState("");
 	const [isSnapshotting, setIsSnapshotting] = useState(false);
 	const [feedback, setFeedback] = useState("");
+	const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
 	useEffect(() => {
 		setSelectedBranch(repo.current_branch || "HEAD");
@@ -413,7 +531,13 @@ function RepositoryCard({
 	}
 
 	return (
-		<article className={selected ? "gm-repo-card selected" : "gm-repo-card"}>
+		<article
+			className={selected ? "gm-repo-card selected" : "gm-repo-card"}
+			onContextMenu={(event) => {
+				event.preventDefault();
+				setContextMenu({ x: event.clientX, y: event.clientY });
+			}}
+		>
 			<header className="gm-repo-card-header">
 				<button className="gm-repo-open" onClick={onSelect} type="button">
 					<RepoAvatar repo={repo} />
@@ -525,266 +649,23 @@ function RepositoryCard({
 				</div>
 			</footer>
 			{feedback && <p className="gm-card-feedback" role="status" aria-live="polite">{feedback}</p>}
+			{contextMenu && (
+				<ContextMenu
+					x={contextMenu.x}
+					y={contextMenu.y}
+					onClose={() => setContextMenu(null)}
+					items={[
+						{ label: "Open repository", onSelect: onSelect },
+						{ label: "Reload saved data", onSelect: () => { void onReloadData(); } },
+						{ label: "Copy repository path", onSelect: () => { void handleCopy(repo.path, "Disk path"); } },
+						...(repo.has_remote ? [{ label: "Check remotes", onSelect: () => { void onQueueRemoteCheck(); } }] : []),
+						{ label: "Create local snapshot", onSelect: () => { void handleSnapshot(); }, disabled: !canSnapshot || isSnapshotting },
+					]}
+				/>
+			)}
 		</article>
 	);
 }
-function RepositoryDetail({
-	repo,
-	preferences,
-	onClose,
-	onOpenWebsite,
-	onRescan,
-	onRepositoryLoaded,
-	onPullCompleted,
-	onOpenCleaner,
-}: {
-	repo: GitRepository;
-	preferences: AppPreferences;
-	onClose: () => void;
-	onOpenWebsite: (url: string) => void;
-	onRescan: () => void;
-	onRepositoryLoaded: (repo: GitRepository) => void;
-	onPullCompleted: (repoPath: string) => void;
-	onOpenCleaner: () => void;
-}) {
-	const [archives, setArchives] = useState<ArchiveSnapshot[]>([]);
-	const [repositoryDetails, setRepositoryDetails] = useState<GitRepository | null>(repo.details_loaded ? repo : null);
-	const [detailsLoading, setDetailsLoading] = useState(!repo.details_loaded);
-	const [archiveRoot, setArchiveRoot] = useState(preferences.archiveRoot || "");
-	const [archiveStatus, setArchiveStatus] = useState("");
-	const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
-	const [commitDetail, setCommitDetail] = useState<unknown>(null);
-	const [busy, setBusy] = useState(false);
-
-	async function refreshArchives() {
-		if (!archiveRoot) {
-			try {
-				const root = await invoke<string>("get_default_archive_directory");
-				setArchiveRoot(root);
-				const rows = await invoke<ArchiveSnapshot[]>("list_repository_archives", {
-					repoPath: repo.path, kind: null, archiveRoot: root,
-				});
-				setArchives(rows ?? []);
-			} catch (error) {
-				setArchiveStatus(String(error));
-			}
-			return;
-		}
-		try {
-			const rows = await invoke<ArchiveSnapshot[]>("list_repository_archives", {
-				repoPath: repo.path, kind: null, archiveRoot,
-			});
-			setArchives(rows ?? []);
-		} catch (error) {
-			setArchiveStatus(String(error));
-		}
-	}
-
-	async function capture(kind: "local" | "remote") {
-		setBusy(true);
-		setArchiveStatus(`Capturing ${kind} archive…`);
-		try {
-			const result = await invoke<ArchiveSnapshot>("capture_repository_archive", {
-				repoPath: repo.path, kind, archiveRoot: archiveRoot || null,
-			});
-			setArchiveStatus(`Saved ${kind} restore point · ${result.fileCount} files`);
-			await refreshArchives();
-		} catch (error) {
-			setArchiveStatus(String(error));
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	async function restore(snapshot: ArchiveSnapshot) {
-		const accepted = window.confirm(
-			`Restore ${snapshot.kind} snapshot ${snapshot.id}? Existing destination files will be preserved first.`,
-		);
-		if (!accepted) return;
-		setBusy(true);
-		setArchiveStatus("Verifying and restoring snapshot…");
-		try {
-			await invoke("restore_repository_archive", {
-				repoPath: repo.path,
-				destinationPath: repo.path,
-				snapshotId: snapshot.id,
-				kind: snapshot.kind,
-				archiveRoot: archiveRoot || null,
-				confirmReplace: true,
-			});
-			setArchiveStatus("Restore completed. Refreshing repository state…");
-			onRescan();
-			await refreshArchives();
-		} catch (error) {
-			setArchiveStatus(String(error));
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	async function showCommit(oid: string) {
-		setSelectedCommit(oid);
-		setCommitDetail(null);
-		try {
-			const details = await invoke("get_commit_details", { repoPath: repo.path, oid });
-			setCommitDetail(details);
-		} catch (error) {
-			setCommitDetail({ error: String(error) });
-		}
-	}
-
-	useEffect(() => {
-		void refreshArchives();
-		// Repository path defines the archive index scope.
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [repo.path]);
-
-	useEffect(() => {
-		let active = true;
-		if (repo.details_loaded) {
-			setRepositoryDetails(repo);
-			setDetailsLoading(false);
-			onRepositoryLoaded(repo);
-			return () => { active = false; };
-		}
-		setRepositoryDetails(null);
-		setDetailsLoading(true);
-		void invoke<GitRepository>("inspect_repository", { repoPath: repo.path }).then((loaded) => {
-			if (active) {
-				setRepositoryDetails(loaded);
-				onRepositoryLoaded(loaded);
-			}
-		}).catch((error) => {
-			if (active) setArchiveStatus(`Could not load Git Tree details: ${String(error)}`);
-		}).finally(() => {
-			if (active) setDetailsLoading(false);
-		});
-		return () => { active = false; };
-	}, [repo.path, repo.details_loaded, onRepositoryLoaded]);
-
-	const displayRepo = repositoryDetails ?? repo;
-	const branches = (displayRepo.branches ?? []).filter((branch) => !branch.is_remote);
-	const commits = displayRepo.commits ?? [];
-
-	return (
-		<section className="gm-detail-view">
-			<div className="gm-detail-heading">
-				<div className="gm-detail-heading-main">
-					<button className="gm-back-link" onClick={onClose} type="button"><Glyph>‹</Glyph> All repositories</button>
-					<div className="gm-detail-title-row">
-						<RepoAvatar repo={repo} />
-						<div>
-							<div className="gm-eyebrow">{repo.primary_provider || "LOCAL"} REPOSITORY</div>
-							<h1>{repo.name}</h1>
-						</div>
-					</div>
-					<p className="gm-detail-path">{repo.path}</p>
-				</div>
-				<div className="gm-detail-actions">
-					{repo.web_url && <Button onClick={() => onOpenWebsite(repo.web_url!)}><Glyph>↗</Glyph> Open remote</Button>}
-					<Button variant="primary" onClick={onRescan}><Glyph>↻</Glyph> Refresh</Button>
-				</div>
-			</div>
-
-			<div className="gm-detail-stats">
-				<div><span>Current branch</span><strong><Glyph>⑂</Glyph>{displayRepo.current_branch}</strong></div>
-				<div><span>Commits indexed</span><strong>{displayRepo.total_commits_loaded}</strong></div>
-				<div><span>Working tree</span><strong>{displayRepo.dirty_files_count ? `${displayRepo.dirty_files_count} changed` : "Clean"}</strong></div>
-				<div><span>Remotes</span><strong>{displayRepo.remotes?.length ?? 0}</strong></div>
-			</div>
-
-			<RepositoryWorkspace
-				key={repo.path}
-				repo={displayRepo}
-				onRepositoryUpdated={onRepositoryLoaded}
-				onPullCompleted={onPullCompleted}
-				onOpenCleaner={onOpenCleaner}
-			/>
-
-			<div className="gm-detail-columns">
-				<div className="gm-panel gm-commit-panel">
-					<div className="gm-panel-heading">
-						<div><h2>Commit history</h2><p>Recent commits across local and remote branches.</p></div>
-						<span className="gm-count-chip">{commits.length} commits</span>
-					</div>
-					{detailsLoading ? <div className="gm-panel-empty">Loading Git Tree, branches and repository status…</div> : commits.length === 0 ? <div className="gm-panel-empty">No commits were found for this repository.</div> : (
-						<div className="gm-commit-list">
-							{commits.map((commit, index) => (
-								<button
-									key={commit.oid}
-									className={selectedCommit === commit.oid ? "gm-commit-row selected" : "gm-commit-row"}
-									onClick={() => void showCommit(commit.oid)}
-									type="button"
-								>
-									<span className={index === 0 ? "gm-commit-node head" : "gm-commit-node"} />
-									<span className="gm-commit-copy">
-										<strong>{commit.summary || commit.message.split("\n")[0]}</strong>
-										<small>{commit.author_name} · {relativeDate(commit.timestamp)}</small>
-										{commit.tags?.length > 0 && <span className="gm-commit-tags">{commit.tags.map((tag) => <i key={tag}>{tag}</i>)}</span>}
-									</span>
-									<code>{commit.short_oid}</code>
-								</button>
-							))}
-						</div>
-					)}
-					{selectedCommit && (
-						<div className="gm-commit-inspector">
-							<div className="gm-commit-inspector-heading">
-								<strong>Commit details</strong>
-								<button onClick={() => { setSelectedCommit(null); setCommitDetail(null); }} type="button">×</button>
-							</div>
-							<pre>{commitDetail ? JSON.stringify(commitDetail, null, 2) : "Loading commit details…"}</pre>
-						</div>
-					)}
-				</div>
-
-				<div className="gm-detail-side">
-					<div className="gm-panel">
-						<div className="gm-panel-heading"><div><h2>Branches</h2><p>Local branch references</p></div><span className="gm-count-chip">{branches.length}</span></div>
-						<div className="gm-branch-list">
-							{branches.slice(0, 12).map((branch) => (
-								<div className="gm-branch-row" key={branch.name}>
-									<Glyph>⑂</Glyph>
-									<strong>{branch.name}</strong>
-									{branch.is_head && <span className="gm-current-chip">Current</span>}
-									{branch.is_default && <span className="gm-default-chip">Default</span>}
-								</div>
-							))}
-							{branches.length === 0 && <p className="gm-muted-copy">No local branches reported.</p>}
-						</div>
-					</div>
-
-					<div className="gm-panel gm-archive-panel">
-						<div className="gm-panel-heading">
-							<div><h2>Restore points</h2><p>Verified snapshots for this repository.</p></div>
-							<Button onClick={() => void refreshArchives()} disabled={busy}><Glyph>↻</Glyph></Button>
-						</div>
-						<div className="gm-archive-actions">
-							<Button variant="primary" disabled={busy || preferences.archiveLocalEnabled === false} onClick={() => void capture("local")}>Save Local</Button>
-							<Button disabled={busy || !repo.has_remote || preferences.archiveRemoteEnabled === false} onClick={() => void capture("remote")}>Save Remote</Button>
-						</div>
-						{archiveStatus && <p className="gm-inline-status">{archiveStatus}</p>}
-						<div className="gm-snapshot-list">
-							{archives.length === 0 ? <p className="gm-muted-copy">No restore points yet. Capture a Local or Remote Archive to start.</p> :
-								archives.slice(0, 5).map((snapshot) => (
-									<div className="gm-snapshot-row" key={snapshot.id}>
-										<div>
-											<strong>{snapshot.kind === "remote" ? "Remote archive" : "Local archive"}</strong>
-											<small>{snapshot.capturedAt ? new Date(snapshot.capturedAt).toLocaleString() : snapshot.id}</small>
-											<small>{snapshot.fileCount} files · {Number(snapshot.storedBytes || 0).toLocaleString()} bytes</small>
-										</div>
-										<Button disabled={busy} variant="ghost" onClick={() => void restore(snapshot)}>Restore</Button>
-									</div>
-								))}
-						</div>
-						<small className="gm-archive-root">Archive folder: {archiveRoot || "Resolving…"}</small>
-					</div>
-				</div>
-			</div>
-		</section>
-	);
-}
-
 function RepositorySkeletons() {
 	return (
 		<div className="gm-skeleton-grid" aria-label="Loading repository data" aria-live="polite">
@@ -813,20 +694,24 @@ function RepositoryPage({
 	setKind,
 	scanning,
 	onScan,
-	onCheckUpdates,
-	updates,
+	onQueueRemoteCheck,
 	onSwitchBranch,
 	preferences,
 	onRescan,
 	onRepositoryLoaded,
-	onPullCompleted,
 	onOpenCleaner,
+	onReloadData,
+	reloadingData,
 	scanTruncated,
+	destination,
+	onNavigateDestination,
 }: {
 	repositories: GitRepository[];
 	dependencies: string[];
 	selectedRepo: GitRepository | null;
 	setSelectedRepo: (repo: GitRepository | null) => void;
+	destination: RepositoryDestination;
+	onNavigateDestination: (destination: RepositoryDestination) => void;
 	query: string;
 	setQuery: (value: string) => void;
 	filter: RepoFilter;
@@ -835,14 +720,14 @@ function RepositoryPage({
 	setKind: (value: RepoKind) => void;
 	scanning: boolean;
 	onScan: () => void;
-	onCheckUpdates: () => Promise<UpdateAlert[]>;
-	updates: UpdateAlert[];
+	onQueueRemoteCheck: () => Promise<void>;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
 	preferences: AppPreferences;
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
-	onPullCompleted: (repoPath: string) => void;
 	onOpenCleaner: () => void;
+	onReloadData: () => Promise<void>;
+	reloadingData: boolean;
 	scanTruncated: boolean;
 }) {
 	const dependencySet = useMemo(() => new Set(dependencies), [dependencies]);
@@ -861,11 +746,12 @@ function RepositoryPage({
 			<RepositoryDetail
 				repo={selectedRepo}
 				preferences={preferences}
+				destination={destination}
+				onNavigateDestination={onNavigateDestination}
 				onClose={() => setSelectedRepo(null)}
 				onOpenWebsite={(url) => { void invoke("open_external_url", { url }).catch((error) => window.alert(String(error))); }}
 				onRescan={onRescan}
 				onRepositoryLoaded={onRepositoryLoaded}
-				onPullCompleted={onPullCompleted}
 				onOpenCleaner={onOpenCleaner}
 			/>
 		);
@@ -880,7 +766,8 @@ function RepositoryPage({
 					<p>Find, inspect and maintain the Git projects on this machine.</p>
 				</div>
 				<div className="gm-page-heading-actions">
-					<Button onClick={onCheckUpdates}><Glyph>↻</Glyph> Check remotes</Button>
+					<Button onClick={() => void onReloadData()} disabled={reloadingData}><Glyph>↻</Glyph>{reloadingData ? "Reloading data…" : "Refresh data"}</Button>
+					<Button onClick={onQueueRemoteCheck}><Glyph>⇄</Glyph> Check remotes</Button>
 					<Button variant="primary" onClick={onScan} disabled={scanning}><Glyph>⌕</Glyph>{scanning ? "Scanning…" : "Scan workspace"}</Button>
 				</div>
 			</div>
@@ -895,26 +782,6 @@ function RepositoryPage({
 			</EngineGrid>
 
 			{scanTruncated && <div className="gm-scan-limit-banner">Discovery reached a safety limit. Narrow your scan folders or depth to inspect the remaining workspace.</div>}
-			{updates.length > 0 && (
-				<div className="gm-update-banner">
-					<div className="gm-update-banner-icon">↑</div>
-					<div className="gm-update-banner-copy">
-						<strong>{updates.length} remote update{updates.length === 1 ? "" : "s"} available</strong>
-						<span>Review each repository, choose how to protect local changes, and confirm every Pull.</span>
-					</div>
-					<div className="gm-update-list">
-						{updates.slice(0, 3).map((update) => (
-							<div key={update.repo_path}>
-								<span>{update.repo_name} · {update.commits_behind} behind</span>
-								<Button variant="primary" onClick={() => {
-									const target = repositories.find((item) => item.path === update.repo_path);
-									if (target) setSelectedRepo(target);
-								}}>Review Pull</Button>
-							</div>
-						))}
-					</div>
-				</div>
-			)}
 
 			<div className="gm-repo-toolbar">
 				<label className="gm-search-field">
@@ -960,644 +827,12 @@ function RepositoryPage({
 							canSnapshot={preferences.archiveLocalEnabled !== false}
 							onSelect={() => setSelectedRepo(repo)}
 							onSwitchBranch={onSwitchBranch}
+							onReloadData={onReloadData}
+							onQueueRemoteCheck={onQueueRemoteCheck}
 						/>
 					))}
 				</EngineGrid>
 			)}
-		</div>
-	);
-}
-
-function AccountsPage({
-	accounts,
-	onConnect,
-}: {
-	accounts: ConnectedAccount[];
-	onConnect: (provider: string, username: string, token: string) => Promise<unknown>;
-}) {
-	const [provider, setProvider] = useState("github");
-	const [username, setUsername] = useState("");
-	const [token, setToken] = useState("");
-	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState("");
-	const [message, setMessage] = useState("");
-	const [backgroundServiceBusy, setBackgroundServiceBusy] = useState(false);
-	const [backgroundServiceMessage, setBackgroundServiceMessage] = useState("");
-
-	async function connect() {
-		setBusy(true);
-		setError("");
-		setMessage("");
-		try {
-			const account = await onConnect(provider, username, token);
-			setToken("");
-			setMessage(`Connected ${(account as ConnectedAccount).account_login}.`);
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	const remoteRepositories = accounts.flatMap((account) => account.repositories ?? []);
-
-	return (
-		<div className="gm-page-content">
-			<div className="gm-page-heading">
-				<div><div className="gm-eyebrow">REMOTE PROVIDERS</div><h1>Accounts</h1><p>Connect provider identities to browse repositories outside your local scan roots.</p></div>
-			</div>
-			<div className="gm-account-layout">
-				<div className="gm-panel gm-connect-panel">
-					<div className="gm-panel-heading"><div><h2>Connect an account</h2><p>GitManager keeps provider credentials in the active app session.</p></div></div>
-					<div className="gm-form-grid">
-						<label className="gm-field">
-							<span>Provider</span>
-							<select value={provider} onChange={(event) => setProvider(event.target.value)}>
-								<option value="github">GitHub</option>
-								<option value="gitlab">GitLab</option>
-							</select>
-						</label>
-						<Field label="Username or organization" value={username} onChange={setUsername} placeholder={provider === "github" ? "Optional for GitHub CLI sign-in" : "Username or GitLab host"} />
-						<label className="gm-field gm-field-wide">
-							<span>Personal access token <em>Optional for GitHub CLI sign-in</em></span>
-							<input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Paste token for private repositories" autoComplete="off" />
-						</label>
-					</div>
-					{error && <div className="gm-inline-error">{error}</div>}
-					{message && <div className="gm-inline-success">{message}</div>}
-					<div className="gm-panel-actions">
-						<Button variant="primary" onClick={() => void connect()} disabled={busy}>{busy ? "Connecting…" : "Connect provider"}</Button>
-						{provider === "github" && <span className="gm-muted-copy">Leave both fields blank to use the active <code>gh auth login</code> session.</span>}
-					</div>
-				</div>
-				<div className="gm-panel gm-connected-panel">
-					<div className="gm-panel-heading"><div><h2>Connected identities</h2><p>Provider sessions available in this app.</p></div><span className="gm-count-chip">{accounts.length}</span></div>
-					{accounts.length === 0 ? (
-						<EmptyState icon="◎" title="No accounts connected" body="Connect GitHub or GitLab to browse remote repositories." />
-					) : accounts.map((account) => (
-						<div className="gm-account-row" key={account.provider + account.account_login}>
-							<ProviderMark provider={account.provider} />
-							<div className="gm-account-copy"><strong>{account.display_name || account.account_login}</strong><small>{account.account_login} · {account.provider}</small></div>
-							<span className="gm-connected-pill"><i /> Connected</span>
-							{account.repositories?.length > 0 && <span className="gm-count-chip">{account.repositories.length} repos</span>}
-						</div>
-					))}
-				</div>
-			</div>
-			<section className="gm-panel gm-connected-panel">
-				<div className="gm-panel-heading"><div><h2>Remote repositories</h2><p>Repositories returned by your connected provider identities.</p></div><span className="gm-count-chip">{remoteRepositories.length}</span></div>
-				{remoteRepositories.length === 0 ? <p className="gm-muted-copy" style={{ padding: "0 15px" }}>Connect a provider account to load its remote repository list.</p> : remoteRepositories.map((repo) => (
-					<button className="gm-account-row gm-remote-repo-row" type="button" key={repo.id} onClick={() => repo.web_url && void invoke("open_external_url", { url: repo.web_url }).catch((error) => window.alert(String(error)))}>
-						<RepoAvatar repo={repo} />
-						<div className="gm-account-copy"><strong>{repo.owner_name ? repo.owner_name + "/" : ""}{repo.name}</strong><small>{repo.current_branch || "default branch"} · {repo.primary_provider || "remote"}</small></div>
-						<span className="gm-connected-pill">↗ Open</span>
-					</button>
-				))}
-			</section>
-		</div>
-	);
-}
-
-function SettingsPage({
-	preferences,
-	directories,
-	onSave,
-	onScan,
-	onOpenCleaner,
-}: {
-	preferences: AppPreferences;
-	directories: ApplicationDirectories | null;
-	onSave: (next: AppPreferences) => Promise<unknown>;
-	onScan: () => void;
-	onOpenCleaner: () => void;
-}) {
-	const [tab, setTab] = useState<SettingsTab>("general");
-	const [draft, setDraft] = useState(preferences);
-	useEffect(() => setDraft(preferences), [preferences]);
-	const [newRoot, setNewRoot] = useState("");
-	const [saving, setSaving] = useState(false);
-	const [message, setMessage] = useState("");
-	const [cloudJson, setCloudJson] = useState("");
-	const [cloudInfo, setCloudInfo] = useState<Record<string, unknown> | null>(null);
-	const [cloudStatus, setCloudStatus] = useState("");
-	const [cloudNodeAddress, setCloudNodeAddress] = useState(preferences.cloudNodeAddress || "");
-	const [cloudBusy, setCloudBusy] = useState(false);
-	const [certificates, setCertificates] = useState<Array<{ thumbprint: string; subject: string; notAfter: string }>>([]);
-	const [selectedThumbprint, setSelectedThumbprint] = useState("");
-	const [installerPath, setInstallerPath] = useState("");
-	const [signingStatus, setSigningStatus] = useState("Windows Authenticode signing is available when a valid CurrentUser Code Signing certificate is installed.");
-	const [signingBusy, setSigningBusy] = useState(false);
-	const [flatpakCli, setFlatpakCli] = useState<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>({ isFlatpak: false, installed: false, wrapperPath: null });
-	const [flatpakCliBusy, setFlatpakCliBusy] = useState(false);
-	const [flatpakCliMessage, setFlatpakCliMessage] = useState("");
-
-	async function refreshFlatpakCli() {
-		try {
-			const status = await invoke<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>("get_flatpak_cli_integration_status");
-			setFlatpakCli(status);
-		} catch {
-			setFlatpakCli({ isFlatpak: false, installed: false, wrapperPath: null });
-		}
-	}
-
-	useEffect(() => {
-		let active = true;
-		void invoke<{ isFlatpak: boolean; installed: boolean; wrapperPath: string | null }>("get_flatpak_cli_integration_status")
-			.then((status) => { if (active) setFlatpakCli(status); })
-			.catch(() => undefined);
-		return () => { active = false; };
-	}, []);
-
-	async function installFlatpakCli() {
-		setFlatpakCliBusy(true);
-		setFlatpakCliMessage("");
-		try {
-			const path = await invoke<string>("install_flatpak_gitm_cli");
-			await refreshFlatpakCli();
-			setFlatpakCliMessage("The gitm terminal command was installed at " + path + ". Make sure ~/.local/bin is in your PATH.");
-		} catch (cause) {
-			setFlatpakCliMessage(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setFlatpakCliBusy(false);
-		}
-	}
-
-	async function removeFlatpakCli() {
-		setFlatpakCliBusy(true);
-		setFlatpakCliMessage("");
-		try {
-			await invoke("remove_flatpak_gitm_cli");
-			await refreshFlatpakCli();
-			setFlatpakCliMessage("The GitManager-managed gitm wrapper was removed.");
-		} catch (cause) {
-			setFlatpakCliMessage(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setFlatpakCliBusy(false);
-		}
-	}
-
-	function patch(values: Partial<AppPreferences>) {
-		setDraft((current) => ({ ...current, ...values }));
-	}
-
-	function addRoot() {
-		const value = newRoot.trim();
-		if (!value || draft.scanRoots.some((root) => root.toLowerCase() === value.toLowerCase())) return;
-		patch({ scanRoots: [...draft.scanRoots, value] });
-		setNewRoot("");
-	}
-
-	async function chooseScanRoot() {
-		try {
-			const selected = await openDialog({ title: "Choose a repository scan folder", directory: true, multiple: false });
-			const path = Array.isArray(selected) ? selected[0] : selected;
-			if (path) {
-				patch({ scanRoots: draft.scanRoots.some((root) => root.toLowerCase() === path.toLowerCase()) ? draft.scanRoots : [...draft.scanRoots, path] });
-			}
-		} catch (cause) {
-			setMessage(cause instanceof Error ? cause.message : String(cause));
-		}
-	}
-
-	async function chooseArchiveRoot() {
-		try {
-			const selected = await openDialog({ title: "Choose an archive destination", directory: true, multiple: false });
-			const path = Array.isArray(selected) ? selected[0] : selected;
-			if (path) patch({ archiveRoot: path });
-		} catch (cause) {
-			setMessage(cause instanceof Error ? cause.message : String(cause));
-		}
-	}
-
-	async function refreshCertificates() {
-		setSigningBusy(true);
-		setSigningStatus("Reading CurrentUser Code Signing certificates…");
-		try {
-			const found = await invoke<Array<{ thumbprint: string; subject: string; notAfter: string }>>("list_windows_signing_certificates");
-			setCertificates(found ?? []);
-			setSelectedThumbprint(found?.[0]?.thumbprint ?? "");
-			setSigningStatus(found?.length
-				? found.length + " usable Code Signing certificate(s) found."
-				: "No valid Code Signing certificate with a private key was found in CurrentUser\\My.");
-		} catch (cause) {
-			setCertificates([]);
-			setSelectedThumbprint("");
-			setSigningStatus(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setSigningBusy(false);
-		}
-	}
-
-	async function chooseInstaller() {
-		try {
-			const selected = await openDialog({
-				title: "Choose the GitManager Windows installer",
-				directory: false,
-				multiple: false,
-				filters: [{ name: "Windows installer", extensions: ["exe", "msi"] }],
-			});
-			const path = Array.isArray(selected) ? selected[0] : selected;
-			if (path) setInstallerPath(path);
-		} catch (cause) {
-			setSigningStatus(cause instanceof Error ? cause.message : String(cause));
-		}
-	}
-
-	async function signInstaller() {
-		if (!selectedThumbprint || !installerPath.trim()) {
-			setSigningStatus("Choose a certificate and Windows .exe or .msi installer first.");
-			return;
-		}
-		setSigningBusy(true);
-		setSigningStatus("Creating a SHA-256 Authenticode signature and timestamp…");
-		try {
-			const result = await invoke<{ chainTrusted?: boolean }>("sign_windows_installer", {
-				installerPath: installerPath.trim(),
-				thumbprint: selectedThumbprint,
-			});
-			setSigningStatus(result.chainTrusted
-				? "Signature created and trust chain verified. SmartScreen reputation may still build over time."
-				: "Signature created, but Windows could not verify the trust chain. This may be a self-signed or untrusted certificate.");
-		} catch (cause) {
-			setSigningStatus("Signing failed: " + (cause instanceof Error ? cause.message : String(cause)));
-		} finally {
-			setSigningBusy(false);
-		}
-	}
-
-	async function enableBackgroundService() {
-		setBackgroundServiceBusy(true);
-		setBackgroundServiceMessage("");
-		try {
-			await invoke("control_background_service", { enableInApp: true, installOsService: true });
-			setBackgroundServiceMessage(
-				"Background worker registered and started for this user. On Windows, open Task Scheduler → Task Scheduler Library and look for 'GitManager Background Service'. The running process appears as git-manager-service.exe in Task Manager → Details."
-			);
-		} catch (cause) {
-			setBackgroundServiceMessage(
-				"Could not register or start the background worker: " +
-				(cause instanceof Error ? cause.message : String(cause))
-			);
-		} finally {
-			setBackgroundServiceBusy(false);
-		}
-	}
-
-	async function save() {
-		setSaving(true);
-		setMessage("");
-		try {
-			await onSave(draft);
-			setMessage("Settings saved. Repository indexing has been refreshed.");
-			setDraft({ ...draft, firstRunComplete: true });
-		} catch (cause) {
-			setMessage(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setSaving(false);
-		}
-	}
-
-	async function refreshCloud() {
-		setCloudBusy(true);
-		try {
-			const root = draft.archiveRoot || await invoke<string>("get_default_archive_directory");
-			if (!draft.archiveRoot) patch({ archiveRoot: root });
-			const result = await invoke<Record<string, unknown>>("get_archive_cloud_storage_info", { archiveRoot: root });
-			setCloudInfo(result);
-			setCloudStatus(result.configured ? `Connected · ${String(result.provider || "provider")}` : "No cloud provider configured. Local archives continue to work.");
-		} catch (cause) {
-			setCloudStatus(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setCloudBusy(false);
-		}
-	}
-
-	async function configureCloud() {
-		setCloudBusy(true);
-		try {
-			const result = await invoke<Record<string, unknown>>("configure_archive_cloud_storage", {
-				archiveRoot: draft.archiveRoot,
-				providerJson: cloudJson,
-			});
-			setCloudInfo(result);
-			setCloudStatus("Cloud provider configuration saved.");
-		} catch (cause) {
-			setCloudStatus(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setCloudBusy(false);
-		}
-	}
-
-	async function disableCloud() {
-		if (!window.confirm("Disable cloud synchronization? Existing provider objects will not be deleted.")) return;
-		setCloudBusy(true);
-		try {
-			const result = await invoke<Record<string, unknown>>("disable_archive_cloud_storage", { archiveRoot: draft.archiveRoot });
-			setCloudInfo(result);
-			setCloudStatus("Cloud synchronization disabled.");
-		} catch (cause) {
-			setCloudStatus(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setCloudBusy(false);
-		}
-	}
-
-	async function syncCloud() {
-		setCloudBusy(true);
-		try {
-			const result = await invoke<string>("sync_archive_cloud_storage", { archiveRoot: draft.archiveRoot });
-			setCloudStatus(`Synchronization completed · ${result}`);
-		} catch (cause) {
-			setCloudStatus(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setCloudBusy(false);
-		}
-	}
-
-	async function checkNode() {
-		setCloudBusy(true);
-		try {
-			const result = await invoke<{ address: string; reachable: boolean; message: string }>("check_rbe_node_status", { address: cloudNodeAddress });
-			const saved = await invoke<string>("save_cloud_node_address", { address: result.address || cloudNodeAddress });
-			setCloudNodeAddress(saved);
-			patch({ cloudNodeAddress: saved });
-			setCloudStatus(result.message || (result.reachable ? "NAS backend reachable." : "NAS backend not confirmed reachable."));
-		} catch (cause) {
-			setCloudStatus(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setCloudBusy(false);
-		}
-	}
-
-	return (
-		<div className="gm-page-content">
-			<div className="gm-page-heading">
-				<div><div className="gm-eyebrow">PREFERENCES & MAINTENANCE</div><h1>Settings</h1><p>Configure scanning, archive behaviour, cloud storage and application locations.</p></div>
-				<Button variant="primary" onClick={() => void save()} disabled={saving}>{saving ? "Saving…" : "Save changes"}</Button>
-			</div>
-			<div className="gm-settings-tabs">
-				{([
-					["general", "General"],
-					["cloud", "Cloud storage"],
-					["about", "About"],
-				] as [SettingsTab, string][]).map(([value, label]) => (
-					<button key={value} className={tab === value ? "active" : ""} onClick={() => setTab(value)}>{label}</button>
-				))}
-			</div>
-
-			{tab === "general" && (
-				<div className="gm-settings-grid">
-					{flatpakCli.isFlatpak && (
-						<section className="gm-panel gm-settings-card">
-							<div className="gm-panel-heading"><div><h2>Terminal integration</h2><p>Optionally expose GitManager's bundled gitm command to your Linux terminal.</p></div><span className="gm-panel-icon">⌘</span></div>
-							<p className="gm-muted-copy">GitManager creates or removes only its own ~/.local/bin/gitm wrapper. It never edits .bashrc, .zshrc or your shell PATH. Ensure ~/.local/bin is already on your PATH.</p>
-							{flatpakCli.wrapperPath && <p className="gm-muted-copy">Wrapper: {flatpakCli.wrapperPath}</p>}
-							<div className="gm-add-root">
-								<Button variant="primary" onClick={() => void installFlatpakCli()} disabled={flatpakCliBusy}>{flatpakCliBusy ? "Working…" : flatpakCli.installed ? "Refresh gitm command" : "Install gitm command"}</Button>
-								{flatpakCli.installed && <Button variant="danger" onClick={() => void removeFlatpakCli()} disabled={flatpakCliBusy}>Remove wrapper</Button>}
-							</div>
-							{flatpakCliMessage && <p className="gm-muted-copy" role="status">{flatpakCliMessage}</p>}
-						</section>
-					)}
-					<section className="gm-panel gm-settings-card">
-						<div className="gm-panel-heading"><div><h2>Repository discovery</h2><p>Choose which directories GitManager scans for local repositories.</p></div><span className="gm-panel-icon">⌕</span></div>
-						<div className="gm-root-list">
-							{draft.scanRoots.map((root) => (
-								<div className="gm-root-row" key={root}><Glyph>▰</Glyph><span title={root}>{root}</span><button onClick={() => patch({ scanRoots: draft.scanRoots.filter((item) => item !== root) })} aria-label={`Remove ${root}`}>×</button></div>
-							))}
-							{draft.scanRoots.length === 0 && <p className="gm-muted-copy">No scan folders configured. Add a directory below.</p>}
-						</div>
-						<div className="gm-add-root">
-							<input value={newRoot} onChange={(event) => setNewRoot(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addRoot(); }} placeholder="C:\\Users\\you\\Projects or /home/you/projects" />
-							<Button onClick={addRoot}>Add path</Button>
-							<Button onClick={() => void chooseScanRoot()}>Browse…</Button>
-						</div>
-						<div className="gm-form-grid">
-							<Field label="Maximum scan depth" value={draft.maxScanDepth} onChange={(value) => patch({ maxScanDepth: Math.min(16, Math.max(2, Number(value) || 8)) })} type="number" />
-						</div>
-						<Switch label="Include hidden directories" checked={draft.includeHiddenDirs} onChange={(value) => patch({ includeHiddenDirs: value })} description="Include folders such as .config or hidden workspaces." />
-						<Switch label="Index dependency repositories" checked={draft.indexDependencyRepositories} onChange={(value) => patch({ indexDependencyRepositories: value })} description="Only search node_modules, vendor and build folders when no regular repositories are found." />
-						<Switch label="Show dependency repositories" checked={draft.showDependencyRepositories} onChange={(value) => patch({ showDependencyRepositories: value })} description="Include nested dependencies in the default repository list." />
-						<div className="gm-panel-actions"><Button onClick={onScan}><Glyph>↻</Glyph> Scan now</Button></div>
-					</section>
-
-					<section className="gm-panel gm-settings-card">
-						<div className="gm-panel-heading"><div><h2>Automatic archives</h2><p>Control restore-point capture and retention through GitManager's archive engine.</p></div><span className="gm-panel-icon">▤</span></div>
-						<div className="gm-add-root">
-							<input aria-label="Archive folder" value={draft.archiveRoot} onChange={(event) => patch({ archiveRoot: event.target.value })} placeholder="Default application archive directory" />
-							<Button onClick={() => void chooseArchiveRoot()}>Browse…</Button>
-						</div>
-						<Switch label="Local archives" checked={draft.archiveLocalEnabled} onChange={(value) => patch({ archiveLocalEnabled: value })} description="Capture working-tree files, including uncommitted changes." />
-						<Switch label="Remote archives" checked={draft.archiveRemoteEnabled} onChange={(value) => patch({ archiveRemoteEnabled: value })} description="Capture a self-contained archive of Git refs and history." />
-						<label className="gm-field">
-							<span>Capture trigger</span>
-							<select value={draft.archiveTrigger} onChange={(event) => patch({ archiveTrigger: event.target.value })}>
-								<option value="manual">Manual only</option>
-								<option value="commit">After Git commits</option>
-								<option value="change">After filesystem changes settle</option>
-							</select>
-						</label>
-						<Field label="Quiet period (milliseconds)" value={draft.archiveQuietMs} onChange={(value) => patch({ archiveQuietMs: Math.min(60000, Math.max(250, Number(value) || 1500)) })} type="number" />
-						<div className="gm-panel-actions"><Button onClick={() => void save()} variant="primary" disabled={saving}>Save archive settings</Button></div>
-					</section>
-
-					<section className="gm-panel gm-settings-card">
-						<div className="gm-panel-heading"><div><h2>Background updates</h2><p>Check remote branches and register the per-user background worker.</p></div><span className="gm-panel-icon">↻</span></div>
-						<p className="gm-muted-copy">Updates use a safe fast-forward-only strategy. GitManager does not overwrite local commits or pull over a dirty working tree.</p>
-						<p className="gm-muted-copy">The worker is optional and starts only after you enable it. On Windows it runs as your user through Task Scheduler—not as a Windows Service—so it will not appear in Services.msc. The separate git-manager-service.exe process is visible in Task Manager only while the scheduled task is running.</p>
-						<div className="gm-panel-actions">
-							<Button onClick={() => void invoke("check_repo_updates_now", { rootPaths: draft.scanRoots })}>Check remotes</Button>
-							<Button variant="primary" onClick={() => void enableBackgroundService()} disabled={backgroundServiceBusy}>{backgroundServiceBusy ? "Registering…" : "Enable background service"}</Button>
-						</div>
-						{backgroundServiceMessage && <p className="gm-muted-copy" role="status">{backgroundServiceMessage}</p>}
-					</section>
-
-					<section className="gm-panel gm-settings-card">
-						<div className="gm-panel-heading"><div><h2>Production signing</h2><p>Sign a Windows installer with a certificate installed for this Windows user.</p></div><span className="gm-panel-icon">✓</span></div>
-						<label className="gm-field">
-							<span>Code Signing certificate</span>
-							<select value={selectedThumbprint} onChange={(event) => setSelectedThumbprint(event.target.value)} disabled={signingBusy || certificates.length === 0}>
-								<option value="">Choose a certificate…</option>
-								{certificates.map((certificate) => <option key={certificate.thumbprint} value={certificate.thumbprint}>{certificate.subject} · expires {certificate.notAfter}</option>)}
-							</select>
-						</label>
-						<div className="gm-add-root">
-							<input value={installerPath} onChange={(event) => setInstallerPath(event.target.value)} placeholder="Choose a GitManager-Setup.exe or .msi installer…" />
-							<Button onClick={() => void chooseInstaller()} disabled={signingBusy}>Choose file…</Button>
-						</div>
-						<div className="gm-panel-actions">
-							<Button onClick={() => void refreshCertificates()} disabled={signingBusy}>Refresh certificates</Button>
-							<Button variant="primary" onClick={() => void signInstaller()} disabled={signingBusy || !selectedThumbprint || !installerPath.trim()}>Sign installer</Button>
-						</div>
-						<p className="gm-muted-copy" style={{ padding: "0 15px" }}>{signingStatus}</p>
-						<p className="gm-muted-copy" style={{ padding: "0 15px" }}>The signing operation runs in the native Rust backend. The certificate's private key never leaves the Windows Certificate Store.</p>
-					</section>
-
-					<section className="gm-panel gm-settings-card">
-						<div className="gm-panel-heading"><div><h2>Developer tools</h2><p>Preview generated files and developer caches before cleaning them.</p></div><span className="gm-panel-icon">⌁</span></div>
-						<p className="gm-muted-copy">Nothing is removed until you inspect a cleanup preview and explicitly confirm the action.</p>
-						<div className="gm-panel-actions"><Button onClick={onOpenCleaner}>Open Developer Cleaner</Button></div>
-					</section>
-				</div>
-			)}
-
-			{tab === "cloud" && (
-				<div className="gm-settings-grid">
-					<section className="gm-panel gm-settings-card">
-						<div className="gm-panel-heading"><div><h2>Object storage</h2><p>Configure an archive provider supported by the RBE Cloud Node storage engine.</p></div><span className="gm-panel-icon">☁</span></div>
-						<Field label="Archive folder" value={draft.archiveRoot} onChange={(value) => patch({ archiveRoot: value })} />
-						<label className="gm-field gm-field-wide">
-							<span>Provider configuration (JSON)</span>
-							<textarea
-								rows={9}
-								value={cloudJson}
-								onChange={(event) => setCloudJson(event.target.value)}
-								placeholder={'Paste a provider settings JSON document. Credentials should be supplied through environment variables, not embedded here.'}
-							/>
-						</label>
-						{cloudStatus && <div className="gm-inline-status">{cloudStatus}</div>}
-						<div className="gm-panel-actions">
-							<Button onClick={() => void refreshCloud()} disabled={cloudBusy}>Refresh status</Button>
-							<Button onClick={() => void syncCloud()} disabled={cloudBusy || !Boolean(cloudInfo?.configured)}>Sync now</Button>
-							<Button variant="primary" onClick={() => void configureCloud()} disabled={cloudBusy || !cloudJson.trim()}>Save provider</Button>
-							<Button variant="danger" onClick={() => void disableCloud()} disabled={cloudBusy || !Boolean(cloudInfo?.configured)}>Disable</Button>
-						</div>
-					</section>
-					<section className="gm-panel gm-settings-card">
-						<div className="gm-panel-heading"><div><h2>RBE Cloud Node</h2><p>Check the health endpoints on a NAS or another computer on your LAN.</p></div><span className="gm-panel-icon">⌂</span></div>
-						<Field label="NAS address" value={cloudNodeAddress} onChange={(value) => setCloudNodeAddress(value)} placeholder="192.168.1.20:8080" />
-						<p className="gm-muted-copy">This checks backend health and saves the address. It does not establish peer authentication or pairing.</p>
-						<div className="gm-panel-actions"><Button variant="primary" onClick={() => void checkNode()} disabled={cloudBusy}>Check NAS health</Button></div>
-						{cloudStatus && <div className="gm-inline-status">{cloudStatus}</div>}
-					</section>
-				</div>
-			)}
-
-			{tab === "about" && (
-				<div className="gm-panel gm-about-panel">
-					<div className="gm-about-mark">GM</div>
-					<h2>GitManager</h2>
-					<p>A native Git workspace manager powered by Rust, Tauri, React and Next.js Engine.</p>
-					<div className="gm-about-paths">
-						<div><span>Application install</span><code>{directories?.installDir || "Unavailable"}</code></div>
-						<div><span>Software root</span><code>{directories?.softwareRoot || "Unavailable"}</code></div>
-						<div><span>Configuration</span><code>{directories?.configDir || "Unavailable"}</code></div>
-						<div><span>Application data</span><code>{directories?.dataDir || "Unavailable"}</code></div>
-					</div>
-				</div>
-			)}
-			{message && <div className="gm-inline-status">{message}</div>}
-		</div>
-	);
-}
-
-function CleanerPage({ repositories, onRefresh, initialRepoPath }: { repositories: GitRepository[]; onRefresh: () => void; initialRepoPath?: string }) {
-	const [scope, setScope] = useState<CleanerScope>("repository");
-	const [repoPath, setRepoPath] = useState(initialRepoPath || repositories[0]?.path || "");
-	useEffect(() => { if (initialRepoPath) setRepoPath(initialRepoPath); }, [initialRepoPath]);
-	const [remoteUrl, setRemoteUrl] = useState("");
-	const [branch, setBranch] = useState("");
-	const [includeDependencies, setIncludeDependencies] = useState(false);
-	const [includeVirtualenvs, setIncludeVirtualenvs] = useState(false);
-	const [includeWindowsJunk, setIncludeWindowsJunk] = useState(false);
-	const [confirmation, setConfirmation] = useState("");
-	const [preview, setPreview] = useState<Record<string, unknown> | null>(null);
-	const [status, setStatus] = useState("");
-	const [busy, setBusy] = useState(false);
-
-	const args = {
-		scope,
-		repoPath: repoPath.trim() || null,
-		remoteUrl: remoteUrl.trim() || null,
-		branch: branch.trim() || null,
-		includeDependencies,
-		includeVirtualenvs,
-		includeWindowsJunk,
-	};
-
-	async function runPreview() {
-		setBusy(true);
-		setPreview(null);
-		setStatus("Building a safe cleanup plan…");
-		setConfirmation("");
-		try {
-			const result = await invoke<Record<string, unknown>>("cleaner_preview", args);
-			setPreview(result);
-			setStatus("Preview ready — nothing has been deleted.");
-		} catch (cause) {
-			setStatus(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	async function applyCleanup() {
-		if (!preview || Number(preview.candidate_count) < 1 || confirmation !== "YES") return;
-		if (!window.confirm("Delete only the paths listed in this cleanup preview?")) return;
-		setBusy(true);
-		setStatus("Applying cleanup…");
-		try {
-			const result = await invoke<Record<string, unknown>>("cleaner_apply", { ...args, confirmText: "YES" });
-			setPreview(result);
-			setStatus(result.pushed ? `Cleanup branch pushed: ${String(result.branch)}` : "Cleanup completed.");
-			if (scope === "repository") onRefresh();
-		} catch (cause) {
-			setStatus(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	const candidates = Array.isArray(preview?.candidates) ? preview.candidates as Record<string, unknown>[] : [];
-	return (
-		<div className="gm-page-content">
-			<div className="gm-page-heading">
-				<div><div className="gm-eyebrow">MAINTENANCE</div><h1>Developer Cleaner</h1><p>Review generated files and development caches before removing anything.</p></div>
-			</div>
-			<div className="gm-cleaner-layout">
-				<section className="gm-panel gm-settings-card">
-					<div className="gm-panel-heading"><div><h2>Cleanup scope</h2><p>Choose what should be inspected. Preview always runs before apply.</p></div></div>
-					<label className="gm-field"><span>Scope</span><select value={scope} onChange={(event) => { setScope(event.target.value as CleanerScope); setPreview(null); }}>
-						<option value="repository">Local repository</option>
-						<option value="system">Current user caches</option>
-						<option value="remote">Remote repository</option>
-					</select></label>
-					{scope === "repository" && <label className="gm-field"><span>Repository</span><select value={repoPath} onChange={(event) => setRepoPath(event.target.value)}>
-						{repositories.map((repo) => <option key={repo.id} value={repo.path}>{repo.name} — {repo.path}</option>)}
-					</select></label>}
-					{scope === "remote" && <>
-						<Field label="Remote URL" value={remoteUrl} onChange={setRemoteUrl} placeholder="https://github.com/owner/repository.git" />
-						<Field label="Branch (optional)" value={branch} onChange={setBranch} placeholder="Leave blank to use the remote default" />
-					</>}
-					<Switch label="Include dependency folders" checked={includeDependencies} onChange={setIncludeDependencies} description="Include package and build dependency directories." />
-					<Switch label="Include virtual environments" checked={includeVirtualenvs} onChange={setIncludeVirtualenvs} description="Include Python and other virtual environment folders." />
-					{scope === "system" && <Switch label="Include Windows junk files" checked={includeWindowsJunk} onChange={setIncludeWindowsJunk} />}
-					<div className="gm-panel-actions"><Button variant="primary" onClick={() => void runPreview()} disabled={busy || (scope === "repository" && !repoPath) || (scope === "remote" && !remoteUrl.trim())}>{busy ? "Scanning…" : "Preview cleanup"}</Button></div>
-				</section>
-				<section className="gm-panel gm-cleaner-results">
-					<div className="gm-panel-heading"><div><h2>Preview results</h2><p>Nothing is removed by the preview operation.</p></div></div>
-					{preview ? (
-						<>
-							<div className="gm-cleaner-summary">
-								<div><span>Candidates</span><strong>{String(preview.candidate_count ?? candidates.length)}</strong></div>
-								<div><span>Estimated space</span><strong>{String(preview.total_bytes ?? preview.freed_bytes_estimate ?? "—")}</strong></div>
-							</div>
-							<div className="gm-cleaner-candidates">
-								{candidates.slice(0, 50).map((item, index) => <div key={String(item.path ?? item.relative_path ?? index)}>
-									<div><strong>{String(item.label ?? item.category ?? "Cleanup item")}</strong><small>{String(item.relative_path ?? item.path ?? "")}</small></div>
-									<code>{String(item.size_bytes ?? "")} B</code>
-								</div>)}
-								{candidates.length === 0 && <p className="gm-muted-copy">No cleanup candidates found.</p>}
-							</div>
-							{Number(preview.candidate_count) > 0 && <>
-								<Field label="Type YES to confirm apply" value={confirmation} onChange={setConfirmation} placeholder="YES" />
-								<Button variant="danger" onClick={() => void applyCleanup()} disabled={busy || confirmation !== "YES"}>Apply reviewed cleanup</Button>
-							</>}
-						</>
-					) : <EmptyState icon="⌁" title="No preview yet" body="Choose a scope and run a preview. GitManager will show every candidate before an apply action is enabled." />}
-					{status && <div className="gm-inline-status">{status}</div>}
-				</section>
-			</div>
 		</div>
 	);
 }
@@ -1614,6 +849,7 @@ function SetupDialog({
 	const [draft, setDraft] = useState(preferences);
 	const [newRoot, setNewRoot] = useState("");
 	const [saving, setSaving] = useState(false);
+	const [startServiceAtSignIn, setStartServiceAtSignIn] = useState(true);
 	const [error, setError] = useState("");
 	function patch(values: Partial<AppPreferences>) {
 		setDraft((current) => ({ ...current, ...values }));
@@ -1640,6 +876,12 @@ function SetupDialog({
 		setSaving(true);
 		setError("");
 		try {
+			// The bootstrap setup companion owns OS integration. Register the
+			// per-user service task before closing the wizard so failures are
+			// visible and the user can retry or opt out.
+			if (startServiceAtSignIn) {
+				await invoke("control_background_service", { installOsService: true });
+			}
 			await onSave({ ...draft, firstRunComplete: true });
 			onClose();
 		} catch (cause) {
@@ -1676,6 +918,14 @@ function SetupDialog({
 						<Button onClick={() => void chooseSetupArchiveRoot()}>Browse…</Button>
 					</div>
 				</div>
+				<div className="gm-field">
+					<Switch
+						label="Start the GitManager core service when I sign in"
+						checked={startServiceAtSignIn}
+						onChange={setStartServiceAtSignIn}
+					/>
+					<p className="gm-muted-copy">Registers a per-user background task with Windows Task Scheduler, systemd, or LaunchAgents. GitManager can keep indexing and checking repositories before you open the desktop app.</p>
+				</div>
 				{error && <div className="gm-inline-error">{error}</div>}
 				<div className="gm-modal-actions">
 					{draft.firstRunComplete && <Button onClick={onClose}>Close</Button>}
@@ -1686,14 +936,79 @@ function SetupDialog({
 	);
 }
 
+const MemoRepositoryPage = memo(RepositoryPage);
+
 export function GitManagerApp() {
+	// This heartbeat runs on the WebView/React event loop. A separate Rust
+	// thread would keep reporting healthy even if the actual UI froze.
+	useEffect(() => {
+		let active = true;
+		const reportHeartbeat = () => {
+			if (active) void invoke("report_ui_heartbeat").catch(() => undefined);
+		};
+		reportHeartbeat();
+		const heartbeat = window.setInterval(reportHeartbeat, 3000);
+		return () => {
+			active = false;
+			window.clearInterval(heartbeat);
+		};
+	}, []);
+
 	const git = useGitManager();
-	const [page, setPage] = useState<PageKey>("repositories");
+	const [internalRoute, setInternalRoute] = useState("/r");
 	const [query, setQuery] = useState("");
 	const [filter, setFilter] = useState<RepoFilter>("all");
 	const [kind, setKind] = useState<RepoKind>("projects");
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const selectedRepo = git.repositories.find((repo) => repo.id === selectedId) ?? null;
+	const parsedInternalRoute = useMemo(() => parseInternalRoute(internalRoute), [internalRoute]);
+	const page: PageKey = sectionForRoute(parsedInternalRoute);
+	const currentDestination: RepositoryDestination = parsedInternalRoute.kind === "repository"
+		? parsedInternalRoute.destination
+		: OVERVIEW_DESTINATION;
+
+	const navigatePage = useCallback((next: PageKey) => {
+		if (next === "accounts") void git.loadAccounts().catch(() => undefined);
+		setSelectedId(null);
+		setInternalRoute(sectionRoute(next));
+	}, [git.loadAccounts]);
+
+	const selectRepository = useCallback((repo: GitRepository | null) => {
+		setSelectedId(repo?.id ?? null);
+		setInternalRoute(repo ? repositoryRouteForItem(repo) : "/r");
+	}, []);
+
+	const navigateRepositoryDestination = useCallback((destination: RepositoryDestination) => {
+		if (!selectedRepo) return;
+		const baseRoute = parseInternalRoute(repositoryRouteForItem(selectedRepo));
+		if (baseRoute.kind !== "repository") return;
+		setInternalRoute(repositorySubroute(baseRoute.owner, baseRoute.repository, destination));
+	}, [selectedRepo]);
+
+	const handleScan = useCallback(() => { void git.scan(); }, [git.scan]);
+	const handleRetryService = useCallback(() => { void git.retryService(); }, [git.retryService]);
+	const handleOpenCleaner = useCallback(() => navigatePage("cleaner"), [navigatePage]);
+	const openServiceManager = useCallback(() => setInternalRoute("/s/service"), []);
+	const openPerformanceCenter = useCallback(() => setInternalRoute("/s/performance"), []);
+
+	const openNotificationRepository = useCallback(async (item: AppNotification) => {
+		if (!item.repositoryPath) return;
+		let repository = git.repositories.find((candidate) => candidate.path === item.repositoryPath) ?? null;
+		if (!repository) {
+			const refreshed = await git.scan();
+			repository = refreshed.find((candidate) => candidate.path === item.repositoryPath) ?? null;
+		}
+		if (repository) {
+			navigatePage("repositories");
+			selectRepository(repository);
+		} else {
+			navigatePage("repositories");
+			git.setError("The repository from this notification is not currently in the saved index. Refresh its scan roots and try again.");
+		}
+		if (!item.read) await git.markNotificationRead(item.id).catch((cause) => {
+			git.setError(cause instanceof Error ? cause.message : String(cause));
+		});
+	}, [git.repositories, git.scan, git.markNotificationRead, git.setError, navigatePage, selectRepository]);
 
 	if (git.loading) {
 		return (
@@ -1715,29 +1030,48 @@ export function GitManagerApp() {
 		<EngineBox className="gm-app-shell">
 			<Sidebar
 				page={page}
-				setPage={setPage}
+				setPage={navigatePage}
 				repositoryCount={git.repositories.length}
 				accountCount={git.accounts.length}
 			/>
 			<div className="gm-main-column">
 				<TopBar
-					page={page}
+					internalRoute={internalRoute}
 					version={git.version}
 					status={git.status}
 					query={query}
 					setQuery={setQuery}
-					scanning={git.scanning}
-					onScan={() => void git.scan()}
+					scanning={git.scanning || git.awaitingInitialIndex}
+					serviceReady={git.serviceReady}
+					remoteCheckPending={git.remoteCheckPending}
+					remoteCheckRunning={git.remoteCheckRunning}
+					serviceIndexing={git.serviceIndexing}
+					awaitingInitialIndex={git.awaitingInitialIndex}
+					repositoryCount={git.repositories.length}
+					scanTruncated={git.scanTruncated}
+					notifications={git.notifications}
+					inAppNotificationsEnabled={git.preferences.inAppNotificationsEnabled !== false}
+					onRefreshNotifications={git.refreshNotifications}
+					onMarkNotificationRead={git.markNotificationRead}
+					onMarkAllNotificationsRead={git.markAllNotificationsRead}
+					reloadingData={git.reloadingData}
+					onReloadData={git.reloadData}
+					onDismissNotification={git.dismissNotification}
+					onOpenNotification={openNotificationRepository}
+					onScan={handleScan}
+					onRetryService={handleRetryService}
 				/>
 				<main className="gm-main">
 					{(git.loading || git.scanning) && <div className="gm-loading-bar"><i /></div>}
 					{git.error && <div className="gm-error-banner"><span>{git.error}</span><button onClick={() => git.setError("")}>Dismiss</button></div>}
 					{page === "repositories" && (
-						<RepositoryPage
+						<MemoRepositoryPage
 							repositories={git.repositories}
 							dependencies={git.dependencies}
 							selectedRepo={selectedRepo}
-							setSelectedRepo={(repo) => setSelectedId(repo?.id ?? null)}
+							setSelectedRepo={selectRepository}
+							destination={currentDestination}
+							onNavigateDestination={navigateRepositoryDestination}
 							query={query}
 							setQuery={setQuery}
 							filter={filter}
@@ -1745,29 +1079,41 @@ export function GitManagerApp() {
 							kind={kind}
 							setKind={setKind}
 							scanning={git.scanning}
+							onReloadData={git.reloadData}
+							reloadingData={git.reloadingData}
 							onScan={() => void git.scan()}
 							scanTruncated={git.scanTruncated}
-							onCheckUpdates={() => git.checkUpdates()}
-							updates={git.updates}
+							onQueueRemoteCheck={async () => { await git.queueRemoteCheck(); }}
 							onSwitchBranch={git.switchBranch}
 							preferences={git.preferences}
-							onRescan={() => void git.scan()}
+							onRescan={handleScan}
 							onRepositoryLoaded={git.updateRepository}
-							onPullCompleted={git.clearUpdate}
-							onOpenCleaner={() => setPage("cleaner")}
+							onOpenCleaner={handleOpenCleaner}
 						/>
 					)}
-					{page === "accounts" && <AccountsPage accounts={git.accounts} onConnect={git.connectAccount} />}
-					{page === "settings" && (
+					{page === "accounts" && <AccountsPage accounts={git.accounts} loading={git.accountsLoading} onConnect={git.connectAccount} />}
+					{parsedInternalRoute.kind === "service" && (
+						<ServiceManagerPage
+							serviceReady={git.serviceReady}
+							status={git.status}
+							onStart={handleRetryService}
+						/>
+					)}
+					{parsedInternalRoute.kind === "performance" && (
+						<PerformancePage serviceReady={git.serviceReady} scanning={git.scanning || git.serviceIndexing} />
+					)}
+					{page === "settings" && parsedInternalRoute.kind === "settings" && (
 						<SettingsPage
 							preferences={git.preferences}
 							directories={git.directories}
 							onSave={git.savePreferences}
 							onScan={() => void git.scan()}
-							onOpenCleaner={() => setPage("cleaner")}
+							onOpenCleaner={() => navigatePage("cleaner")}
+							onOpenService={openServiceManager}
+							onOpenPerformance={openPerformanceCenter}
 						/>
 					)}
-					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={() => void git.scan()} initialRepoPath={selectedRepo?.path} />}
+					{page === "cleaner" && <CleanerPage repositories={git.repositories} onRefresh={handleScan} initialRepoPath={selectedRepo?.path} />}
 				</main>
 				<footer className="gm-footer">
 					<span><i /> {git.available ? "Tauri runtime connected" : "Browser preview mode"}</span>

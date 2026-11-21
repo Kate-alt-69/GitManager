@@ -48,8 +48,11 @@ fn main() {
         if let Ok(current_exe) = std::env::current_exe() {
             match crash_helper::launch_supervisor(&current_exe, &arguments) {
                 Ok(true) => return,
-                Ok(false) if cfg!(debug_assertions) => {
-                    // Unbundled source checkouts remain runnable without sidecars.
+                Ok(false)
+                    if cfg!(debug_assertions) || crash_helper::supervisor_should_bypass() =>
+                {
+                    // Development checkouts and debugger-attached sessions run
+                    // the real UI in this process. Normal launches remain supervised.
                 }
                 Ok(false) => fail_closed(
                     "GitManager's crash_helper companion is missing. Reinstall GitManager or rebuild its sidecars.",

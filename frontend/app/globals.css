@@ -1256,3 +1256,982 @@ code, pre, kbd { font-family: "JetBrains Mono", Consolas, monospace; }
 		flex: 1;
 	}
 }
+
+/* Compact top-right Task Center and Notifications surfaces. */
+.gm-topbar-popover-host {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
+.gm-topbar-panel-triggers {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+.gm-topbar-panel-trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	min-height: 30px;
+	padding: 0 9px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: #aab6c3;
+	font-size: 10px;
+	font-weight: 600;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.gm-topbar-panel-trigger:hover,
+.gm-topbar-panel-trigger.active {
+	border-color: #354252;
+	background: #182330;
+	color: #e6edf3;
+}
+.gm-panel-indicator,
+.gm-task-state {
+	display: inline-block;
+	width: 7px;
+	height: 7px;
+	flex: 0 0 7px;
+	background: #687786;
+}
+.gm-panel-indicator.ready,
+.gm-task-state.ready {
+	background: #3fb950;
+}
+.gm-panel-indicator.busy,
+.gm-task-state.busy {
+	background: #d29922;
+	box-shadow: 0 0 0 3px rgba(210,153,34,.12);
+}
+.gm-panel-indicator.offline,
+.gm-task-state.offline {
+	background: #f85149;
+}
+.gm-task-state.idle {
+	background: #718096;
+}
+.gm-topbar-unread-count {
+	display: inline-grid;
+	min-width: 16px;
+	height: 16px;
+	place-items: center;
+	padding: 0 4px;
+	background: #9e3434;
+	color: #fff;
+	font-size: 9px;
+	font-variant-numeric: tabular-nums;
+}
+.gm-topbar-popover {
+	position: absolute;
+	z-index: 80;
+	top: calc(100% + 9px);
+	right: 0;
+	display: flex;
+	flex-direction: column;
+	width: min(420px, calc(100vw - 28px));
+	max-height: min(620px, calc(100vh - 94px));
+	overflow: hidden;
+	border: 1px solid #3a4654;
+	background: #121a24;
+	box-shadow: 0 18px 46px rgba(0,0,0,.56);
+}
+.gm-notifications-panel {
+	width: min(460px, calc(100vw - 28px));
+}
+.gm-popover-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 13px 14px;
+	border-bottom: 1px solid #303b48;
+	background: #192431;
+}
+.gm-popover-heading > div {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+.gm-popover-heading strong {
+	color: #e5edf5;
+	font-size: 12px;
+	font-weight: 700;
+}
+.gm-popover-heading small {
+	color: #8798a9;
+	font-size: 9px;
+}
+.gm-popover-heading > button {
+	width: 25px;
+	height: 25px;
+	border: 1px solid #354251;
+	background: #111922;
+	color: #9eacba;
+	font-size: 16px;
+	line-height: 1;
+	cursor: pointer;
+}
+.gm-popover-heading > button:hover {
+	border-color: #65788a;
+	color: #fff;
+}
+.gm-task-list,
+.gm-notification-list {
+	min-height: 0;
+	overflow: auto;
+	overscroll-behavior: contain;
+}
+.gm-task-row {
+	display: grid;
+	grid-template-columns: 9px minmax(0, 1fr) auto;
+	align-items: start;
+	gap: 10px;
+	padding: 12px 13px;
+	border-bottom: 1px solid #26323e;
+}
+.gm-task-row > .gm-task-state {
+	margin-top: 4px;
+}
+.gm-task-row > div {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	min-width: 0;
+}
+.gm-task-row strong {
+	color: #d9e3ed;
+	font-size: 10px;
+	font-weight: 650;
+}
+.gm-task-row small {
+	color: #8798a9;
+	font-size: 9px;
+	line-height: 1.45;
+	overflow-wrap: anywhere;
+}
+.gm-task-meta {
+	color: #9aaaba;
+	font: 9px "JetBrains Mono", Consolas, monospace;
+}
+.gm-popover-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 7px;
+	padding: 10px 12px;
+	border-top: 1px solid #303b48;
+	background: #101720;
+}
+.gm-popover-actions button {
+	min-height: 29px;
+	padding: 0 9px;
+	border: 1px solid #3a4857;
+	background: #1a2531;
+	color: #cbd8e5;
+	font-size: 9px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.gm-popover-actions button:hover:not(:disabled) {
+	border-color: #64819f;
+	background: #243445;
+}
+.gm-popover-actions button.primary {
+	border-color: #2ea043;
+	background: #238636;
+	color: #fff;
+}
+.gm-popover-actions button:disabled {
+	cursor: not-allowed;
+	opacity: .45;
+}
+.gm-notification-item {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px 13px;
+	border-bottom: 1px solid #293541;
+}
+.gm-notification-item.unread {
+	background: #162333;
+	box-shadow: inset 2px 0 #2f81f7;
+}
+.gm-notification-item.read {
+	background: #121a24;
+}
+.gm-notification-copy {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	min-width: 0;
+}
+.gm-notification-title {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+}
+.gm-notification-title strong {
+	color: #dce7f1;
+	font-size: 10px;
+	font-weight: 650;
+	line-height: 1.4;
+}
+.gm-notification-title time {
+	flex: 0 0 auto;
+	color: #77889a;
+	font: 8px "JetBrains Mono", Consolas, monospace;
+}
+.gm-notification-copy p {
+	margin: 0;
+	color: #9aabba;
+	font-size: 9px;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+.gm-notification-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+}
+.gm-notification-actions button {
+	padding: 3px 6px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: #8fb8e0;
+	font-size: 8px;
+	cursor: pointer;
+}
+.gm-notification-actions button:hover {
+	border-color: #34485e;
+	background: #1c2b3a;
+	color: #d7eaff;
+}
+.gm-notification-actions button:last-child {
+	color: #9b8c8a;
+}
+.gm-notification-actions button:last-child:hover {
+	border-color: #684442;
+	color: #ffaaa4;
+}
+.gm-notification-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 5px;
+	padding: 34px 20px;
+	text-align: center;
+}
+.gm-notification-empty strong {
+	color: #cbd8e5;
+	font-size: 11px;
+}
+.gm-notification-empty span {
+	max-width: 34ch;
+	color: #7e8e9f;
+	font-size: 9px;
+	line-height: 1.5;
+}
+.gm-topbar-status .gm-status-dot.offline {
+	background: #f85149;
+}
+
+@media (max-width: 920px) {
+	.gm-topbar-panel-trigger {
+		padding-inline: 6px;
+		font-size: 9px;
+	}
+	.gm-topbar-panel-trigger > span:first-child {
+		display: none;
+	}
+}
+@media (max-width: 660px) {
+	.gm-topbar {
+		flex-wrap: wrap;
+		gap: 7px;
+		padding-block: 8px;
+	}
+	.gm-topbar-actions {
+		width: 100%;
+		order: 2;
+		justify-content: flex-end;
+	}
+	.gm-topbar-status {
+		margin-left: auto;
+	}
+	.gm-global-search {
+		flex: 1 1 150px;
+		width: auto;
+	}
+	.gm-topbar-popover-host {
+		position: static;
+	}
+	.gm-topbar-popover {
+		top: calc(100% + 1px);
+		right: 10px;
+	}
+}
+
+/* Lightweight placeholders shown while route-specific feature chunks load. */
+.gm-page-chunk-loading {
+	display: flex;
+	min-height: 150px;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	border: 1px solid #303b48;
+	background: #111922;
+	color: #8fa0b2;
+	font-size: 10px;
+}
+.gm-workspace-loading {
+	display: grid;
+	min-height: clamp(320px, 45vh, 560px);
+	place-items: center;
+	border: 1px solid #303b48;
+	background: #101720;
+	color: #8fa0b2;
+	font-size: 10px;
+}
+.gm-service-log {
+	max-height: 220px;
+	overflow: auto;
+	margin: 0;
+	padding: 10px 12px;
+	border-top: 1px solid #303b48;
+	background: #0a1017;
+	color: #a9c4dd;
+	font: 9px/1.55 "JetBrains Mono", Consolas, monospace;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+/* Visual Studio-style workspace surfaces: square edges and compact spacing. */
+.gm-app-shell :where(*) {
+	border-radius: 0 !important;
+}
+
+.gm-app-shell :where(
+	.gm-status-dot,
+	.gm-online-dot,
+	.gm-panel-indicator,
+	.gm-task-state,
+	.gm-footer i,
+	.gm-connected-pill i,
+	.gm-commit-node,
+	.gm-dirty-meta i,
+	.gm-clean-meta i,
+	.gm-status-pending i
+) {
+	border-radius: 50% !important;
+}
+
+.gm-app-shell {
+	border-radius: 0 !important;
+}
+.gm-sidebar {
+	border-right: 1px solid #30363d;
+}
+.gm-nav-item,
+.gm-topbar-panel-trigger,
+.gm-quick-link,
+.gm-global-search,
+.gm-search-field,
+.gm-repo-toolbar,
+.gm-filter-group,
+.gm-filter-group button,
+.gm-topbar-popover,
+.gm-topbar-popover button,
+.gm-version-pill,
+.gm-button,
+.gm-card-action,
+.gm-workspace-mini,
+.gm-workspace-toolbar,
+.gm-workspace-source,
+.gm-workspace-source button,
+.gm-workspace-select,
+.gm-workspace-card,
+.gm-workspace-panel,
+.gm-workspace-actions,
+.gm-workspace-summary span,
+.gm-workspace-state,
+.gm-workspace-file,
+.gm-workspace-change,
+.gm-workspace-modal,
+.gm-panel,
+.gm-stat-card,
+.gm-repo-card,
+.gm-detail-stats,
+.gm-commit-inspector,
+.gm-modal,
+.gm-modal-actions,
+.gm-settings-card,
+.gm-settings-section,
+.gm-account-card,
+.gm-cleaner-card {
+	border-radius: 0 !important;
+}
+
+.gm-detail-view {
+	gap: 10px;
+}
+.gm-detail-heading {
+	padding-bottom: 9px;
+}
+.gm-detail-stats {
+	overflow: hidden;
+}
+.gm-detail-columns {
+	grid-template-columns: minmax(0, 1.4fr) minmax(250px, .8fr);
+	gap: 10px;
+}
+.gm-workspace-panel {
+	gap: 9px;
+	padding: 10px;
+}
+.gm-workspace-layout {
+	grid-template-columns: minmax(0, 1.35fr) minmax(250px, .85fr);
+	gap: 8px;
+}
+.gm-workspace-main {
+	gap: 8px;
+}
+.gm-workspace-card-heading {
+	min-height: 38px;
+	padding: 7px 9px;
+}
+.gm-workspace-change-list {
+	max-height: 205px;
+}
+.gm-workspace-file-list {
+	max-height: 255px;
+}
+.gm-workspace-preview {
+	top: 8px;
+}
+.gm-workspace-preview-text {
+	max-height: 420px;
+	min-height: 130px;
+	padding: 9px;
+}
+.gm-detail-columns .gm-panel {
+	min-width: 0;
+}
+.gm-commit-list {
+	max-height: 380px;
+	overflow: auto;
+}
+.gm-topbar {
+	gap: 8px;
+}
+.gm-topbar-actions {
+	gap: 7px;
+}
+.gm-topbar-panel-triggers {
+	gap: 3px;
+}
+.gm-topbar-panel-trigger {
+	min-height: 30px;
+	padding: 0 9px;
+	border: 1px solid #30363d;
+	background: #161b22;
+}
+.gm-topbar-panel-trigger.active {
+	border-color: #47749e;
+	background: #1b2d40;
+}
+.gm-topbar-popover {
+	border: 1px solid #3a4653;
+	box-shadow: 0 12px 32px rgba(0, 0, 0, .36);
+}
+.gm-nav-item {
+	min-height: 34px;
+	border-left: 2px solid transparent;
+}
+.gm-nav-item.active {
+	border-left-color: #58a6ff;
+	background: #1a2633;
+}
+@media (max-width: 940px) {
+	.gm-workspace-layout,
+	.gm-detail-columns {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.gm-workspace-preview {
+		position: static;
+	}
+}
+
+/* Repository subroutes use compact, square editor-style tabs and route status. */
+.gm-repository-route-nav {
+	display: flex;
+	align-items: stretch;
+	gap: 0;
+	min-width: 0;
+	overflow-x: auto;
+	border: 1px solid #30363d;
+	border-bottom: 1px solid #30363d;
+	background: #111820;
+}
+.gm-repository-route-nav button {
+	min-height: 34px;
+	flex: 0 0 auto;
+	padding: 0 13px;
+	border: 0;
+	border-right: 1px solid #30363d;
+	border-bottom: 2px solid transparent;
+	background: transparent;
+	color: #8b98a6;
+	font-size: 10px;
+	cursor: pointer;
+}
+.gm-repository-route-nav button:hover {
+	background: #1a2633;
+	color: #dbe6f0;
+}
+.gm-repository-route-nav button.active {
+	border-bottom-color: #58a6ff;
+	background: #172433;
+	color: #dbeafe;
+}
+.gm-route-notice {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px 14px;
+	padding: 10px 12px;
+	border: 1px solid #303f4e;
+	background: #111a24;
+	color: #a8b6c4;
+	font-size: 10px;
+	line-height: 1.5;
+}
+.gm-route-notice > strong {
+	flex: 0 0 auto;
+	color: #dbe6f0;
+	font-size: 10px;
+}
+.gm-route-notice > span {
+	flex: 1 1 260px;
+	min-width: 0;
+}
+.gm-route-notice .gm-button {
+	min-height: 27px;
+	flex: 0 0 auto;
+	padding: 0 9px;
+	font-size: 9px;
+}
+
+.gm-workspace-conflict-editor {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+.gm-workspace-conflict-editor-note {
+	padding: 8px 10px;
+	border-bottom: 1px solid #283542;
+	background: #111c27;
+	color: #91a6ba;
+	font-size: 8px;
+	line-height: 1.45;
+}
+.gm-workspace-conflict-textarea {
+	display: block;
+	width: 100%;
+	min-height: 240px;
+	max-height: 520px;
+	resize: vertical;
+	border: 0;
+	border-bottom: 1px solid #293542;
+	outline: 0;
+}
+.gm-workspace-conflict-textarea:focus {
+	box-shadow: inset 0 0 0 1px #477ca8;
+}
+.gm-workspace-conflict-textarea:disabled {
+	opacity: .6;
+}
+.gm-workspace-conflict-editor-actions {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 9px;
+	padding: 8px 10px;
+	background: #111821;
+}
+.gm-workspace-conflict-editor-actions span {
+	color: #788899;
+	font-size: 8px;
+}
+.gm-workspace-conflict-editor-actions .gm-button {
+	min-height: 27px;
+	padding: 0 9px;
+	font-size: 8px;
+}
+
+
+/* Compact, square filters for the repository commit browser. */
+.gm-commit-filters {
+	display: flex;
+	gap: 6px;
+	padding: 0 10px 8px;
+	min-width: 0;
+}
+.gm-commit-filters input,
+.gm-commit-filters select {
+	min-width: 0;
+	min-height: 30px;
+	padding: 6px 8px;
+	border: 1px solid #303d4c;
+	border-radius: 0;
+	background: #101720;
+	color: #c9d1d9;
+	font: inherit;
+	font-size: 10px;
+}
+.gm-commit-filters input {
+	flex: 1 1 200px;
+}
+.gm-commit-filters select {
+	flex: 0 1 180px;
+}
+.gm-commit-filters input:focus,
+.gm-commit-filters select:focus {
+	outline: 1px solid #388bfd;
+	outline-offset: 0;
+	border-color: #388bfd;
+}
+@media (max-width: 640px) {
+	.gm-commit-filters {
+		flex-direction: column;
+	}
+	.gm-commit-filters input,
+	.gm-commit-filters select {
+		width: 100%;
+	}
+}
+
+
+.gm-commit-more {
+	padding: 8px 10px 10px;
+	border-top: 1px solid #26323e;
+}
+.gm-commit-more button {
+	width: 100%;
+	min-height: 30px;
+	padding: 5px 9px;
+	border: 1px solid #354251;
+	border-radius: 0;
+	background: #151d27;
+	color: #c9d1d9;
+	font-size: 10px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.gm-commit-more button:hover:not(:disabled) {
+	border-color: #64819f;
+	background: #1b2a39;
+}
+.gm-commit-more button:disabled {
+	cursor: wait;
+	opacity: .6;
+}
+
+
+.gm-settings-diagnostics-nav {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+	margin-bottom: 14px;
+}
+.gm-settings-diagnostics-nav button {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 4px;
+	min-width: 0;
+	padding: 10px 12px;
+	border: 1px solid #303d4c;
+	border-radius: 0;
+	background: #111923;
+	color: #c9d1d9;
+	text-align: left;
+	cursor: pointer;
+}
+.gm-settings-diagnostics-nav button:hover {
+	border-color: #64819f;
+	background: #172331;
+}
+.gm-settings-diagnostics-nav strong {
+	font-size: 11px;
+	font-weight: 650;
+}
+.gm-settings-diagnostics-nav span {
+	color: #8594a3;
+	font-size: 9px;
+	line-height: 1.4;
+}
+.gm-diagnostics-page {
+	max-width: 1240px;
+}
+.gm-diagnostics-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+}
+.gm-diagnostic-panel {
+	min-width: 0;
+}
+.gm-diagnostics-state {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	padding: 6px 8px;
+	border: 1px solid #384555;
+	font-size: 10px;
+	font-weight: 650;
+	white-space: nowrap;
+}
+.gm-diagnostics-state i {
+	width: 7px;
+	height: 7px;
+	background: #8b949e;
+}
+.gm-diagnostics-state.ready i { background: #3fb950; }
+.gm-diagnostics-state.offline i { background: #f85149; }
+.gm-diagnostics-facts {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 1px;
+	margin: 0;
+	border: 1px solid #293541;
+	background: #293541;
+}
+.gm-diagnostics-facts > div {
+	min-width: 0;
+	padding: 10px;
+	background: #111923;
+}
+.gm-diagnostics-facts dt {
+	margin-bottom: 4px;
+	color: #8798a9;
+	font-size: 9px;
+}
+.gm-diagnostics-facts dd {
+	margin: 0;
+	color: #d6e0ea;
+	font-size: 12px;
+	font-weight: 650;
+	overflow-wrap: anywhere;
+}
+.gm-diagnostic-message {
+	margin-top: 10px;
+	padding: 9px 10px;
+	border-left: 2px solid #53677c;
+	background: #101821;
+	color: #9eacba;
+	font-size: 10px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.gm-diagnostic-log {
+	max-height: 300px;
+	overflow: auto;
+	margin: 10px 0 0;
+	padding: 10px;
+	border: 1px solid #293541;
+	background: #0b1118;
+	color: #9fb2c8;
+	font: 9px/1.5 "JetBrains Mono", Consolas, monospace;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.gm-performance-target {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	padding: 7px 10px;
+	border: 1px solid #354251;
+	background: #111923;
+}
+.gm-performance-target strong {
+	color: #d6e0ea;
+	font-size: 15px;
+}
+.gm-performance-target span {
+	color: #8798a9;
+	font-size: 9px;
+}
+.gm-performance-capture {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 12px;
+	margin-bottom: 12px;
+	padding: 14px;
+}
+.gm-performance-capture > div:first-child {
+	min-width: 220px;
+	flex: 1;
+}
+.gm-performance-capture strong {
+	color: #d6e0ea;
+	font-size: 12px;
+}
+.gm-performance-capture p {
+	margin: 5px 0 0;
+	color: #8798a9;
+	font-size: 10px;
+	line-height: 1.5;
+}
+.gm-performance-progress {
+	flex-basis: 100%;
+	padding: 8px 10px;
+	border-left: 2px solid #d29922;
+	background: #19170f;
+	color: #c9b68d;
+	font-size: 10px;
+}
+.gm-performance-result {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 0 0 12px;
+	padding: 10px 12px;
+	border: 1px solid #354251;
+	background: #111923;
+	font-size: 10px;
+}
+.gm-performance-result strong { color: #d6e0ea; }
+.gm-performance-result span { color: #9eacba; font-variant-numeric: tabular-nums; }
+.gm-performance-result.met { border-left: 3px solid #3fb950; }
+.gm-performance-result.over { border-left: 3px solid #d29922; }
+.gm-performance-notes {
+	display: grid;
+	gap: 4px;
+	margin-top: 10px;
+	color: #7f8c99;
+	font-size: 9px;
+}
+@media (max-width: 760px) {
+	.gm-settings-diagnostics-nav,
+	.gm-diagnostics-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.gm-diagnostics-state,
+	.gm-performance-target {
+		width: 100%;
+	}
+}
+
+
+.gm-notification-filters {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	padding: 7px 10px;
+	border-bottom: 1px solid #2c3947;
+	background: #101720;
+}
+.gm-notification-filters button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 25px;
+	padding: 0 8px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: #8fa0b1;
+	font-size: 9px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.gm-notification-filters button span {
+	color: #728295;
+	font: 8px "JetBrains Mono", Consolas, monospace;
+}
+.gm-notification-filters button:hover,
+.gm-notification-filters button.active {
+	border-color: #3b4d60;
+	background: #1a2938;
+	color: #e1ebf5;
+}
+.gm-notification-filters button.active span {
+	color: #c1d8ef;
+}
+.gm-notification-kind {
+	align-self: flex-start;
+	padding: 2px 5px;
+	border: 1px solid #35485b;
+	color: #8fb6da;
+	font-size: 8px;
+	line-height: 1.2;
+	text-transform: capitalize;
+}
+.gm-notification-footer {
+	justify-content: space-between;
+}
+.gm-notification-footer button:first-child:not(:disabled) {
+	color: #a9c8e4;
+}
+@media (max-width: 760px) {
+	.gm-notification-filters {
+		padding-inline: 8px;
+	}
+	.gm-notification-footer {
+		justify-content: flex-end;
+	}
+}
+
+/* Native-style right-click actions for repository and notification surfaces. */
+.gm-context-menu {
+	position: fixed;
+	z-index: 1200;
+	min-width: 196px;
+	max-width: min(260px, calc(100vw - 16px));
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 4px;
+	border: 1px solid #3a4653;
+	background: #111922;
+	box-shadow: 0 12px 32px rgba(0, 0, 0, .48);
+}
+.gm-context-menu button {
+	width: 100%;
+	min-height: 31px;
+	padding: 6px 9px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: #cbd8e5;
+	font-size: 10px;
+	font-weight: 550;
+	text-align: left;
+	cursor: pointer;
+}
+.gm-context-menu button:hover:not(:disabled),
+.gm-context-menu button:focus-visible {
+	border-color: #354a60;
+	background: #1c2b3a;
+	color: #f0f6fc;
+	outline: none;
+}
+.gm-context-menu button.danger {
+	color: #f0a19b;
+}
+.gm-context-menu button.danger:hover:not(:disabled) {
+	border-color: #684442;
+	background: #2a1b1c;
+	color: #ffc4bf;
+}
+.gm-context-menu button:disabled {
+	cursor: not-allowed;
+	opacity: .45;
+}

@@ -70,8 +70,8 @@ class BuildEnvironmentSetupPlanTests(unittest.TestCase):
 
     def test_explicit_linux_target_on_windows_requests_wsl_with_yes_as_default(self):
         with patch.object(SETUP.platform, "system", return_value="Windows"), patch.object(
-            SETUP, "_setup_wsl_linux", return_value=0
-        ) as wsl_setup:
+            SETUP.platform, "machine", return_value="AMD64"
+        ), patch.object(SETUP, "_setup_wsl_linux", return_value=0) as wsl_setup:
             result = SETUP.setup_build_environment("linux(x64)")
             self.assertEqual(result, 0)
             wsl_setup.assert_called_once_with(include_flatpak=False, default_yes=True)

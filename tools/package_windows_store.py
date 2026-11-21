@@ -54,11 +54,11 @@ def main() -> int:
     output = args.output.resolve()
 
     names = (
-        "git-manager.exe",
+        "gitmanager.exe",
         "gitm.exe",
         "gitmanager-setup.exe",
         "crash_helper.exe",
-        "git-manager-service.exe",
+        "gitmanager.service.exe",
         "GitManager-Setup.exe",
     )
     missing = [name for name in names if not (app_dir / name).is_file()]
@@ -103,11 +103,11 @@ def main() -> int:
         shutil.copy2(cleaner, tools_dir / cleaner.name)
 
         required = (
-            output / "git-manager.exe",
+            output / "gitmanager.exe",
             resources / "gitm.exe",
             resources / "gitmanager-setup.exe",
             resources / "crash_helper.exe",
-            resources / "git-manager-service.exe",
+            resources / "gitmanager.service.exe",
             resources / "python" / "python.exe",
             tools_dir / cleaner.name,
         )

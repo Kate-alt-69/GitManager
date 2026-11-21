@@ -14,6 +14,13 @@ export interface CommitNode {
 	lane: number;
 }
 
+export interface CommitHistoryPage {
+	commits: CommitNode[];
+	offset: number;
+	limit: number;
+	hasMore: boolean;
+}
+
 export interface BranchInfo {
 	name: string;
 	is_head: boolean;
@@ -70,6 +77,8 @@ export interface AppPreferences {
 	archiveTrigger: string;
 	archiveQuietMs: number;
 	cloudNodeAddress: string;
+	inAppNotificationsEnabled: boolean;
+	osNotificationsEnabled: boolean;
 	repositorySettings?: Record<string, unknown>;
 }
 
@@ -78,6 +87,13 @@ export interface ApplicationDirectories {
 	installDir: string;
 	configDir: string;
 	dataDir: string;
+	repoMetadataDir: string;
+	gitDataDir: string;
+	accountMetadataDir: string;
+	accountGitDataDir: string;
+	remoteRepoMetadataDir: string;
+	remoteRepoGitDataDir: string;
+	cacheDir: string;
 }
 
 export interface ConnectedAccount {
@@ -87,6 +103,7 @@ export interface ConnectedAccount {
 	email: string;
 	avatar_url: string;
 	profile_url: string;
+	session_connected: boolean;
 	repositories: GitRepository[];
 }
 
@@ -100,6 +117,48 @@ export interface UpdateAlert {
 	working_tree_clean?: boolean;
 	failure_message?: string;
 	prompt_message?: string;
+}
+
+export interface CoreServiceStatus {
+	suspended: boolean;
+	remaining_seconds: number;
+	message: string;
+	service_generation: number;
+	process_id: number;
+	protocol_version: number;
+	remote_check_pending?: boolean;
+	remote_check_running?: boolean;
+	indexing: boolean;
+}
+
+export interface ProcessUsageSummary {
+	averageCpuPercent: number;
+	peakCpuPercent: number;
+	averageMemoryBytes: number;
+	peakMemoryBytes: number;
+	processCount: number;
+}
+
+export interface IdlePerformanceCapture {
+	sampleDurationSeconds: number;
+	sampleCount: number;
+	logicalProcessors: number;
+	capturedAtUnixMs: number;
+	uiProcessTree: ProcessUsageSummary;
+	serviceProcessTree: ProcessUsageSummary | null;
+	serviceGeneration: number;
+	serviceProtocolVersion: number;
+	notes: string[];
+}
+
+export interface AppNotification {
+	id: string;
+	kind: string;
+	title: string;
+	body: string;
+	createdAtUnixMs: number;
+	read: boolean;
+	repositoryPath?: string | null;
 }
 
 export interface RepositoryFileEntry {

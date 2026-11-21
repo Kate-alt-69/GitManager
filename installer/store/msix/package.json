@@ -22,7 +22,7 @@
     {
       "name": "GitManager",
       "description": "Git workspace manager by Kastrick",
-      "target": "$.installDir\\git-manager.exe",
+      "target": "$.installDir\\gitmanager.exe",
       "icon": "src-tauri/icons/icon.ico"
     }
   ],

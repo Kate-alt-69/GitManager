@@ -1,24 +1,38 @@
-//! Cross-platform GitManager UI supervision and background-service control.
+//! Cross-platform GitManager UI and core-service supervision.
 //!
-//! crash_helper supervises the desktop UI only. The independent
-//! git-manager-service process is controlled over a loopback-only authenticated
-//! endpoint and is never placed in the UI's process tree or termination scope.
+//! crash_helper supervises the desktop UI and independently starts/restarts
+//! gitmanager.service. The service is always launched outside the UI's
+//! kill-on-close process job and communicates over authenticated local IPC.
 
 use fs2::FileExt;
+use interprocess::local_socket::{
+    prelude::*,
+    GenericFilePath,
+    Listener,
+    ListenerOptions,
+    ListenerNonblockingMode,
+    Stream as LocalSocketStream,
+};
+#[cfg(unix)]
+use interprocess::local_socket::ConnectOptions;
+use interprocess::ConnectWaitMode;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[cfg(windows)]
 mod windows_process;
+#[cfg(feature = "provider-sync")]
+mod provider_sync;
 
 #[cfg(windows)]
 type ProcessContainment = windows_process::ProcessContainment;
@@ -30,6 +44,8 @@ const DATA_ROOT: &str = "kastrick's_software";
 const ENDPOINT_FILE: &str = "service-control.json";
 const SUSPENSION_FILE: &str = "service-suspension.json";
 const LOCK_FILE: &str = "service-control.lock";
+const SERVICE_SUPERVISOR_LOCK_FILE: &str = "service-supervisor.lock";
+const SERVICE_SHUTDOWN_FILE: &str = "service-shutdown.requested";
 const DEFAULT_SUSPENSION_SECONDS: u64 = 120;
 const MIN_SUSPENSION_SECONDS: u64 = 15;
 const MAX_SUSPENSION_SECONDS: u64 = 600;
@@ -37,24 +53,349 @@ const UI_STARTUP_GRACE: Duration = Duration::from_secs(90);
 const UI_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 const UI_RECOVERY_GRACE: Duration = Duration::from_secs(15);
 const SUPERVISOR_POLL: Duration = Duration::from_millis(400);
-const MAX_MESSAGE_BYTES: u64 = 4096;
+const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
+pub const SERVICE_PROTOCOL_VERSION: u32 = 4;
+const MAX_CONCURRENT_SERVICE_REQUESTS: usize = 32;
+pub const SERVICE_GENERATION: u32 = 5;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Endpoint {
     version: u32,
+    /// Current protocol: a per-user Named Pipe (Windows) or Unix socket path.
+    #[serde(default)]
+    name: String,
+    /// Legacy protocol v1-v3: loopback TCP address used only for status negotiation.
+    #[serde(default)]
     address: String,
     token: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn service_socket_identity(data_dir: &Path) -> u64 {
+    let identity = data_dir.to_string_lossy();
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in identity.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Stable per-user local socket name. The hashed identity derives from the
+/// per-user GitManager data directory, not from a globally shared pipe name.
+fn service_socket_name(data_dir: &Path) -> (String, Option<PathBuf>) {
+    let identity = service_socket_identity(data_dir);
+    #[cfg(windows)]
+    {
+        (format!(r"\\.\pipe\kastrick-gitmanager-{identity:016x}"), None)
+    }
+    #[cfg(unix)]
+    {
+        // Keep the UDS path short enough for sockaddr_un::sun_path on macOS.
+        // A private parent directory prevents other users from reaching the
+        // socket even on systems where socket chmod is not supported.
+        let socket_directory = PathBuf::from("/tmp")
+            .join(format!("kastrick-gitmanager-{identity:016x}"));
+        let socket_path = socket_directory.join("service.sock");
+        (
+            socket_path.to_string_lossy().to_string(),
+            Some(socket_directory),
+        )
+    }
+}
+
+fn prepare_service_socket_directory(directory: &Path) -> Result<(), String> {
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("Could not create the private service socket directory: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("Could not restrict service socket directory permissions: {error}"))?;
+    }
+    Ok(())
+}
+
+fn bind_service_local_listener(name: &str) -> io::Result<Listener> {
+    let local_name = name.to_fs_name::<GenericFilePath>()?;
+    let options = ListenerOptions::new()
+        .name(local_name)
+        .nonblocking(ListenerNonblockingMode::Accept);
+
+    #[cfg(windows)]
+    {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+        use widestring::U16CString;
+
+        // Owner Rights + Local System; no broad Users/Everyone ACE.
+        let sddl = U16CString::from_str("D:P(A;;GA;;;OW)(A;;GA;;;SY)")
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let descriptor = SecurityDescriptor::deserialize(&sddl)?;
+        options.security_descriptor(descriptor).create_sync()
+    }
+
+    #[cfg(unix)]
+    {
+        use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+
+        options.mode(0o600).create_sync()
+    }
+}
+
+fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<LocalSocketStream> {
+    #[cfg(windows)]
+    {
+        use interprocess::os::windows::named_pipe::{
+            local_socket,
+            pipe_mode,
+            DuplexPipeStream,
+        };
+        // Use the direct named-pipe API here: ConnectOptions' local-socket
+        // timeout is not enforced for an overloaded Windows pipe.
+        let pipe = DuplexPipeStream::<pipe_mode::Bytes>::connect_by_path_with_wait_mode(
+            name,
+            ConnectWaitMode::Timeout(timeout),
+        )?;
+        Ok(LocalSocketStream::NamedPipe(local_socket::Stream::from(pipe)))
+    }
+
+    #[cfg(unix)]
+    {
+        let local_name = name.to_fs_name::<GenericFilePath>()?;
+        ConnectOptions::new()
+            .name(local_name)
+            .wait_mode(ConnectWaitMode::Timeout(timeout))
+            .connect_sync()
+    }
+}
+
+fn write_service_frame(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
+    if payload.is_empty() || payload.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Service IPC frame is empty or exceeds the message limit",
+        ));
+    }
+    let length = u32::try_from(payload.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Service IPC frame is too large"))?;
+    stream.write_all(&length.to_be_bytes())?;
+    stream.write_all(payload)?;
+    stream.flush()
+}
+
+fn read_service_frame(stream: &mut impl Read) -> io::Result<Vec<u8>> {
+    let mut header = [0u8; 4];
+    stream.read_exact(&mut header)?;
+    let length = u32::from_be_bytes(header) as u64;
+    if length == 0 || length >= MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Service IPC frame has an invalid length",
+        ));
+    }
+    let mut payload = vec![0u8; length as usize];
+    stream.read_exact(&mut payload)?;
+    Ok(payload)
+}
+
+/// Read an exact byte count from a nonblocking stream without losing partial data.
+/// Windows named pipes do not implement socket receive timeouts, so callers enable
+/// nonblocking mode and use this deadline-aware loop instead.
+fn read_exact_with_deadline(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < buffer.len() {
+        match reader.read(&mut buffer[offset..]) {
+            Ok(0) => {
+                // On Windows, interprocess implements nonblocking named pipes
+                // with PIPE_NOWAIT. ERROR_NO_DATA (232) can be surfaced by the
+                // byte-stream Read implementation as Ok(0), even though the
+                // peer is still connected and has not written the next bytes.
+                // Treat zero bytes as "not ready yet" and keep the deadline;
+                // otherwise the client drops a healthy pipe before the service
+                // gets a chance to write its response.
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Service IPC receive deadline expired while waiting for pipe data",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            Ok(read) => offset += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Service IPC receive deadline expired",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Send all bytes through a nonblocking stream until the complete write or deadline.
+fn write_all_with_deadline(
+    writer: &mut impl Write,
+    buffer: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < buffer.len() {
+        match writer.write(&buffer[offset..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "Service IPC stream accepted zero bytes",
+                ));
+            }
+            Ok(written) => offset += written,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Service IPC send deadline expired",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn read_service_frame_with_timeout(
+    stream: &mut impl Read,
+    timeout: Duration,
+) -> io::Result<Vec<u8>> {
+    let deadline = Instant::now() + timeout;
+    let mut header = [0u8; 4];
+    read_exact_with_deadline(stream, &mut header, deadline)?;
+    let length = u32::from_be_bytes(header) as u64;
+    if length == 0 || length >= MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Service IPC frame has an invalid length",
+        ));
+    }
+    let mut payload = vec![0u8; length as usize];
+    read_exact_with_deadline(stream, &mut payload, deadline)?;
+    Ok(payload)
+}
+
+fn write_service_frame_with_timeout(
+    stream: &mut impl Write,
+    payload: &[u8],
+    timeout: Duration,
+) -> io::Result<()> {
+    if payload.is_empty() || payload.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Service IPC frame is empty or exceeds the message limit",
+        ));
+    }
+    let length = u32::try_from(payload.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Service IPC frame is too large"))?;
+    let deadline = Instant::now() + timeout;
+    write_all_with_deadline(stream, &length.to_be_bytes(), deadline)?;
+    write_all_with_deadline(stream, payload, deadline)?;
+    stream.flush()
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum ServiceCommand {
     Status,
+    Shutdown,
     Suspend { seconds: u64 },
     Resume,
+    RequestScan,
+    RequestRemoteCheck,
+    LoadAccounts,
+    SaveAccount { payload: serde_json::Value },
+    InspectRepository { repo_path: String },
+    LoadCommitHistory {
+        repo_path: String,
+        offset: usize,
+        limit: usize,
+        branch_filter: Option<String>,
+        search_query: Option<String>,
+    },
+    GetCommitDetails { repo_path: String, oid: String },
+    ListRepositoryFiles {
+        repo_path: String,
+        relative_path: Option<String>,
+        source: String,
+        branch: Option<String>,
+    },
+    ReadRepositoryFile {
+        repo_path: String,
+        relative_path: String,
+        source: String,
+        branch: Option<String>,
+    },
+    SaveConflictResolution { repo_path: String, relative_path: String, content: String },
+    PreviewRepositoryPull { repo_path: String },
+    GetRepositoryChanges { repo_path: String },
+    ReadRepositoryFileDiff { repo_path: String, relative_path: String, staged: bool },
+    FetchRepositoryRemote { repo_path: String, remote_name: String },
+    StageRepositoryPaths { repo_path: String, paths: Vec<String> },
+    UnstageRepositoryPaths { repo_path: String, paths: Vec<String> },
+    PreviewRepositoryCommit { repo_path: String },
+    CreateRepositoryCommit { repo_path: String, message: String, expected_index_tree: String },
+    DeleteRepositoryPath { repo_path: String, relative_path: String },
+    PrepareAndPullRepositoryUpdate {
+        repo_path: String,
+        expected_branch: String,
+        expected_local_oid: String,
+        expected_remote_oid: String,
+        expected_status_token: String,
+        mode: String,
+        stage_paths: Vec<String>,
+        commit_message: String,
+    },
+    ListLocalRepositoryBranches { repo_path: String },
+    SwitchRepositoryBranch { repo_path: String, branch_name: String },
+    ListNotifications,
+    MarkNotificationRead { id: String },
+    DismissNotification { id: String },
+    MarkAllNotificationsRead,
+    LoadAppPreferences,
+    SaveAppPreferences { payload: serde_json::Value },
+    GetRepositoryIndexGeneration,
+    LoadIndexedRepositories { filter_mode: String },
+    LoadRepositoryPreferences { repo_path: String, repo_id: Option<String> },
+    SaveRepositoryPreferences { repo_path: String, payload: serde_json::Value },
+    CaptureRepositoryArchive { repo_path: String, kind: String, archive_root: Option<String> },
+    ListRepositoryArchives { repo_path: String, kind: Option<String>, archive_root: Option<String> },
+    RestoreRepositoryArchive {
+        repo_path: String,
+        destination_path: String,
+        snapshot_id: String,
+        kind: String,
+        archive_root: Option<String>,
+        confirm_replace: bool,
+    },
+    GetArchiveCloudStorageInfo { archive_root: String },
+    ConfigureArchiveCloudStorage { archive_root: String, provider_json: String },
+    DisableArchiveCloudStorage { archive_root: String },
+    SyncArchiveCloudStorage { archive_root: String },
+    #[serde(rename = "detect_github_identity")]
+    DetectGitHubIdentity,
+    ConnectGitAccount { payload: serde_json::Value },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ServiceRequest {
     token: String,
     command: ServiceCommand,
@@ -65,6 +406,22 @@ pub struct ServiceStatus {
     pub suspended: bool,
     pub remaining_seconds: u64,
     pub message: String,
+    /// Missing in legacy workers; zero identifies the pre-core-service process.
+    #[serde(default)]
+    pub service_generation: u32,
+    #[serde(default)]
+    pub process_id: u32,
+    #[serde(default)]
+    pub protocol_version: u32,
+    /// True while an immediate or scheduled remote check is queued.
+    #[serde(default)]
+    pub remote_check_pending: bool,
+    /// True while the service is querying remote refs and publishing results.
+    #[serde(default)]
+    pub remote_check_running: bool,
+    /// True while the service is walking the configured repository roots.
+    #[serde(default)]
+    pub indexing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +429,8 @@ struct ServiceResponse {
     ok: bool,
     status: ServiceStatus,
     error: Option<String>,
+    #[serde(default)]
+    data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +515,12 @@ impl ServiceState {
             suspended: remaining > 0,
             remaining_seconds: remaining,
             message: message.into(),
+            service_generation: SERVICE_GENERATION,
+            process_id: std::process::id(),
+            protocol_version: SERVICE_PROTOCOL_VERSION,
+            remote_check_pending: false,
+            remote_check_running: false,
+            indexing: false,
         }
     }
 
@@ -200,6 +565,13 @@ pub struct ServiceControlServer {
     running: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     endpoint_path: PathBuf,
+    socket_directory: Option<PathBuf>,
+    scan_requested: Arc<AtomicBool>,
+    remote_check_requested: Arc<AtomicBool>,
+    remote_check_running: Arc<AtomicBool>,
+    indexing: Arc<AtomicBool>,
+    shutdown_requested: Arc<AtomicBool>,
+    active_requests: Arc<AtomicUsize>,
     _lock_file: File,
 }
 
@@ -211,7 +583,57 @@ impl ServiceControlServer {
     }
 
     pub fn status(&self) -> ServiceStatus {
-        self.state.status("Background service status")
+        let mut status = self.state.status("GitManager core service status");
+        status.remote_check_pending = self.remote_check_pending();
+        status.remote_check_running = self.remote_check_running();
+        status.indexing = self.indexing();
+        status
+    }
+
+    /// Returns true once per queued repository-index refresh request.
+    pub fn take_scan_request(&self) -> bool {
+        self.scan_requested.swap(false, Ordering::AcqRel)
+    }
+
+    /// Allows the service loop to wake early without consuming a request.
+    pub fn scan_request_pending(&self) -> bool {
+        self.scan_requested.load(Ordering::Acquire)
+    }
+
+    /// Returns true once per queued immediate remote-update check.
+    pub fn take_remote_check_request(&self) -> bool {
+        self.remote_check_requested.swap(false, Ordering::AcqRel)
+    }
+
+    /// Allows the service loop to wake early when the UI requests a remote check.
+    pub fn remote_check_pending(&self) -> bool {
+        self.remote_check_requested.load(Ordering::Acquire)
+    }
+
+    pub fn set_remote_check_running(&self, running: bool) {
+        self.remote_check_running.store(running, Ordering::Release);
+    }
+
+    pub fn remote_check_running(&self) -> bool {
+        self.remote_check_running.load(Ordering::Acquire)
+    }
+
+    pub fn set_indexing(&self, indexing: bool) {
+        self.indexing.store(indexing, Ordering::Release);
+    }
+
+    pub fn indexing(&self) -> bool {
+        self.indexing.load(Ordering::Acquire)
+    }
+
+    /// True after an authenticated shutdown response was written to the client.
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire)
+    }
+
+    /// Active IPC handlers include the shutdown acknowledgement until it returns.
+    pub fn active_request_count(&self) -> usize {
+        self.active_requests.load(Ordering::Acquire)
     }
 }
 
@@ -222,17 +644,38 @@ impl Drop for ServiceControlServer {
             let _ = worker.join();
         }
         let _ = fs::remove_file(&self.endpoint_path);
+        if let Some(directory) = &self.socket_directory {
+            let _ = fs::remove_file(directory.join("service.sock"));
+            let _ = fs::remove_dir(directory);
+        }
     }
 }
 
-/// Starts a loopback-only control endpoint protected by a random per-process token.
+fn reserve_service_request_slot(active: &AtomicUsize) -> bool {
+    loop {
+        let current = active.load(Ordering::Acquire);
+        if current >= MAX_CONCURRENT_SERVICE_REQUESTS {
+            return false;
+        }
+        if active.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).is_ok() {
+            return true;
+        }
+    }
+}
+
+/// Starts a per-user Named Pipe (Windows) or Unix Domain Socket protected by a random token.
 pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     let data_dir = gitmanager_data_dir()?;
     fs::create_dir_all(&data_dir)
         .map_err(|error| format!("Could not create service state directory: {error}"))?;
 
     let lock_path = data_dir.join(LOCK_FILE);
-    let lock_file = OpenOptions::new()
+    let mut lock_file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
@@ -241,16 +684,23 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         .map_err(|error| format!("Could not open service ownership lock: {error}"))?;
     lock_file.try_lock_exclusive()
         .map_err(|_| "Another GitManager background service instance already owns the service lock.".to_string())?;
+    lock_file.set_len(0)
+        .and_then(|_| lock_file.write_all(format!("{}", std::process::id()).as_bytes()))
+        .and_then(|_| lock_file.sync_all())
+        .map_err(|error| format!("Could not publish the service lock owner PID: {error}"))?;
 
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|error| format!("Could not bind the local service-control endpoint: {error}"))?;
-    listener.set_nonblocking(true)
-        .map_err(|error| format!("Could not configure the service-control listener: {error}"))?;
+    let (socket_name, socket_directory) = service_socket_name(&data_dir);
+    if let Some(directory) = &socket_directory {
+        prepare_service_socket_directory(directory)?;
+    }
+    let listener = bind_service_local_listener(&socket_name)
+        .map_err(|error| format!("Could not create the per-user local service socket: {error}"))?;
 
     let endpoint_path = data_dir.join(ENDPOINT_FILE);
     let endpoint = Endpoint {
-        version: 1,
-        address: listener.local_addr().map_err(|error| error.to_string())?.to_string(),
+        version: SERVICE_PROTOCOL_VERSION,
+        name: socket_name,
+        address: String::new(),
         token: Uuid::new_v4().to_string(),
     };
     write_private_json(&endpoint_path, &endpoint)
@@ -258,8 +708,20 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
 
     let state = Arc::new(ServiceState::load(data_dir.join(SUSPENSION_FILE)));
     let running = Arc::new(AtomicBool::new(true));
+    let scan_requested = Arc::new(AtomicBool::new(false));
+    let remote_check_requested = Arc::new(AtomicBool::new(false));
+    let remote_check_running = Arc::new(AtomicBool::new(false));
+    let indexing = Arc::new(AtomicBool::new(false));
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let active_requests = Arc::new(AtomicUsize::new(0));
     let thread_state = Arc::clone(&state);
     let thread_running = Arc::clone(&running);
+    let thread_scan_requested = Arc::clone(&scan_requested);
+    let thread_remote_check_requested = Arc::clone(&remote_check_requested);
+    let thread_remote_check_running = Arc::clone(&remote_check_running);
+    let thread_indexing = Arc::clone(&indexing);
+    let thread_shutdown_requested = Arc::clone(&shutdown_requested);
+    let thread_active_requests = Arc::clone(&active_requests);
     let token = endpoint.token.clone();
 
     let worker = thread::Builder::new()
@@ -267,7 +729,50 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         .spawn(move || {
             while thread_running.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((stream, _)) => handle_service_connection(stream, &token, &thread_state),
+                    Ok(stream) => {
+                        if !reserve_service_request_slot(&thread_active_requests) {
+                            // Keep request handling bounded, but make overload
+                            // visible. Closing a pipe without a response looks
+                            // like a dead service to clients and can trigger
+                            // duplicate launch attempts.
+                            eprintln!(
+                                "GitManager service IPC: rejected a request because all {} handler slots are occupied.",
+                                MAX_CONCURRENT_SERVICE_REQUESTS
+                            );
+                            drop(stream);
+                            continue;
+                        }
+
+                        let request_token = token.clone();
+                        let request_state = Arc::clone(&thread_state);
+                        let request_scan = Arc::clone(&thread_scan_requested);
+                        let request_remote_check = Arc::clone(&thread_remote_check_requested);
+                        let request_remote_running = Arc::clone(&thread_remote_check_running);
+                        let request_indexing = Arc::clone(&thread_indexing);
+                        let request_shutdown = Arc::clone(&thread_shutdown_requested);
+                        let request_running = Arc::clone(&thread_running);
+                        let request_counter = Arc::clone(&thread_active_requests);
+                        if let Err(error) = thread::Builder::new()
+                            .name("gitmanager-service-request".to_string())
+                            .spawn(move || {
+                                handle_service_connection(
+                                    stream,
+                                    &request_token,
+                                    &request_state,
+                                    &request_scan,
+                                    &request_remote_check,
+                                    &request_remote_running,
+                                    &request_indexing,
+                                    &request_shutdown,
+                                    &request_running,
+                                );
+                                request_counter.fetch_sub(1, Ordering::Release);
+                            })
+                        {
+                            thread_active_requests.fetch_sub(1, Ordering::Release);
+                            eprintln!("GitManager service could not dispatch a control request: {error}");
+                        }
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(100));
                     }
@@ -282,105 +787,1669 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
         running,
         worker: Some(worker),
         endpoint_path,
+        socket_directory,
+        scan_requested,
+        remote_check_requested,
+        remote_check_running,
+        indexing,
+        shutdown_requested,
+        active_requests,
         _lock_file: lock_file,
     })
 }
 
-fn handle_service_connection(mut stream: TcpStream, token: &str, state: &ServiceState) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+#[cfg(feature = "account-storage")]
+fn load_account_storage(state: &ServiceState) -> ServiceResponse {
+    match gitmanager_core::account_store::load_accounts()
+        .and_then(|accounts| serde_json::to_value(accounts)
+            .map_err(|error| format!("Could not encode saved accounts: {error}")))
+    {
+        Ok(data) => ServiceResponse {
+            ok: true,
+            status: state.status("Account metadata loaded from the core service"),
+            error: None,
+            data: Some(data),
+        },
+        Err(error) => ServiceResponse {
+            ok: false,
+            status: state.status("Could not load account metadata"),
+            error: Some(error),
+            data: None,
+        },
+    }
+}
 
-    let mut bytes = Vec::new();
-    let read_result = (&mut stream).take(MAX_MESSAGE_BYTES).read_to_end(&mut bytes);
-    let response = if read_result.is_err() || bytes.len() as u64 >= MAX_MESSAGE_BYTES {
-        ServiceResponse {
+#[cfg(not(feature = "account-storage"))]
+fn load_account_storage(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Account storage is not enabled in this process"),
+        error: Some("Account persistence is only available through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+
+#[cfg(feature = "account-storage")]
+fn save_account_storage(state: &ServiceState, payload: serde_json::Value) -> ServiceResponse {
+    let result = (|| {
+        let metadata_value = payload.get("metadata")
+            .cloned()
+            .ok_or_else(|| "Account save request is missing metadata.".to_string())?;
+        let repositories_value = payload.get("repositories")
+            .cloned()
+            .ok_or_else(|| "Account save request is missing repository data.".to_string())?;
+        let metadata: gitmanager_core::account_store::AccountMetadata =
+            serde_json::from_value(metadata_value)
+                .map_err(|error| format!("Account metadata payload is invalid: {error}"))?;
+        let repositories: Vec<gitmanager_core::models::GitRepositoryInfo> =
+            serde_json::from_value(repositories_value)
+                .map_err(|error| format!("Account repository cache payload is invalid: {error}"))?;
+        gitmanager_core::account_store::save_account(&metadata, &repositories)
+    })();
+
+    match result {
+        Ok(()) => ServiceResponse {
+            ok: true,
+            status: state.status("Account metadata saved by the core service"),
+            error: None,
+            data: None,
+        },
+        Err(error) => ServiceResponse {
+            ok: false,
+            status: state.status("Could not save account metadata"),
+            error: Some(error),
+            data: None,
+        },
+    }
+}
+
+#[cfg(not(feature = "account-storage"))]
+fn save_account_storage(state: &ServiceState, _payload: serde_json::Value) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Account storage is not enabled in this process"),
+        error: Some("Account persistence is only available through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+
+#[allow(dead_code)]
+fn repository_data_response<T: Serialize>(
+    state: &ServiceState,
+    description: &str,
+    result: Result<T, String>,
+) -> ServiceResponse {
+    let data = result.and_then(|value| serde_json::to_value(value)
+        .map_err(|error| format!("Could not encode {description}: {error}")));
+    match data {
+        Ok(data) => ServiceResponse {
+            ok: true,
+            status: state.status(format!("{description} loaded by the core service")),
+            error: None,
+            data: Some(data),
+        },
+        Err(error) => ServiceResponse {
+            ok: false,
+            status: state.status(format!("Could not load {description}")),
+            error: Some(error),
+            data: None,
+        },
+    }
+}
+
+#[cfg(feature = "repository-data")]
+fn load_repository_overview(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    let workdir = Path::new(&repo_path);
+    let git_dir = workdir.join(".git");
+    repository_data_response(
+        state,
+        "Repository overview",
+        gitmanager_core::git_info::extract_git_repository_overview(workdir, &git_dir),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn load_commit_history(
+    state: &ServiceState,
+    repo_path: String,
+    offset: usize,
+    limit: usize,
+    branch_filter: Option<String>,
+    search_query: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Commit history page",
+        gitmanager_core::git_info::load_repository_commit_history(
+            Path::new(&repo_path),
+            offset,
+            limit,
+            branch_filter.as_deref(),
+            search_query.as_deref(),
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn load_commit_details(
+    state: &ServiceState,
+    repo_path: String,
+    oid: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Commit details",
+        gitmanager_core::git_info::load_commit_details(Path::new(&repo_path), &oid),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn list_repository_files(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: Option<String>,
+    source: String,
+    branch: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository directory",
+        gitmanager_core::repository_browser::list_repository_files(
+            &repo_path,
+            relative_path.as_deref(),
+            &source,
+            branch.as_deref(),
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn read_repository_file(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: String,
+    source: String,
+    branch: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository file preview",
+        gitmanager_core::repository_browser::read_repository_file(
+            &repo_path,
+            &relative_path,
+            &source,
+            branch.as_deref(),
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn get_repository_index_generation(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository index generation",
+        gitmanager_core::repository_index::repository_index_generation()
+            .map(|generation| generation.to_string()),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn load_indexed_repositories(state: &ServiceState, filter_mode: String) -> ServiceResponse {
+    let result = gitmanager_core::repository_index::load_persisted_repository_index()
+        .map(|index| {
+            let (repositories, truncated) = index
+                .map(|index| (index.repositories, index.truncated))
+                .unwrap_or_else(|| (Vec::new(), false));
+            gitmanager_core::repository_index::build_indexed_summary_with_scan_status(
+                repositories,
+                &filter_mode,
+                truncated,
+            )
+        });
+    repository_data_response(state, "Indexed repository snapshot", result)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn get_repository_index_generation(state: &ServiceState) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+#[cfg(not(feature = "repository-data"))]
+fn load_indexed_repositories(state: &ServiceState, _: String) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(feature = "preferences-storage")]
+fn load_app_preferences(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Application preferences",
+        gitmanager_core::load_background_preferences(),
+    )
+}
+
+#[cfg(feature = "preferences-storage")]
+fn save_app_preferences(state: &ServiceState, payload: serde_json::Value) -> ServiceResponse {
+    let result = serde_json::from_value::<gitmanager_core::AppPreferences>(payload)
+        .map_err(|error| format!("Application preference payload is invalid: {error}"))
+        .and_then(|mut preferences| {
+            gitmanager_core::app_preferences::save_background_preferences(&mut preferences)?;
+            Ok(preferences)
+        });
+    repository_data_response(state, "Saved application preferences", result)
+}
+
+#[cfg(not(feature = "preferences-storage"))]
+fn preference_storage_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Application preference storage is not enabled in this process"),
+        error: Some("Application preference storage is available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+#[cfg(not(feature = "preferences-storage"))]
+fn load_app_preferences(state: &ServiceState) -> ServiceResponse { preference_storage_unavailable(state) }
+#[cfg(not(feature = "preferences-storage"))]
+fn save_app_preferences(state: &ServiceState, _: serde_json::Value) -> ServiceResponse { preference_storage_unavailable(state) }
+
+#[cfg(feature = "notification-storage")]
+fn list_notifications(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Notification history",
+        gitmanager_core::notification_center::list_notifications(),
+    )
+}
+
+#[cfg(feature = "notification-storage")]
+fn mark_notification_read(state: &ServiceState, id: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Notification read update",
+        gitmanager_core::notification_center::mark_notification_read(&id),
+    )
+}
+
+#[cfg(feature = "notification-storage")]
+fn dismiss_notification(state: &ServiceState, id: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Notification dismissal",
+        gitmanager_core::notification_center::dismiss_notification(&id),
+    )
+}
+
+#[cfg(feature = "notification-storage")]
+fn mark_all_notifications_read(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Bulk notification read update",
+        gitmanager_core::notification_center::mark_all_notifications_read(),
+    )
+}
+
+#[cfg(not(feature = "notification-storage"))]
+fn notification_storage_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Notification storage is not enabled in this process"),
+        error: Some("Notification storage is available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+#[cfg(not(feature = "notification-storage"))]
+fn list_notifications(state: &ServiceState) -> ServiceResponse { notification_storage_unavailable(state) }
+#[cfg(not(feature = "notification-storage"))]
+fn mark_notification_read(state: &ServiceState, _: String) -> ServiceResponse { notification_storage_unavailable(state) }
+#[cfg(not(feature = "notification-storage"))]
+fn dismiss_notification(state: &ServiceState, _: String) -> ServiceResponse { notification_storage_unavailable(state) }
+#[cfg(not(feature = "notification-storage"))]
+fn mark_all_notifications_read(state: &ServiceState) -> ServiceResponse { notification_storage_unavailable(state) }
+
+#[cfg(feature = "repository-data")]
+fn load_repository_preferences(
+    state: &ServiceState,
+    repo_path: String,
+    repo_id: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository preferences",
+        gitmanager_core::repository_preferences::load_repository_preferences(
+            &repo_path,
+            repo_id.as_deref(),
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn save_repository_preferences(
+    state: &ServiceState,
+    repo_path: String,
+    payload: serde_json::Value,
+) -> ServiceResponse {
+    let result = serde_json::from_value::<gitmanager_core::RepositoryPreferences>(payload)
+        .map_err(|error| format!("Repository preference payload is invalid: {error}"))
+        .and_then(|settings| {
+            gitmanager_core::repository_preferences::save_repository_preferences(&repo_path, settings)
+        });
+    repository_data_response(state, "Saved repository preferences", result)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn load_repository_preferences(
+    state: &ServiceState, _: String, _: Option<String>,
+) -> ServiceResponse {
+    service_workspace_unavailable(state)
+}
+#[cfg(not(feature = "repository-data"))]
+fn save_repository_preferences(
+    state: &ServiceState, _: String, _: serde_json::Value,
+) -> ServiceResponse {
+    service_workspace_unavailable(state)
+}
+
+#[cfg(feature = "provider-sync")]
+fn detect_github_identity(state: &ServiceState) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "GitHub CLI identity",
+        provider_sync::detect_github_identity(),
+    )
+}
+
+#[cfg(feature = "provider-sync")]
+fn connect_git_account(state: &ServiceState, payload: serde_json::Value) -> ServiceResponse {
+    let result = serde_json::from_value::<gitmanager_core::account_types::ProviderAccountRequest>(payload)
+        .map_err(|error| format!("Provider account request is invalid: {error}"))
+        .and_then(|request| {
+            let use_github_cli = request.provider.eq_ignore_ascii_case("github")
+                && request.username_or_host.trim().is_empty()
+                && request.access_token.as_ref()
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true);
+            let summary = if use_github_cli {
+                provider_sync::fetch_github_cli_account()?
+            } else {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| format!("Could not initialize provider sync runtime: {error}"))?;
+                runtime.block_on(provider_sync::fetch_remote_account_repositories(request))?
+            };
+
+            let updated_at_unix_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .min(u64::MAX as u128) as u64;
+            let metadata = gitmanager_core::account_store::AccountMetadata {
+                provider: summary.provider.clone(),
+                account_login: summary.account_login.clone(),
+                display_name: summary.display_name.clone(),
+                email: summary.email.clone(),
+                avatar_url: summary.avatar_url.clone(),
+                profile_url: summary.profile_url.clone(),
+                updated_at_unix_ms,
+            };
+            // Only non-secret metadata and provider repository data are saved.
+            // The request token is dropped with this function and never persisted.
+            gitmanager_core::account_store::save_account(&metadata, &summary.repositories)?;
+            Ok(summary)
+        });
+    repository_data_response(state, "Connected provider account", result)
+}
+
+#[cfg(not(feature = "provider-sync"))]
+fn provider_sync_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Provider synchronization is available only in gitmanager.service"),
+        error: Some("Account provider synchronization is available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+#[cfg(not(feature = "provider-sync"))]
+fn detect_github_identity(state: &ServiceState) -> ServiceResponse {
+    provider_sync_unavailable(state)
+}
+#[cfg(not(feature = "provider-sync"))]
+fn connect_git_account(state: &ServiceState, _: serde_json::Value) -> ServiceResponse {
+    provider_sync_unavailable(state)
+}
+
+#[cfg(feature = "archive-operations")]
+fn capture_repository_archive(
+    state: &ServiceState,
+    repo_path: String,
+    kind: String,
+    archive_root: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository archive capture",
+        gitmanager_archive::capture_repository(&repo_path, archive_root.as_deref(), &kind),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn list_repository_archives(
+    state: &ServiceState,
+    repo_path: String,
+    kind: Option<String>,
+    archive_root: Option<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository archive list",
+        gitmanager_archive::list_repository_archives(
+            &repo_path,
+            archive_root.as_deref(),
+            kind.as_deref(),
+        ),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn restore_repository_archive(
+    state: &ServiceState,
+    repo_path: String,
+    destination_path: String,
+    snapshot_id: String,
+    kind: String,
+    archive_root: Option<String>,
+    confirm_replace: bool,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository archive restore",
+        gitmanager_archive::restore_repository_archive(
+            &repo_path,
+            &destination_path,
+            archive_root.as_deref(),
+            &kind,
+            &snapshot_id,
+            confirm_replace,
+        ),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn get_archive_cloud_storage_info(state: &ServiceState, archive_root: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Archive cloud storage information",
+        gitmanager_archive::archive_cloud_storage_info(Path::new(&archive_root)),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn configure_archive_cloud_storage(
+    state: &ServiceState,
+    archive_root: String,
+    provider_json: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Archive cloud storage configuration",
+        gitmanager_archive::configure_archive_cloud_storage(Some(&archive_root), &provider_json),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn disable_archive_cloud_storage(state: &ServiceState, archive_root: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Archive cloud storage configuration",
+        gitmanager_archive::disable_archive_cloud_storage(Some(&archive_root)),
+    )
+}
+
+#[cfg(feature = "archive-operations")]
+fn sync_archive_cloud_storage(state: &ServiceState, archive_root: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Archive cloud storage synchronization",
+        gitmanager_archive::sync_archive_cloud_storage(Some(&archive_root)),
+    )
+}
+
+#[cfg(not(feature = "archive-operations"))]
+fn archive_service_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Archive engine is available only in gitmanager.service"),
+        error: Some("Repository archive operations are available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+#[cfg(not(feature = "archive-operations"))]
+fn capture_repository_archive(
+    state: &ServiceState, _: String, _: String, _: Option<String>,
+) -> ServiceResponse { archive_service_unavailable(state) }
+#[cfg(not(feature = "archive-operations"))]
+fn list_repository_archives(
+    state: &ServiceState, _: String, _: Option<String>, _: Option<String>,
+) -> ServiceResponse { archive_service_unavailable(state) }
+#[cfg(not(feature = "archive-operations"))]
+fn restore_repository_archive(
+    state: &ServiceState, _: String, _: String, _: String, _: String, _: Option<String>, _: bool,
+) -> ServiceResponse { archive_service_unavailable(state) }
+#[cfg(not(feature = "archive-operations"))]
+fn get_archive_cloud_storage_info(state: &ServiceState, _: String) -> ServiceResponse {
+    archive_service_unavailable(state)
+}
+#[cfg(not(feature = "archive-operations"))]
+fn configure_archive_cloud_storage(state: &ServiceState, _: String, _: String) -> ServiceResponse {
+    archive_service_unavailable(state)
+}
+#[cfg(not(feature = "archive-operations"))]
+fn disable_archive_cloud_storage(state: &ServiceState, _: String) -> ServiceResponse {
+    archive_service_unavailable(state)
+}
+#[cfg(not(feature = "archive-operations"))]
+fn sync_archive_cloud_storage(state: &ServiceState, _: String) -> ServiceResponse {
+    archive_service_unavailable(state)
+}
+
+#[cfg(feature = "repository-data")]
+fn save_conflict_resolution(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: String,
+    content: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Conflict resolution",
+        gitmanager_core::repository_workspace::save_conflict_resolution(
+            &repo_path, &relative_path, &content,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn preview_repository_pull(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Pull preview",
+        gitmanager_core::repository_workspace::preview_repository_pull(&repo_path),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn get_repository_changes(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository changes",
+        gitmanager_core::repository_workspace::get_repository_changes(&repo_path),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn read_repository_file_diff(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: String,
+    staged: bool,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository file diff",
+        gitmanager_core::repository_workspace::read_repository_file_diff(
+            &repo_path, &relative_path, staged,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn fetch_repository_remote(
+    state: &ServiceState,
+    repo_path: String,
+    remote_name: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Remote fetch",
+        gitmanager_core::repository_workspace::fetch_repository_remote(&repo_path, &remote_name),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn stage_repository_paths(
+    state: &ServiceState,
+    repo_path: String,
+    paths: Vec<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Staged repository changes",
+        gitmanager_core::repository_workspace::stage_repository_paths(&repo_path, &paths),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn unstage_repository_paths(
+    state: &ServiceState,
+    repo_path: String,
+    paths: Vec<String>,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Unstaged repository changes",
+        gitmanager_core::repository_workspace::unstage_repository_paths(&repo_path, &paths),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn preview_repository_commit(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Commit preview",
+        gitmanager_core::repository_workspace::preview_repository_commit(&repo_path),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn create_repository_commit(
+    state: &ServiceState,
+    repo_path: String,
+    message: String,
+    expected_index_tree: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Created commit",
+        gitmanager_core::repository_workspace::create_repository_commit(
+            &repo_path, &message, &expected_index_tree,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn delete_repository_path(
+    state: &ServiceState,
+    repo_path: String,
+    relative_path: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Repository deletion",
+        gitmanager_core::repository_workspace::delete_repository_path(
+            &repo_path, &relative_path,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn prepare_and_pull_repository_update(
+    state: &ServiceState,
+    repo_path: String,
+    expected_branch: String,
+    expected_local_oid: String,
+    expected_remote_oid: String,
+    expected_status_token: String,
+    mode: String,
+    stage_paths: Vec<String>,
+    commit_message: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Pull execution",
+        gitmanager_core::repository_workspace::prepare_and_pull_repository_update(
+            &repo_path,
+            &expected_branch,
+            &expected_local_oid,
+            &expected_remote_oid,
+            &expected_status_token,
+            &mode,
+            &stage_paths,
+            &commit_message,
+        ),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn list_local_repository_branches(state: &ServiceState, repo_path: String) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Local branches",
+        gitmanager_core::git_info::list_local_repository_branches(Path::new(&repo_path)),
+    )
+}
+
+#[cfg(feature = "repository-data")]
+fn switch_repository_branch(
+    state: &ServiceState,
+    repo_path: String,
+    branch_name: String,
+) -> ServiceResponse {
+    repository_data_response(
+        state,
+        "Branch switch",
+        gitmanager_core::git_info::switch_repository_branch(
+            Path::new(&repo_path), &branch_name,
+        ),
+    )
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn service_workspace_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Repository workspace IPC is not enabled in this process"),
+        error: Some("Repository workspace operations are available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn save_conflict_resolution(state: &ServiceState, _: String, _: String, _: String) -> ServiceResponse {
+    service_workspace_unavailable(state)
+}
+#[cfg(not(feature = "repository-data"))]
+fn preview_repository_pull(state: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn get_repository_changes(state: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn read_repository_file_diff(state: &ServiceState, _: String, _: String, _: bool) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn fetch_repository_remote(state: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn stage_repository_paths(state: &ServiceState, _: String, _: Vec<String>) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn unstage_repository_paths(state: &ServiceState, _: String, _: Vec<String>) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn preview_repository_commit(state: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn create_repository_commit(state: &ServiceState, _: String, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn delete_repository_path(state: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn prepare_and_pull_repository_update(
+    state: &ServiceState, _: String, _: String, _: String, _: String, _: String, _: String, _: Vec<String>, _: String,
+) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn list_local_repository_branches(state: &ServiceState, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
+#[cfg(not(feature = "repository-data"))]
+fn switch_repository_branch(state: &ServiceState, _: String, _: String) -> ServiceResponse { service_workspace_unavailable(state) }
+
+#[cfg(not(feature = "repository-data"))]
+fn list_repository_files(
+    state: &ServiceState,
+    _repo_path: String,
+    _relative_path: Option<String>,
+    _source: String,
+    _branch: Option<String>,
+) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn read_repository_file(
+    state: &ServiceState,
+    _repo_path: String,
+    _relative_path: String,
+    _source: String,
+    _branch: Option<String>,
+) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn load_repository_overview(state: &ServiceState, _repo_path: String) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn load_commit_history(
+    state: &ServiceState,
+    _repo_path: String,
+    _offset: usize,
+    _limit: usize,
+    _branch_filter: Option<String>,
+    _search_query: Option<String>,
+) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn load_commit_details(
+    state: &ServiceState,
+    _repo_path: String,
+    _oid: String,
+) -> ServiceResponse {
+    service_data_unavailable(state)
+}
+
+#[cfg(not(feature = "repository-data"))]
+fn service_data_unavailable(state: &ServiceState) -> ServiceResponse {
+    ServiceResponse {
+        ok: false,
+        status: state.status("Repository data IPC is not enabled in this process"),
+        error: Some("Repository data is available only through gitmanager.service.".to_string()),
+        data: None,
+    }
+}
+
+fn repository_operation_lock(repo_path: &str) -> Arc<RwLock<()>> {
+    static REPOSITORY_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<RwLock<()>>>>> = OnceLock::new();
+    let key = fs::canonicalize(repo_path).unwrap_or_else(|_| PathBuf::from(repo_path));
+    let locks = REPOSITORY_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Drop idle lock entries so visiting repositories over time cannot grow
+    // this registry without bound. Active readers/writers keep a strong ref.
+    locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(RwLock::new(()))))
+}
+
+/// Runs a read-only operation. Other reads for this repository remain concurrent,
+/// while a writer waits until all readers have finished.
+pub fn with_repository_read_lock<T>(
+    repo_path: &str,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let lock = repository_operation_lock(repo_path);
+    let _guard = lock.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
+}
+
+/// Runs a repository mutation exclusively against all reads and other writes.
+pub fn with_repository_operation_lock<T>(
+    repo_path: &str,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let lock = repository_operation_lock(repo_path);
+    let _guard = lock.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
+}
+
+/// Serializes archive work for one repository while allowing normal read-only
+/// views to proceed. The shared reader lock still excludes Git writes until the
+/// archive operation has captured a consistent worktree/ref state.
+pub fn with_repository_archive_lock<T>(
+    repo_path: &str,
+    operation: impl FnOnce() -> T,
+) -> T {
+    static ARCHIVE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let key = fs::canonicalize(repo_path).unwrap_or_else(|_| PathBuf::from(repo_path));
+    let lock = {
+        let locks = ARCHIVE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut locks = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
+    };
+    let repository_lock = repository_operation_lock(repo_path);
+    let _read_guard = repository_lock.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _archive_guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation()
+}
+
+fn handle_service_connection(
+    mut stream: LocalSocketStream,
+    token: &str,
+    state: &ServiceState,
+    scan_requested: &AtomicBool,
+    remote_check_requested: &AtomicBool,
+    remote_check_running: &AtomicBool,
+    indexing: &AtomicBool,
+    shutdown_requested: &AtomicBool,
+    running: &AtomicBool,
+) {
+    #[cfg(windows)]
+    if let Err(error) = stream.set_nonblocking(true) {
+        eprintln!("GitManager service could not enable bounded named-pipe I/O: {error}");
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = stream.set_recv_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_send_timeout(Some(Duration::from_secs(15)));
+    }
+
+    #[cfg(windows)]
+    let request_frame = read_service_frame_with_timeout(&mut stream, Duration::from_secs(5));
+    #[cfg(not(windows))]
+    let request_frame = read_service_frame(&mut stream);
+
+    let mut shutdown_after_response = false;
+    if let Err(error) = &request_frame {
+        eprintln!(
+            "GitManager service IPC: rejected an incomplete/invalid client request: {error}"
+        );
+    }
+    let response = match request_frame {
+        Err(error) => ServiceResponse {
             ok: false,
             status: state.status("Invalid service-control request"),
-            error: Some("Invalid or oversized request".to_string()),
-        }
-    } else {
-        match serde_json::from_slice::<ServiceRequest>(&bytes) {
+            error: Some(format!("Invalid or oversized request: {error}")),
+            data: None,
+        },
+        Ok(bytes) => match serde_json::from_slice::<ServiceRequest>(&bytes) {
             Ok(request) if request.token == token => match request.command {
-                ServiceCommand::Status => ServiceResponse {
-                    ok: true,
-                    status: state.status("Background service status"),
-                    error: None,
+                ServiceCommand::Shutdown => {
+                    shutdown_after_response = true;
+                    ServiceResponse {
+                        ok: true,
+                        status: state.status("Graceful service shutdown acknowledged"),
+                        error: None,
+                        data: None,
+                    }
+                },
+                ServiceCommand::Status => {
+                    let mut status = state.status("Background service status");
+                    status.remote_check_pending = remote_check_requested.load(Ordering::Acquire);
+                    status.remote_check_running = remote_check_running.load(Ordering::Acquire);
+                    status.indexing = indexing.load(Ordering::Acquire);
+                    ServiceResponse {
+                        ok: true,
+                        status,
+                        error: None,
+                        data: None,
+                    }
                 },
                 ServiceCommand::Suspend { seconds } => ServiceResponse {
                     ok: true,
                     status: state.suspend(seconds),
                     error: None,
+                    data: None,
                 },
                 ServiceCommand::Resume => ServiceResponse {
                     ok: true,
                     status: state.resume(),
                     error: None,
+                    data: None,
                 },
+                ServiceCommand::RequestScan => {
+                    scan_requested.store(true, Ordering::Release);
+                    ServiceResponse {
+                        ok: true,
+                        status: state.status("Repository index refresh queued"),
+                        error: None,
+                        data: None,
+                    }
+                },
+                ServiceCommand::RequestRemoteCheck => {
+                    remote_check_requested.store(true, Ordering::Release);
+                    let mut status = state.status("Remote repository check queued");
+                    status.remote_check_pending = true;
+                    status.remote_check_running = remote_check_running.load(Ordering::Acquire);
+                    status.indexing = indexing.load(Ordering::Acquire);
+                    ServiceResponse {
+                        ok: true,
+                        status,
+                        error: None,
+                        data: None,
+                    }
+                },
+                ServiceCommand::LoadAccounts => load_account_storage(state),
+                ServiceCommand::SaveAccount { payload } => save_account_storage(state, payload),
+                ServiceCommand::InspectRepository { repo_path } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_read_lock(&lock_path, || load_repository_overview(state, repo_path))
+                }
+                ServiceCommand::LoadCommitHistory {
+                    repo_path, offset, limit, branch_filter, search_query,
+                } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_read_lock(&lock_path, || load_commit_history(
+                        state, repo_path, offset, limit, branch_filter, search_query,
+                    ))
+                }
+                ServiceCommand::GetCommitDetails { repo_path, oid } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_read_lock(&lock_path, || load_commit_details(state, repo_path, oid))
+                }
+                ServiceCommand::ListRepositoryFiles {
+                    repo_path, relative_path, source, branch,
+                } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_read_lock(&lock_path, || list_repository_files(
+                        state, repo_path, relative_path, source, branch,
+                    ))
+                }
+                ServiceCommand::ReadRepositoryFile {
+                    repo_path, relative_path, source, branch,
+                } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_read_lock(&lock_path, || read_repository_file(
+                        state, repo_path, relative_path, source, branch,
+                    ))
+                }
+                ServiceCommand::SaveConflictResolution { repo_path, relative_path, content } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        save_conflict_resolution(state, repo_path, relative_path, content)
+                    })
+                }
+                ServiceCommand::PreviewRepositoryPull { repo_path } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || preview_repository_pull(state, repo_path))
+                }
+                ServiceCommand::GetRepositoryChanges { repo_path } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_read_lock(&lock_path, || get_repository_changes(state, repo_path))
+                }
+                ServiceCommand::ReadRepositoryFileDiff { repo_path, relative_path, staged } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_read_lock(&lock_path, || {
+                        read_repository_file_diff(state, repo_path, relative_path, staged)
+                    })
+                }
+                ServiceCommand::FetchRepositoryRemote { repo_path, remote_name } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        fetch_repository_remote(state, repo_path, remote_name)
+                    })
+                }
+                ServiceCommand::StageRepositoryPaths { repo_path, paths } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || stage_repository_paths(state, repo_path, paths))
+                }
+                ServiceCommand::UnstageRepositoryPaths { repo_path, paths } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || unstage_repository_paths(state, repo_path, paths))
+                }
+                ServiceCommand::PreviewRepositoryCommit { repo_path } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || preview_repository_commit(state, repo_path))
+                }
+                ServiceCommand::CreateRepositoryCommit { repo_path, message, expected_index_tree } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        create_repository_commit(state, repo_path, message, expected_index_tree)
+                    })
+                }
+                ServiceCommand::DeleteRepositoryPath { repo_path, relative_path } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        delete_repository_path(state, repo_path, relative_path)
+                    })
+                }
+                ServiceCommand::PrepareAndPullRepositoryUpdate {
+                    repo_path, expected_branch, expected_local_oid, expected_remote_oid,
+                    expected_status_token, mode, stage_paths, commit_message,
+                } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || prepare_and_pull_repository_update(
+                        state, repo_path, expected_branch, expected_local_oid, expected_remote_oid,
+                        expected_status_token, mode, stage_paths, commit_message,
+                    ))
+                }
+                ServiceCommand::ListLocalRepositoryBranches { repo_path } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_read_lock(&lock_path, || list_local_repository_branches(state, repo_path))
+                }
+                ServiceCommand::SwitchRepositoryBranch { repo_path, branch_name } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        switch_repository_branch(state, repo_path, branch_name)
+                    })
+                }
+                ServiceCommand::ListNotifications => list_notifications(state),
+                ServiceCommand::MarkNotificationRead { id } => mark_notification_read(state, id),
+                ServiceCommand::DismissNotification { id } => dismiss_notification(state, id),
+                ServiceCommand::MarkAllNotificationsRead => mark_all_notifications_read(state),
+                ServiceCommand::LoadAppPreferences => load_app_preferences(state),
+                ServiceCommand::SaveAppPreferences { payload } => save_app_preferences(state, payload),
+                ServiceCommand::GetRepositoryIndexGeneration => get_repository_index_generation(state),
+                ServiceCommand::LoadIndexedRepositories { filter_mode } =>
+                    load_indexed_repositories(state, filter_mode),
+                ServiceCommand::LoadRepositoryPreferences { repo_path, repo_id } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        load_repository_preferences(state, repo_path, repo_id)
+                    })
+                }
+                ServiceCommand::SaveRepositoryPreferences { repo_path, payload } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        save_repository_preferences(state, repo_path, payload)
+                    })
+                }
+                ServiceCommand::CaptureRepositoryArchive { repo_path, kind, archive_root } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_archive_lock(&lock_path, || {
+                        capture_repository_archive(state, repo_path, kind, archive_root)
+                    })
+                }
+                ServiceCommand::ListRepositoryArchives { repo_path, kind, archive_root } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_archive_lock(&lock_path, || {
+                        list_repository_archives(state, repo_path, kind, archive_root)
+                    })
+                }
+                ServiceCommand::RestoreRepositoryArchive {
+                    repo_path, destination_path, snapshot_id, kind, archive_root, confirm_replace,
+                } => {
+                    let lock_path = repo_path.clone();
+                    with_repository_operation_lock(&lock_path, || {
+                        restore_repository_archive(
+                            state, repo_path, destination_path, snapshot_id, kind, archive_root, confirm_replace,
+                        )
+                    })
+                }
+                ServiceCommand::GetArchiveCloudStorageInfo { archive_root } =>
+                    get_archive_cloud_storage_info(state, archive_root),
+                ServiceCommand::ConfigureArchiveCloudStorage { archive_root, provider_json } =>
+                    configure_archive_cloud_storage(state, archive_root, provider_json),
+                ServiceCommand::DisableArchiveCloudStorage { archive_root } =>
+                    disable_archive_cloud_storage(state, archive_root),
+                ServiceCommand::SyncArchiveCloudStorage { archive_root } =>
+                    sync_archive_cloud_storage(state, archive_root),
+                ServiceCommand::DetectGitHubIdentity => detect_github_identity(state),
+                ServiceCommand::ConnectGitAccount { payload } => connect_git_account(state, payload),
             },
             Ok(_) => ServiceResponse {
                 ok: false,
                 status: state.status("Unauthorized service-control request"),
                 error: Some("Authentication failed".to_string()),
+                data: None,
             },
             Err(error) => ServiceResponse {
                 ok: false,
                 status: state.status("Invalid service-control request"),
                 error: Some(format!("Invalid request: {error}")),
+                data: None,
             },
         }
     };
 
     if let Ok(encoded) = serde_json::to_vec(&response) {
-        let _ = stream.write_all(&encoded);
-        let _ = stream.flush();
+        let response_bytes = if encoded.len() as u64 >= MAX_MESSAGE_BYTES {
+            serde_json::to_vec(&ServiceResponse {
+                ok: false,
+                status: state.status("Service response exceeded its size limit"),
+                error: Some("The service response is too large to send over local IPC.".to_string()),
+                data: None,
+            }).unwrap_or_default()
+        } else {
+            encoded
+        };
+        #[cfg(windows)]
+        let response_sent = match write_service_frame_with_timeout(
+            &mut stream,
+            &response_bytes,
+            Duration::from_secs(15),
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!(
+                    "GitManager service IPC: could not send {}-byte response frame: {error}",
+                    response_bytes.len()
+                );
+                false
+            }
+        };
+        #[cfg(not(windows))]
+        let response_sent = match write_service_frame(&mut stream, &response_bytes) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!(
+                    "GitManager service IPC: could not send {}-byte response frame: {error}",
+                    response_bytes.len()
+                );
+                false
+            }
+        };
+
+        // Do not stop the listener until the caller has received its
+        // acknowledgement; then reject new work and let the service drain.
+        if response_sent && shutdown_after_response {
+            shutdown_requested.store(true, Ordering::Release);
+            running.store(false, Ordering::Release);
+        }
     }
 }
 
-fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String> {
-    let endpoint_path = gitmanager_data_dir()?.join(ENDPOINT_FILE);
+
+fn is_legacy_protocol_command_compatible(command: &ServiceCommand) -> bool {
+    matches!(command, ServiceCommand::Status)
+}
+
+fn finish_service_response(
+    endpoint_version: u32,
+    response_bytes: &[u8],
+) -> Result<ServiceResponse, String> {
+    let mut response: ServiceResponse = serde_json::from_slice(response_bytes)
+        .map_err(|error| format!("Service-control response was invalid: {error}"))?;
+    if response.status.protocol_version == 0 {
+        response.status.protocol_version = endpoint_version;
+    }
+    if !response.ok {
+        return Err(response.error.unwrap_or_else(|| "Service-control request was rejected.".to_string()));
+    }
+    Ok(response)
+}
+
+/// Protocol v1-v3 used loopback TCP and an unframed JSON stream.
+/// Only Status is allowed here so the UI can identify and replace an older worker.
+fn send_legacy_tcp_status(endpoint: &Endpoint) -> Result<ServiceResponse, String> {
+    if endpoint.address.trim().is_empty() {
+        return Err("The previous GitManager service did not publish a TCP endpoint.".to_string());
+    }
+    let address: SocketAddr = endpoint.address.parse()
+        .map_err(|_| "Legacy service-control address is invalid.".to_string())?;
+    if !address.ip().is_loopback() {
+        return Err("Legacy service-control endpoint is not a loopback address.".to_string());
+    }
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+        .map_err(|error| format!("Could not connect to the previous GitManager service: {error}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(3))).ok();
+
+    let request = ServiceRequest {
+        token: endpoint.token.clone(),
+        command: ServiceCommand::Status,
+    };
+    let encoded = serde_json::to_vec(&request)
+        .map_err(|error| format!("Could not encode legacy status request: {error}"))?;
+    stream.write_all(&encoded)
+        .map_err(|error| format!("Could not send legacy service status request: {error}"))?;
+    stream.shutdown(std::net::Shutdown::Write).ok();
+
+    let mut response_bytes = Vec::new();
+    stream.take(MAX_MESSAGE_BYTES).read_to_end(&mut response_bytes)
+        .map_err(|error| format!("Could not read legacy service status response: {error}"))?;
+    if response_bytes.is_empty() || response_bytes.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err("Legacy service status response was empty or exceeded its size limit.".to_string());
+    }
+    finish_service_response(endpoint.version, &response_bytes)
+}
+
+fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, String> {
+    let data_dir = gitmanager_data_dir()?;
+    let endpoint_path = data_dir.join(ENDPOINT_FILE);
     let content = fs::read(&endpoint_path)
-        .map_err(|error| format!("GitManager background service is not reachable: {error}"))?;
+        .map_err(|error| format!("GitManager core service is not reachable: {error}"))?;
     if content.len() > 4096 {
         return Err("Service-control endpoint file is invalid.".to_string());
     }
 
     let endpoint: Endpoint = serde_json::from_slice(&content)
         .map_err(|error| format!("Service-control endpoint is invalid: {error}"))?;
-    if endpoint.version != 1 {
+    if endpoint.version == 0 || endpoint.version > SERVICE_PROTOCOL_VERSION {
         return Err("Service-control protocol version is unsupported.".to_string());
     }
-
-    let address: SocketAddr = endpoint.address.parse()
-        .map_err(|_| "Service-control address is invalid.".to_string())?;
-    if !address.ip().is_loopback() {
-        return Err("Service-control endpoint is not a loopback address.".to_string());
+    if endpoint.version < SERVICE_PROTOCOL_VERSION {
+        if !is_legacy_protocol_command_compatible(&command) {
+            return Err(format!(
+                "GitManager core service protocol v{} is outdated; protocol v{} is required. Restart the required service.",
+                endpoint.version,
+                SERVICE_PROTOCOL_VERSION,
+            ));
+        }
+        return send_legacy_tcp_status(&endpoint);
     }
 
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
-        .map_err(|error| format!("Could not connect to GitManager background service: {error}"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+    let (connect_timeout, read_timeout) = match &command {
+        ServiceCommand::Status
+        | ServiceCommand::Shutdown
+        | ServiceCommand::Suspend { .. }
+        | ServiceCommand::Resume
+        | ServiceCommand::RequestScan
+        | ServiceCommand::RequestRemoteCheck => (
+            Duration::from_secs(2),
+            Duration::from_secs(3),
+        ),
+        ServiceCommand::CaptureRepositoryArchive { .. }
+        | ServiceCommand::ListRepositoryArchives { .. }
+        | ServiceCommand::RestoreRepositoryArchive { .. }
+        | ServiceCommand::ConfigureArchiveCloudStorage { .. }
+        | ServiceCommand::DisableArchiveCloudStorage { .. }
+        | ServiceCommand::SyncArchiveCloudStorage { .. } => (
+            Duration::from_secs(5),
+            Duration::from_secs(600),
+        ),
+        ServiceCommand::ConnectGitAccount { .. } => (
+            Duration::from_secs(5),
+            Duration::from_secs(300),
+        ),
+        _ => (
+            Duration::from_secs(5),
+            Duration::from_secs(90),
+        ),
+    };
+
+    let expected_name = service_socket_name(&data_dir).0;
+    if endpoint.name != expected_name {
+        return Err("Service-control socket name does not match this user's GitManager data directory.".to_string());
+    }
+    let mut stream = connect_service_local_socket(&endpoint.name, connect_timeout)
+        .map_err(|error| format!("Could not connect to GitManager core service: {error}"))?;
+
+    #[cfg(windows)]
+    stream.set_nonblocking(true)
+        .map_err(|error| format!("Could not enable bounded Windows named-pipe IPC: {error}"))?;
+    #[cfg(not(windows))]
+    {
+        stream.set_recv_timeout(Some(read_timeout))
+            .map_err(|error| format!("Could not set service IPC receive timeout: {error}"))?;
+        stream.set_send_timeout(Some(Duration::from_secs(15)))
+            .map_err(|error| format!("Could not set service IPC send timeout: {error}"))?;
+    }
 
     let request = ServiceRequest { token: endpoint.token, command };
     let encoded = serde_json::to_vec(&request)
         .map_err(|error| format!("Could not encode service-control request: {error}"))?;
-    stream.write_all(&encoded)
-        .map_err(|error| format!("Could not send service-control request: {error}"))?;
-    stream.shutdown(std::net::Shutdown::Write).ok();
-
-    let mut response_bytes = Vec::new();
-    stream.take(MAX_MESSAGE_BYTES).read_to_end(&mut response_bytes)
-        .map_err(|error| format!("Could not read service-control response: {error}"))?;
-    let response: ServiceResponse = serde_json::from_slice(&response_bytes)
-        .map_err(|error| format!("Service-control response was invalid: {error}"))?;
-    if !response.ok {
-        return Err(response.error.unwrap_or_else(|| "Service-control request was rejected.".to_string()));
+    if encoded.is_empty() || encoded.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err("Service-control request exceeded its size limit.".to_string());
     }
-    Ok(response.status)
+
+    #[cfg(windows)]
+    let response_bytes = {
+        write_service_frame_with_timeout(&mut stream, &encoded, Duration::from_secs(15))
+            .map_err(|error| format!("Could not send service-control request: {error}"))?;
+        read_service_frame_with_timeout(&mut stream, read_timeout)
+            .map_err(|error| format!("Could not read service-control response: {error}"))?
+    };
+    #[cfg(not(windows))]
+    let response_bytes = {
+        write_service_frame(&mut stream, &encoded)
+            .map_err(|error| format!("Could not send service-control request: {error}"))?;
+        read_service_frame(&mut stream)
+            .map_err(|error| format!("Could not read service-control response: {error}"))?
+    };
+
+    finish_service_response(endpoint.version, &response_bytes)
+}
+
+
+fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String> {
+    send_service_request(command).map(|response| response.status)
+}
+
+pub fn load_service_account_cache() -> Result<serde_json::Value, String> {
+    let response = send_service_request(ServiceCommand::LoadAccounts)?;
+    response.data.ok_or_else(|| "The service returned no saved account metadata.".to_string())
+}
+
+pub fn save_service_account_cache(payload: serde_json::Value) -> Result<(), String> {
+    send_service_request(ServiceCommand::SaveAccount { payload }).map(|_| ())
+}
+
+fn service_response_data(command: ServiceCommand, description: &str) -> Result<serde_json::Value, String> {
+    let response = send_service_request(command)?;
+    response.data.ok_or_else(|| format!("The core service returned no {description} payload."))
+}
+
+pub fn load_service_repository_overview(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::InspectRepository { repo_path },
+        "repository overview",
+    )
+}
+
+pub fn load_service_commit_history(
+    repo_path: String,
+    offset: usize,
+    limit: usize,
+    branch_filter: Option<String>,
+    search_query: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::LoadCommitHistory {
+            repo_path,
+            offset,
+            limit,
+            branch_filter,
+            search_query,
+        },
+        "commit history",
+    )
+}
+
+pub fn load_service_commit_details(
+    repo_path: String,
+    oid: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::GetCommitDetails { repo_path, oid },
+        "commit details",
+    )
+}
+
+pub fn load_service_repository_files(
+    repo_path: String,
+    relative_path: Option<String>,
+    source: String,
+    branch: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::ListRepositoryFiles {
+            repo_path,
+            relative_path,
+            source,
+            branch,
+        },
+        "repository directory",
+    )
+}
+
+pub fn read_service_repository_file(
+    repo_path: String,
+    relative_path: String,
+    source: String,
+    branch: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::ReadRepositoryFile {
+            repo_path,
+            relative_path,
+            source,
+            branch,
+        },
+        "repository file preview",
+    )
+}
+
+pub fn service_save_conflict_resolution(
+    repo_path: String, relative_path: String, content: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::SaveConflictResolution { repo_path, relative_path, content }, "conflict resolution")
+}
+pub fn service_preview_repository_pull(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::PreviewRepositoryPull { repo_path }, "pull preview")
+}
+pub fn service_get_repository_changes(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::GetRepositoryChanges { repo_path }, "repository changes")
+}
+pub fn service_read_repository_file_diff(
+    repo_path: String, relative_path: String, staged: bool,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::ReadRepositoryFileDiff { repo_path, relative_path, staged }, "repository file diff")
+}
+pub fn service_fetch_repository_remote(
+    repo_path: String, remote_name: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::FetchRepositoryRemote { repo_path, remote_name }, "remote fetch result")
+}
+pub fn service_stage_repository_paths(
+    repo_path: String, paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::StageRepositoryPaths { repo_path, paths }, "staged changes")
+}
+pub fn service_unstage_repository_paths(
+    repo_path: String, paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::UnstageRepositoryPaths { repo_path, paths }, "unstaged changes")
+}
+pub fn service_preview_repository_commit(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::PreviewRepositoryCommit { repo_path }, "commit preview")
+}
+pub fn service_create_repository_commit(
+    repo_path: String, message: String, expected_index_tree: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::CreateRepositoryCommit { repo_path, message, expected_index_tree }, "commit result")
+}
+pub fn service_delete_repository_path(
+    repo_path: String, relative_path: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::DeleteRepositoryPath { repo_path, relative_path }, "deletion result")
+}
+pub fn service_prepare_and_pull_repository_update(
+    repo_path: String,
+    expected_branch: String,
+    expected_local_oid: String,
+    expected_remote_oid: String,
+    expected_status_token: String,
+    mode: String,
+    stage_paths: Vec<String>,
+    commit_message: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::PrepareAndPullRepositoryUpdate {
+            repo_path, expected_branch, expected_local_oid, expected_remote_oid,
+            expected_status_token, mode, stage_paths, commit_message,
+        },
+        "pull result",
+    )
+}
+pub fn service_list_local_repository_branches(repo_path: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::ListLocalRepositoryBranches { repo_path }, "branch list")
+}
+pub fn service_switch_repository_branch(
+    repo_path: String, branch_name: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::SwitchRepositoryBranch { repo_path, branch_name }, "branch switch result")
+}
+
+pub fn service_list_notifications() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::ListNotifications, "notification history")
+}
+pub fn service_mark_notification_read(id: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::MarkNotificationRead { id }, "notification read update")
+}
+pub fn service_dismiss_notification(id: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::DismissNotification { id }, "notification dismissal")
+}
+pub fn service_mark_all_notifications_read() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::MarkAllNotificationsRead, "bulk notification read update")
+}
+
+pub fn service_load_app_preferences() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::LoadAppPreferences, "application preferences")
+}
+pub fn service_save_app_preferences(payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::SaveAppPreferences { payload }, "saved application preferences")
+}
+
+pub fn service_get_repository_index_generation() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::GetRepositoryIndexGeneration, "repository index generation")
+}
+pub fn service_load_indexed_repositories(filter_mode: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::LoadIndexedRepositories { filter_mode }, "indexed repository snapshot")
+}
+
+pub fn service_load_repository_preferences(
+    repo_path: String,
+    repo_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::LoadRepositoryPreferences { repo_path, repo_id },
+        "repository preferences",
+    )
+}
+pub fn service_save_repository_preferences(
+    repo_path: String,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::SaveRepositoryPreferences { repo_path, payload },
+        "saved repository preferences",
+    )
+}
+
+pub fn service_capture_repository_archive(
+    repo_path: String, kind: String, archive_root: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::CaptureRepositoryArchive { repo_path, kind, archive_root },
+        "repository archive capture",
+    )
+}
+pub fn service_list_repository_archives(
+    repo_path: String, kind: Option<String>, archive_root: Option<String>,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::ListRepositoryArchives { repo_path, kind, archive_root },
+        "repository archive list",
+    )
+}
+pub fn service_restore_repository_archive(
+    repo_path: String,
+    destination_path: String,
+    snapshot_id: String,
+    kind: String,
+    archive_root: Option<String>,
+    confirm_replace: bool,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::RestoreRepositoryArchive {
+            repo_path, destination_path, snapshot_id, kind, archive_root, confirm_replace,
+        },
+        "repository archive restore",
+    )
+}
+pub fn service_get_archive_cloud_storage_info(archive_root: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::GetArchiveCloudStorageInfo { archive_root }, "archive cloud storage information")
+}
+pub fn service_configure_archive_cloud_storage(
+    archive_root: String, provider_json: String,
+) -> Result<serde_json::Value, String> {
+    service_response_data(
+        ServiceCommand::ConfigureArchiveCloudStorage { archive_root, provider_json },
+        "archive cloud storage configuration",
+    )
+}
+pub fn service_disable_archive_cloud_storage(archive_root: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::DisableArchiveCloudStorage { archive_root }, "archive cloud storage configuration")
+}
+pub fn service_sync_archive_cloud_storage(archive_root: String) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::SyncArchiveCloudStorage { archive_root }, "archive cloud storage synchronization")
+}
+
+pub fn service_detect_github_identity() -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::DetectGitHubIdentity, "GitHub CLI identity")
+}
+pub fn service_connect_git_account(payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    service_response_data(ServiceCommand::ConnectGitAccount { payload }, "connected provider account")
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
-    send_service_command(ServiceCommand::Status)
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match send_service_command(ServiceCommand::Status) {
+            Ok(status) => return Ok(status),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(40 * (attempt + 1) as u64));
+                }
+            }
+        }
+    }
+    Err(format!(
+        "GitManager core service did not complete its authenticated status response after 3 attempts: {}",
+        last_error.unwrap_or_else(|| "unknown service IPC error".to_string())
+    ))
+}
+
+/// Requests a graceful, authenticated service shutdown. The service closes
+/// its listener after acknowledging and exits after active IPC handlers drain.
+pub fn request_service_shutdown() -> Result<ServiceStatus, String> {
+    send_service_command(ServiceCommand::Shutdown)
+}
+
+/// Asks the required service process to refresh the persisted repository index.
+/// The UI never performs the directory walk itself.
+pub fn request_service_scan() -> Result<ServiceStatus, String> {
+    send_service_command(ServiceCommand::RequestScan)
+}
+
+/// Requests an immediate remote-update check in the required service.
+pub fn request_service_remote_check() -> Result<ServiceStatus, String> {
+    send_service_command(ServiceCommand::RequestRemoteCheck)
 }
 
 /// Persists the suspension request before attempting IPC. If the service is
@@ -405,6 +2474,12 @@ pub fn request_service_suspend(seconds: u64) -> Result<ServiceStatus, String> {
             suspended: true,
             remaining_seconds: seconds,
             message: format!("Background-service suspension queued for {seconds} seconds; the service will observe the persisted state on its next poll: {error}"),
+            service_generation: 0,
+            process_id: 0,
+            protocol_version: 0,
+            remote_check_pending: false,
+            remote_check_running: false,
+            indexing: false,
         }),
     }
 }
@@ -425,6 +2500,12 @@ pub fn request_service_resume() -> Result<ServiceStatus, String> {
             suspended: false,
             remaining_seconds: 0,
             message: format!("Background-service activation queued for its next control poll: {error}"),
+            service_generation: 0,
+            process_id: 0,
+            protocol_version: 0,
+            remote_check_pending: false,
+            remote_check_running: false,
+            indexing: false,
         }),
     }
 }
@@ -489,13 +2570,138 @@ pub fn report_supervisor_launch_failure(reason: &str) {
     record_supervisor_start_failure(reason);
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ))
+        .unwrap_or(false)
+}
+
+/// Bypass the second-process UI supervisor in an explicitly requested or
+/// debugger-attached session. This keeps Visual Studio attached to the real
+/// WebView host instead of the launcher process waiting on crash_helper.
+pub fn supervisor_should_bypass() -> bool {
+    if env_flag_enabled("GITMANAGER_DISABLE_CRASH_SUPERVISOR") {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn IsDebuggerPresent() -> i32;
+        }
+        unsafe { IsDebuggerPresent() != 0 }
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Persist a service startup/readiness failure in crash_helper's incident
+/// stream, including the latest service log tail.
+pub fn report_service_start_failure(reason: &str) {
+    append_incident(
+        reason,
+        std::process::id(),
+        None,
+        request_service_status(),
+    );
+}
+
+fn launch_service_supervisor(helper: &Path, current_exe: &Path) -> Result<bool, String> {
+    let mut command = Command::new(helper);
+    command
+        .arg("--supervise-service")
+        .arg(current_exe)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    configure_detached_command(&mut command);
+
+    let mut process = command.spawn()
+        .map_err(|error| format!("Could not start the GitManager service supervisor: {error}"))?;
+    let stdout = process.stdout.take()
+        .ok_or_else(|| "The GitManager service supervisor did not expose its startup channel.".to_string())?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("gitmanager-service-supervisor-startup".to_string())
+        .spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut line = String::new();
+            let result = reader.read_line(&mut line);
+            let _ = sender.send(result.map(|count| (count, line)));
+        })
+        .map_err(|error| format!("Could not monitor service-supervisor startup: {error}"))?;
+
+    match receiver.recv_timeout(Duration::from_secs(15)) {
+        Ok(Ok((count, line))) if count > 0 && line.trim() == "GITMANAGER_SERVICE_SUPERVISOR_READY" => {
+            // Dropping Child does not terminate the detached monitor. It owns
+            // its own lock and lifetime and continues after the UI exits.
+            drop(process);
+            Ok(true)
+        }
+        Ok(Ok((_count, line))) => {
+            let _ = process.kill();
+            let _ = process.wait();
+            Err(format!("GitManager service supervisor failed during startup: {}", line.trim()))
+        }
+        Ok(Err(error)) => {
+            let _ = process.kill();
+            let _ = process.wait();
+            Err(format!("Could not read service-supervisor startup status: {error}"))
+        }
+        Err(error) => {
+            let status = process.try_wait().ok().flatten();
+            if status.is_none() {
+                let _ = process.kill();
+                let _ = process.wait();
+            }
+            Err(format!("GitManager service supervisor did not become ready within 15 seconds: {error}"))
+        }
+    }
+}
+
+/// Start the independent core-service monitor before choosing the UI launch
+/// mode. In a debugger-attached session the UI remains in this process, while
+/// the service monitor still runs out-of-process and keeps its own lifetime.
 pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Result<bool, String> {
     if is_supervised_child(args) {
         return Ok(false);
     }
-    let helper = match find_crash_helper(current_exe) {
-        Some(path) => path,
-        None => return Ok(false),
+
+    let helper = find_crash_helper(current_exe);
+    let service_supervisor_started = if let Some(helper_path) = helper.as_ref() {
+        match launch_service_supervisor(helper_path, current_exe) {
+            Ok(started) => started,
+            Err(error) if cfg!(debug_assertions) => {
+                eprintln!("GitManager service supervisor could not start: {error}");
+                false
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        false
+    };
+
+    if service_supervisor_started {
+        std::env::set_var("GITMANAGER_SERVICE_SUPERVISOR", "1");
+    }
+
+    // Keep Visual Studio attached to the real WebView host. The independent
+    // service supervisor above remains active even when the UI watchdog is
+    // intentionally bypassed for debugger sessions.
+    if supervisor_should_bypass() {
+        return Ok(false);
+    }
+
+    let Some(helper) = helper else {
+        return Ok(false);
     };
 
     let mut command = Command::new(helper);
@@ -505,8 +2711,8 @@ pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Res
         .map_err(|error| format!("Could not start crash_helper: {error}"))?;
 
     // Keep the original GitManager process alive as the process-tree root.
-    // This makes crash_helper.exe visible beneath the launched app while it
-    // supervises the UI; the independent service remains outside this tree.
+    // crash_helper owns UI containment; the separate service monitor owns the
+    // per-user data service and is deliberately not in that kill-on-close tree.
     let status = helper_process.wait()
         .map_err(|error| format!("Could not wait for crash_helper: {error}"))?;
     if !status.success() {
@@ -514,6 +2720,7 @@ pub fn launch_supervisor(current_exe: &Path, args: &[std::ffi::OsString]) -> Res
     }
     Ok(true)
 }
+
 
 fn find_crash_helper(current_exe: &Path) -> Option<PathBuf> {
     let executable_dir = current_exe.parent()?;
@@ -575,6 +2782,665 @@ fn find_crash_helper(current_exe: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn find_core_service_executable(application: &Path) -> Option<PathBuf> {
+    let executable_dir = application.parent()?;
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let triple = host_target_triple();
+    let mut directories = vec![
+        executable_dir.to_path_buf(),
+        executable_dir.join("resources"),
+        executable_dir.join("Resources"),
+        executable_dir.join("../Resources"),
+        executable_dir.join("../resources"),
+    ];
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(prefix) = executable_dir.parent() {
+            for product in ["GitManager", "gitmanager", "git-manager"] {
+                directories.push(prefix.join("lib").join(product));
+            }
+        }
+        if let Some(app_dir) = std::env::var_os("APPDIR") {
+            let libraries = PathBuf::from(app_dir).join("usr").join("lib");
+            for product in ["GitManager", "gitmanager", "git-manager"] {
+                directories.push(libraries.join(product));
+            }
+        }
+    }
+
+    let names = [
+        format!("gitmanager.service{suffix}"),
+        format!("gitmanager.service-{triple}{suffix}"),
+        format!("gitmanager-service{suffix}"),
+        format!("gitmanager-service-{triple}{suffix}"),
+    ];
+    for directory in directories {
+        for name in &names {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        if let Ok(entries) = fs::read_dir(&directory) {
+            let mut candidates = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.is_file()
+                        && path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                (name.starts_with("gitmanager.service-")
+                                    || name.starts_with("gitmanager-service-"))
+                                    && name.ends_with(suffix)
+                            })
+                })
+                .collect::<Vec<_>>();
+            candidates.sort();
+            if let Some(candidate) = candidates.into_iter().next() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn core_service_log_path() -> Result<PathBuf, String> {
+    Ok(gitmanager_data_dir()?.join("log").join("service.log"))
+}
+
+fn core_service_log_tail() -> String {
+    const MAX_TAIL_BYTES: u64 = 16 * 1024;
+    let path = match core_service_log_path() {
+        Ok(path) => path,
+        Err(error) => return format!("Service log path unavailable: {error}"),
+    };
+    let mut file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return "The core service has not written a log yet.".to_string();
+        }
+        Err(error) => return format!("Could not open service log: {error}"),
+    };
+    let length = match file.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => return format!("Could not inspect service log: {error}"),
+    };
+    let offset = length.saturating_sub(MAX_TAIL_BYTES);
+    if let Err(error) = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(offset)) {
+        return format!("Could not seek service log: {error}");
+    }
+    let mut bytes = Vec::with_capacity((length - offset) as usize);
+    if let Err(error) = file.read_to_end(&mut bytes) {
+        return format!("Could not read service log: {error}");
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    text.lines().rev().take(32).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
+fn read_bounded_log_tail(path: &Path, max_bytes: u64, max_lines: usize) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let length = file.metadata()?.len();
+    let offset = length.saturating_sub(max_bytes);
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(offset))?;
+    let mut bytes = Vec::with_capacity((length - offset) as usize);
+    file.read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(text
+        .lines()
+        .rev()
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Returns the most recent bounded crash_helper incidents for Task Center →
+/// Service diagnostics. The JSONL records include the failure reason, exit
+/// code, authenticated service status and a snapshot of the service log.
+pub fn read_service_incident_tail() -> Result<String, String> {
+    let path = gitmanager_data_dir()?.join("log").join("crash_helper.jsonl");
+    match read_bounded_log_tail(&path, 16 * 1024, 24) {
+        Ok(text) if text.trim().is_empty() => {
+            Ok("No crash_helper incident records have been recorded.".to_string())
+        }
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok("No crash_helper incident records have been recorded.".to_string())
+        }
+        Err(error) => Err(format!(
+            "Could not read crash_helper incident history at {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn open_core_service_log_streams() -> Result<(Stdio, Stdio), String> {
+    let path = core_service_log_path()?;
+    let directory = path.parent()
+        .ok_or_else(|| "GitManager service log path has no parent directory.".to_string())?;
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("Could not create GitManager service log directory: {error}"))?;
+
+    const SERVICE_LOG_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
+    if fs::metadata(&path)
+        .map(|metadata| metadata.len() > SERVICE_LOG_LIMIT_BYTES)
+        .unwrap_or(false)
+    {
+        let rotated = path.with_extension("log.1");
+        if rotated.exists() {
+            fs::remove_file(&rotated)
+                .map_err(|error| format!("Could not remove previous service log: {error}"))?;
+        }
+        fs::rename(&path, &rotated)
+            .map_err(|error| format!("Could not rotate GitManager service log: {error}"))?;
+    }
+
+    let output = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| format!("Could not open GitManager service log: {error}"))?;
+    let errors = output.try_clone()
+        .map_err(|error| format!("Could not duplicate GitManager service log handle: {error}"))?;
+    Ok((Stdio::from(output), Stdio::from(errors)))
+}
+
+/// Reads the PID recorded by the process that acquired the exclusive service lock.
+/// A stale value is ignored whenever the kernel lock is not currently held.
+pub fn service_control_lock_owner_pid() -> Option<u32> {
+    let path = gitmanager_data_dir().ok()?.join(LOCK_FILE);
+    let mut value = String::new();
+    File::open(path).ok()?.read_to_string(&mut value).ok()?;
+    let pid = value.trim().parse::<u32>().ok()?;
+    (pid > 1).then_some(pid)
+}
+
+/// Checks the kernel-enforced service lock without trusting the owner PID file.
+/// Any inspection error fails closed so startup cannot create a duplicate.
+pub fn service_control_lock_is_held() -> bool {
+    let path = match gitmanager_data_dir() {
+        Ok(directory) => directory.join(LOCK_FILE),
+        Err(_) => return true,
+    };
+    let file = match OpenOptions::new().read(true).write(true).open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            let _ = FileExt::unlock(&file);
+            false
+        }
+        Err(_) => true,
+    }
+}
+
+fn core_service_ready() -> bool {
+    request_service_status()
+        .map(|status| {
+            status.service_generation >= SERVICE_GENERATION
+                && status.protocol_version >= SERVICE_PROTOCOL_VERSION
+        })
+        .unwrap_or(false)
+}
+
+fn spawn_core_service_process(executable: &Path) -> Result<Child, String> {
+    let (stdout, stderr) = open_core_service_log_streams()?;
+    let mut command = Command::new(executable);
+    command.stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        // The service must survive UI containment and UI shutdown.
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    command.spawn().map_err(|error| {
+        format!(
+            "Could not start GitManager core service at {}: {error}",
+            executable.display()
+        )
+    })
+}
+
+fn stop_obsolete_service_process(pid: u32) -> bool {
+    if pid <= 1 || pid == std::process::id() {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+const EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE: Duration = Duration::from_secs(45);
+
+fn external_service_lock_recovery_due(since: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(since) >= EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE
+}
+
+fn restart_delay(attempts: u32) -> Duration {
+    // Bound exponential backoff so a repeatedly failing worker cannot spin.
+    let seconds = 2u64.saturating_pow(attempts.min(4)).min(30);
+    Duration::from_secs(seconds)
+}
+
+struct CoreServiceSupervisor {
+    executable: Option<PathBuf>,
+    child: Option<Child>,
+    child_started_at: Option<Instant>,
+    unhealthy_since: Option<Instant>,
+    lock_unhealthy_since: Option<Instant>,
+    lock_owner_pid: Option<u32>,
+    restart_attempts: u32,
+    lock_warning_recorded: bool,
+    next_restart: Instant,
+    last_health_check: Instant,
+}
+
+impl CoreServiceSupervisor {
+    fn new(application: &Path) -> Self {
+        let mut supervisor = Self {
+            executable: find_core_service_executable(application),
+            child: None,
+            child_started_at: None,
+            unhealthy_since: None,
+            lock_unhealthy_since: None,
+            lock_owner_pid: None,
+            restart_attempts: 0,
+            lock_warning_recorded: false,
+            next_restart: std::time::Instant::now(),
+            last_health_check: std::time::Instant::now(),
+        };
+        supervisor.ensure_started("GitManager startup");
+        supervisor
+    }
+
+    fn stop_obsolete_instance(&mut self) -> bool {
+        let status = match request_service_status() {
+            Ok(status) => status,
+            Err(_) => return false,
+        };
+
+        if status.service_generation >= SERVICE_GENERATION
+            && status.protocol_version >= SERVICE_PROTOCOL_VERSION
+        {
+            return true;
+        }
+
+        if status.process_id <= 1 || status.process_id == std::process::id() {
+            return false;
+        }
+
+        let pid = status.process_id;
+        append_incident(
+            &format!(
+                "Found an older GitManager core service (generation {}, protocol {}). Replacing authenticated process {pid}.",
+                status.service_generation,
+                status.protocol_version,
+            ),
+            pid,
+            None,
+            Ok(status),
+        );
+
+        if !stop_obsolete_service_process(pid) {
+            return false;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            match request_service_status() {
+                Ok(current)
+                    if current.service_generation >= SERVICE_GENERATION
+                        && current.protocol_version >= SERVICE_PROTOCOL_VERSION =>
+                {
+                    return true;
+                }
+                Ok(current) if current.process_id == pid => {}
+                Err(_) => return false,
+                _ => {}
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    fn ensure_started(&mut self, reason: &str) {
+        if core_service_ready() {
+            self.unhealthy_since = None;
+            self.lock_unhealthy_since = None;
+            self.lock_owner_pid = None;
+            self.restart_attempts = 0;
+            self.lock_warning_recorded = false;
+            return;
+        }
+
+        // A separately launched or previous-install service may still own
+        // the OS lock while its named-pipe response is broken. Do not spawn a
+        // duplicate; give the owner a recovery grace, then terminate only the
+        // PID recorded under that same kernel-enforced lock.
+        if self.child.is_none() && service_control_lock_is_held() {
+            let owner_pid = service_control_lock_owner_pid();
+            if self.lock_owner_pid != owner_pid {
+                self.lock_owner_pid = owner_pid;
+                self.lock_unhealthy_since = Some(Instant::now());
+                self.lock_warning_recorded = false;
+            }
+            let unhealthy_since = *self
+                .lock_unhealthy_since
+                .get_or_insert_with(Instant::now);
+
+            if !self.lock_warning_recorded {
+                append_incident(
+                    &format!(
+                        "The GitManager core-service lock is held by an existing process (PID {}). Its authenticated IPC endpoint is not completing status responses. crash_helper will wait before attempting bounded recovery.",
+                        owner_pid.map(|pid| pid.to_string()).unwrap_or_else(|| "unknown".to_string())
+                    ),
+                    owner_pid.unwrap_or(0),
+                    None,
+                    request_service_status(),
+                );
+                self.lock_warning_recorded = true;
+            }
+
+            if let Some(pid) = owner_pid.filter(|pid| *pid > 1 && *pid != std::process::id()) {
+                if external_service_lock_recovery_due(unhealthy_since, Instant::now())
+                    && Instant::now() >= self.next_restart
+                {
+                    // The PID file is only trusted while the kernel lock is
+                    // held. Re-read both immediately before terminating to
+                    // avoid acting on a stale PID after an ownership change.
+                    let same_owner = service_control_lock_is_held()
+                        && service_control_lock_owner_pid() == Some(pid);
+                    if same_owner {
+                        append_incident(
+                            &format!(
+                                "The external GitManager core service PID {pid} held the exclusive service lock for at least {} seconds without answering authenticated IPC. Attempting bounded recovery.\n{}",
+                                unhealthy_since.elapsed().as_secs(),
+                                core_service_log_tail()
+                            ),
+                            pid,
+                            None,
+                            request_service_status(),
+                        );
+
+                        let termination_requested = stop_obsolete_service_process(pid);
+                        let lock_path = gitmanager_data_dir()
+                            .ok()
+                            .map(|directory| directory.join(LOCK_FILE));
+                        let mut lock_released = lock_path.as_deref().is_some_and(|path| {
+                            wait_for_exclusive_lock_release(path, Duration::from_secs(4))
+                        });
+
+                        #[cfg(unix)]
+                        if !lock_released
+                            && service_control_lock_is_held()
+                            && service_control_lock_owner_pid() == Some(pid)
+                        {
+                            let _ = force_terminate_service_process(pid);
+                            lock_released = lock_path.as_deref().is_some_and(|path| {
+                                wait_for_exclusive_lock_release(path, Duration::from_secs(2))
+                            });
+                        }
+
+                        if lock_released {
+                            append_incident(
+                                &format!(
+                                    "The unresponsive external GitManager service PID {pid} released its lock; crash_helper will start a fresh service instance. Termination command accepted: {termination_requested}."
+                                ),
+                                pid,
+                                None,
+                                Err("External service was stopped after its IPC health grace expired.".to_string()),
+                            );
+                            self.lock_owner_pid = None;
+                            self.lock_unhealthy_since = None;
+                            self.lock_warning_recorded = false;
+                            self.restart_attempts = self.restart_attempts.saturating_add(1);
+                            self.next_restart = Instant::now() + Duration::from_secs(2);
+                        } else {
+                            append_incident(
+                                &format!(
+                                    "crash_helper could not release the service lock held by external PID {pid}. It will not start a duplicate. Termination command accepted: {termination_requested}.\n{}",
+                                    core_service_log_tail()
+                                ),
+                                pid,
+                                None,
+                                request_service_status(),
+                            );
+                            self.lock_unhealthy_since = Some(Instant::now());
+                            self.restart_attempts = self.restart_attempts.saturating_add(1);
+                            self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+                        }
+                    } else {
+                        // Another process released or replaced the lock while
+                        // the health check was in flight. Never kill that PID.
+                        self.lock_owner_pid = None;
+                        self.lock_unhealthy_since = None;
+                        self.lock_warning_recorded = false;
+                    }
+                }
+            }
+            return;
+        }
+        self.lock_owner_pid = None;
+        self.lock_unhealthy_since = None;
+        self.lock_warning_recorded = false;
+
+        // A current instance may have become reachable after the first
+        // health probe timed out. Treat that authenticated response as ready;
+        // never launch a duplicate merely because the first probe was transient.
+        if self.stop_obsolete_instance() {
+            return;
+        }
+
+        // End the borrow before mutating self.child; Child::try_wait only
+        // needs to be sampled once per supervisor tick.
+        let child_state = self.child.as_mut().map(|child| {
+            let pid = child.id();
+            (pid, child.try_wait())
+        });
+        if let Some((pid, result)) = child_state {
+            match result {
+                Ok(None) => return,
+                Ok(Some(_)) => {
+                    self.child = None;
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
+                }
+                Err(error) => {
+                    append_incident(
+                        &format!("Could not query GitManager core service process: {error}"),
+                        pid,
+                        None,
+                        request_service_status(),
+                    );
+                    self.child = None;
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
+                    self.restart_attempts = self.restart_attempts.saturating_add(1);
+                    self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+                }
+            }
+        }
+
+        if Instant::now() < self.next_restart {
+            return;
+        }
+        let Some(executable) = self.executable.as_ref() else {
+            append_incident(
+                "crash_helper could not locate the packaged gitmanager.service executable",
+                0,
+                None,
+                request_service_status(),
+            );
+            self.restart_attempts = self.restart_attempts.saturating_add(1);
+            self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+            return;
+        };
+
+        match spawn_core_service_process(executable) {
+            Ok(child) => {
+                eprintln!(
+                    "crash_helper: started GitManager core service (pid {}).",
+                    child.id()
+                );
+                self.child = Some(child);
+                self.child_started_at = Some(Instant::now());
+                self.unhealthy_since = None;
+                self.next_restart = Instant::now() + Duration::from_secs(3);
+            }
+            Err(error) => {
+                append_incident(
+                    &format!(
+                        "crash_helper could not start GitManager core service during {reason}: {error}\n{}",
+                        core_service_log_tail()
+                    ),
+                    0,
+                    None,
+                    request_service_status(),
+                );
+                self.restart_attempts = self.restart_attempts.saturating_add(1);
+                self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+            }
+        }
+    }
+
+    fn tick(&mut self) {
+        let child_state = self.child.as_mut().map(|child| {
+            let pid = child.id();
+            (pid, child.try_wait())
+        });
+        if let Some((pid, result)) = child_state {
+            match result {
+                Ok(Some(status)) => {
+                    self.child = None;
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
+                    if !core_service_ready() {
+                        append_incident(
+                            &format!(
+                                "GitManager core service exited unexpectedly ({status}).\n{}",
+                                core_service_log_tail()
+                            ),
+                            pid,
+                            status.code(),
+                            request_service_status(),
+                        );
+                        self.restart_attempts = self.restart_attempts.saturating_add(1);
+                        self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+                    } else {
+                        self.restart_attempts = 0;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    append_incident(
+                        &format!(
+                            "crash_helper could not query GitManager core service process: {error}\n{}",
+                            core_service_log_tail()
+                        ),
+                        pid,
+                        None,
+                        request_service_status(),
+                    );
+                    self.child = None;
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
+                    self.restart_attempts = self.restart_attempts.saturating_add(1);
+                    self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+                }
+            }
+        }
+
+        if self.last_health_check.elapsed() >= Duration::from_secs(5) {
+            self.last_health_check = Instant::now();
+
+            if core_service_ready() {
+                self.unhealthy_since = None;
+                self.lock_unhealthy_since = None;
+                self.lock_owner_pid = None;
+                self.restart_attempts = 0;
+                self.lock_warning_recorded = false;
+                return;
+            }
+
+            if let Some(pid) = self.child.as_ref().map(Child::id) {
+                let since = *self.unhealthy_since.get_or_insert_with(Instant::now);
+                let started = self.child_started_at.unwrap_or(since);
+                let grace = if started.elapsed() < Duration::from_secs(45) {
+                    Duration::from_secs(45)
+                } else {
+                    Duration::from_secs(20)
+                };
+
+                if since.elapsed() >= grace {
+                    let mut child = match self.child.take() {
+                        Some(child) => child,
+                        None => return,
+                    };
+                    append_incident(
+                        &format!(
+                            "GitManager core service PID {pid} remained alive but did not answer authenticated health checks for {} seconds. Terminating the unresponsive child.\n{}",
+                            since.elapsed().as_secs(),
+                            core_service_log_tail()
+                        ),
+                        pid,
+                        None,
+                        request_service_status(),
+                    );
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    self.child_started_at = None;
+                    self.unhealthy_since = None;
+                    self.restart_attempts = self.restart_attempts.saturating_add(1);
+                    self.next_restart = Instant::now() + restart_delay(self.restart_attempts);
+                }
+            } else {
+                self.ensure_started("service health recovery");
+            }
+        }
+    }
 }
 
 fn host_target_triple() -> &'static str {
@@ -735,7 +3601,8 @@ fn append_incident(reason: &str, pid: u32, exit_code: Option<i32>, service_resul
         "process": { "pid": pid, "executable": "git-manager" },
         "reason": reason,
         "exitCode": exit_code.map(|code| format!("0x{:08X}", code as u32)),
-        "service": service
+        "service": service,
+        "serviceLogTail": core_service_log_tail()
     });
 
     if let Ok(data_dir) = gitmanager_data_dir() {
@@ -955,10 +3822,394 @@ fn run_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
     }
 }
 
+fn windows_process_open_failure_means_running(error_code: u32) -> bool {
+    // OpenProcess reports ERROR_INVALID_PARAMETER for a PID that no longer
+    // exists. Access denied and other failures remain conservative: they do
+    // not prove that the target process has exited.
+    const ERROR_INVALID_PARAMETER: u32 = 87;
+    error_code != ERROR_INVALID_PARAMETER
+}
+
+fn service_process_is_running(pid: u32) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> isize;
+            fn GetExitCodeProcess(process: isize, exit_code: *mut u32) -> i32;
+            fn CloseHandle(handle: isize) -> i32;
+            fn GetLastError() -> u32;
+        }
+
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle == 0 {
+            return windows_process_open_failure_means_running(unsafe { GetLastError() });
+        }
+        let mut exit_code = 0u32;
+        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+        unsafe {
+            CloseHandle(handle);
+        }
+        !queried || exit_code == STILL_ACTIVE
+    }
+
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(true)
+    }
+}
+
+fn terminate_service_process(pid: u32) -> bool {
+    if pid <= 1 || pid == std::process::id() {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(unix)]
+fn force_terminate_service_process(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn request_service_supervisor_stop() -> Result<(), String> {
+    let data_dir = gitmanager_data_dir()?;
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Could not create GitManager service state directory: {error}"))?;
+    let marker = data_dir.join(SERVICE_SHUTDOWN_FILE);
+    fs::write(&marker, format!("{}\n", timestamp_ms()))
+        .map_err(|error| format!("Could not signal the GitManager service supervisor: {error}"))?;
+    set_private_permissions(&marker)
+        .map_err(|error| format!("Could not secure the service-supervisor shutdown signal: {error}"))
+}
+
+fn clear_service_supervisor_stop() -> Result<(), String> {
+    let marker = gitmanager_data_dir()?.join(SERVICE_SHUTDOWN_FILE);
+    match fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not clear the previous service-supervisor shutdown signal: {error}")),
+    }
+}
+
+fn wait_for_exclusive_lock_release(lock_path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let lock_file = match OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+        {
+            Ok(file) => file,
+            Err(_) => return false,
+        };
+
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => {
+                let _ = FileExt::unlock(&lock_file);
+                return true;
+            }
+            Err(_) if Instant::now() >= deadline => return false,
+            Err(_) => thread::sleep(Duration::from_millis(75)),
+        }
+    }
+}
+
+fn wait_for_service_supervisor_exit(timeout: Duration) -> bool {
+    let lock_path = match gitmanager_data_dir() {
+        Ok(directory) => directory.join(SERVICE_SUPERVISOR_LOCK_FILE),
+        Err(_) => return false,
+    };
+    wait_for_exclusive_lock_release(&lock_path, timeout)
+}
+
+fn service_supervisor_stop_requested() -> bool {
+    gitmanager_data_dir()
+        .map(|directory| directory.join(SERVICE_SHUTDOWN_FILE).is_file())
+        .unwrap_or(false)
+}
+
+fn supervised_service_process_is_running(
+    supervisor: &mut CoreServiceSupervisor,
+    pid: u32,
+) -> bool {
+    // On Unix, kill -0 can still succeed for a zombie until its parent reaps
+    // it. This monitor owns the Child handle, so poll try_wait first and reap
+    // the child before deciding whether the installer can replace crash_helper.
+    let child_state = supervisor.child.as_mut().map(|child| {
+        let child_pid = child.id();
+        (child_pid, child.try_wait())
+    });
+
+    match child_state {
+        Some((child_pid, Ok(Some(_status)))) => {
+            supervisor.child = None;
+            supervisor.child_started_at = None;
+            supervisor.unhealthy_since = None;
+            if child_pid == pid {
+                return false;
+            }
+        }
+        Some((child_pid, Ok(None))) if child_pid == pid => return true,
+        Some((child_pid, Err(error))) if child_pid == pid => {
+            append_incident(
+                &format!(
+                    "crash_helper could not reap GitManager core service PID {child_pid} during installer shutdown: {error}"
+                ),
+                child_pid,
+                None,
+                request_service_status(),
+            );
+            // An uncertain wait result is not proof that replacement is safe.
+            return true;
+        }
+        _ => {}
+    }
+
+    service_process_is_running(pid)
+}
+
+fn run_service_supervisor(arguments: Vec<std::ffi::OsString>) -> i32 {
+    suppress_windows_application_error_dialogs();
+    let Some(application) = arguments.first().map(PathBuf::from) else {
+        eprintln!("crash_helper: --supervise-service requires the GitManager executable path.");
+        return 2;
+    };
+
+    let data_dir = match gitmanager_data_dir() {
+        Ok(directory) => directory,
+        Err(error) => {
+            eprintln!("crash_helper: could not resolve the per-user data directory: {error}");
+            return 2;
+        }
+    };
+    if let Err(error) = fs::create_dir_all(&data_dir) {
+        eprintln!("crash_helper: could not create the per-user service directory: {error}");
+        return 2;
+    }
+
+    let lock_path = data_dir.join(SERVICE_SUPERVISOR_LOCK_FILE);
+    let lock_file = match OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&lock_path) {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("crash_helper: could not open the service-supervisor lock: {error}");
+            return 2;
+        }
+    };
+    if lock_file.try_lock_exclusive().is_err() {
+        // The kernel lock proves another service monitor is alive. Its child
+        // health is a separate concern: the existing monitor owns recovery,
+        // and this launcher must not time out and fall back to spawning a
+        // duplicate service from the UI process.
+        println!("GITMANAGER_SERVICE_SUPERVISOR_READY");
+        let _ = std::io::stdout().flush();
+        return 0;
+    }
+
+    if let Err(error) = clear_service_supervisor_stop() {
+        eprintln!("crash_helper: {error}");
+        return 2;
+    }
+
+    let mut supervisor = CoreServiceSupervisor::new(&application);
+    println!("GITMANAGER_SERVICE_SUPERVISOR_READY");
+    let _ = std::io::stdout().flush();
+
+    let mut shutdown_started: Option<Instant> = None;
+    let mut shutdown_pid: Option<u32> = None;
+    loop {
+        if service_supervisor_stop_requested() {
+            let started = *shutdown_started.get_or_insert_with(Instant::now);
+            if shutdown_pid.is_none() {
+                shutdown_pid = request_service_status().ok().map(|status| status.process_id);
+                if shutdown_pid.is_none() {
+                    shutdown_pid = supervisor.child.as_ref().map(Child::id);
+                }
+            }
+
+            let process_running = shutdown_pid
+                .filter(|pid| *pid > 1)
+                .map(|pid| supervised_service_process_is_running(&mut supervisor, pid))
+                .unwrap_or(false);
+            if !process_running || started.elapsed() >= Duration::from_secs(25) {
+                return if process_running { 1 } else { 0 };
+            }
+            // Shutdown is being handled by the authenticated one-shot helper.
+            // Never restart the service while an installer is replacing it.
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+
+        shutdown_started = None;
+        shutdown_pid = None;
+        supervisor.tick();
+        thread::sleep(SUPERVISOR_POLL);
+    }
+}
+
+fn run_stop_service_command() -> i32 {
+    if let Err(error) = request_service_supervisor_stop() {
+        eprintln!("crash_helper: could not signal the independent service monitor: {error}");
+        return 1;
+    }
+    let initial = match request_service_status() {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!(
+                "crash_helper: no authenticated service endpoint is reachable ({error}); requesting the installer's current-user process cleanup fallback."
+            );
+            return 1;
+        }
+    };
+
+    let pid = initial.process_id;
+    if pid <= 1 || pid == std::process::id() {
+        eprintln!(
+            "crash_helper: refusing to stop GitManager service because its authenticated status did not include a safe process ID."
+        );
+        return 1;
+    }
+
+    eprintln!("crash_helper: requesting a short service suspension before installer shutdown.");
+    let _ = request_service_suspend(30);
+
+    // Let an active repository scan or remote check finish before stopping.
+    // This is bounded; an unresponsive worker cannot block installation forever.
+    let quiesce_deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < quiesce_deadline {
+        match request_service_status() {
+            Ok(status) if status.process_id != pid => {
+                eprintln!("crash_helper: service ownership changed during installer shutdown; refusing to stop a different process.");
+                let _ = request_service_resume();
+                return 1;
+            }
+            Ok(status) if !status.indexing && !status.remote_check_running => break,
+            Ok(_) => thread::sleep(Duration::from_millis(150)),
+            Err(_) => break,
+        }
+    }
+
+    let mut stopped = false;
+    if request_service_shutdown().is_ok() {
+        eprintln!("crash_helper: graceful shutdown acknowledged; waiting for service requests to drain.");
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < deadline {
+            if !service_process_is_running(pid) {
+                stopped = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    if !stopped {
+        eprintln!("crash_helper: graceful shutdown was unsupported or timed out; terminating authenticated service PID {pid}.");
+        let _ = terminate_service_process(pid);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if !service_process_is_running(pid) {
+                stopped = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        #[cfg(unix)]
+        if !stopped {
+            let _ = force_terminate_service_process(pid);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if !service_process_is_running(pid) {
+                    stopped = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    if stopped {
+        // The service process has exited, but its independent crash_helper
+        // monitor may still hold this executable open until it observes the
+        // shutdown marker and releases its ownership lock. Do not tell NSIS
+        // that replacement is safe until that monitor has exited too.
+        if !wait_for_service_supervisor_exit(Duration::from_secs(5)) {
+            eprintln!(
+                "crash_helper: the core service stopped, but its supervisor did not release its lock within 5 seconds."
+            );
+            let _ = request_service_resume();
+            return 1;
+        }
+    }
+
+    // Clear the temporary suspension record even after the service exits.
+    let _ = request_service_resume();
+
+    if stopped {
+        eprintln!("crash_helper: GitManager core service and monitor stopped.");
+        0
+    } else {
+        eprintln!("crash_helper: GitManager core service did not stop within the installer deadline.");
+        1
+    }
+}
+
 pub fn run_helper_from_args() -> i32 {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if arguments.first().is_some_and(|argument| argument.to_string_lossy() == "--supervise") {
         run_supervisor(arguments.into_iter().skip(1).collect())
+    } else if arguments.first().is_some_and(|argument| argument.to_string_lossy() == "--supervise-service") {
+        run_service_supervisor(arguments.into_iter().skip(1).collect())
+    } else if arguments.first().is_some_and(|argument| argument.to_string_lossy() == "--stop-service") {
+        run_stop_service_command()
     } else {
         2
     }
@@ -967,12 +4218,698 @@ pub fn run_helper_from_args() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServiceState, SuspensionRecord, DEFAULT_SUSPENSION_SECONDS,
-        MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS,
+        reserve_service_request_slot, ServiceCommand, ServiceRequest, ServiceState,
+        SuspensionRecord, DEFAULT_SUSPENSION_SECONDS, MAX_CONCURRENT_SERVICE_REQUESTS,
+        MAX_SUSPENSION_SECONDS, MIN_SUSPENSION_SECONDS, SERVICE_GENERATION,
     };
     use super::Uuid;
-    use std::fs;
+    use fs2::FileExt;
+    use std::fs::{self, OpenOptions};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn windows_service_probe_distinguishes_missing_pids_from_access_denied() {
+        assert!(
+            !super::windows_process_open_failure_means_running(87),
+            "ERROR_INVALID_PARAMETER means the PID no longer exists"
+        );
+        assert!(
+            super::windows_process_open_failure_means_running(5),
+            "ERROR_ACCESS_DENIED must not be treated as proof that the process exited"
+        );
+        assert!(
+            super::windows_process_open_failure_means_running(6),
+            "unexpected OpenProcess failures remain conservative"
+        );
+    }
+
+    #[test]
+    fn service_supervisor_reaps_its_exited_child_during_installer_shutdown() {
+        let executable = std::env::current_exe().expect("resolve test executable");
+        let child = std::process::Command::new(executable)
+            .arg("--list")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn short-lived child process");
+        let pid = child.id();
+        std::thread::sleep(Duration::from_millis(500));
+
+        let mut supervisor = super::CoreServiceSupervisor {
+            executable: None,
+            child: Some(child),
+            child_started_at: Some(std::time::Instant::now()),
+            unhealthy_since: None,
+            lock_unhealthy_since: None,
+            lock_owner_pid: None,
+            restart_attempts: 0,
+            lock_warning_recorded: false,
+            next_restart: std::time::Instant::now(),
+            last_health_check: std::time::Instant::now(),
+        };
+
+        assert!(
+            !super::supervised_service_process_is_running(&mut supervisor, pid),
+            "the monitor must reap its exited child instead of waiting on a Unix zombie"
+        );
+        assert!(supervisor.child.is_none());
+    }
+
+    #[test]
+    fn installer_shutdown_waits_for_the_service_supervisor_lock_to_be_released() {
+        let root = std::env::temp_dir()
+            .join(format!("gitmanager-service-supervisor-lock-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create supervisor lock fixture directory");
+        let path = root.join("service-supervisor.lock");
+        let owner = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open supervisor lock fixture");
+        owner.try_lock_exclusive().expect("acquire supervisor lock fixture");
+
+        assert!(
+            !super::wait_for_exclusive_lock_release(&path, Duration::from_millis(30)),
+            "installer shutdown must not report success while the monitor still owns its lock"
+        );
+
+        FileExt::unlock(&owner).expect("release supervisor lock fixture");
+        assert!(
+            super::wait_for_exclusive_lock_release(&path, Duration::from_millis(200)),
+            "installer shutdown should continue once the monitor releases its lock"
+        );
+        drop(owner);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bounded_incident_tail_returns_only_the_newest_records() {
+        let root = std::env::temp_dir()
+            .join(format!("gitmanager-incident-tail-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create incident fixture directory");
+        let path = root.join("crash_helper.jsonl");
+        fs::write(&path, "incident-one\nincident-two\nincident-three\n")
+            .expect("write incident fixture");
+
+        let tail = super::read_bounded_log_tail(&path, 1024, 2)
+            .expect("read incident tail");
+        assert_eq!(tail, "incident-two\nincident-three");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_service_lock_recovery_waits_for_the_full_health_grace() {
+        let started = std::time::Instant::now();
+        assert!(
+            !super::external_service_lock_recovery_due(
+                started,
+                started + Duration::from_secs(44),
+            ),
+            "an external service must not be terminated before its recovery grace expires"
+        );
+        assert!(
+            super::external_service_lock_recovery_due(
+                started,
+                started + Duration::from_secs(45),
+            ),
+            "a persistently unresponsive lock owner becomes recoverable after the grace"
+        );
+    }
+
+    #[test]
+    fn crash_helper_locates_the_core_service_beside_the_application() {
+        let root = std::env::temp_dir()
+            .join(format!("gitmanager-core-sidecar-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create sidecar fixture");
+        let application = root.join(if cfg!(windows) { "gitmanager.exe" } else { "gitmanager" });
+        let sidecar = root.join(if cfg!(windows) {
+            "gitmanager.service.exe"
+        } else {
+            "gitmanager.service"
+        });
+        fs::write(&sidecar, b"fixture").expect("write service sidecar fixture");
+
+        assert_eq!(
+            super::find_core_service_executable(&application),
+            Some(sidecar.clone()),
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_service_status_defaults_to_generation_zero() {
+        let legacy = serde_json::json!({
+            "suspended": false,
+            "remaining_seconds": 0,
+            "message": "legacy worker"
+        });
+        let status: super::ServiceStatus =
+            serde_json::from_value(legacy).expect("deserialize legacy status");
+        assert_eq!(status.service_generation, 0);
+        assert!(!status.remote_check_pending);
+        assert!(!status.remote_check_running);
+    }
+
+    #[test]
+    fn new_service_status_reports_the_required_generation() {
+        let path = std::env::temp_dir()
+            .join(format!("gitmanager-service-generation-{}.json", Uuid::new_v4()));
+        let status = ServiceState::load(path.clone()).status("test");
+        assert_eq!(status.service_generation, SERVICE_GENERATION);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn graceful_shutdown_uses_the_authenticated_service_protocol() {
+        let request = ServiceRequest {
+            token: "installer-token".to_string(),
+            command: ServiceCommand::Shutdown,
+        };
+        let encoded = serde_json::to_value(request).expect("encode shutdown request");
+        assert_eq!(encoded["token"], "installer-token");
+        assert_eq!(encoded["command"]["action"], "shutdown");
+    }
+
+    #[test]
+    fn account_storage_commands_use_the_versioned_authenticated_protocol() {
+        let save = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::SaveAccount {
+                payload: serde_json::json!({
+                    "metadata": { "provider": "github", "account_login": "example" },
+                    "repositories": []
+                }),
+            },
+        };
+        let encoded_save = serde_json::to_value(save).expect("encode account save request");
+        assert_eq!(encoded_save["token"], "test-token");
+        assert_eq!(encoded_save["command"]["action"], "save_account");
+        assert!(encoded_save["command"].get("payload").is_some());
+        assert!(encoded_save["command"]["payload"].get("access_token").is_none());
+
+        let load = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::LoadAccounts,
+        };
+        let encoded_load = serde_json::to_value(load).expect("encode account load request");
+        assert_eq!(encoded_load["command"]["action"], "load_accounts");
+    }
+
+    #[test]
+    fn service_status_exposes_repository_indexing_state() {
+        let mut status = super::ServiceStatus::default();
+        status.indexing = true;
+        let encoded = serde_json::to_value(status).expect("encode service status");
+        assert_eq!(encoded["indexing"], true);
+    }
+
+    #[test]
+    fn legacy_endpoint_json_defaults_to_tcp_compatibility_fields() {
+        let endpoint: super::Endpoint = serde_json::from_str(
+            r#"{"version":3,"address":"127.0.0.1:41234","token":"legacy-token"}"#,
+        ).expect("decode a protocol-v3 endpoint");
+        assert_eq!(endpoint.version, 3);
+        assert!(endpoint.name.is_empty());
+        assert_eq!(endpoint.address, "127.0.0.1:41234");
+        assert_eq!(endpoint.token, "legacy-token");
+    }
+
+    #[test]
+    fn windows_style_nonblocking_frame_reader_preserves_partial_reads() {
+        struct IntermittentReader {
+            bytes: Vec<u8>,
+            offset: usize,
+            block_next: bool,
+        }
+
+        impl std::io::Read for IntermittentReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.block_next {
+                    self.block_next = false;
+                    return Err(std::io::ErrorKind::WouldBlock.into());
+                }
+                self.block_next = true;
+                let remaining = &self.bytes[self.offset..];
+                let count = remaining.len().min(buffer.len()).min(3);
+                if count == 0 {
+                    return Ok(0);
+                }
+                buffer[..count].copy_from_slice(&remaining[..count]);
+                self.offset += count;
+                Ok(count)
+            }
+        }
+
+        let payload = br#"{"action":"status"}"#;
+        let mut encoded = Vec::new();
+        super::write_service_frame(&mut encoded, payload).expect("encode test frame");
+        let mut reader = IntermittentReader {
+            bytes: encoded,
+            offset: 0,
+            block_next: true,
+        };
+
+        let decoded = super::read_service_frame_with_timeout(
+            &mut reader,
+            Duration::from_secs(1),
+        ).expect("read frame despite temporary WouldBlock");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn windows_nonblocking_pipe_waits_through_temporary_zero_byte_reads() {
+        struct DelayedReader {
+            bytes: Vec<u8>,
+            offset: usize,
+            empty_reads: usize,
+        }
+
+        impl std::io::Read for DelayedReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.empty_reads > 0 {
+                    self.empty_reads -= 1;
+                    return Ok(0);
+                }
+                let remaining = &self.bytes[self.offset..];
+                let count = remaining.len().min(buffer.len()).min(4);
+                if count == 0 {
+                    return Ok(0);
+                }
+                buffer[..count].copy_from_slice(&remaining[..count]);
+                self.offset += count;
+                Ok(count)
+            }
+        }
+
+        let payload = br#"{"action":"status"}"#;
+        let mut encoded = Vec::new();
+        super::write_service_frame(&mut encoded, payload).expect("encode test frame");
+        let mut reader = DelayedReader {
+            bytes: encoded,
+            offset: 0,
+            empty_reads: 4,
+        };
+
+        let decoded = super::read_service_frame_with_timeout(
+            &mut reader,
+            Duration::from_secs(1),
+        ).expect("temporary zero-byte reads must not be mistaken for a closed pipe");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn nonblocking_service_ipc_returns_a_bounded_timeout() {
+        struct StalledReader;
+        impl std::io::Read for StalledReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::WouldBlock.into())
+            }
+        }
+
+        let error = super::read_service_frame_with_timeout(
+            &mut StalledReader,
+            Duration::from_millis(20),
+        ).expect_err("a stalled pipe must time out instead of hanging");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn service_ipc_frames_round_trip_with_a_bounded_length_prefix() {
+        let payload = br#"{"token":"abc","command":{"action":"status"}}"#;
+        let mut encoded = Vec::new();
+        super::write_service_frame(&mut encoded, payload).expect("write IPC frame");
+        assert_eq!(&encoded[..4], &(payload.len() as u32).to_be_bytes());
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        let decoded = super::read_service_frame(&mut cursor).expect("read IPC frame");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn service_ipc_frame_reader_rejects_oversized_payloads() {
+        let mut frame = (super::MAX_MESSAGE_BYTES as u32).to_be_bytes().to_vec();
+        let mut cursor = std::io::Cursor::new(std::mem::take(&mut frame));
+        let error = super::read_service_frame(&mut cursor).expect_err("oversized IPC frame should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn service_local_socket_names_are_stable_and_per_user() {
+        let first = super::service_socket_name(std::path::Path::new("/home/alice/GitManager"));
+        let same = super::service_socket_name(std::path::Path::new("/home/alice/GitManager"));
+        let other = super::service_socket_name(std::path::Path::new("/home/bob/GitManager"));
+        assert_eq!(first.0, same.0);
+        assert_ne!(first.0, other.0);
+        #[cfg(windows)]
+        assert!(first.0.starts_with(r"\\.\pipe\kastrick-gitmanager-"));
+        #[cfg(unix)]
+        {
+            assert!(first.0.starts_with("/tmp/kastrick-gitmanager-"));
+            assert!(first.1.is_some());
+        }
+    }
+
+    #[test]
+    fn legacy_protocol_is_allowed_only_for_status_negotiation() {
+        assert!(super::is_legacy_protocol_command_compatible(&ServiceCommand::Status));
+        assert!(!super::is_legacy_protocol_command_compatible(&ServiceCommand::LoadAccounts));
+        assert!(!super::is_legacy_protocol_command_compatible(
+            &ServiceCommand::GetRepositoryIndexGeneration
+        ));
+    }
+
+    #[test]
+    fn legacy_service_response_defaults_to_empty_data_payload() {
+        let legacy = serde_json::json!({
+            "ok": true,
+            "status": {
+                "suspended": false,
+                "remaining_seconds": 0,
+                "message": "legacy worker"
+            },
+            "error": null
+        });
+        let response: super::ServiceResponse =
+            serde_json::from_value(legacy).expect("deserialize legacy service response");
+        assert!(response.ok);
+        assert!(response.data.is_none());
+        assert_eq!(response.status.service_generation, 0);
+        assert!(!response.status.indexing);
+    }
+
+    #[test]
+    fn service_control_request_slots_are_bounded_and_released() {
+        let active = AtomicUsize::new(0);
+        for expected in 1..=MAX_CONCURRENT_SERVICE_REQUESTS {
+            assert!(reserve_service_request_slot(&active));
+            assert_eq!(active.load(Ordering::Acquire), expected);
+        }
+        assert!(!reserve_service_request_slot(&active));
+        active.fetch_sub(1, Ordering::Release);
+        assert!(reserve_service_request_slot(&active));
+        assert_eq!(active.load(Ordering::Acquire), MAX_CONCURRENT_SERVICE_REQUESTS);
+    }
+
+    #[test]
+    fn repository_data_commands_use_bounded_versioned_request_shapes() {
+        let overview = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::InspectRepository {
+                repo_path: "/workspace/repository".to_string(),
+            },
+        };
+        let overview = serde_json::to_value(overview).expect("encode repository overview request");
+        assert_eq!(overview["command"]["action"], "inspect_repository");
+        assert_eq!(overview["command"]["repo_path"], "/workspace/repository");
+
+        let history = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::LoadCommitHistory {
+                repo_path: "/workspace/repository".to_string(),
+                offset: 50,
+                limit: 50,
+                branch_filter: Some("feature/topic".to_string()),
+                search_query: Some("needle".to_string()),
+            },
+        };
+        let history = serde_json::to_value(history).expect("encode commit history request");
+        assert_eq!(history["command"]["action"], "load_commit_history");
+        assert_eq!(history["command"]["offset"], 50);
+        assert_eq!(history["command"]["limit"], 50);
+        assert_eq!(history["command"]["branch_filter"], "feature/topic");
+        assert_eq!(history["command"]["search_query"], "needle");
+
+        let details = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::GetCommitDetails {
+                repo_path: "/workspace/repository".to_string(),
+                oid: "0123456789abcdef".to_string(),
+            },
+        };
+        let details = serde_json::to_value(details).expect("encode commit details request");
+        assert_eq!(details["command"]["action"], "get_commit_details");
+        assert_eq!(details["command"]["oid"], "0123456789abcdef");
+
+        let list_files = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::ListRepositoryFiles {
+                repo_path: "/workspace/repository".to_string(),
+                relative_path: Some("src".to_string()),
+                source: "remote".to_string(),
+                branch: Some("origin/main".to_string()),
+            },
+        };
+        let list_files = serde_json::to_value(list_files).expect("encode repository file list request");
+        assert_eq!(list_files["command"]["action"], "list_repository_files");
+        assert_eq!(list_files["command"]["relative_path"], "src");
+        assert_eq!(list_files["command"]["source"], "remote");
+        assert_eq!(list_files["command"]["branch"], "origin/main");
+
+        let read_file = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::ReadRepositoryFile {
+                repo_path: "/workspace/repository".to_string(),
+                relative_path: "src/main.rs".to_string(),
+                source: "local".to_string(),
+                branch: None,
+            },
+        };
+        let read_file = serde_json::to_value(read_file).expect("encode repository file read request");
+        assert_eq!(read_file["command"]["action"], "read_repository_file");
+        assert_eq!(read_file["command"]["relative_path"], "src/main.rs");
+    }
+
+    #[test]
+    fn preference_and_repository_index_commands_use_stable_wire_names() {
+        let requests = vec![
+            ServiceCommand::LoadAppPreferences,
+            ServiceCommand::SaveAppPreferences {
+                payload: serde_json::json!({
+                    "scanRoots": ["/workspace"],
+                    "maxScanDepth": 8,
+                    "firstRunComplete": true
+                }),
+            },
+            ServiceCommand::GetRepositoryIndexGeneration,
+            ServiceCommand::LoadIndexedRepositories {
+                filter_mode: "grouped".to_string(),
+            },
+        ];
+        let expected = [
+            "load_app_preferences",
+            "save_app_preferences",
+            "get_repository_index_generation",
+            "load_indexed_repositories",
+        ];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode service storage request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+        }
+    }
+
+    #[test]
+    fn provider_sync_commands_use_stable_service_wire_names() {
+        let requests = vec![
+            ServiceCommand::DetectGitHubIdentity,
+            ServiceCommand::ConnectGitAccount {
+                payload: serde_json::json!({
+                    "provider": "github",
+                    "username_or_host": "octocat",
+                    "access_token": "ephemeral-test-token"
+                }),
+            },
+        ];
+        let expected = ["detect_github_identity", "connect_git_account"];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode provider sync request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+        }
+    }
+
+    #[test]
+    fn archive_commands_use_stable_service_wire_names() {
+        let requests = vec![
+            ServiceCommand::CaptureRepositoryArchive {
+                repo_path: "/workspace/repo".to_string(), kind: "local".to_string(),
+                archive_root: Some("/archive".to_string()),
+            },
+            ServiceCommand::ListRepositoryArchives {
+                repo_path: "/workspace/repo".to_string(), kind: None,
+                archive_root: Some("/archive".to_string()),
+            },
+            ServiceCommand::RestoreRepositoryArchive {
+                repo_path: "/workspace/repo".to_string(), destination_path: "/restore".to_string(),
+                snapshot_id: "snapshot-1".to_string(), kind: "local".to_string(),
+                archive_root: Some("/archive".to_string()), confirm_replace: true,
+            },
+            ServiceCommand::GetArchiveCloudStorageInfo { archive_root: "/archive".to_string() },
+            ServiceCommand::ConfigureArchiveCloudStorage {
+                archive_root: "/archive".to_string(), provider_json: "{}".to_string(),
+            },
+            ServiceCommand::DisableArchiveCloudStorage { archive_root: "/archive".to_string() },
+            ServiceCommand::SyncArchiveCloudStorage { archive_root: "/archive".to_string() },
+        ];
+        let expected = [
+            "capture_repository_archive", "list_repository_archives", "restore_repository_archive",
+            "get_archive_cloud_storage_info", "configure_archive_cloud_storage",
+            "disable_archive_cloud_storage", "sync_archive_cloud_storage",
+        ];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode archive service request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+        }
+    }
+
+    #[test]
+    fn repository_preference_commands_use_stable_wire_names() {
+        let requests = vec![
+            ServiceCommand::LoadRepositoryPreferences {
+                repo_path: "/workspace/repo".to_string(),
+                repo_id: Some("local::repo-id".to_string()),
+            },
+            ServiceCommand::SaveRepositoryPreferences {
+                repo_path: "/workspace/repo".to_string(),
+                payload: serde_json::json!({
+                    "autoUpdate": false,
+                    "cleanerExcludePatterns": ["target"]
+                }),
+            },
+        ];
+        let expected = ["load_repository_preferences", "save_repository_preferences"];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode repository preference request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+            assert_eq!(encoded["command"]["repo_path"], "/workspace/repo");
+        }
+    }
+
+    #[test]
+    fn notification_commands_use_stable_service_wire_names() {
+        let requests = vec![
+            ServiceCommand::ListNotifications,
+            ServiceCommand::MarkNotificationRead { id: "notification-1".to_string() },
+            ServiceCommand::DismissNotification { id: "notification-2".to_string() },
+            ServiceCommand::MarkAllNotificationsRead,
+        ];
+        let expected = [
+            "list_notifications",
+            "mark_notification_read",
+            "dismiss_notification",
+            "mark_all_notifications_read",
+        ];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode notification IPC request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+        }
+    }
+
+    #[test]
+    fn worktree_and_commit_commands_use_stable_service_wire_names() {
+        let requests = vec![
+            ServiceCommand::SaveConflictResolution {
+                repo_path: "/repo".to_string(), relative_path: "src/main.rs".to_string(), content: "fixed".to_string(),
+            },
+            ServiceCommand::PreviewRepositoryPull { repo_path: "/repo".to_string() },
+            ServiceCommand::GetRepositoryChanges { repo_path: "/repo".to_string() },
+            ServiceCommand::ReadRepositoryFileDiff {
+                repo_path: "/repo".to_string(), relative_path: "src/main.rs".to_string(), staged: true,
+            },
+            ServiceCommand::FetchRepositoryRemote {
+                repo_path: "/repo".to_string(), remote_name: "origin".to_string(),
+            },
+            ServiceCommand::StageRepositoryPaths {
+                repo_path: "/repo".to_string(), paths: vec!["src/main.rs".to_string()],
+            },
+            ServiceCommand::UnstageRepositoryPaths {
+                repo_path: "/repo".to_string(), paths: vec!["src/main.rs".to_string()],
+            },
+            ServiceCommand::PreviewRepositoryCommit { repo_path: "/repo".to_string() },
+            ServiceCommand::CreateRepositoryCommit {
+                repo_path: "/repo".to_string(), message: "test".to_string(), expected_index_tree: "tree".to_string(),
+            },
+            ServiceCommand::DeleteRepositoryPath {
+                repo_path: "/repo".to_string(), relative_path: "old.txt".to_string(),
+            },
+            ServiceCommand::PrepareAndPullRepositoryUpdate {
+                repo_path: "/repo".to_string(), expected_branch: "main".to_string(),
+                expected_local_oid: "local".to_string(), expected_remote_oid: "remote".to_string(),
+                expected_status_token: "status".to_string(), mode: "stash".to_string(),
+                stage_paths: vec![], commit_message: String::new(),
+            },
+            ServiceCommand::ListLocalRepositoryBranches { repo_path: "/repo".to_string() },
+            ServiceCommand::SwitchRepositoryBranch {
+                repo_path: "/repo".to_string(), branch_name: "feature/topic".to_string(),
+            },
+        ];
+        let expected = [
+            "save_conflict_resolution", "preview_repository_pull", "get_repository_changes",
+            "read_repository_file_diff", "fetch_repository_remote", "stage_repository_paths",
+            "unstage_repository_paths", "preview_repository_commit", "create_repository_commit",
+            "delete_repository_path", "prepare_and_pull_repository_update",
+            "list_local_repository_branches", "switch_repository_branch",
+        ];
+        for (command, action) in requests.into_iter().zip(expected) {
+            let request = ServiceRequest {
+                token: "authenticated-test-token".to_string(),
+                command,
+            };
+            let encoded = serde_json::to_value(request).expect("encode service request");
+            assert_eq!(encoded["token"], "authenticated-test-token");
+            assert_eq!(encoded["command"]["action"], action);
+            assert!(encoded["command"]["repo_path"].is_string());
+        }
+    }
+
+    #[test]
+    fn remote_check_request_uses_the_authenticated_control_protocol() {
+        let request = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::RequestRemoteCheck,
+        };
+        let encoded = serde_json::to_value(request).expect("encode remote check request");
+        assert_eq!(encoded["token"], "test-token");
+        assert_eq!(encoded["command"]["action"], "request_remote_check");
+    }
+
+    #[test]
+    fn repository_scan_request_uses_the_authenticated_control_protocol() {
+        let request = ServiceRequest {
+            token: "test-token".to_string(),
+            command: ServiceCommand::RequestScan,
+        };
+        let encoded = serde_json::to_value(request).expect("encode scan request");
+        assert_eq!(encoded["token"], "test-token");
+        assert_eq!(encoded["command"]["action"], "request_scan");
+    }
 
     #[test]
     fn gpu_compatibility_switch_is_consumed_without_losing_other_arguments() {

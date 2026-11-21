@@ -62,7 +62,7 @@
       "binaries/gitm",
       "binaries/gitmanager-setup",
       "binaries/crash_helper",
-      "binaries/git-manager-service"
+      "binaries/gitmanager.service"
     ]
   }
 }

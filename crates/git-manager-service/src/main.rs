@@ -4,5 +4,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    git_manager_lib::background_service::run();
+    gitmanager_service::run();
 }

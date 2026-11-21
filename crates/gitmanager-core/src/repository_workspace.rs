@@ -1,67 +1,42 @@
 use git2::{BranchType, ObjectType, Repository, Status, StatusOptions};
-use serde::Serialize;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
-use std::time::UNIX_EPOCH;
 use std::ffi::OsStr;
 use walkdir::WalkDir;
-use crate::process_utils::hidden_command;
+use std::process::Command;
+
+/// Run a helper process without opening a Windows console window.
+fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+    let command = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut command = command;
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        command
+    }
+}
 
 const MAX_PREVIEW_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 2_000;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepositoryFileEntry {
-    pub name: String,
-    pub path: String,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub size_bytes: u64,
-}
+use crate::models::{
+    PullExecutionResult,
+    PullPreview,
+    RepositoryCommitPreview,
+    RepositoryFileEntry,
+    WorktreeChange,
+};
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorktreeChange {
-    pub path: String,
-    pub index_status: String,
-    pub worktree_status: String,
-    pub staged: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PullPreview {
-    pub repo_name: String,
-    pub branch: String,
-    pub remote_name: String,
-    pub remote_branch: String,
-    pub local_oid: String,
-    pub remote_oid: String,
-    pub commits_ahead: usize,
-    pub commits_behind: usize,
-    pub changes: Vec<WorktreeChange>,
-    pub status_token: String,
-    pub can_pull: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PullExecutionResult {
-    pub message: String,
-    pub commit_created: bool,
-    pub stash_created: bool,
-    pub rebased: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepositoryCommitPreview {
-    pub changes: Vec<WorktreeChange>,
-    pub index_tree: String,
-}
 
 fn validate_relative_path(value: &str) -> Result<PathBuf, String> {
     let normalized = value.replace('\\', "/");
@@ -194,6 +169,100 @@ pub fn list_repository_files(
     entries.sort_by(|left, right| right.is_dir.cmp(&left.is_dir)
         .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase())));
     Ok(entries)
+}
+
+/// Write an edited conflict file back to the local working tree. This is
+/// deliberately limited to paths Git currently reports as unmerged, regular
+/// UTF-8 files inside the repository, and the same 1 MiB editor limit as preview.
+pub fn save_conflict_resolution(
+    repo_path: &str,
+    relative_path: &str,
+    content: &str,
+) -> Result<String, String> {
+    if content.len() as u64 > MAX_PREVIEW_FILE_BYTES {
+        return Err("Conflict editor is limited to 1 MiB per file.".to_string());
+    }
+
+    let repo = Repository::open(repo_path)
+        .map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let relative = validate_browser_relative_path(relative_path)?;
+    if relative.as_os_str().is_empty() {
+        return Err("Select a conflicted file first.".to_string());
+    }
+    let normalized = relative.to_string_lossy().replace('\\', "/");
+    let is_conflicted = collect_worktree_changes(&repo)?
+        .iter()
+        .any(|change| {
+            change.path == normalized
+                && (change.index_status == "Conflict" || change.worktree_status == "Conflict")
+        });
+    if !is_conflicted {
+        return Err("This file is no longer marked as conflicted by Git. Refresh the conflict list before editing it.".to_string());
+    }
+
+    let (root, file) = canonical_local_path(&repo, relative_path)?;
+    if !file.starts_with(&root) || !file.is_file() {
+        return Err("The selected conflict must be an existing regular file inside this repository.".to_string());
+    }
+    let metadata = fs::symlink_metadata(&file)
+        .map_err(|error| format!("Could not inspect the selected conflict file: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("Conflict editing does not follow symbolic links or write non-file entries.".to_string());
+    }
+    if metadata.len() > MAX_PREVIEW_FILE_BYTES {
+        return Err("Conflict editor is limited to 1 MiB per file.".to_string());
+    }
+    let parent = file.parent()
+        .ok_or_else(|| "The selected conflict file has no parent directory.".to_string())?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = parent.join(format!(
+        ".gitmanager-conflict-{}-{nonce}.tmp",
+        std::process::id(),
+    ));
+
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| format!("Could not create temporary conflict file: {error}"))?;
+    if let Err(error) = output.write_all(content.as_bytes()).and_then(|_| output.sync_all()) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("Could not save the temporary conflict contents: {error}"));
+    }
+    drop(output);
+    fs::set_permissions(&temporary, metadata.permissions())
+        .map_err(|error| format!("Could not preserve conflict file permissions: {error}"))?;
+
+    #[cfg(windows)]
+    {
+        let backup = parent.join(format!(
+            ".gitmanager-conflict-{}-{nonce}.previous",
+            std::process::id(),
+        ));
+        fs::rename(&file, &backup)
+            .map_err(|error| format!("Could not stage the previous conflict file: {error}"))?;
+        if let Err(error) = fs::rename(&temporary, &file) {
+            let _ = fs::rename(&backup, &file);
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("Could not publish the resolved conflict file: {error}"));
+        }
+        let _ = fs::remove_file(&backup);
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Err(error) = fs::rename(&temporary, &file) {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("Could not publish the resolved conflict file: {error}"));
+        }
+    }
+
+    Ok(format!(
+        "Saved {normalized}. Stage the resolved file to mark this conflict resolved."
+    ))
 }
 
 pub fn read_repository_file(
@@ -659,6 +728,13 @@ mod tests {
         validate_relative_path, Repository, WorktreeChange,
     };
     use std::fs;
+
+    #[test]
+    fn conflict_resolution_uses_the_same_repository_path_guard() {
+        assert!(super::validate_browser_relative_path("src/main.rs").is_ok());
+        assert!(super::validate_browser_relative_path("../outside.txt").is_err());
+        assert!(super::validate_browser_relative_path(".git/config").is_err());
+    }
 
     #[test]
     fn repository_paths_reject_parent_traversal() {

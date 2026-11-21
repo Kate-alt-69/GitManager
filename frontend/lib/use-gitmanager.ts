@@ -6,9 +6,9 @@ import type {
 	AppPreferences,
 	ApplicationDirectories,
 	ConnectedAccount,
+	AppNotification,
 	GitRepository,
 	ScanSummary,
-	UpdateAlert,
 } from "./types";
 
 const DEFAULT_PREFERENCES: AppPreferences = {
@@ -24,21 +24,36 @@ const DEFAULT_PREFERENCES: AppPreferences = {
 	archiveTrigger: "manual",
 	archiveQuietMs: 1500,
 	cloudNodeAddress: "",
+	inAppNotificationsEnabled: true,
+	osNotificationsEnabled: true,
 };
 
 export function useGitManager() {
 	const scanInFlight = useRef(false);
 	const [available, setAvailable] = useState(false);
+	const [serviceReady, setServiceReady] = useState(false);
+	const [remoteCheckPending, setRemoteCheckPending] = useState(false);
+	const [remoteCheckRunning, setRemoteCheckRunning] = useState(false);
+	const [serviceIndexing, setServiceIndexing] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [scanning, setScanning] = useState(false);
+	const [reloadingData, setReloadingData] = useState(false);
+	const reloadInFlight = useRef(false);
 	const [scanTruncated, setScanTruncated] = useState(false);
+	const [indexReady, setIndexReady] = useState(false);
+	const indexGeneration = useRef("0");
 	const [version, setVersion] = useState("—");
 	const [preferences, setPreferences] = useState<AppPreferences>(DEFAULT_PREFERENCES);
+	const inAppNotificationsEnabledRef = useRef(preferences.inAppNotificationsEnabled !== false);
+	inAppNotificationsEnabledRef.current = preferences.inAppNotificationsEnabled !== false;
 	const [directories, setDirectories] = useState<ApplicationDirectories | null>(null);
 	const [repositories, setRepositories] = useState<GitRepository[]>([]);
 	const [dependencies, setDependencies] = useState<string[]>([]);
 	const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
-	const [updates, setUpdates] = useState<UpdateAlert[]>([]);
+	const [accountsLoaded, setAccountsLoaded] = useState(false);
+	const [accountsLoading, setAccountsLoading] = useState(false);
+	const accountsLoadInFlight = useRef<Promise<ConnectedAccount[]> | null>(null);
+	const [notifications, setNotifications] = useState<AppNotification[]>([]);
 	const [setupOpen, setSetupOpen] = useState(false);
 	const [status, setStatus] = useState("Ready");
 	const [error, setError] = useState("");
@@ -70,6 +85,7 @@ export function useGitManager() {
 			setRepositories(local);
 			setDependencies(summary.dependency_repo_ids ?? []);
 			setScanTruncated(Boolean(summary.scan_truncated));
+			setIndexReady(true);
 			setStatus(summary.scan_truncated
 				? `Indexed ${local.length} repositories · stopped at a safety limit`
 				: `Indexed ${local.length} repositories`);
@@ -87,54 +103,209 @@ export function useGitManager() {
 
 	const scan = useCallback((customRoot?: string) => performScan(preferences, customRoot), [performScan, preferences]);
 
+	const retryService = useCallback(async () => {
+		setError("");
+		setStatus("Starting GitManager core service…");
+		try {
+			await invoke<string>("ensure_required_service");
+			setServiceReady(true);
+			setStatus("GitManager core service ready");
+			if (preferences.firstRunComplete) await performScan(preferences);
+		} catch (cause) {
+			const message = cause instanceof Error ? cause.message : String(cause);
+			setServiceReady(false);
+			setError(message);
+			setStatus("Core service unavailable");
+		}
+	}, [performScan, preferences]);
+
 	const updateRepository = useCallback((updated: GitRepository) => {
 		setRepositories((current) => current.map((repo) => repo.id === updated.id ? updated : repo));
 	}, []);
 
-	const clearUpdate = useCallback((repoPath: string) => {
-		setUpdates((current) => current.filter((item) => item.repo_path !== repoPath));
+	const refreshNotifications = useCallback(async () => {
+		if (!isTauriRuntime() || !inAppNotificationsEnabledRef.current) return [];
+		try {
+			const current = await invoke<AppNotification[]>("list_app_notifications");
+			setNotifications(current ?? []);
+			return current ?? [];
+		} catch {
+			return [];
+		}
 	}, []);
 
 
-	// Report only after the desktop hook is ready. The independent crash_helper
-	// treats a missing heartbeat as an unresponsive UI.
-	useEffect(() => {
-		if (!available || loading || !isTauriRuntime()) return;
-		const heartbeat = () => {
-			void invoke("report_ui_heartbeat").catch(() => undefined);
+	const reloadData = useCallback(async (): Promise<void> => {
+		if (!isTauriRuntime()) {
+			setStatus("Open GitManager as a desktop app to reload local repository data.");
+			return;
+		}
+		if (reloadInFlight.current) return;
+		reloadInFlight.current = true;
+		setReloadingData(true);
+		setError("");
+		setStatus("Reloading saved workspace data…");
+
+		const readIndex = async () => {
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				const generationBefore = await invoke<string>("get_repository_index_generation");
+				const summary = await invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" });
+				const generationAfter = await invoke<string>("get_repository_index_generation");
+				if (generationBefore === generationAfter) {
+					return { generation: generationAfter, summary };
+				}
+			}
+			throw new Error("The repository index changed during refresh. Try again after indexing finishes.");
 		};
-		heartbeat();
-		const timer = window.setInterval(heartbeat, 3000);
-		return () => window.clearInterval(timer);
-	}, [available, loading]);
+
+		try {
+			let snapshot: Awaited<ReturnType<typeof readIndex>>;
+			try {
+				snapshot = await readIndex();
+			} catch {
+				// A manual refresh is also a recovery action: re-establish the
+				// required service once, then retry the read against its saved index.
+				await invoke<string>("ensure_required_service");
+				setServiceReady(true);
+				snapshot = await readIndex();
+			}
+
+			const local = Array.isArray(snapshot.summary.repositories)
+				? snapshot.summary.repositories.filter((repo) => repo.source_kind === "local_scan")
+				: [];
+			indexGeneration.current = snapshot.generation;
+			setServiceReady(true);
+			setRepositories(local);
+			setDependencies(snapshot.summary.dependency_repo_ids ?? []);
+			setScanTruncated(Boolean(snapshot.summary.scan_truncated));
+			setIndexReady(snapshot.generation !== "0");
+			setStatus(snapshot.generation === "0"
+				? "No saved repository index has been published yet"
+				: "Reloaded " + local.length + " repositories from saved data");
+			if (inAppNotificationsEnabledRef.current) void refreshNotifications();
+		} catch (cause) {
+			const message = cause instanceof Error ? cause.message : String(cause);
+			setError(message);
+			setStatus("Could not reload workspace data");
+		} finally {
+			reloadInFlight.current = false;
+			setReloadingData(false);
+		}
+	}, [refreshNotifications]);
+
+	const markNotificationRead = useCallback(async (id: string) => {
+		try {
+			await invoke("mark_app_notification_read", { id });
+			setNotifications((current) => current.map((item) => item.id === id ? { ...item, read: true } : item));
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+			setStatus("Could not update notification");
+		}
+	}, []);
+
+	const dismissNotification = useCallback(async (id: string) => {
+		try {
+			await invoke("dismiss_app_notification", { id });
+			setNotifications((current) => current.filter((item) => item.id !== id));
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+			setStatus("Could not dismiss notification");
+		}
+	}, []);
+
+	const markAllNotificationsRead = useCallback(async () => {
+		try {
+			const changed = await invoke<number>("mark_all_app_notifications_read");
+			setNotifications((current) => current.map((item) => item.read ? item : { ...item, read: true }));
+			return changed;
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+			setStatus("Could not update notifications");
+			return 0;
+		}
+	}, []);
+
+
+	// The native runtime monitor emits an event when the service publishes a
+	// new index. Listen first, then compare the generation once to close the
+	// startup race; the WebView no longer polls while idle.
+	useEffect(() => {
+		if (!serviceReady || !preferences.firstRunComplete) return;
+		let active = true;
+		let unlisten: (() => void) | undefined;
+		const refreshRepositoryIndex = async () => {
+			try {
+				const generation = await invoke<string>("get_repository_index_generation");
+				if (!active || generation === "0" || generation === indexGeneration.current) return;
+				const summary = await invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" });
+				if (!active) return;
+				indexGeneration.current = generation;
+				const local = Array.isArray(summary.repositories)
+					? summary.repositories.filter((repo) => repo.source_kind === "local_scan")
+					: [];
+				setRepositories(local);
+				setDependencies(summary.dependency_repo_ids ?? []);
+				setScanTruncated(Boolean(summary.scan_truncated));
+				setIndexReady(true);
+				setStatus(summary.scan_truncated
+					? `Indexed ${local.length} repositories · stopped at a safety limit`
+					: `Indexed ${local.length} repositories`);
+			} catch {
+				// The service may still be publishing the initial index.
+			}
+		};
+		void listen("gitmanager://repository-index-updated", () => {
+			if (active) void refreshRepositoryIndex();
+		}).then((stop) => {
+			if (!active) { stop(); return; }
+			unlisten = stop;
+			void refreshRepositoryIndex();
+		});
+		return () => {
+			active = false;
+			unlisten?.();
+		};
+	}, [serviceReady, preferences.firstRunComplete]);
 
 	const savePreferences = useCallback(async (next: AppPreferences) => {
 		const saved = await invoke<AppPreferences>("save_app_preferences", {
 			preferences: { ...next, firstRunComplete: true },
 		});
+		const inAppEnabled = saved.inAppNotificationsEnabled !== false;
+		inAppNotificationsEnabledRef.current = inAppEnabled;
 		setPreferences(saved);
+		if (inAppEnabled) {
+			await refreshNotifications();
+		} else {
+			setNotifications([]);
+		}
 		setSetupOpen(false);
 		setStatus("Preferences saved");
-		await performScan(saved);
+		const scanSettingsChanged = !preferences.firstRunComplete
+			|| JSON.stringify(preferences.scanRoots) !== JSON.stringify(saved.scanRoots)
+			|| preferences.maxScanDepth !== saved.maxScanDepth
+			|| preferences.includeHiddenDirs !== saved.includeHiddenDirs
+			|| preferences.indexDependencyRepositories !== saved.indexDependencyRepositories;
+		if (scanSettingsChanged) {
+			await performScan(saved);
+		}
 		return saved;
-	}, [performScan]);
+	}, [performScan, preferences, refreshNotifications]);
 
-	const checkUpdates = useCallback(async () => {
-		setStatus("Checking remote branches…");
+	const queueRemoteCheck = useCallback(async (): Promise<void> => {
+		setStatus("Queuing remote check in GitManager Core Service…");
 		try {
-			const found = await invoke<UpdateAlert[]>("check_repo_updates_now", {
+			await invoke("check_repo_updates_now", {
 				rootPaths: preferences.scanRoots,
 			});
-			setUpdates(found ?? []);
-			setStatus(found?.length ? `${found.length} update available` : "All repositories are up to date");
-			return found ?? [];
+			void refreshNotifications();
+			setStatus("Remote check queued · results will appear in Notifications");
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			setError(message);
-			setStatus("Remote check failed");
-			return [];
+			setStatus("Remote check could not be queued");
 		}
-	}, [preferences.scanRoots]);
+	}, [preferences.scanRoots, refreshNotifications]);
 
 	const switchBranch = useCallback(async (repoPath: string, branchName: string) => {
 		setStatus("Switching local branch safely…");
@@ -154,6 +325,30 @@ export function useGitManager() {
 		}
 	}, []);
 
+	const loadAccounts = useCallback(async () => {
+		if (accountsLoaded) return accounts;
+		if (accountsLoadInFlight.current) return accountsLoadInFlight.current;
+		setAccountsLoading(true);
+		const request = invoke<ConnectedAccount[]>("load_connected_accounts")
+			.then((saved) => {
+				const loaded = saved ?? [];
+				setAccounts(loaded);
+				setAccountsLoaded(true);
+				return loaded;
+			})
+			.catch((cause) => {
+				const message = cause instanceof Error ? cause.message : String(cause);
+				setError(message);
+				throw cause;
+			})
+			.finally(() => {
+				accountsLoadInFlight.current = null;
+				setAccountsLoading(false);
+			});
+		accountsLoadInFlight.current = request;
+		return request;
+	}, [accounts, accountsLoaded]);
+
 	const connectAccount = useCallback(async (
 		provider: string,
 		usernameOrHost: string,
@@ -164,6 +359,7 @@ export function useGitManager() {
 			usernameOrHost,
 			accessToken: accessToken.trim() ? accessToken.trim() : null,
 		});
+		setAccountsLoaded(true);
 		setAccounts((current) => [
 			...current.filter((item) => !(
 				item.provider === account.provider &&
@@ -177,8 +373,9 @@ export function useGitManager() {
 
 	useEffect(() => {
 		let active = true;
-		let unlistenUpdate: (() => void) | undefined;
 		let unlistenState: (() => void) | undefined;
+		let unlistenNotifications: (() => void) | undefined;
+		let unlistenServiceHealth: (() => void) | undefined;
 
 		async function initialize() {
 			setAvailable(isTauriRuntime());
@@ -188,6 +385,12 @@ export function useGitManager() {
 				return;
 			}
 			try {
+				setStatus("Connecting to GitManager core service…");
+				await invoke<string>("ensure_required_service");
+				if (!active) return;
+				setServiceReady(true);
+				setStatus("Core service connected");
+
 				const cliTools = await invoke<{ git: boolean; github: boolean }>("check_cli_tools");
 				if (!cliTools.git && !cliTools.github) {
 					const flatpak = await invoke<{ isFlatpak: boolean }>("get_flatpak_cli_integration_status")
@@ -222,6 +425,26 @@ export function useGitManager() {
 					resolved = { ...resolved, scanRoots: suggested ?? [] };
 				}
 				setPreferences(resolved);
+				// Load the persisted unread badge only after the saved preference is
+				// known, avoiding a disabled-history IPC read during startup.
+				inAppNotificationsEnabledRef.current = resolved.inAppNotificationsEnabled !== false;
+				if (inAppNotificationsEnabledRef.current) void refreshNotifications();
+
+				// Hydrate the last published inventory before requesting any refresh.
+				// This is a read of the service-owned index, never a filesystem scan.
+				const generationBeforeLoad = await invoke<string>("get_repository_index_generation").catch(() => "0");
+				const cachedIndex = await invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" }).catch(() => null);
+				const generationAfterLoad = await invoke<string>("get_repository_index_generation").catch(() => generationBeforeLoad);
+				indexGeneration.current = generationAfterLoad;
+				if (active && cachedIndex && generationBeforeLoad === generationAfterLoad && generationAfterLoad !== "0") setIndexReady(true);
+				if (active && cachedIndex) {
+					const local = Array.isArray(cachedIndex.repositories)
+						? cachedIndex.repositories.filter((repo) => repo.source_kind === "local_scan")
+						: [];
+					setRepositories(local);
+					setDependencies(cachedIndex.dependency_repo_ids ?? []);
+					setScanTruncated(Boolean(cachedIndex.scan_truncated));
+				}
 
 				const setupMode = await invoke<boolean>("is_setup_mode").catch(() => false);
 				if (setupMode) {
@@ -234,9 +457,12 @@ export function useGitManager() {
 						setSetupOpen(true);
 					}
 				} else {
-					// Paint the application shell first; native discovery fills the skeleton cards.
+					// The service owns first-run discovery. Render cached data immediately
+					// and let the native index-change event hydrate the first new index.
 					setLoading(false);
-					void performScan(resolved);
+					setStatus(indexGeneration.current === "0"
+						? "GitManager Core Service is indexing repositories…"
+						: "Repository index loaded");
 				}
 
 				// GitHub CLI detection is intentionally deferred to Accounts.
@@ -254,26 +480,48 @@ export function useGitManager() {
 		}
 
 		void initialize();
-		void listen<UpdateAlert>("gitmanager://repo-update-available", (payload) => {
-			if (active) setUpdates((current) => [
-				...current.filter((item) => item.repo_path !== payload.repo_path),
-				payload,
-			]);
-		}).then((unlisten) => { unlistenUpdate = unlisten; });
 		void listen<{ checking?: boolean; status?: string }>("gitmanager://update-check-state", (payload) => {
 			if (active && payload.status) setStatus(payload.status);
 		}).then((unlisten) => { unlistenState = unlisten; });
+		void listen("gitmanager://notifications-updated", () => {
+			if (active && inAppNotificationsEnabledRef.current) void refreshNotifications();
+		}).then((unlisten) => { unlistenNotifications = unlisten; });
+		void listen<{
+			ready: boolean;
+			generation: number;
+			message: string;
+			remoteCheckPending?: boolean;
+			remoteCheckRunning?: boolean;
+			indexing?: boolean;
+		}>("gitmanager://service-health", (payload) => {
+			if (!active) return;
+			setServiceReady(payload.ready);
+			setRemoteCheckPending(Boolean(payload.remoteCheckPending));
+			setRemoteCheckRunning(Boolean(payload.remoteCheckRunning));
+			setServiceIndexing(Boolean(payload.indexing));
+			if (payload.ready) {
+				setStatus(payload.message || "GitManager Core Service ready");
+				setError((current) => current.includes("GitManager Core Service") ? "" : current);
+			} else {
+				setStatus("GitManager Core Service connection lost");
+				setError(payload.message || "GitManager Core Service is unavailable.");
+			}
+		}).then((unlisten) => { unlistenServiceHealth = unlisten; });
 
 		return () => {
 			active = false;
-			unlistenUpdate?.();
 			unlistenState?.();
+			unlistenNotifications?.();
+			unlistenServiceHealth?.();
 		};
-	}, [scan]);
+	}, [performScan, refreshNotifications]);
 
 	return {
-		available, loading, scanning, scanTruncated, version, preferences, setPreferences, directories,
-		repositories, dependencies, accounts, updates, setupOpen, setSetupOpen,
-		status, error, setError, scan, savePreferences, checkUpdates, switchBranch, updateRepository, clearUpdate, connectAccount,
+		available, serviceReady, remoteCheckPending, remoteCheckRunning, serviceIndexing, loading, scanning, reloadingData, reloadData, scanTruncated, indexReady,
+		awaitingInitialIndex: serviceReady && !indexReady,
+		version, preferences, setPreferences, directories,
+		repositories, dependencies, accounts, accountsLoading, loadAccounts, notifications, setupOpen, setSetupOpen,
+		status, error, setError, scan, retryService, savePreferences, queueRemoteCheck, switchBranch, updateRepository, connectAccount,
+		refreshNotifications, markNotificationRead, dismissNotification, markAllNotificationsRead,
 	};
 }

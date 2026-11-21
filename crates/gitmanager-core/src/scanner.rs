@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -9,7 +9,9 @@ use std::thread;
 use std::time::Duration;
 use fs2::FileExt;
 
-use crate::git_info::{extract_git_repository_summary, GitRepositoryInfo};
+use crate::git_info::extract_git_repository_summary;
+use crate::models::GitRepositoryInfo;
+use crate::repository_index::{default_scan_roots, ScanReport};
 
 const SCAN_WORKERS: usize = 2;
 const SCAN_ENTRY_PACING_INTERVAL: usize = 128;
@@ -20,7 +22,7 @@ const MAX_PENDING_DIRECTORIES: usize = 8_192;
 const MAX_REPOSITORIES: usize = 1_000;
 const MAX_DEPENDENCY_DESCENT: usize = 2;
 
-// Prevent UI, archive watcher, and update service scans from multiplying I/O.
+// Prevent overlapping service refresh requests from multiplying filesystem I/O.
 static ACTIVE_SCAN: Mutex<()> = Mutex::new(());
 
 const IGNORED_DIRECTORY_NAMES: &[&str] = &[
@@ -43,12 +45,6 @@ pub struct ScanOptions {
     pub index_dependency_repositories: Option<bool>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ScanReport {
-    pub repositories: Vec<GitRepositoryInfo>,
-    pub truncated: bool,
-}
-
 #[derive(Clone)]
 struct ScanTask { root: PathBuf, path: PathBuf, depth: usize }
 
@@ -67,23 +63,6 @@ struct ScanShared {
     seen_repositories: Arc<Mutex<HashSet<String>>>,
     repositories: Arc<Mutex<Vec<GitRepositoryInfo>>>,
     truncated: Arc<AtomicBool>,
-}
-
-pub fn default_scan_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        let candidates = [
-            "Projects", "Repos", "Repositories", "Development", "dev", "workspace",
-            "src", "code", "GitHub", "GitLab", "source/repos", "Documents/GitHub",
-            "Documents/Projects", "Desktop",
-        ];
-        for relative in candidates {
-            let path = home.join(relative);
-            if path.exists() && path.is_dir() { roots.push(path); }
-        }
-        if roots.is_empty() { roots.push(home); }
-    }
-    roots
 }
 
 /// Compatibility wrapper for archive and background-update callers.
@@ -396,14 +375,10 @@ fn should_visit_directory(
     true
 }
 
-fn is_dependency_repository_path(path: &str) -> bool {
-    path_has_dependency_component(Path::new(path))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        is_dependency_repository_path, normalize_scan_roots, scan_worker_count_for,
+        normalize_scan_roots, path_has_dependency_component, scan_worker_count_for,
         should_visit_directory,
     };
     use std::path::{Path, PathBuf, MAIN_SEPARATOR};
@@ -411,12 +386,12 @@ mod tests {
     #[test]
     fn classifies_dependency_directory_paths() {
         let path = format!("projects{0}app{0}node_modules{0}some-package", MAIN_SEPARATOR);
-        assert!(is_dependency_repository_path(&path));
+        assert!(path_has_dependency_component(Path::new(&path)));
     }
     #[test]
     fn does_not_classify_similarly_named_directories() {
         let path = format!("projects{0}targeting-tool{0}src", MAIN_SEPARATOR);
-        assert!(!is_dependency_repository_path(&path));
+        assert!(!path_has_dependency_component(Path::new(&path)));
     }
     #[test]
     fn primary_pass_skips_dependency_trees() {
@@ -487,47 +462,3 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexedRepoSummary {
-    pub repositories: Vec<GitRepositoryInfo>,
-    pub by_folder: HashMap<String, Vec<String>>,
-    pub remote_count: usize,
-    pub local_only_count: usize,
-    pub dependency_count: usize,
-    pub dependency_repo_ids: Vec<String>,
-    pub effective_filter_mode: String,
-    pub scan_truncated: bool,
-}
-
-pub fn build_indexed_summary(repos: Vec<GitRepositoryInfo>, requested_filter: &str) -> IndexedRepoSummary {
-    build_indexed_summary_with_scan_status(repos, requested_filter, false)
-}
-
-pub fn build_indexed_summary_with_scan_status(
-    repos: Vec<GitRepositoryInfo>, requested_filter: &str, scan_truncated: bool,
-) -> IndexedRepoSummary {
-    let remote_count = repos.iter().filter(|repository| repository.has_remote).count();
-    let local_only_count = repos.len().saturating_sub(remote_count);
-    let dependency_repo_ids = repos.iter()
-        .filter(|repository| is_dependency_repository_path(&repository.path))
-        .map(|repository| repository.id.clone()).collect::<Vec<_>>();
-    let dependency_count = dependency_repo_ids.len();
-
-    let mut by_folder: HashMap<String, Vec<String>> = HashMap::new();
-    for repository in &repos {
-        by_folder.entry(repository.parent_folder.clone()).or_default().push(repository.id.clone());
-    }
-    let effective_filter_mode = match requested_filter {
-        "remote" if remote_count > 0 => "remote".to_string(),
-        "local" if local_only_count > 0 => "local".to_string(),
-        "remote" | "local" | "grouped" | _ => {
-            if remote_count == 0 || local_only_count == 0 { "grouped_fallback".to_string() }
-            else if requested_filter == "remote" || requested_filter == "local" { requested_filter.to_string() }
-            else { "grouped".to_string() }
-        }
-    };
-    IndexedRepoSummary {
-        repositories: repos, by_folder, remote_count, local_only_count,
-        dependency_count, dependency_repo_ids, effective_filter_mode, scan_truncated,
-    }
-}

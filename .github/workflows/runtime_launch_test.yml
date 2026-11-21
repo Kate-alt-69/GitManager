@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: linux-runtime-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -101,7 +101,7 @@ jobs:
       - name: Verify the expected executable exists
         shell: bash
         run: |
-          APP="build/.rcache/x86_64-unknown-linux-gnu/debug/git-manager"
+          APP="build/.rcache/x86_64-unknown-linux-gnu/debug/gitmanager"
           test -x "$APP"
           file "$APP"
           ldd "$APP" | tee build/linux-runtime-ldd.txt
@@ -114,7 +114,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          APP="build/.rcache/x86_64-unknown-linux-gnu/debug/git-manager"
+          APP="build/.rcache/x86_64-unknown-linux-gnu/debug/gitmanager"
           mkdir -p build/runtime-test
           dbus-run-session -- xvfb-run -a \
             timeout --signal=TERM --kill-after=10s 60s \

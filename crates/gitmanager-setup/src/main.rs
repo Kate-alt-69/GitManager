@@ -12,7 +12,11 @@ fn main() -> ExitCode {
         }
     };
 
-    match Command::new(&app_path).arg("--setup").spawn() {
+    match Command::new(&app_path)
+        .arg("--setup")
+        .env("GITMANAGER_SETUP_MODE", "1")
+        .spawn()
+    {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             show_error(&format!(
@@ -56,7 +60,7 @@ fn application_candidates(helper_dir: &Path) -> Vec<PathBuf> {
     }
 
     #[cfg(windows)]
-    let executable_names = ["git-manager.exe", "GitManager.exe"];
+    let executable_names = ["gitmanager.exe", "GitManager.exe"];
     #[cfg(target_os = "macos")]
     let executable_names = [
         "git-manager",

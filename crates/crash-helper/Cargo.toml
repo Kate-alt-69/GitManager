@@ -13,10 +13,26 @@ path = "src/lib.rs"
 name = "crash_helper"
 path = "src/main.rs"
 
+[features]
+default = []
+core-service = ["dep:gitmanager-core"]
+account-storage = ["core-service"]
+repository-data = ["core-service", "gitmanager-core/git-engine"]
+notification-storage = ["core-service"]
+preferences-storage = ["core-service"]
+archive-operations = ["repository-data", "dep:gitmanager-archive"]
+provider-sync = ["repository-data", "account-storage", "dep:reqwest", "dep:tokio"]
+
 [dependencies]
+gitmanager-core = { path = "../gitmanager-core", optional = true }
+gitmanager-archive = { path = "../archive-core", optional = true }
 dirs = "5.0"
 fs2 = "0.4"
+interprocess = "2.4.8"
 libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.11", features = ["v4"] }
+widestring = "1.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+tokio = { version = "1.40", default-features = false, features = ["rt", "rt-multi-thread", "net", "time"], optional = true }
