@@ -335,13 +335,13 @@ function TopBar({
 									<div className="gm-notification-empty"><strong>{notificationFilter === "unread" ? "No unread notifications" : "You're all caught up"}</strong><span>{notificationFilter === "unread" ? "Everything has been read. Switch to All to review recent activity." : "Repository updates and GitManager activity will appear here."}</span></div>
 								) : visibleNotifications.map((item) => (
 									<article
-						className={item.read ? "gm-notification-item read" : "gm-notification-item unread"}
-						key={item.id}
-						onContextMenu={(event) => {
-							event.preventDefault();
-							setNotificationContextMenu({ x: event.clientX, y: event.clientY, item });
-						}}
-					>
+										className={item.read ? "gm-notification-item read" : "gm-notification-item unread"}
+										key={item.id}
+										onContextMenu={(event) => {
+											event.preventDefault();
+											setNotificationContextMenu({ x: event.clientX, y: event.clientY, item });
+										}}
+									>
 										<div className="gm-notification-copy">
 											<div className="gm-notification-title">
 												<strong>{item.title}</strong>
@@ -351,13 +351,15 @@ function TopBar({
 											<p>{item.body}</p>
 										</div>
 										<div className="gm-notification-actions">
-											{item.repositoryPath && <button
-								type="button"
-								onClick={() => {
-									setOpenPanel(null);
-									onOpenNotification(item);
-								}}
-							>Open repository</button>}
+											{item.repositoryPath && (
+											<button
+												type="button"
+												onClick={() => {
+													setOpenPanel(null);
+													onOpenNotification(item);
+												}}
+											>Open repository</button>
+										)}
 											{!item.read && <button type="button" onClick={() => void onMarkNotificationRead(item.id)}>Mark read</button>}
 											<button type="button" onClick={() => void onDismissNotification(item.id)}>Dismiss</button>
 										</div>
