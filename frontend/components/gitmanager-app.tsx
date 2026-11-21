@@ -302,7 +302,7 @@ function TopBar({
 							{serviceLog !== null && <pre className="gm-service-log">{serviceLog || "No service log output yet."}</pre>}
 							<div className="gm-popover-actions">
 								<button type="button" onClick={() => void onReloadData()} disabled={reloadingData}>{reloadingData ? "Reloading data…" : "Reload saved data"}</button>
-				<button type="button" onClick={onScan} disabled={!serviceReady || scanning || serviceIndexing}>{scanning || serviceIndexing ? "Indexing…" : "Rebuild repository index"}</button>
+								<button type="button" onClick={onScan} disabled={!serviceReady || scanning || serviceIndexing}>{scanning || serviceIndexing ? "Indexing…" : "Rebuild repository index"}</button>
 								<button type="button" disabled={serviceLogBusy} onClick={async () => {
 									if (serviceLog !== null) { setServiceLog(null); return; }
 									setServiceLogBusy(true);
@@ -1087,8 +1087,6 @@ export function GitManagerApp() {
 							onRescan={handleScan}
 							onRepositoryLoaded={git.updateRepository}
 							onOpenCleaner={handleOpenCleaner}
-							onReloadData={git.reloadData}
-							reloadingData={git.reloadingData}
 						/>
 					)}
 					{page === "accounts" && <AccountsPage accounts={git.accounts} loading={git.accountsLoading} onConnect={git.connectAccount} />}
