@@ -65,7 +65,7 @@ export function ContextMenu({
 			aria-label="Context actions"
 			style={{ left: position.left, top: position.top }}
 			onPointerDown={(event) => event.stopPropagation()}
-			onContextMenu={(event) => event.preventDefault()}
+			onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
 		>
 			{items.map((item) => (
 				<button
