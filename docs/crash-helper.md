@@ -2,11 +2,16 @@
 
 ## Process boundaries
 
-- The desktop executable stays alive as the process-tree root while its bundled crash_helper sidecar supervises the Tauri UI.
-- crash_helper starts and supervises only the Tauri UI process.
-- gitmanager.service is a separate executable launched directly by the OS service manager.
-- The UI and helper never place the background service in their process tree or termination scope.
-- Cloud Node keeps using its existing RBE Error Reporter; this feature does not duplicate it.
+GitManager starts **two independent instances of the same `crash_helper` executable**:
+
+- `crash_helper.exe --supervise` supervises the Tauri desktop UI, watches its UI heartbeat and owns the UI crash-containment boundary.
+- `crash_helper.exe --supervise-service` supervises the required `gitmanager.service.exe` data engine, owns its separate supervisor lock and restarts it after an unexpected exit.
+
+The service supervisor is started before the UI supervisor. It launches `gitmanager.service.exe` outside the UI's kill-on-close Job Object, so closing or recovering the desktop UI does not terminate the data engine. Both helper instances have the same executable name but different command-line modes and separate ownership locks.
+
+Optional sign-in registration (Task Scheduler on Windows, a systemd user unit on Linux, or a LaunchAgent on macOS) can start the service before the desktop opens. It shares the service's per-user single-instance lock; the service supervisor detects an already-running instance instead of starting a duplicate.
+
+**Expected Windows Task Manager entries:** one `gitmanager.exe`, two `crash_helper.exe` processes (UI supervisor and service supervisor), and one `gitmanager.service.exe`. The two helpers are intentional; they perform different jobs. Cloud Node keeps using its existing RBE Error Reporter; this feature does not duplicate it.
 
 ## UI health and recovery
 
@@ -14,7 +19,7 @@ The Tauri host starts a native runtime-monitor thread during setup. It reports t
 
 The monitor checks the repository-index and notification-history file generations once per second and checks the authenticated service endpoint every five seconds. It emits Tauri events only when those values change. React subscribes to those events; it no longer polls for index updates, notifications or service health. This heartbeat confirms the native Tauri host is responsive; it does not by itself prove that the WebView's JavaScript event loop is responsive.
 
-The helper creates a separate process group for the UI on Linux and macOS and terminates that group on an emergency shutdown. On Windows, the original GitManager launcher remains alive while `crash_helper.exe` runs as its child and the Tauri UI runs as the helper's child. Neither child creates a new process group. The helper starts the UI suspended, assigns it to a Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then resumes the primary thread. The Job Object—not process-group membership—is the authoritative crash-containment boundary: closing its handle on UI exit or timeout terminates only the UI and its descendants. The independent background service is never assigned to this job. Task Manager should now have a real process ancestry to display, but the exact grouping presentation still needs a Windows runtime check.
+The helper creates a separate process group for the UI on Linux and macOS and terminates that group on an emergency shutdown. On Windows, the original GitManager launcher remains alive while `crash_helper.exe` runs as its child and the Tauri UI runs as the helper's child. Neither child creates a new process group. The UI supervisor starts the UI suspended, assigns it to a Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then resumes the primary thread. The Job Object—not process-group membership—is the authoritative crash-containment boundary: closing its handle on UI exit or timeout terminates only the UI and its descendants. The service supervisor and `gitmanager.service.exe` are never assigned to this job.
 
 ## Windows WebView2 compatibility
 
@@ -32,7 +37,7 @@ The required service exposes a per-user local IPC endpoint (protocol version 4):
 
 The `Status` response also exposes `remote_check_pending` and `remote_check_running`. The native Tauri monitor emits a service-health event only when readiness, service identity/protocol, or these task states change; the WebView does not poll for remote-check progress.
 
-Suspension is cooperative. The service stops scheduling new remote checks, archive watcher work, and cloud sync. Already-running transactional operations are allowed to reach their safe stopping points. The service process is not OS-frozen, so its control channel and expiry timer remain alive. The Tauri UI starts this service on demand and waits for its authenticated readiness response before enabling the workspace.
+Suspension is cooperative. The service stops scheduling new remote checks, archive watcher work, and cloud sync. Already-running transactional operations are allowed to reach their safe stopping points. The service process is not OS-frozen, so its control channel and expiry timer remain alive. The service supervisor starts this service independently of the Tauri UI and waits for its authenticated readiness response. The UI then verifies that service through authenticated IPC before enabling the workspace.
 
 The default suspension is 120 seconds and requests are clamped to a 15–600 second range.
 
