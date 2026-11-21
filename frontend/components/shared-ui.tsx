@@ -22,19 +22,21 @@ export function ContextMenu({
 	onClose: () => void;
 }) {
 	const menuRef = useRef<HTMLDivElement | null>(null);
+	const onCloseRef = useRef(onClose);
+	onCloseRef.current = onClose;
 	const [position, setPosition] = useState({ left: x, top: y });
 
 	useEffect(() => {
 		const closeOnOutsidePointer = (event: PointerEvent) => {
-			if (event.target instanceof Node && !menuRef.current?.contains(event.target)) onClose();
+			if (event.target instanceof Node && !menuRef.current?.contains(event.target)) onCloseRef.current();
 		};
 		const closeOnEscape = (event: KeyboardEvent) => {
 			if (event.key === "Escape") {
 				event.preventDefault();
-				onClose();
+				onCloseRef.current();
 			}
 		};
-		const closeOnViewportChange = () => onClose();
+		const closeOnViewportChange = () => onCloseRef.current();
 		document.addEventListener("pointerdown", closeOnOutsidePointer);
 		document.addEventListener("keydown", closeOnEscape);
 		window.addEventListener("resize", closeOnViewportChange);
@@ -53,7 +55,7 @@ export function ContextMenu({
 			document.removeEventListener("keydown", closeOnEscape);
 			window.removeEventListener("resize", closeOnViewportChange);
 		};
-	}, [x, y, onClose]);
+	}, [x, y]);
 
 	return (
 		<div
