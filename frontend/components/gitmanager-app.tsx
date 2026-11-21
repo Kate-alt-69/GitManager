@@ -301,7 +301,7 @@ function TopBar({
 							</div>
 							{serviceLog !== null && <pre className="gm-service-log">{serviceLog || "No service log output yet."}</pre>}
 							<div className="gm-popover-actions">
-								<button type="button" onClick={() => void onReloadData()} disabled={!serviceReady || reloadingData}>{reloadingData ? "Reloading data…" : "Reload saved data"}</button>
+								<button type="button" onClick={() => void onReloadData()} disabled={reloadingData}>{reloadingData ? "Reloading data…" : "Reload saved data"}</button>
 				<button type="button" onClick={onScan} disabled={!serviceReady || scanning || serviceIndexing}>{scanning || serviceIndexing ? "Indexing…" : "Rebuild repository index"}</button>
 								<button type="button" disabled={serviceLogBusy} onClick={async () => {
 									if (serviceLog !== null) { setServiceLog(null); return; }
