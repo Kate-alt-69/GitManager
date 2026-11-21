@@ -37,6 +37,7 @@ export function useGitManager() {
 	const [serviceIndexing, setServiceIndexing] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [scanning, setScanning] = useState(false);
+	const [reloadingData, setReloadingData] = useState(false);
 	const [scanTruncated, setScanTruncated] = useState(false);
 	const [indexReady, setIndexReady] = useState(false);
 	const indexGeneration = useRef("0");
@@ -132,6 +133,57 @@ export function useGitManager() {
 		}
 	}, []);
 
+
+	const reloadData = useCallback(async (): Promise<void> => {
+		if (!isTauriRuntime()) {
+			setStatus("Open GitManager as a desktop app to reload local repository data.");
+			return;
+		}
+		if (reloadingData) return;
+		setReloadingData(true);
+		setError("");
+		setStatus("Reloading saved workspace data…");
+
+		const readIndex = async () => {
+			const [generation, summary] = await Promise.all([
+				invoke<string>("get_repository_index_generation"),
+				invoke<ScanSummary>("load_indexed_repositories", { filterMode: "grouped" }),
+			]);
+			return { generation, summary };
+		};
+
+		try {
+			let snapshot: Awaited<ReturnType<typeof readIndex>>;
+			try {
+				snapshot = await readIndex();
+			} catch {
+				// A manual refresh is also a recovery action: re-establish the
+				// required service once, then retry the read against its saved index.
+				await invoke<string>("ensure_required_service");
+				setServiceReady(true);
+				snapshot = await readIndex();
+			}
+
+			const local = Array.isArray(snapshot.summary.repositories)
+				? snapshot.summary.repositories.filter((repo) => repo.source_kind === "local_scan")
+				: [];
+			indexGeneration.current = snapshot.generation;
+			setRepositories(local);
+			setDependencies(snapshot.summary.dependency_repo_ids ?? []);
+			setScanTruncated(Boolean(snapshot.summary.scan_truncated));
+			setIndexReady(snapshot.generation !== "0");
+			setStatus(snapshot.generation === "0"
+				? "No saved repository index has been published yet"
+				: "Reloaded " + local.length + " repositories from saved data");
+			if (inAppNotificationsEnabledRef.current) void refreshNotifications();
+		} catch (cause) {
+			const message = cause instanceof Error ? cause.message : String(cause);
+			setError(message);
+			setStatus("Could not reload workspace data");
+		} finally {
+			setReloadingData(false);
+		}
+	}, [refreshNotifications, reloadingData]);
 
 	const markNotificationRead = useCallback(async (id: string) => {
 		try {
@@ -457,7 +509,7 @@ export function useGitManager() {
 	}, [performScan, refreshNotifications]);
 
 	return {
-		available, serviceReady, remoteCheckPending, remoteCheckRunning, serviceIndexing, loading, scanning, scanTruncated, indexReady,
+		available, serviceReady, remoteCheckPending, remoteCheckRunning, serviceIndexing, loading, scanning, reloadingData, reloadData, scanTruncated, indexReady,
 		awaitingInitialIndex: serviceReady && !indexReady,
 		version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, accountsLoading, loadAccounts, notifications, setupOpen, setSetupOpen,
