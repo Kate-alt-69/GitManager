@@ -416,6 +416,8 @@ function RepositoryCard({
 	canSnapshot,
 	onSelect,
 	onSwitchBranch,
+	onReloadData,
+	onQueueRemoteCheck,
 }: {
 	repo: GitRepository;
 	selected: boolean;
@@ -424,6 +426,8 @@ function RepositoryCard({
 	canSnapshot: boolean;
 	onSelect: () => void;
 	onSwitchBranch: (path: string, branchName: string) => Promise<GitRepository>;
+	onReloadData: () => Promise<void>;
+	onQueueRemoteCheck: () => Promise<void>;
 }) {
 	const currentBranchTip = repo.branches?.find((branch) => branch.name === repo.current_branch && !branch.is_remote)?.target_oid;
 	const latest = (currentBranchTip && repo.commits?.find((commit) => commit.oid === currentBranchTip))
@@ -445,6 +449,7 @@ function RepositoryCard({
 	const [branchMessage, setBranchMessage] = useState("");
 	const [isSnapshotting, setIsSnapshotting] = useState(false);
 	const [feedback, setFeedback] = useState("");
+	const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
 	useEffect(() => {
 		setSelectedBranch(repo.current_branch || "HEAD");
@@ -524,7 +529,13 @@ function RepositoryCard({
 	}
 
 	return (
-		<article className={selected ? "gm-repo-card selected" : "gm-repo-card"}>
+		<article
+			className={selected ? "gm-repo-card selected" : "gm-repo-card"}
+			onContextMenu={(event) => {
+				event.preventDefault();
+				setContextMenu({ x: event.clientX, y: event.clientY });
+			}}
+		>
 			<header className="gm-repo-card-header">
 				<button className="gm-repo-open" onClick={onSelect} type="button">
 					<RepoAvatar repo={repo} />
@@ -636,6 +647,20 @@ function RepositoryCard({
 				</div>
 			</footer>
 			{feedback && <p className="gm-card-feedback" role="status" aria-live="polite">{feedback}</p>}
+			{contextMenu && (
+				<ContextMenu
+					x={contextMenu.x}
+					y={contextMenu.y}
+					onClose={() => setContextMenu(null)}
+					items={[
+						{ label: "Open repository", onSelect: onSelect },
+						{ label: "Reload saved data", onSelect: () => { void onReloadData(); } },
+						{ label: "Copy repository path", onSelect: () => { void handleCopy(repo.path, "Disk path"); } },
+						...(repo.has_remote ? [{ label: "Check remotes", onSelect: () => { void onQueueRemoteCheck(); } }] : []),
+						{ label: "Create local snapshot", onSelect: () => { void handleSnapshot(); }, disabled: !canSnapshot || isSnapshotting },
+					]}
+				/>
+			)}
 		</article>
 	);
 }
@@ -673,6 +698,8 @@ function RepositoryPage({
 	onRescan,
 	onRepositoryLoaded,
 	onOpenCleaner,
+	onReloadData,
+	reloadingData,
 	scanTruncated,
 	destination,
 	onNavigateDestination,
@@ -697,6 +724,8 @@ function RepositoryPage({
 	onRescan: () => void;
 	onRepositoryLoaded: (repo: GitRepository) => void;
 	onOpenCleaner: () => void;
+	onReloadData: () => Promise<void>;
+	reloadingData: boolean;
 	scanTruncated: boolean;
 }) {
 	const dependencySet = useMemo(() => new Set(dependencies), [dependencies]);
@@ -735,7 +764,8 @@ function RepositoryPage({
 					<p>Find, inspect and maintain the Git projects on this machine.</p>
 				</div>
 				<div className="gm-page-heading-actions">
-					<Button onClick={onQueueRemoteCheck}><Glyph>↻</Glyph> Check remotes</Button>
+					<Button onClick={() => void onReloadData()} disabled={reloadingData}><Glyph>↻</Glyph>{reloadingData ? "Reloading data…" : "Refresh data"}</Button>
+					<Button onClick={onQueueRemoteCheck}><Glyph>⇄</Glyph> Check remotes</Button>
 					<Button variant="primary" onClick={onScan} disabled={scanning}><Glyph>⌕</Glyph>{scanning ? "Scanning…" : "Scan workspace"}</Button>
 				</div>
 			</div>
@@ -795,6 +825,8 @@ function RepositoryPage({
 							canSnapshot={preferences.archiveLocalEnabled !== false}
 							onSelect={() => setSelectedRepo(repo)}
 							onSwitchBranch={onSwitchBranch}
+							onReloadData={onReloadData}
+							onQueueRemoteCheck={onQueueRemoteCheck}
 						/>
 					))}
 				</EngineGrid>
