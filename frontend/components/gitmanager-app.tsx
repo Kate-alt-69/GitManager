@@ -1052,6 +1052,8 @@ export function GitManagerApp() {
 					onRefreshNotifications={git.refreshNotifications}
 					onMarkNotificationRead={git.markNotificationRead}
 					onMarkAllNotificationsRead={git.markAllNotificationsRead}
+					reloadingData={git.reloadingData}
+					onReloadData={git.reloadData}
 					onDismissNotification={git.dismissNotification}
 					onOpenNotification={openNotificationRepository}
 					onScan={handleScan}
@@ -1075,6 +1077,8 @@ export function GitManagerApp() {
 							kind={kind}
 							setKind={setKind}
 							scanning={git.scanning}
+							onReloadData={git.reloadData}
+							reloadingData={git.reloadingData}
 							onScan={() => void git.scan()}
 							scanTruncated={git.scanTruncated}
 							onQueueRemoteCheck={async () => { await git.queueRemoteCheck(); }}
@@ -1083,6 +1087,8 @@ export function GitManagerApp() {
 							onRescan={handleScan}
 							onRepositoryLoaded={git.updateRepository}
 							onOpenCleaner={handleOpenCleaner}
+							onReloadData={git.reloadData}
+							reloadingData={git.reloadingData}
 						/>
 					)}
 					{page === "accounts" && <AccountsPage accounts={git.accounts} loading={git.accountsLoading} onConnect={git.connectAccount} />}
