@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { EngineBox, EngineGrid } from "@/engine";
 import { useGitManager } from "../lib/use-gitmanager";
 import { invoke, openDialog } from "../lib/tauri";
-import { Button, EmptyState, Field, Glyph, ProviderMark, RepoAvatar, Switch } from "./shared-ui";
+import { Button, ContextMenu, EmptyState, Field, Glyph, ProviderMark, RepoAvatar, Switch } from "./shared-ui";
 import { parseInternalRoute, repositoryRouteForItem, repositorySubroute, routeLabel, sectionForRoute, sectionRoute } from "../lib/internal-routing";
 import type { RepositoryDestination } from "../lib/internal-routing";
 import type { AppPreferences, ArchiveSnapshot, AppNotification, BranchInfo, GitRepository } from "../lib/types";
@@ -156,6 +156,8 @@ function TopBar({
 	onRefreshNotifications,
 	onMarkNotificationRead,
 	onMarkAllNotificationsRead,
+	reloadingData,
+	onReloadData,
 	onDismissNotification,
 	onOpenNotification,
 	onScan,
@@ -179,6 +181,8 @@ function TopBar({
 	onRefreshNotifications: () => Promise<unknown>;
 	onMarkNotificationRead: (id: string) => Promise<void>;
 	onMarkAllNotificationsRead: () => Promise<number>;
+	reloadingData: boolean;
+	onReloadData: () => Promise<void>;
 	onDismissNotification: (id: string) => Promise<void>;
 	onOpenNotification: (item: AppNotification) => void;
 	onScan: () => void;
@@ -189,6 +193,7 @@ function TopBar({
 	const [serviceLog, setServiceLog] = useState<string | null>(null);
 	const [serviceLogBusy, setServiceLogBusy] = useState(false);
 	const [notificationFilter, setNotificationFilter] = useState<"all" | "unread">("all");
+	const [notificationContextMenu, setNotificationContextMenu] = useState<{ x: number; y: number; item: AppNotification } | null>(null);
 	const unreadCount = inAppNotificationsEnabled ? notifications.filter((item) => !item.read).length : 0;
 	const visibleNotifications = useMemo(
 		() => notificationFilter === "unread" ? notifications.filter((item) => !item.read) : notifications,
@@ -196,6 +201,10 @@ function TopBar({
 	);
 	const currentRoute = parseInternalRoute(internalRoute);
 	const label = routeLabel(currentRoute);
+
+	useEffect(() => {
+		if (openPanel !== "notifications") setNotificationContextMenu(null);
+	}, [openPanel]);
 
 	useEffect(() => {
 		if (openPanel === "notifications" && inAppNotificationsEnabled) {
@@ -292,7 +301,8 @@ function TopBar({
 							</div>
 							{serviceLog !== null && <pre className="gm-service-log">{serviceLog || "No service log output yet."}</pre>}
 							<div className="gm-popover-actions">
-								<button type="button" onClick={onScan} disabled={!serviceReady || scanning || serviceIndexing}>{scanning || serviceIndexing ? "Indexing…" : "Refresh repository index"}</button>
+								<button type="button" onClick={() => void onReloadData()} disabled={!serviceReady || reloadingData}>{reloadingData ? "Reloading data…" : "Reload saved data"}</button>
+				<button type="button" onClick={onScan} disabled={!serviceReady || scanning || serviceIndexing}>{scanning || serviceIndexing ? "Indexing…" : "Rebuild repository index"}</button>
 								<button type="button" disabled={serviceLogBusy} onClick={async () => {
 									if (serviceLog !== null) { setServiceLog(null); return; }
 									setServiceLogBusy(true);
@@ -324,7 +334,14 @@ function TopBar({
 								) : visibleNotifications.length === 0 ? (
 									<div className="gm-notification-empty"><strong>{notificationFilter === "unread" ? "No unread notifications" : "You're all caught up"}</strong><span>{notificationFilter === "unread" ? "Everything has been read. Switch to All to review recent activity." : "Repository updates and GitManager activity will appear here."}</span></div>
 								) : visibleNotifications.map((item) => (
-									<article className={item.read ? "gm-notification-item read" : "gm-notification-item unread"} key={item.id}>
+									<article
+						className={item.read ? "gm-notification-item read" : "gm-notification-item unread"}
+						key={item.id}
+						onContextMenu={(event) => {
+							event.preventDefault();
+							setNotificationContextMenu({ x: event.clientX, y: event.clientY, item });
+						}}
+					>
 										<div className="gm-notification-copy">
 											<div className="gm-notification-title">
 												<strong>{item.title}</strong>
@@ -352,6 +369,31 @@ function TopBar({
 								<button type="button" onClick={() => void onRefreshNotifications()} disabled={!inAppNotificationsEnabled}>Refresh</button>
 							</div>
 						</section>
+					)}
+					{notificationContextMenu && openPanel === "notifications" && (
+						<ContextMenu
+							x={notificationContextMenu.x}
+							y={notificationContextMenu.y}
+							onClose={() => setNotificationContextMenu(null)}
+							items={[
+								...(notificationContextMenu.item.repositoryPath ? [{
+									label: "Open repository",
+									onSelect: () => {
+										setOpenPanel(null);
+										onOpenNotification(notificationContextMenu.item);
+									},
+								}] : []),
+								...(!notificationContextMenu.item.read ? [{
+									label: "Mark as read",
+									onSelect: () => { void onMarkNotificationRead(notificationContextMenu.item.id); },
+								}] : []),
+								{
+									label: "Dismiss notification",
+									danger: true,
+									onSelect: () => { void onDismissNotification(notificationContextMenu.item.id); },
+								},
+							]}
+						/>
 					)}
 				</div>
 				<Button onClick={onScan} disabled={!serviceReady || scanning} variant="secondary" className="gm-top-scan">
