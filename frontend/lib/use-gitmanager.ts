@@ -38,6 +38,7 @@ export function useGitManager() {
 	const [loading, setLoading] = useState(true);
 	const [scanning, setScanning] = useState(false);
 	const [reloadingData, setReloadingData] = useState(false);
+	const reloadInFlight = useRef(false);
 	const [scanTruncated, setScanTruncated] = useState(false);
 	const [indexReady, setIndexReady] = useState(false);
 	const indexGeneration = useRef("0");
@@ -139,7 +140,8 @@ export function useGitManager() {
 			setStatus("Open GitManager as a desktop app to reload local repository data.");
 			return;
 		}
-		if (reloadingData) return;
+		if (reloadInFlight.current) return;
+		reloadInFlight.current = true;
 		setReloadingData(true);
 		setError("");
 		setStatus("Reloading saved workspace data…");
@@ -186,9 +188,10 @@ export function useGitManager() {
 			setError(message);
 			setStatus("Could not reload workspace data");
 		} finally {
+			reloadInFlight.current = false;
 			setReloadingData(false);
 		}
-	}, [refreshNotifications, reloadingData]);
+	}, [refreshNotifications]);
 
 	const markNotificationRead = useCallback(async (id: string) => {
 		try {
