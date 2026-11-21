@@ -210,10 +210,20 @@ fn read_exact_with_deadline(
     while offset < buffer.len() {
         match reader.read(&mut buffer[offset..]) {
             Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "Service IPC stream closed before the complete frame arrived",
-                ));
+                // On Windows, interprocess implements nonblocking named pipes
+                // with PIPE_NOWAIT. ERROR_NO_DATA (232) can be surfaced by the
+                // byte-stream Read implementation as Ok(0), even though the
+                // peer is still connected and has not written the next bytes.
+                // Treat zero bytes as "not ready yet" and keep the deadline;
+                // otherwise the client drops a healthy pipe before the service
+                // gets a chance to write its response.
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Service IPC receive deadline expired while waiting for pipe data",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(2));
             }
             Ok(read) => offset += read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -4467,6 +4477,47 @@ mod tests {
             &mut reader,
             Duration::from_secs(1),
         ).expect("read frame despite temporary WouldBlock");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn windows_nonblocking_pipe_waits_through_temporary_zero_byte_reads() {
+        struct DelayedReader {
+            bytes: Vec<u8>,
+            offset: usize,
+            empty_reads: usize,
+        }
+
+        impl std::io::Read for DelayedReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.empty_reads > 0 {
+                    self.empty_reads -= 1;
+                    return Ok(0);
+                }
+                let remaining = &self.bytes[self.offset..];
+                let count = remaining.len().min(buffer.len()).min(4);
+                if count == 0 {
+                    return Ok(0);
+                }
+                buffer[..count].copy_from_slice(&remaining[..count]);
+                self.offset += count;
+                Ok(count)
+            }
+        }
+
+        let payload = br#"{"action":"status"}"#;
+        let mut encoded = Vec::new();
+        super::write_service_frame(&mut encoded, payload).expect("encode test frame");
+        let mut reader = DelayedReader {
+            bytes: encoded,
+            offset: 0,
+            empty_reads: 4,
+        };
+
+        let decoded = super::read_service_frame_with_timeout(
+            &mut reader,
+            Duration::from_secs(1),
+        ).expect("temporary zero-byte reads must not be mistaken for a closed pipe");
         assert_eq!(decoded, payload);
     }
 
