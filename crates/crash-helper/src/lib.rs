@@ -3287,6 +3287,9 @@ impl CoreServiceSupervisor {
             // The pipe's kernel-reported server PID is the fallback for
             // pre-metadata services whose lock file is empty or malformed.
             let peer_pid = service_control_peer_pid();
+            // Preserve this observation across diagnostic status probes below:
+            // diagnostics may fail to reconnect and clear the most recent PID.
+            let observed_peer_pid = peer_pid;
             let recorded_owner_pid = service_control_lock_owner_pid();
             // Prefer the live pipe's kernel identity. Retain the lock-file PID
             // only as a fallback when no pipe connection could be established.
@@ -3321,7 +3324,7 @@ impl CoreServiceSupervisor {
                     // held. Re-read both immediately before terminating to
                     // avoid acting on a stale PID after an ownership change.
                     let recorded_owner = service_control_lock_owner_pid();
-                    let connected_peer = service_control_peer_pid();
+                    let connected_peer = service_control_peer_pid().or(observed_peer_pid);
                     let same_owner = service_control_lock_is_held()
                         && match (recorded_owner, connected_peer) {
                             (Some(recorded_pid), Some(peer_pid)) => {
