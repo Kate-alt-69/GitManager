@@ -5027,6 +5027,91 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_overlapped_client_round_trips_with_service_listener() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let pipe_name = format!(
+            r"\\.\pipe\kastrick-gitmanager-test-{}",
+            Uuid::new_v4().simple()
+        );
+        let server_pipe_name = pipe_name.clone();
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+
+        let server = thread::spawn(move || {
+            let listener = bind_service_local_listener(&server_pipe_name)
+                .expect("bind the production-style service pipe");
+            ready_sender.send(()).expect("signal listener readiness");
+
+            let accept_deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < accept_deadline,
+                            "timed out waiting for the overlapped client"
+                        );
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("accept the overlapped client: {error}"),
+                }
+            };
+
+            stream
+                .set_nonblocking(true)
+                .expect("use the production server's bounded pipe mode");
+            let request = read_service_frame_with_timeout(
+                &mut stream,
+                Duration::from_secs(5),
+            )
+            .expect("read the framed client request");
+            let request: serde_json::Value =
+                serde_json::from_slice(&request).expect("decode the client request");
+            assert_eq!(request["test"], true);
+
+            let response = ServiceResponse {
+                ok: true,
+                status: ServiceStatus {
+                    process_id: std::process::id(),
+                    protocol_version: SERVICE_PROTOCOL_VERSION,
+                    ..ServiceStatus::default()
+                },
+                error: None,
+                data: None,
+            };
+            let response = serde_json::to_vec(&response).expect("encode service response");
+            write_service_frame_with_timeout(
+                &mut stream,
+                &response,
+                Duration::from_secs(5),
+            )
+            .expect("write the framed service response");
+        });
+
+        ready_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("wait for service pipe listener");
+
+        let (response, server_pid) = send_windows_service_frame(
+            &pipe_name,
+            br#"{"test":true}"#,
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+            false,
+        )
+        .expect("round-trip through the overlapped named-pipe client");
+        assert_eq!(server_pid, std::process::id());
+
+        let response: ServiceResponse =
+            serde_json::from_slice(&response).expect("decode service response");
+        assert!(response.ok);
+        assert_eq!(response.status.process_id, server_pid);
+        server.join().expect("join service listener thread");
+    }
+
     #[test]
     fn named_pipe_peer_pid_must_match_authenticated_service_status() {
         assert!(super::service_pipe_server_identity_matches(4321, 4321));
