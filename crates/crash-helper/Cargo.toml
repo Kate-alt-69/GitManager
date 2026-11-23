@@ -14,7 +14,7 @@ name = "crash_helper"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["async-ipc"]
 core-service = ["dep:gitmanager-core", "async-ipc"]
 account-storage = ["core-service"]
 repository-data = ["core-service", "gitmanager-core/git-engine"]
