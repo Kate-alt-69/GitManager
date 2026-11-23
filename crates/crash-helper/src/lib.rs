@@ -2260,6 +2260,7 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
     Ok(response)
 }
 
+#[cfg(any(windows, test))]
 fn service_pipe_server_identity_matches(pipe_server_pid: u32, reported_service_pid: u32) -> bool {
     pipe_server_pid > 1 && pipe_server_pid == reported_service_pid
 }
@@ -3285,7 +3286,11 @@ impl CoreServiceSupervisor {
         if self.child.is_none() && service_control_lock_is_held() {
             // The pipe's kernel-reported server PID is the fallback for
             // pre-metadata services whose lock file is empty or malformed.
-            let owner_pid = service_control_lock_owner_pid().or_else(service_control_peer_pid);
+            let peer_pid = service_control_peer_pid();
+            let recorded_owner_pid = service_control_lock_owner_pid();
+            // Prefer the live pipe's kernel identity. Retain the lock-file PID
+            // only as a fallback when no pipe connection could be established.
+            let owner_pid = peer_pid.or(recorded_owner_pid);
             if self.lock_owner_pid != owner_pid {
                 self.lock_owner_pid = owner_pid;
                 self.lock_unhealthy_since = Some(Instant::now());
@@ -3318,9 +3323,13 @@ impl CoreServiceSupervisor {
                     let recorded_owner = service_control_lock_owner_pid();
                     let connected_peer = service_control_peer_pid();
                     let same_owner = service_control_lock_is_held()
-                        && match recorded_owner {
-                            Some(recorded_pid) => recorded_pid == pid,
-                            None => connected_peer == Some(pid),
+                        && match (recorded_owner, connected_peer) {
+                            (Some(recorded_pid), Some(peer_pid)) => {
+                                recorded_pid == pid && peer_pid == pid
+                            }
+                            (Some(recorded_pid), None) => recorded_pid == pid,
+                            (None, Some(peer_pid)) => peer_pid == pid,
+                            (None, None) => false,
                         };
                     if same_owner {
                         append_incident(
