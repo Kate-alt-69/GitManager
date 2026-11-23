@@ -641,7 +641,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("pub use gitmanager_core::repository_index;", desktop_source)
         self.assertNotIn("pub use gitmanager_core::scanner;", desktop_source)
         self.assertNotIn("crate::scanner", desktop_source)
-        self.assertIn('core-service = ["dep:gitmanager-core"]', crash_helper_manifest)
+        self.assertIn('core-service = ["dep:gitmanager-core", "async-ipc"]', crash_helper_manifest)
         self.assertIn('account-storage = ["core-service"]', crash_helper_manifest)
         self.assertIn('repository-data = ["core-service", "gitmanager-core/git-engine"]', crash_helper_manifest)
         self.assertIn('notification-storage = ["core-service"]', crash_helper_manifest)
