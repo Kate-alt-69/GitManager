@@ -24,21 +24,25 @@ Features:
 """
 
 import argparse
+import functools
 import hashlib
 import json
 import os
 import platform
+import queue
 import re
 import shutil
+import stat
 import subprocess
 import sys
-import tempfile
 import tarfile
+import tempfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-import stat
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
@@ -56,21 +60,526 @@ RECOMMENDED_RUST_VERSION = (1, 88, 0)
 RECOMMENDED_TAURI_CRATE_VERSION = (2, 0, 0)
 
 
+_ANSI_COLORS = {
+    "white": "\033[97m",
+    "green": "\033[92m",
+    "yellow": "\033[93m",
+    "red": "\033[91m",
+    "gray": "\033[90m",
+}
+_ANSI_RESET = "\033[0m"
+VERBOSE_LOGGING = os.environ.get("GITMANAGER_BUILD_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _supports_color(stream) -> bool:
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("FORCE_COLOR", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    try:
+        return bool(stream.isatty()) and os.environ.get("TERM", "").lower() != "dumb"
+    except (AttributeError, OSError):
+        return False
+
+
+def _paint(message: str, color: str, stream) -> str:
+    if not _supports_color(stream):
+        return message
+    return _ANSI_COLORS[color] + message + _ANSI_RESET
+
+
+_PROGRESS_LOCK = threading.RLock()
+_ACTIVE_PROGRESS_STREAM = None
+_ACTIVE_PROGRESS_STATE = None
+_LAST_NONINTERACTIVE_PROGRESS = {}
+_PROGRESS_BAR_WIDTH = 12
+
+_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_ASCII_SPINNER_FRAMES = ("|", "/", "-", "\\")
+
+
+def _supports_inline_progress(stream) -> bool:
+    """Enable in-place rendering only when the destination is a real terminal."""
+    try:
+        return bool(stream.isatty()) and os.environ.get("TERM", "").lower() != "dumb"
+    except (AttributeError, OSError):
+        return False
+
+
+def _finish_progress_line_locked() -> None:
+    """Commit the current status row without leaving terminal control sequences behind."""
+    global _ACTIVE_PROGRESS_STREAM, _ACTIVE_PROGRESS_STATE
+    if _ACTIVE_PROGRESS_STREAM is not None:
+        _ACTIVE_PROGRESS_STREAM.write("\n")
+        _ACTIVE_PROGRESS_STREAM.flush()
+    _ACTIVE_PROGRESS_STREAM = None
+    _ACTIVE_PROGRESS_STATE = None
+
+
+def _spinner_character(stream, frame: int) -> str:
+    """Use a Braille spinner where encodable, otherwise fall back to portable ASCII."""
+    glyph = _SPINNER_FRAMES[frame % len(_SPINNER_FRAMES)]
+    encoding = getattr(stream, "encoding", None) or sys.getdefaultencoding()
+    try:
+        glyph.encode(encoding)
+        return glyph
+    except (LookupError, UnicodeEncodeError):
+        return _ASCII_SPINNER_FRAMES[frame % len(_ASCII_SPINNER_FRAMES)]
+
+
+def _progress_bar(percentage: int, width: int = _PROGRESS_BAR_WIDTH) -> str:
+    """Represent actual percentage progress instead of animating a fake marquee."""
+    value = max(0, min(100, percentage))
+    filled = min(width, int((value + (100 / width / 2)) * width / 100))
+    return "[" + ("=" * filled) + ("." * (width - filled)) + "]"
+
+
+def _render_progress_locked(state, *, advance: bool = True) -> None:
+    """Paint one width-bounded frame and pad over any remnants from the last frame."""
+    if advance and state["status"] == "WORKING":
+        state["frame"] += 1
+
+    status = state["status"]
+    if status == "WORKING":
+        indicator = _spinner_character(state["stream"], state["frame"])
+    else:
+        indicator = {
+            "PENDING": "...",
+            "DONE": "OK",
+            "FAILED": "ERR",
+            "CANCELLED": "STOP",
+            "SKIPPED": "SKIP",
+            "DEBUG": "DBG",
+        }.get(status, status)
+
+    progress = state["progress"].strip()
+    percentage_match = re.fullmatch(r"(\d{1,3})%", progress)
+    if percentage_match:
+        percentage = max(0, min(100, int(percentage_match.group(1))))
+        progress_display = f"{percentage:3d}% {_progress_bar(percentage)}"
+    else:
+        progress_display = progress
+
+    elapsed_seconds = max(0, int(time.monotonic() - state["started_at"]))
+    elapsed = f"{elapsed_seconds // 60:02d}:{elapsed_seconds % 60:02d}"
+    message = " ".join(state["message"].splitlines()).strip()
+    rendered = "  ".join(
+        part for part in (
+            indicator,
+            state["work"],
+            progress_display,
+            elapsed,
+            message,
+        ) if part
+    )
+
+    try:
+        columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+    except OSError:
+        columns = 100
+    # Leave the final terminal column unused so a frame never wraps.
+    max_width = max(1, columns - 1)
+    if len(rendered) > max_width:
+        rendered = rendered[:max(1, max_width - 3)] + "..."
+
+    target = state["stream"]
+    padding = " " * max(0, state["width"] - len(rendered))
+    target.write("\r" + _paint(rendered, state["color"], target) + padding)
+    target.flush()
+    state["width"] = len(rendered)
+
+
+def _emit(message: str, *, color: str = "white", stream=None) -> None:
+    """Write a log line above the active status row, then restore that same row."""
+    target = sys.stdout if stream is None else stream
+    with _PROGRESS_LOCK:
+        active = _ACTIVE_PROGRESS_STATE
+        progress_stream = _ACTIVE_PROGRESS_STREAM
+        can_restore = (
+            active is not None
+            and progress_stream is not None
+            and _supports_inline_progress(progress_stream)
+            and _supports_inline_progress(target)
+        )
+        if can_restore:
+            # stdout and stderr normally share the same console. Clear through
+            # the progress stream, emit the log on its requested stream, then
+            # redraw once at the bottom without duplicating the old status row.
+            progress_stream.write("\r" + (" " * active["width"]) + "\r")
+            target.write(_paint(message, color, target) + "\n")
+            target.flush()
+            active["width"] = 0
+            _render_progress_locked(active, advance=False)
+        else:
+            _finish_progress_line_locked()
+            target.write(_paint(message, color, target) + "\n")
+            target.flush()
+
+
 def log_info(msg: str) -> None:
-    print(f"[INFO] {msg}")
+    _emit(f"[INFO] {msg}", color="white")
 
 
 def log_ok(msg: str) -> None:
-    print(f"[ OK ] {msg}")
+    _emit(f"[ OK ] {msg}", color="green")
 
 
 def log_warn(msg: str) -> None:
-    print(f"[WARN] {msg}")
+    _emit(f"[WARN] {msg}", color="yellow")
 
 
 def log_err(msg: str) -> None:
-    print(f"[ERR ] {msg}", file=sys.stderr)
+    _emit(f"[ERR ] {msg}", color="red", stream=sys.stderr)
 
+
+def log_debug(msg: str) -> None:
+    if VERBOSE_LOGGING:
+        _emit(f"[DBG ] {msg}", color="gray")
+
+
+def log_work(work: str, progress: str, status: str, message: str) -> None:
+    """Render a real-progress TTY row or concise, non-animated redirected log entries."""
+    global _ACTIVE_PROGRESS_STREAM, _ACTIVE_PROGRESS_STATE
+    normalized = status.strip().upper()
+    colors = {
+        "PENDING": "yellow",
+        "WORKING": "white",
+        "DONE": "green",
+        "FAILED": "red",
+        "CANCELLED": "red",
+        "DEBUG": "gray",
+        "SKIPPED": "gray",
+    }
+    color = colors.get(normalized, "white")
+    target = sys.stdout
+
+    with _PROGRESS_LOCK:
+        if not _supports_inline_progress(target):
+            previous = _LAST_NONINTERACTIVE_PROGRESS.get(work)
+            # Redirected output gets stage transitions, never periodic heartbeat spam.
+            if normalized == "WORKING" and previous == (normalized, progress):
+                return
+            _LAST_NONINTERACTIVE_PROGRESS[work] = (normalized, progress)
+            _finish_progress_line_locked()
+            target.write(_paint(
+                f"[ {work} ] [{progress}] [{normalized}] {message}",
+                color,
+                target,
+            ) + "\n")
+            target.flush()
+            return
+
+        if _ACTIVE_PROGRESS_STATE is not None and (
+            _ACTIVE_PROGRESS_STREAM is not target
+            or _ACTIVE_PROGRESS_STATE["work"] != work
+        ):
+            _finish_progress_line_locked()
+
+        previous_state = _ACTIVE_PROGRESS_STATE
+        state = {
+            "stream": target,
+            "work": work,
+            "progress": progress,
+            "status": normalized,
+            "message": message,
+            "color": color,
+            "started_at": (
+                previous_state["started_at"]
+                if previous_state is not None
+                else time.monotonic()
+            ),
+            "frame": previous_state["frame"] if previous_state is not None else 0,
+            "width": previous_state["width"] if previous_state is not None else 0,
+        }
+        _ACTIVE_PROGRESS_STREAM = target
+        _ACTIVE_PROGRESS_STATE = state
+        _render_progress_locked(state)
+
+        if normalized in {"DONE", "FAILED", "CANCELLED", "SKIPPED"}:
+            target.write("\n")
+            target.flush()
+            _ACTIVE_PROGRESS_STREAM = None
+            _ACTIVE_PROGRESS_STATE = None
+
+
+
+def is_cargo_progress_line(command: List[str], output_line: str) -> bool:
+    """Recognize routine Cargo status lines that belong in the TUI, not the log."""
+    if not command or Path(str(command[0])).stem.casefold() != "cargo":
+        return False
+    return bool(re.match(
+        r"^(Compiling|Checking|Downloading|Downloaded|Fresh|Building|Running|Finished)\b",
+        output_line.strip(),
+    ))
+
+
+def tracked_work(work: str):
+    """Log a consistent start/end status around a complete build stage."""
+    def decorate(function):
+        @functools.wraps(function)
+        def wrapped(*args, **kwargs):
+            started_at = time.monotonic()
+            log_work(work, "1/1", "WORKING", f"Starting {function.__name__.replace('_', ' ')}...")
+            try:
+                result = function(*args, **kwargs)
+            except Exception as error:
+                elapsed = max(time.monotonic() - started_at, 0.001)
+                log_work(work, "1/1", "FAILED", f"{error} (after {elapsed:.1f}s).")
+                raise
+
+            return_code = None
+            if type(result) is int:
+                return_code = result
+            elif isinstance(result, tuple) and result and type(result[0]) is int:
+                return_code = result[0]
+
+            elapsed = max(time.monotonic() - started_at, 0.001)
+            if return_code not in (None, 0):
+                log_work(work, "1/1", "FAILED", f"Stage returned exit code {return_code} after {elapsed:.1f}s.")
+            else:
+                log_work(work, "1/1", "DONE", f"Finished in {elapsed:.1f}s.")
+            return result
+        return wrapped
+    return decorate
+
+
+def is_mpdev_offline_mode_error(command: List[str], output_line: str) -> bool:
+    """Recognize MPDEV's Free-tier offline-mode rejection without masking other tools."""
+    if not command:
+        return False
+    executable = Path(str(command[0])).stem.casefold()
+    lowered = output_line.casefold()
+    return (
+        executable == "mpdev"
+        and "offline mode is only supported" in lowered
+        and "enterprise" in lowered
+    )
+
+
+def run_command(
+    command: List[str],
+    cwd: Optional[Path] = None,
+    env: Optional[Dict[str, str]] = None,
+    *,
+    work: Optional[str] = None,
+    progress: str = "1/1",
+    heartbeat_seconds: float = 0.1,
+) -> int:
+    """Run a command with a single animated TTY row and readable process output."""
+    args = [str(part) for part in command]
+    label = work or (Path(args[0]).name if args else "Command")
+    if not args:
+        log_work(label, progress, "FAILED", "Refusing to run an empty command.")
+        return 2
+
+    log_work(label, progress, "PENDING", "Queued command.")
+    log_work(label, progress, "WORKING", "Starting process...")
+    log_debug(f"Command: {' '.join(args)}")
+    if cwd is not None:
+        log_debug(f"Working directory: {cwd}")
+
+    started_at = time.monotonic()
+    try:
+        process = subprocess.Popen(
+            args,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except OSError as error:
+        message = f"Could not start {label}: {error}"
+        log_work(label, progress, "FAILED", message)
+        log_err(message)
+        return 127
+
+    output_queue = queue.Queue()
+
+    def forward_output(channel: str, stream) -> None:
+        try:
+            for raw_line in iter(stream.readline, ""):
+                output_queue.put((channel, raw_line.rstrip("\r\n")))
+        finally:
+            stream.close()
+            output_queue.put((channel, None))
+
+    readers = [
+        threading.Thread(target=forward_output, args=("stdout", process.stdout), name="gitmanager-build-stdout", daemon=True),
+        threading.Thread(target=forward_output, args=("stderr", process.stderr), name="gitmanager-build-stderr", daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    remaining_streams = {"stdout", "stderr"}
+    heartbeat_seconds = max(float(heartbeat_seconds), 0.08)
+    terminal_progress = _supports_inline_progress(sys.stdout)
+    try:
+        while remaining_streams:
+            try:
+                channel, line = output_queue.get(timeout=heartbeat_seconds)
+            except queue.Empty:
+                # A live TTY needs frames; redirected logs deliberately get no
+                # heartbeat lines at all, which prevents the old spam regression.
+                if terminal_progress:
+                    log_work(label, progress, "WORKING", "Waiting for process output...")
+                continue
+            if line is None:
+                remaining_streams.discard(channel)
+                continue
+
+            if terminal_progress and channel == "stdout" and is_cargo_progress_line(args, line):
+                # Cargo's repetitive Compiling/Checking lines update the current
+                # activity text instead of pushing dozens of lines through the TUI.
+                log_work(label, progress, "WORKING", line.strip())
+                continue
+
+            lowered = line.lower()
+            if re.search(r"\b(error|fatal)\b", lowered):
+                line_color = "red"
+            elif re.search(r"\b(warn|warning)\b", lowered):
+                line_color = "yellow"
+            elif re.search(r"\b(debug|trace)\b", lowered):
+                line_color = "gray"
+            else:
+                line_color = "red" if channel == "stderr" else "white"
+
+            if is_mpdev_offline_mode_error(args, line):
+                error_stream = sys.stdout if terminal_progress else sys.stderr
+                _emit(f"[ {label} ] [ERR ] {line}", color="red", stream=error_stream)
+                log_warn("MPDEV has entered Offline Mode, which its Free tier does not support.")
+                log_info("GitManager does not enable Offline Mode or pass an offline build option. MPDEV Free can be used without activation for qualifying personal non-commercial and open-source work, but it must remain online for license validation.")
+                log_info("Check outbound internet access for mpdev.exe and any Windows Firewall, VPN, proxy or DNS filtering. Return MPDEV to online mode and retry; Enterprise is only needed when offline operation is required.")
+            else:
+                # TTY stdout/stderr normally share one console cursor. Keep both
+                # channels on the coordinated stream so neither can overwrite the
+                # live progress row; preserve stream separation in redirected logs.
+                output_stream = (
+                    sys.stdout
+                    if terminal_progress or channel == "stdout"
+                    else sys.stderr
+                )
+                _emit(f"[ {label} ] {line}", color=line_color, stream=output_stream)
+        return_code = process.wait()
+    except KeyboardInterrupt:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        log_work(label, progress, "CANCELLED", "Process stopped after user cancellation.")
+        raise
+    finally:
+        for reader in readers:
+            reader.join(timeout=1.0)
+
+    elapsed = max(time.monotonic() - started_at, 0.001)
+    if return_code == 0:
+        log_work(label, progress, "DONE", f"Process completed successfully in {elapsed:.1f}s.")
+    else:
+        log_work(label, progress, "FAILED", f"Process exited with code {return_code} after {elapsed:.1f}s.")
+    return return_code
+
+
+def _download_response_to_file(response, destination: Path, work: str = "CPython download", progress_state: Optional[Dict[str, str]] = None) -> int:
+    """Stream a download to disk and report byte progress instead of silently waiting."""
+    raw_length = response.headers.get("Content-Length", "")
+    try:
+        total_bytes = int(raw_length) if raw_length else 0
+    except (TypeError, ValueError):
+        total_bytes = 0
+
+    downloaded = 0
+    last_percentage_bucket = -10
+    last_reported_bytes = 0
+    started_at = time.monotonic()
+    last_reported_at = started_at
+    chunk_size = 256 * 1024
+
+    detail = "Waiting for the first response bytes..."
+    if total_bytes:
+        detail = f"Receiving {total_bytes / (1024 * 1024):.1f} MiB from python.org..."
+    if progress_state is not None:
+        progress_state["progress"] = "0%"
+        progress_state["message"] = detail
+    log_work(work, "0%", "WORKING", detail)
+
+    with destination.open("wb") as output:
+        while True:
+            chunk = response.read(chunk_size)
+            if not chunk:
+                break
+            output.write(chunk)
+            downloaded += len(chunk)
+
+            now = time.monotonic()
+            if total_bytes:
+                percentage = min(100, int(downloaded * 100 / total_bytes))
+                bucket = (percentage // 10) * 10
+                should_report = bucket >= last_percentage_bucket + 10 or percentage == 100
+                progress = f"{percentage}%"
+                last_percentage_bucket = max(last_percentage_bucket, bucket)
+                status_detail = (
+                    f"{downloaded / (1024 * 1024):.1f} / "
+                    f"{total_bytes / (1024 * 1024):.1f} MiB"
+                )
+            else:
+                should_report = (
+                    downloaded - last_reported_bytes >= 1024 * 1024
+                    or now - last_reported_at >= 2.0
+                )
+                progress = f"{downloaded / (1024 * 1024):.1f} MiB"
+                status_detail = "received (server did not provide Content-Length)"
+
+            if progress_state is not None:
+                progress_state["progress"] = progress
+                progress_state["message"] = status_detail
+            if should_report:
+                log_work(work, progress, "WORKING", status_detail)
+                last_reported_bytes = downloaded
+                last_reported_at = now
+
+    if total_bytes and downloaded != total_bytes:
+        raise OSError(
+            f"Download ended early: received {downloaded:,} of {total_bytes:,} bytes."
+        )
+
+    elapsed = max(time.monotonic() - started_at, 0.001)
+    log_work(
+        work,
+        "100%",
+        "DONE",
+        f"Downloaded {downloaded:,} bytes ({downloaded / (1024 * 1024):.1f} MiB).",
+    )
+    log_debug(f"{work} transfer completed in approximately {elapsed:.1f}s.")
+    return downloaded
+
+
+def _run_with_work_heartbeat(work: str, progress: str, message: str, operation, interval_seconds: float = 0.1, progress_state: Optional[Dict[str, str]] = None):
+    """Keep the TTY animation moving while a blocking operation waits."""
+    stop = threading.Event()
+
+    def report_heartbeat() -> None:
+        while not stop.wait(max(float(interval_seconds), 0.08)):
+            current_progress = progress_state.get("progress", progress) if progress_state else progress
+            current_message = progress_state.get("message", message) if progress_state else message
+            log_work(work, current_progress, "WORKING", current_message)
+
+    worker = threading.Thread(
+        target=report_heartbeat,
+        name="gitmanager-build-progress",
+        daemon=True,
+    )
+    worker.start()
+    try:
+        return operation()
+    finally:
+        stop.set()
+        worker.join(timeout=max(float(interval_seconds), 1.0))
 
 
 PYTHON_EMBED_VERSION = "3.14.10"
@@ -123,11 +632,15 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
         log_info("Windows CPython runtime preparation runs only on a Windows build runner; skipping.")
         return 0
 
+    log_work("CPython runtime", "1/6", "WORKING", "Resolving the Windows target architecture...")
     target_arch = windows_target_architecture()
     package = PYTHON_EMBED_PACKAGES.get(target_arch)
     if package is None:
-        log_err(f"No pinned Windows Python runtime is available for target architecture {target_arch}.")
+        message = f"No pinned Windows Python runtime is available for target architecture {target_arch}."
+        log_work("CPython runtime", "1/6", "FAILED", message)
+        log_err(message)
         return 1
+
     archive_name, expected_sha256, expected_machine = package
     runtime_dir = project_root / "tools" / "runtime" / "python"
     python_exe = runtime_dir / "python.exe"
@@ -139,6 +652,13 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
         "arm64": "aarch64", "aarch64": "aarch64",
     }.get(machine, "")
 
+    target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip() or "(native target)"
+    log_debug(
+        f"Windows host={host_arch or machine}; target={target_arch}; "
+        f"Rust target={target_triple}; runtime directory={runtime_dir}."
+    )
+
+    log_work("CPython runtime", "2/6", "WORKING", "Checking whether a verified private runtime can be reused...")
     if python_exe.is_file() and windows_pe_machine(python_exe) == expected_machine:
         if host_arch == target_arch or (host_arch == "x86_64" and target_arch == "x86"):
             code, out, err = run_capture([
@@ -146,64 +666,133 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
                 "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
             ])
             if code == 0 and out.startswith(PYTHON_EMBED_VERSION):
-                log_ok(f"Private CPython {out} ({target_arch}) runtime is already prepared.")
+                log_work("CPython runtime", "2/6", "DONE", f"Reusing prepared CPython {out} ({target_arch}).")
                 return 0
+            log_debug(f"Existing Python runtime failed its reuse check: {err or out or code}")
         elif all((runtime_dir / name).is_file() for name in ("python314.zip", "python314._pth")):
-            log_ok(f"Verified existing CPython {PYTHON_EMBED_VERSION} PE runtime for {target_arch} without executing a foreign-architecture binary.")
+            log_work(
+                "CPython runtime", "2/6", "DONE",
+                f"Reusing verified {PYTHON_EMBED_VERSION} PE runtime for {target_arch}; foreign binaries are not executed.",
+            )
             return 0
 
-    log_info(f"Preparing isolated CPython {PYTHON_EMBED_VERSION} ({target_arch}) runtime for the Windows installer...")
+    log_work("CPython runtime", "2/6", "DONE", "No reusable target runtime found; a fresh pinned package is required.")
+
     with tempfile.TemporaryDirectory(prefix="gitmanager-python-") as temporary:
         archive_path = Path(temporary) / "python-embed.zip"
+        archive_url = PYTHON_EMBED_BASE_URL + archive_name
         request = urllib.request.Request(
-            PYTHON_EMBED_BASE_URL + archive_name,
+            archive_url,
             headers={"User-Agent": "GitManager-Build/1.0"},
         )
+        log_work(
+            "CPython download", "3/6", "PENDING",
+            f"Queued {archive_name} from python.org.",
+        )
+        log_work(
+            "CPython download", "3/6", "WORKING",
+            "Opening the HTTPS connection; request timeout is 90 seconds.",
+        )
+        log_debug(f"CPython download URL: {archive_url}")
+
+        progress_state = {
+            "progress": "3/6",
+            "message": "Connecting to python.org (90-second request timeout)...",
+        }
+
+        def download_package() -> None:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                log_debug(
+                    f"python.org response status={getattr(response, 'status', 'unknown')}; "
+                    f"Content-Length={response.headers.get('Content-Length', 'unknown')}."
+                )
+                _download_response_to_file(response, archive_path, progress_state=progress_state)
+
         try:
-            with urllib.request.urlopen(request, timeout=90) as response, archive_path.open("wb") as output:
-                shutil.copyfileobj(response, output)
+            _run_with_work_heartbeat(
+                "CPython download",
+                "3/6",
+                "Connecting to python.org or waiting for more download bytes.",
+                download_package,
+                progress_state=progress_state,
+            )
         except Exception as exc:
-            log_err(f"Could not download the official Python embeddable package: {exc}")
+            message = f"Could not download the official Python embeddable package: {exc}"
+            log_work("CPython download", "3/6", "FAILED", message)
+            log_err(message)
             return 1
 
+        log_work("CPython checksum", "4/6", "WORKING", "Computing SHA-256 for the downloaded archive...")
         digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
         if digest.lower() != expected_sha256:
-            log_err(
+            message = (
                 "Python embeddable package checksum did not match the pinned python.org SHA-256. "
                 f"Expected {expected_sha256}, received {digest}."
             )
+            log_work("CPython checksum", "4/6", "FAILED", message)
+            log_err(message)
             return 1
+        log_work("CPython checksum", "4/6", "DONE", "Pinned SHA-256 verified.")
 
+        log_work("CPython extraction", "5/6", "WORKING", "Validating ZIP entries before touching the runtime directory...")
         try:
             with zipfile.ZipFile(archive_path) as archive:
+                members = archive.infolist()
                 root = runtime_dir.resolve()
-                for member in archive.infolist():
+                for member in members:
                     target = (runtime_dir / member.filename).resolve()
                     try:
                         target.relative_to(root)
                     except ValueError:
-                        log_err(f"Python runtime archive contains an unsafe path: {member.filename}")
+                        message = f"Python runtime archive contains an unsafe path: {member.filename}"
+                        log_work("CPython extraction", "5/6", "FAILED", message)
+                        log_err(message)
                         return 1
+
                 runtime_dir.mkdir(parents=True, exist_ok=True)
-                for existing in runtime_dir.iterdir():
+                existing_entries = list(runtime_dir.iterdir())
+                log_debug(f"Replacing {len(existing_entries)} existing entries in the private runtime directory.")
+                for existing in existing_entries:
                     if existing.name == ".keep":
                         continue
                     if existing.is_dir() and not existing.is_symlink():
                         shutil.rmtree(existing)
                     else:
                         existing.unlink()
-                archive.extractall(runtime_dir)
-        except (OSError, zipfile.BadZipFile) as exc:
-            log_err(f"Could not extract the verified Python runtime: {exc}")
-            return 1
 
+                total_members = max(len(members), 1)
+                last_extraction_bucket = -10
+                for index, member in enumerate(members, start=1):
+                    archive.extract(member, runtime_dir)
+                    percentage = int(index * 100 / total_members)
+                    bucket = (percentage // 10) * 10
+                    if bucket >= last_extraction_bucket + 10 or index == total_members:
+                        log_work(
+                            "CPython extraction",
+                            f"{percentage}%",
+                            "WORKING",
+                            f"Extracted {index} of {len(members)} archive entries.",
+                        )
+                        last_extraction_bucket = max(last_extraction_bucket, bucket)
+        except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+            message = f"Could not extract the verified Python runtime: {exc}"
+            log_work("CPython extraction", "5/6", "FAILED", message)
+            log_err(message)
+            return 1
+    log_work("CPython extraction", "5/6", "DONE", "Runtime archive extracted.")
+
+    log_work("CPython verification", "6/6", "WORKING", "Checking required files and PE architecture...")
     required = [python_exe, runtime_dir / "python314.zip", runtime_dir / "python314._pth"]
     missing = [path.name for path in required if not path.is_file()]
     if missing:
-        log_err("Python runtime is incomplete; missing: " + ", ".join(missing))
+        message = "Python runtime is incomplete; missing: " + ", ".join(missing)
+        log_work("CPython verification", "6/6", "FAILED", message)
+        log_err(message)
         return 1
     if windows_pe_machine(python_exe) != expected_machine:
-        log_err(f"The bundled Python executable is not the expected {target_arch} PE architecture.")
+        message = f"The bundled Python executable is not the expected {target_arch} PE architecture."
+        log_work("CPython verification", "6/6", "FAILED", message)
+        log_err(message)
         return 1
 
     if host_arch == target_arch or (host_arch == "x86_64" and target_arch == "x86"):
@@ -212,15 +801,20 @@ def prepare_windows_python_runtime(project_root: Path) -> int:
             "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
         ])
         if code != 0 or not out.startswith(PYTHON_EMBED_VERSION):
-            log_err(f"Bundled Python failed its isolated startup check: {err or out or code}")
+            message = f"Bundled Python failed its isolated startup check: {err or out or code}"
+            log_work("CPython verification", "6/6", "FAILED", message)
+            log_err(message)
             return 1
         version_label = out
     else:
-        log_info("The target Python runtime is foreign to this build host; archive checksum and PE architecture were verified without executing it.")
+        log_debug("Target Python is foreign to this host; runtime will be validated by archive hash and PE headers only.")
         version_label = PYTHON_EMBED_VERSION
 
     runtime_bytes = sum(path.stat().st_size for path in runtime_dir.iterdir() if path.is_file())
-    log_ok(f"Verified python.org CPython {version_label} ({target_arch}) embeddable runtime ({runtime_bytes:,} bytes extracted).")
+    log_work(
+        "CPython verification", "6/6", "DONE",
+        f"Verified python.org CPython {version_label} ({target_arch}); {runtime_bytes:,} bytes extracted.",
+    )
     return 0
 
 
@@ -229,6 +823,7 @@ def cargo_target_root(project_root: Path) -> Path:
     return value if value.is_absolute() else project_root / value
 
 
+@tracked_work("Windows app staging")
 def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release: bool = True) -> int:
     """Stage the raw Windows app and every runtime/sidecar for MPDEV packaging."""
     if platform.system() != "Windows":
@@ -236,7 +831,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
 
     target_dir = cargo_target_root(project_root)
     profile_dir = target_profile_dir(project_root, release=release)
-    main_exe = profile_dir / "git-manager.exe"
+    main_exe = profile_dir / "gitmanager.exe"
     if not main_exe.is_file():
         log_err(f"Windows desktop executable is missing: {main_exe}")
         return 1
@@ -252,7 +847,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
         "gitm.exe": sidecar_dir / f"gitm-{triple}.exe",
         "gitmanager-setup.exe": sidecar_dir / f"gitmanager-setup-{triple}.exe",
         "crash_helper.exe": sidecar_dir / f"crash_helper-{triple}.exe",
-        "git-manager-service.exe": sidecar_dir / f"git-manager-service-{triple}.exe",
+        "gitmanager.service.exe": sidecar_dir / f"gitmanager.service-{triple}.exe",
     }
     missing = [name for name, source in sidecars.items() if not source.is_file()]
     if missing:
@@ -264,7 +859,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
         if staging.exists():
             shutil.rmtree(staging)
         staging.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(main_exe, staging / "git-manager.exe")
+        shutil.copy2(main_exe, staging / "gitmanager.exe")
         resources = staging / "resources"
         resources.mkdir(parents=True, exist_ok=True)
         # Tauri's shell plugin resolves externalBin sidecars from the app
@@ -288,7 +883,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
         # Fail closed before MPDEV if any packaged executable or the private
         # interpreter is missing or empty. No machine-wide Python is used.
         required = [
-            "git-manager.exe",
+            "gitmanager.exe",
             *(f"resources/{name}" for name in sidecars),
             "resources/python/python.exe",
             "resources/tools/gitmanager_cleaner.py",
@@ -304,7 +899,7 @@ def stage_windows_mpdev_package(project_root: Path, toolchain_arg: str, release:
         return 1
 
     log_ok(f"Staged complete Windows app payload for MPDEV: {staging}")
-    log_info("Included git-manager.exe, crash_helper.exe, background service, gitm, setup helper, cleaner and private CPython.")
+    log_info("Included gitmanager.exe, crash_helper.exe, background service, gitm, setup helper, cleaner and private CPython.")
     return 0
 
 
@@ -404,6 +999,7 @@ def find_master_packager_dev_cli() -> Optional[Path]:
     return None
 
 
+@tracked_work("Windows packaging tools")
 def setup_windows_packaging_tools() -> int:
     """Install the required MPDEV packager and NSIS fallback using exact WinGet package IDs."""
     if platform.system() != "Windows":
@@ -417,7 +1013,7 @@ def setup_windows_packaging_tools() -> int:
         )
         return 1
 
-    for display_name, package_id in WINDOWS_PACKAGING_WINGET_PACKAGES:
+    for package_index, (display_name, package_id) in enumerate(WINDOWS_PACKAGING_WINGET_PACKAGES, start=1):
         code, output, _ = run_capture([
             winget, "list", "--id", package_id, "--exact",
             "--accept-source-agreements",
@@ -431,7 +1027,7 @@ def setup_windows_packaging_tools() -> int:
             "--silent", "--accept-package-agreements", "--accept-source-agreements",
             "--disable-interactivity",
         ]
-        result = subprocess.call(command)
+        result = run_command(command, work=f"Install {display_name}", progress=f"{package_index}/{len(WINDOWS_PACKAGING_WINGET_PACKAGES)}")
         if result != 0:
             log_err(f"WinGet could not install {display_name} (exit code {result}).")
             return result
@@ -464,6 +1060,7 @@ def setup_windows_packaging_tools() -> int:
     return 0
 
 
+@tracked_work("Windows package preflight")
 def verify_windows_packaging_inputs(project_root: Path) -> int:
     """Fail before Tauri bundling if the Python resource or installer hook is misconfigured."""
     runtime_dir = project_root / "tools" / "runtime" / "python"
@@ -538,6 +1135,21 @@ def verify_windows_packaging_inputs(project_root: Path) -> int:
     return 0
 
 
+@tracked_work("MPDEV manifest")
+def resolve_mpdev_timestamp_server() -> str:
+    """Resolve and validate the timestamp authority used for development MSIX signing."""
+    value = os.environ.get(
+        "GITMANAGER_MPDEV_TIMESTAMP_SERVER",
+        "http://timestamp.acs.microsoft.com",
+    ).strip()
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(
+            "GITMANAGER_MPDEV_TIMESTAMP_SERVER must be an absolute HTTP or HTTPS URL."
+        )
+    return value
+
+
 def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[Path]]:
     """Generate the architecture-specific MPDEV manifest from the staged Windows payload."""
     if platform.system() != "Windows":
@@ -564,7 +1176,7 @@ def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[
         return 1, None
 
     staging = cargo_target_root(project_root) / "windows-package" / "source"
-    if not (staging / "git-manager.exe").is_file():
+    if not (staging / "gitmanager.exe").is_file():
         log_err(f"Windows app payload was not staged for MPDEV: {staging}")
         return 1, None
 
@@ -598,12 +1210,14 @@ def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[
             package_config.setdefault("msix", {}).pop("digitalSignature", None)
             log_info("Partner Center identity detected; MPDEV will create an unsigned Store-ready MSIX.")
         else:
-            package_config.setdefault("msix", {}).setdefault(
+            signature = package_config.setdefault("msix", {}).setdefault(
                 "digitalSignature",
-                {
-                    "signWith": "GenerateTestCertificate",
-                    "timestampServer": "http://timestamp.sectigo.com",
-                },
+                {"signWith": "GenerateTestCertificate"},
+            )
+            signature["timestampServer"] = resolve_mpdev_timestamp_server()
+            log_info(
+                "MPDEV development MSIX signing will use timestamp authority: "
+                + signature["timestampServer"]
             )
             log_warn("MPDEV MSIX will use its development certificate; configure Partner Center identity for Store submission.")
         generated_manifest = cargo_target_root(project_root) / "windows-package" / "mpdev-package.json"
@@ -620,6 +1234,7 @@ def prepare_master_packager_manifest(project_root: Path) -> Tuple[int, Optional[
     return 0, generated_manifest
 
 
+@tracked_work("MPDEV installers")
 def build_master_packager_installers(
     project_root: Path,
     generated_manifest: Path,
@@ -646,7 +1261,7 @@ def build_master_packager_installers(
 
     staging = cargo_target_root(project_root) / "windows-package" / "source"
     output_dir = project_root / "build" / ".rcache" / "windows-installers"
-    if not generated_manifest.is_file() or not (staging / "git-manager.exe").is_file():
+    if not generated_manifest.is_file() or not (staging / "gitmanager.exe").is_file():
         log_err("MPDEV manifest or staged Windows app payload is missing.")
         return 1, None
 
@@ -670,10 +1285,10 @@ def build_master_packager_installers(
         f"Master Packager Dev is building the required {package_arch} MSI and MSIX "
         "from the staged Windows application payload..."
     )
-    result = subprocess.run(command, cwd=str(project_root), env=environment, check=False)
-    if result.returncode != 0:
-        log_err(f"Master Packager Dev failed to build Windows MSI/MSIX (exit code {result.returncode}).")
-        return result.returncode, None
+    result = run_command(command, cwd=project_root, env=environment, work=f"MPDEV {package_arch} MSI/MSIX", progress="1/1")
+    if result != 0:
+        log_err(f"Master Packager Dev failed to build Windows MSI/MSIX (exit code {result}).")
+        return result, None
 
     packages: Dict[str, Path] = {}
     for extension in ("msi", "msix"):
@@ -715,20 +1330,45 @@ def format_semver(ver: Tuple[int, int, int]) -> str:
 
 
 def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
-    try:
-        proc = subprocess.run(
-            cmd,
+    """Capture a short probe while still reporting when it starts and finishes."""
+    label = f"Probe {Path(str(cmd[0])).name}" if cmd else "Command probe"
+    log_work(label, "1/1", "WORKING", f"Checking {' '.join(str(part) for part in cmd)}...")
+    started_at = time.monotonic()
+    captured = {}
+
+    def capture_probe() -> None:
+        captured["process"] = subprocess.run(
+            [str(part) for part in cmd],
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
-    except FileNotFoundError:
-        return 127, "", f"Command not found: {cmd[0]}"
+
+    try:
+        _run_with_work_heartbeat(
+            label, "1/1", f"Checking {' '.join(str(part) for part in cmd)}",
+            capture_probe,
+        )
+        proc = captured["process"]
+        stdout = proc.stdout.strip()
+        stderr = proc.stderr.strip()
+        elapsed = max(time.monotonic() - started_at, 0.001)
+        log_work(label, "1/1", "DONE" if proc.returncode == 0 else "FAILED", f"Probe returned exit code {proc.returncode} in {elapsed:.1f}s.")
+        log_debug(f"{label} stdout: {stdout or '(empty)'}")
+        if stderr:
+            log_debug(f"{label} stderr: {stderr}")
+        return proc.returncode, stdout, stderr
+    except OSError as error:
+        message = f"Could not run {cmd[0] if cmd else 'command'}: {error}"
+        log_work(label, "1/1", "FAILED", message)
+        return 127, "", message
 
 
+@tracked_work("Cargo dependency graph audit")
 def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
     """Count the actual build graphs for the app and its packaged sidecars.
 
@@ -749,7 +1389,7 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
         command_prefix.append(toolchain_arg)
 
     package_graphs: Dict[str, set] = {}
-    for package in ("git-manager", "gitm-cli", "gitmanager-setup", "crash-helper", "git-manager-service"):
+    for package in ("git-manager", "gitm-cli", "gitmanager-setup", "crash-helper", "gitmanager-service"):
         command = command_prefix + [
             "tree",
             "--package", package,
@@ -776,7 +1416,7 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
         package_graphs.get("gitm-cli", set())
         | package_graphs.get("gitmanager-setup", set())
         | package_graphs.get("crash-helper", set())
-        | package_graphs.get("git-manager-service", set())
+        | package_graphs.get("gitmanager-service", set())
     ) - package_graphs.get("git-manager", set())
     complete_build_packages = set().union(*package_graphs.values()) if package_graphs else set()
 
@@ -809,6 +1449,7 @@ RBE_CLOUD_NODE_TARGETS = {
 }
 
 
+@tracked_work("Verified network download")
 def read_bounded_url(url: str, limit: int, *, headers: Optional[Dict[str, str]] = None) -> bytes:
     request = urllib.request.Request(
         url,
@@ -833,11 +1474,58 @@ def read_bounded_url(url: str, limit: int, *, headers: Optional[Dict[str, str]] 
             declared_size = response.headers.get("Content-Length")
             if declared_size and int(declared_size) > limit:
                 raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
-            data = response.read(limit + 1)
+            raw_length = response.headers.get("Content-Length", "")
+            try:
+                total_bytes = int(raw_length) if raw_length else 0
+            except (TypeError, ValueError):
+                total_bytes = 0
+
+            chunks = []
+            downloaded = 0
+            last_bucket = -10
+            progress_state = {
+                "progress": "0%",
+                "message": f"Receiving a bounded response from {parsed.hostname}...",
+            }
+            log_work("RBE download", "0%", "WORKING", progress_state["message"])
+
+            def receive_chunks() -> None:
+                nonlocal downloaded, last_bucket
+                while True:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    downloaded += len(chunk)
+                    if downloaded > limit:
+                        raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
+                    chunks.append(chunk)
+                    if total_bytes:
+                        percentage = min(100, int(downloaded * 100 / total_bytes))
+                        progress_value = f"{percentage}%"
+                        detail = f"{downloaded:,} / {total_bytes:,} bytes"
+                        bucket = (percentage // 10) * 10
+                    else:
+                        progress_value = f"{downloaded:,} bytes"
+                        detail = "received (server did not provide Content-Length)"
+                        bucket = downloaded // (1024 * 1024)
+                    progress_state["progress"] = progress_value
+                    progress_state["message"] = detail
+                    if bucket >= last_bucket + (10 if total_bytes else 1):
+                        log_work("RBE download", progress_value, "WORKING", detail)
+                        last_bucket = bucket
+
+            _run_with_work_heartbeat(
+                "RBE download", "0%", progress_state["message"], receive_chunks,
+                progress_state=progress_state,
+            )
+            data = b"".join(chunks)
     except (urllib.error.URLError, TimeoutError) as error:
+        log_work("RBE download", "FAILED", "FAILED", str(error))
         raise RuntimeError(f"Could not download {url}: {error}") from error
     if len(data) > limit:
+        log_work("RBE download", "FAILED", "FAILED", f"Remote file exceeded {limit:,} bytes.")
         raise ValueError(f"Remote file exceeds the {limit:,}-byte download limit.")
+    log_work("RBE download", "100%", "DONE", f"Received {len(data):,} bytes from {parsed.hostname}.")
     return data
 
 
@@ -863,6 +1551,7 @@ def fetch_rbe_cloud_node_release(tag: str) -> Dict[str, object]:
     return release
 
 
+@tracked_work("RBE asset download")
 def download_verified_rbe_asset(
     asset: Dict[str, object],
     cache_dir: Path,
@@ -880,6 +1569,7 @@ def download_verified_rbe_asset(
     if not download_url.startswith("https://github.com/Kastrick8/RBE/releases/download/"):
         raise ValueError(f"RBE asset {name} points to an unexpected download URL.")
 
+    log_work("RBE asset", "1/3", "WORKING", f"Validating release asset metadata for {name}...")
     cache_dir.mkdir(parents=True, exist_ok=True)
     destination = cache_dir / name
     if destination.is_file() and not destination.is_symlink():
@@ -892,8 +1582,10 @@ def download_verified_rbe_asset(
     payload = read_bounded_url(download_url, max_bytes)
     if len(payload) != expected_size:
         raise ValueError(f"RBE asset {name} size mismatch: expected {expected_size}, received {len(payload)}.")
+    log_work("RBE asset", "2/3", "WORKING", f"Verifying byte count and SHA-256 for {name}...")
     actual_hash = hashlib.sha256(payload).hexdigest()
     if actual_hash != expected_hash:
+        log_work("RBE asset", "2/3", "FAILED", f"SHA-256 mismatch for {name}.")
         raise ValueError(f"RBE asset {name} failed GitHub Release SHA-256 verification.")
     temporary = destination.with_name(destination.name + ".part")
     try:
@@ -905,6 +1597,7 @@ def download_verified_rbe_asset(
     finally:
         if temporary.exists():
             temporary.unlink()
+    log_work("RBE asset", "3/3", "DONE", f"Downloaded and verified {name}.")
     log_ok(f"Downloaded and SHA-256 verified: {name}")
     return destination, actual_hash
 
@@ -915,6 +1608,7 @@ def extract_rbe_cloud_node_archive(
     binary_name: str,
     destination: Path,
 ) -> Tuple[int, str]:
+    log_work("RBE extraction", "1/2", "WORKING", f"Validating {archive_path.name}...")
     max_binary_bytes = 256 * 1024 * 1024
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".part")
@@ -933,15 +1627,23 @@ def extract_rbe_cloud_node_archive(
                 if item.file_size <= 0 or item.file_size > max_binary_bytes:
                     raise ValueError(f"RBE asset {binary_name} has an invalid size.")
                 with archive.open(item, "r") as source, temporary.open("wb") as output:
+                    extracted = 0
+                    last_bucket = -10
                     while True:
                         chunk = source.read(1024 * 1024)
                         if not chunk:
                             break
                         count += len(chunk)
+                        extracted += len(chunk)
                         if count > max_binary_bytes:
                             raise ValueError(f"RBE asset {binary_name} exceeded the extraction size limit.")
                         digest.update(chunk)
                         output.write(chunk)
+                        percentage = min(100, int(extracted * 100 / max(item.file_size, 1)))
+                        bucket = (percentage // 10) * 10
+                        if bucket >= last_bucket + 10 or percentage == 100:
+                            log_work("RBE extraction", f"{percentage}%", "WORKING", f"Extracted {extracted:,} of {item.file_size:,} bytes.")
+                            last_bucket = max(last_bucket, bucket)
         elif archive_kind == "tar.gz":
             with tarfile.open(archive_path, "r:gz") as archive:
                 matches = [item for item in archive.getmembers() if item.name == binary_name]
@@ -954,27 +1656,37 @@ def extract_rbe_cloud_node_archive(
                 if source is None:
                     raise ValueError(f"Could not read {binary_name} from {archive_path.name}.")
                 with source, temporary.open("wb") as output:
+                    extracted = 0
+                    last_bucket = -10
                     while True:
                         chunk = source.read(1024 * 1024)
                         if not chunk:
                             break
                         count += len(chunk)
+                        extracted += len(chunk)
                         if count > max_binary_bytes:
                             raise ValueError(f"RBE asset {binary_name} exceeded the extraction size limit.")
                         digest.update(chunk)
                         output.write(chunk)
+                        percentage = min(100, int(extracted * 100 / max(item.size, 1)))
+                        bucket = (percentage // 10) * 10
+                        if bucket >= last_bucket + 10 or percentage == 100:
+                            log_work("RBE extraction", f"{percentage}%", "WORKING", f"Extracted {extracted:,} of {item.size:,} bytes.")
+                            last_bucket = max(last_bucket, bucket)
         else:
             raise ValueError(f"Unsupported RBE archive format: {archive_kind}")
 
         if count <= 0:
             raise ValueError(f"RBE asset contained an empty {binary_name}.")
         os.replace(temporary, destination)
+        log_work("RBE extraction", "2/2", "DONE", f"Extracted and validated {count:,} bytes.")
         return count, digest.hexdigest()
     finally:
         if temporary.exists():
             temporary.unlink()
 
 
+@tracked_work("Cloud node bundle")
 def prepare_cloud_node_deployment(project_root: Path) -> int:
     """Build a small bootstrap ZIP; setup.py downloads only the host's RBE runtime."""
     try:
@@ -1074,8 +1786,10 @@ def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
     and then fail SignTool verification because it produced no signature.
     """
     if platform.system() != "Windows":
+        log_debug("Windows signing override is not required on this host.")
         return None
 
+    log_work("Windows signing config", "1/2", "WORKING", "Resolving certificate and explicit signing behavior...")
     thumbprint = re.sub(r"\s", "", os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "")).upper()
     signing_config: Dict[str, object] = {
         "bundle": {
@@ -1125,6 +1839,7 @@ def prepare_windows_tauri_signing_config(project_root: Path) -> Optional[Path]:
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(signing_config, indent=2) + "\n", encoding="utf-8")
+        log_work("Windows signing config", "2/2", "DONE", f"Wrote {config_path}.")
     except OSError as error:
         log_err(f"Could not write the Windows signing override {config_path}: {error}")
         return None
@@ -1139,8 +1854,10 @@ def sanitize_tauri_v2_config(project_root: Path) -> None:
     """
     conf_path = project_root / "src-tauri" / "tauri.conf.json"
     if not conf_path.is_file():
+        log_work("Tauri config", "1/1", "SKIPPED", "Shared Tauri configuration file was not found.")
         return
 
+    log_work("Tauri config", "1/1", "WORKING", "Validating Tauri v2 schema and frontend command paths...")
     try:
         data = json.loads(conf_path.read_text(encoding="utf-8"))
         changed = False
@@ -1180,7 +1897,9 @@ def sanitize_tauri_v2_config(project_root: Path) -> None:
             log_ok("`src-tauri/tauri.conf.json` verified and updated for Tauri v2 schema.")
         else:
             log_ok("`src-tauri/tauri.conf.json` matches Tauri v2 schema.")
+        log_work("Tauri config", "1/1", "DONE", "Tauri v2 configuration is ready.")
     except Exception as exc:
+        log_work("Tauri config", "1/1", "FAILED", str(exc))
         log_warn(f"Could not inspect `tauri.conf.json`: {exc}")
 
 
@@ -1231,6 +1950,7 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
     - Returns an optional `+toolchain` arg if switching to another already-installed rustup
       toolchain is needed, or "" to use the default installed `cargo`/`rustc`.
     """
+    log_work("Rust toolchain", "1/3", "WORKING", "Locating rustc, cargo and installed rustup toolchains...")
     ensure_cargo_in_path()
 
     rustc_path = shutil.which("rustc")
@@ -1243,6 +1963,7 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
             log_info("  winget install Rustlang.Rustup")
         else:
             log_info("  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
+        log_work("Rust toolchain", "1/3", "FAILED", "Rust compiler or Cargo was not found.")
         return None
 
     _, rustc_out, _ = run_capture([rustc_path, "--version"])
@@ -1251,16 +1972,19 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
 
     if not installed_ver:
         log_warn(f"Could not parse exact semver from `{rustc_out}`, proceeding with installed compiler.")
+        log_work("Rust toolchain", "3/3", "DONE", "Proceeding with the installed compiler.")
         return ""
 
     rec_str = format_semver(RECOMMENDED_RUST_VERSION)
     inst_str = format_semver(installed_ver)
 
     if installed_ver == RECOMMENDED_RUST_VERSION:
+        log_work("Rust toolchain", "3/3", "DONE", "Installed Rust matches the workspace baseline.")
         log_ok(f"Rust version matches target baseline exactly: {rustc_out} ({cargo_out})")
         return ""
 
     if installed_ver > RECOMMENDED_RUST_VERSION:
+        log_work("Rust toolchain", "3/3", "DONE", f"Using newer installed Rust {inst_str}.")
         log_ok(
             f"Different (newer) Rust version detected ({inst_str} vs baseline {rec_str}). "
             f"Using already-installed Rust {inst_str}!"
@@ -1274,6 +1998,7 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
     installed_toolchains = detect_installed_toolchains_sorted()
     for tc_name, tc_ver in installed_toolchains:
         if tc_ver >= RECOMMENDED_RUST_VERSION:
+            log_work("Rust toolchain", "3/3", "DONE", f"Selected installed rustup toolchain {tc_name}.")
             log_ok(
                 f"Found already-installed toolchain '{tc_name}' (Rust {format_semver(tc_ver)}). "
                 f"Using +{tc_name} automatically!"
@@ -1284,9 +2009,11 @@ def check_and_resolve_rust(project_root: Path) -> Optional[str]:
         f"No newer toolchain installed locally; adapting build to use your already-installed Rust {inst_str}."
     )
     relax_cargo_toml_rust_version(project_root / "src-tauri" / "Cargo.toml")
+    log_work("Rust toolchain", "3/3", "DONE", f"Proceeding with installed Rust {inst_str}.")
     return ""
 
 
+@tracked_work("Tauri CLI setup")
 def check_tauri_rust_cli(toolchain_arg: str, auto_install: bool = False) -> bool:
     """
     Checks for the Rust `tauri-cli` crate (`cargo tauri --version`).
@@ -1325,7 +2052,7 @@ def check_tauri_rust_cli(toolchain_arg: str, auto_install: bool = False) -> bool
         # CLI itself just because CARGO_BUILD_TARGET selects the app target.
         build_target = os.environ.pop("CARGO_BUILD_TARGET", None)
         try:
-            rc = subprocess.call(install_cmd)
+            rc = run_command(install_cmd, work="Install Rust Tauri CLI", progress="1/1")
         finally:
             if build_target is not None:
                 os.environ["CARGO_BUILD_TARGET"] = build_target
@@ -1340,6 +2067,7 @@ def check_tauri_rust_cli(toolchain_arg: str, auto_install: bool = False) -> bool
     return False
 
 
+@tracked_work("Platform dependency check")
 def check_os_system_dependencies() -> None:
     sys_name = platform.system()
     log_info(f"Checking native platform dependencies for {sys_name} ({platform.release()})...")
@@ -1395,46 +2123,17 @@ def resolve_rust_target_triple(toolchain_arg: str) -> str:
     raise RuntimeError("Could not determine the Rust target triple for the gitm sidecar.")
 
 
+@tracked_work("Sidecar build and staging")
 def build_gitm_sidecar(
     project_root: Path,
     toolchain_arg: str,
     release: bool,
 ) -> int:
-    """Build and stage gitm, first-run setup, crash_helper and the independent service."""
+    """Compile every workspace library/binary once, then stage Tauri's target sidecars."""
     profile = "release" if release else "debug"
-    common_prefix = ["cargo"]
-    if toolchain_arg:
-        common_prefix.append(toolchain_arg)
     target_triple = os.environ.get("CARGO_BUILD_TARGET", "").strip()
-    target_args = ["--target", target_triple] if target_triple else []
-
-    commands = [
-        (
-            "native gitm CLI",
-            common_prefix + ["build", "--package", "gitm-cli", "--bin", "gitm"] + target_args,
-        ),
-        (
-            "GitManager first-run setup companion",
-            common_prefix + ["build", "--package", "gitmanager-setup", "--bin", "gitmanager-setup"] + target_args,
-        ),
-        (
-            "crash_helper UI supervisor",
-            common_prefix + ["build", "--package", "crash-helper", "--bin", "crash_helper"] + target_args,
-        ),
-    ]
-    if release:
-        for _, command in commands:
-            command.append("--release")
-
-    for description, command in commands:
-        log_info(f"Building {description}: {' '.join(command)}")
-        result = subprocess.call(command, cwd=str(project_root))
-        if result != 0:
-            log_err(f"The {description} failed to build.")
-            return result
-
     try:
-        host_triple = resolve_rust_target_triple(toolchain_arg)
+        binary_triple = target_triple or resolve_rust_target_triple(toolchain_arg)
     except RuntimeError as error:
         log_err(str(error))
         return 1
@@ -1442,90 +2141,94 @@ def build_gitm_sidecar(
     target_dir = cargo_target_root(project_root)
     if not target_dir.is_absolute():
         target_dir = project_root / target_dir
-    binary_triple = target_triple or host_triple
-    binary_dir = target_dir / target_triple / profile if target_triple else target_dir / profile
-
+    binary_dir = target_dir / binary_triple / profile if target_triple else target_dir / profile
     executable_suffix = ".exe" if "windows" in binary_triple else ""
     sidecar_dir = project_root / "src-tauri" / "binaries"
     sidecar_dir.mkdir(parents=True, exist_ok=True)
 
     artifacts = [
         (binary_dir / f"gitm{executable_suffix}", f"gitm-{binary_triple}{executable_suffix}"),
-        (binary_dir / f"gitmanager-setup{executable_suffix}", f"gitmanager-setup-{binary_triple}{executable_suffix}"),
-        (binary_dir / f"crash_helper{executable_suffix}", f"crash_helper-{binary_triple}{executable_suffix}"),
+        (
+            binary_dir / f"gitmanager-setup{executable_suffix}",
+            f"gitmanager-setup-{binary_triple}{executable_suffix}",
+        ),
+        (
+            binary_dir / f"crash_helper{executable_suffix}",
+            f"crash_helper-{binary_triple}{executable_suffix}",
+        ),
+        (
+            binary_dir / f"gitmanager-service{executable_suffix}",
+            f"gitmanager.service-{binary_triple}{executable_suffix}",
+        ),
     ]
-    staged: List[Path] = []
 
-    # Tauri's build script validates every externalBin entry when the
-    # standalone service crate builds its dependency on the Tauri library.
-    # Stage the other tools first, then provide a placeholder for the service
-    # sidecar while compiling the separate service package.
-    for source_path, filename in artifacts:
-        if not source_path.is_file():
-            log_err(f"Cargo completed but the expected sidecar binary is missing: {source_path}")
-            return 1
-        destination = sidecar_dir / filename
-        try:
-            shutil.copy2(source_path, destination)
-        except OSError as error:
-            log_err(f"Could not stage sidecar at {destination}: {error}")
-            return 1
-        staged.append(destination)
-        log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
-
-    service_filename = f"git-manager-service-{binary_triple}{executable_suffix}"
-    service_sidecar = sidecar_dir / service_filename
-    service_source = binary_dir / f"git-manager-service{executable_suffix}"
-
-    # The service is a binary in the Tauri package, whose build script itself
-    # requires every declared externalBin file to exist. Keep any previous
-    # working sidecar as a backup, then supply a temporary placeholder so the
-    # first service build can run. The real Cargo output replaces it immediately.
-    service_backup: Optional[Path] = None
+    # tauri-build validates every externalBin path while compiling the desktop
+    # crate. Keep existing sidecars intact and create only missing placeholders;
+    # real Cargo outputs replace these as soon as the workspace build succeeds.
+    placeholders: List[Path] = []
     try:
-        if service_sidecar.is_file():
-            service_backup = service_sidecar.with_name(service_sidecar.name + ".previous-build")
-            if service_backup.exists():
-                service_backup.unlink()
-            shutil.copy2(service_sidecar, service_backup)
-        service_sidecar.write_bytes(b"")
+        for _, filename in artifacts:
+            destination = sidecar_dir / filename
+            if not destination.exists():
+                destination.write_bytes(b"")
+                placeholders.append(destination)
     except OSError as error:
-        log_err(f"Could not prepare the service sidecar build placeholder: {error}")
+        for placeholder in placeholders:
+            try:
+                placeholder.unlink(missing_ok=True)
+            except OSError:
+                pass
+        log_err(f"Could not prepare Tauri sidecar placeholders: {error}")
         return 1
 
-    service_cmd = common_prefix + ["build", "--package", "git-manager-service", "--bin", "git-manager-service"] + target_args
+    command = ["cargo"]
+    if toolchain_arg:
+        command.append(toolchain_arg)
+    command.extend(["build", "--workspace", "--lib", "--bins"])
+    if target_triple:
+        command.extend(["--target", target_triple])
     if release:
-        service_cmd.append("--release")
-    log_info(f"Building independent GitManager background service: {' '.join(service_cmd)}")
-    service_result = subprocess.call(service_cmd, cwd=str(project_root))
-    if service_result != 0 or not service_source.is_file():
-        try:
-            if service_sidecar.exists():
-                service_sidecar.unlink()
-            if service_backup and service_backup.is_file():
-                shutil.copy2(service_backup, service_sidecar)
-                service_backup.unlink()
-        except OSError as error:
-            log_warn(f"Could not restore the previous service sidecar after a failed build: {error}")
-        if service_result != 0:
-            log_err("The standalone GitManager background service failed to build.")
-            return service_result
-        log_err(f"Cargo completed but the expected service binary is missing: {service_source}")
+        command.append("--release")
+
+    log_info(
+        "Compiling every workspace crate library and binary before any installer is created."
+    )
+    result = run_command(
+        command,
+        cwd=project_root,
+        work=f"Build workspace ({binary_triple})",
+        progress="1/1",
+    )
+    if result != 0:
+        for placeholder in placeholders:
+            try:
+                placeholder.unlink(missing_ok=True)
+            except OSError as error:
+                log_warn(f"Could not remove temporary sidecar placeholder {placeholder}: {error}")
+        return result
+
+    missing = [
+        str(source)
+        for source, _ in artifacts
+        if not source.is_file() or source.stat().st_size == 0
+    ]
+    if missing:
+        log_err("Cargo completed but workspace binaries are missing or empty: " + ", ".join(missing))
         return 1
 
+    staged: List[Path] = []
     try:
-        shutil.copy2(service_source, service_sidecar)
-        if service_backup and service_backup.is_file():
-            service_backup.unlink()
+        for source_path, filename in artifacts:
+            destination = sidecar_dir / filename
+            temporary = destination.with_name(destination.name + ".staging")
+            shutil.copy2(source_path, temporary)
+            os.replace(temporary, destination)
+            staged.append(destination)
+            log_ok(f"Prepared Tauri sidecar: {destination} ({destination.stat().st_size:,} bytes)")
     except OSError as error:
-        log_err(f"Could not stage the built background service at {service_sidecar}: {error}")
+        log_err(f"Could not stage a workspace binary for Tauri: {error}")
         return 1
 
-    staged.append(service_sidecar)
-    log_ok(f"Prepared Tauri sidecar: {service_sidecar} ({service_sidecar.stat().st_size:,} bytes)")
-
-    # Publish a predictable standalone setup helper beside the Cargo outputs:
-    # GitManager-Setup.exe on Windows and GitManager-Setup on Linux/macOS.
     setup_artifact_name = "GitManager-Setup.exe" if executable_suffix else "GitManager-Setup"
     setup_artifact = binary_dir / setup_artifact_name
     try:
@@ -1534,18 +2237,22 @@ def build_gitm_sidecar(
         log_err(f"Could not stage the standalone setup helper at {setup_artifact}: {error}")
         return 1
 
-    # When CI has imported a production signing certificate, sign every sidecar
-    # and the predictable setup-helper output before Tauri bundles the sidecars.
     if platform.system() == "Windows" and os.environ.get("WINDOWS_SIGNING_THUMBPRINT", "").strip():
         sign_script = project_root / "tools" / "sign_windows_file.ps1"
         if sign_script.is_file():
-            for target in [*staged, setup_artifact]:
+            sign_targets = [*staged, setup_artifact]
+            for sign_index, target in enumerate(sign_targets, start=1):
                 sign_cmd = [
                     "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
                     "-ExecutionPolicy", "Bypass", "-File", str(sign_script),
                     "-FilePath", str(target),
                 ]
-                sign_rc = subprocess.call(sign_cmd, cwd=str(project_root))
+                sign_rc = run_command(
+                    sign_cmd,
+                    cwd=project_root,
+                    work=f"Sign {target.name}",
+                    progress=f"{sign_index}/{len(sign_targets)}",
+                )
                 if sign_rc != 0:
                     log_err(f"Could not sign GitManager build output: {target}")
                     return sign_rc
@@ -1554,7 +2261,7 @@ def build_gitm_sidecar(
     return 0
 
 
-
+@tracked_work("Rust target components")
 def ensure_rust_target_components(targets: List[BuildTarget], toolchain_arg: str) -> int:
     """Install missing Rust target std components with the already-selected rustup toolchain."""
     rustup = shutil.which("rustup")
@@ -1585,12 +2292,12 @@ def ensure_rust_target_components(targets: List[BuildTarget], toolchain_arg: str
 
     installed = {line.strip() for line in output.splitlines() if line.strip()}
     missing = sorted({target.triple for target in targets if target.triple not in installed})
-    for triple in missing:
+    for target_index, triple in enumerate(missing, start=1):
         add_command = [rustup, "target", "add", triple]
         if selected_toolchain:
             add_command.extend(["--toolchain", selected_toolchain])
         log_info(f"Installing missing Rust target component locally: {triple}")
-        result = subprocess.call(add_command)
+        result = run_command(add_command, work=f"Install Rust target {triple}", progress=f"{target_index}/{len(missing)}")
         if result != 0:
             log_err(
                 f"Could not install Rust target {triple}. Confirm the selected toolchain supports it "
@@ -1615,14 +2322,13 @@ def prompt_build_selection() -> str:
         else:
             unavailable.append((target, reason))
 
-    print()
-    print(f"Detected build host: {host} ({platform.machine()})")
-    print("Choose the local build architecture:")
-    print("  [A] All architectures supported by this machine (default)")
+    log_info(f"Detected build host: {host} ({platform.machine()})")
+    log_info("Choose the local build architecture:")
+    log_info("  [A] All architectures supported by this machine (default)")
     for index, target in enumerate(available, start=1):
-        print(f"  [{index}] {target.selector}  [{target.triple}]")
+        log_info(f"  [{index}] {target.selector}  [{target.triple}]")
     for target, reason in unavailable:
-        print(f"  [-] {target.selector}  [not available locally: {reason}]")
+        log_warn(f"  [-] {target.selector}  [not available locally: {reason}]")
 
     if not available:
         raise RuntimeError(f"No supported {host} target can be built on this machine.")
@@ -1634,7 +2340,7 @@ def prompt_build_selection() -> str:
     try:
         choice = input("Architecture selection [A]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        print()
+        log_warn("Architecture selection was cancelled.")
         raise RuntimeError("Build selection was cancelled.")
 
     if not choice or choice in {"a", "all"}:
@@ -1646,6 +2352,7 @@ def prompt_build_selection() -> str:
     raise ValueError("Invalid architecture selection. Choose A or one of the listed numbers.")
 
 
+@tracked_work("Local build target selection")
 def resolve_local_build_targets(selection: str) -> List[BuildTarget]:
     """Resolve a selector into targets that the current machine can actually build."""
     kind, selected = parse_build_selection(selection)
@@ -1700,14 +2407,52 @@ def resolve_local_build_targets(selection: str) -> List[BuildTarget]:
 
 
 def configure_local_target(project_root: Path, target: BuildTarget) -> None:
+    log_work("Configure build target", "1/1", "WORKING", f"Setting Cargo target to {target.triple}...")
     os.environ["CARGO_BUILD_TARGET"] = target.triple
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
     os.environ["GITMANAGER_BUILD_SELECTOR"] = target.selector
     log_info(f"Selected local target: {target.selector} ({target.triple})")
     log_info(f"Rust build cache: {os.environ['CARGO_TARGET_DIR']}")
     log_info(f"Artifacts: {project_root / 'build' / 'dist' / target.output_name}")
+    log_work("Configure build target", "1/1", "DONE", f"{target.selector} is configured.")
 
 
+@tracked_work("Tauri bundle")
+def run_tauri_bundle(
+    project_root: Path,
+    target: BuildTarget,
+    toolchain_arg: str,
+    release: bool,
+    bundle_formats: Optional[str] = None,
+) -> int:
+    """Bundle an already-compiled target without invoking Cargo compilation again."""
+    command = ["cargo"]
+    if toolchain_arg:
+        command.append(toolchain_arg)
+    command.extend(["tauri", "bundle", "--target", target.triple])
+
+    if bundle_formats:
+        command.extend(["--bundles", bundle_formats])
+    elif target.platform == "linux" and target.triple == "armv7-unknown-linux-gnueabihf":
+        command.extend(["--bundles", "deb,rpm"])
+    if not release:
+        command.append("--debug")
+    if target.platform == "windows" and release:
+        signing_config = prepare_windows_tauri_signing_config(project_root)
+        if signing_config is None:
+            log_err("Could not prepare the Windows signing override for installer generation.")
+            return 1
+        command.extend(["--config", str(signing_config.resolve())])
+
+    return run_command(
+        command,
+        cwd=project_root / "src-tauri",
+        work=f"Bundle {target.selector}",
+        progress="1/1",
+    )
+
+
+@tracked_work("Store package build")
 def build_local_store_package(
     project_root: Path,
     store: str,
@@ -1715,8 +2460,9 @@ def build_local_store_package(
     toolchain_arg: str,
     has_cargo_tauri: bool,
     release: bool,
+    already_compiled: bool = False,
 ) -> int:
-    """Build Flatpak or Store MSIX on the native local host, without workflow dispatch."""
+    """Package Flatpak or Store MSIX from a completed app compile pass when requested."""
     if store == "flatpak":
         if target.platform != "linux":
             log_err("Flatpak packaging is supported only from a native Linux build host.")
@@ -1727,15 +2473,25 @@ def build_local_store_package(
                 f"{target.architecture} is available as a DEB/RPM desktop build, not a Flatpak target."
             )
             return 2
-        result = run_build_or_dev(
-            project_root=project_root,
-            mode="build",
-            toolchain_arg=toolchain_arg,
-            has_cargo_tauri=has_cargo_tauri,
-            release=release,
-            bundle=True,
-            bundle_formats="deb",
-        )
+        if already_compiled:
+            result = run_tauri_bundle(
+                project_root, target, toolchain_arg, release, bundle_formats="deb"
+            )
+            if result != 0:
+                return result
+            result = publish_build_outputs(
+                project_root, release, True, bundle_formats="deb"
+            )
+        else:
+            result = run_build_or_dev(
+                project_root=project_root,
+                mode="build",
+                toolchain_arg=toolchain_arg,
+                has_cargo_tauri=has_cargo_tauri,
+                release=release,
+                bundle=True,
+                bundle_formats="deb",
+            )
         if result != 0:
             return result
         deb_dir = project_root / "build" / "dist" / target.output_name / "installer"
@@ -1750,7 +2506,7 @@ def build_local_store_package(
             str(debs[0]),
         ]
         log_info("Building the Flatpak bundle locally from the native Linux DEB payload...")
-        return subprocess.call(command, cwd=str(project_root))
+        return run_command(command, cwd=project_root, work="Build Flatpak bundle", progress="1/1")
 
     if store == "msix":
         if target.platform != "windows":
@@ -1763,16 +2519,17 @@ def build_local_store_package(
                 "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
             )
             return 1
-        result = run_build_or_dev(
-            project_root=project_root,
-            mode="build",
-            toolchain_arg=toolchain_arg,
-            has_cargo_tauri=has_cargo_tauri,
-            release=release,
-            bundle=False,
-        )
-        if result != 0:
-            return result
+        if not already_compiled:
+            result = run_build_or_dev(
+                project_root=project_root,
+                mode="build",
+                toolchain_arg=toolchain_arg,
+                has_cargo_tauri=has_cargo_tauri,
+                release=release,
+                bundle=False,
+            )
+            if result != 0:
+                return result
 
         app_dir = project_root / "build" / "dist" / target.output_name / "app"
         platform_name = target.architecture
@@ -1783,7 +2540,7 @@ def build_local_store_package(
             "--app-dir", str(app_dir),
             "--platform", platform_name,
         ]
-        staged = subprocess.call(stage_command, cwd=str(project_root))
+        staged = run_command(stage_command, cwd=project_root, work="Stage Microsoft Store app payload", progress="1/2")
         if staged != 0:
             return staged
 
@@ -1797,8 +2554,8 @@ def build_local_store_package(
         environment["GITMANAGER_APP_SOURCE"] = str(
             (cargo_target_root(project_root) / "windows-store" / "source").resolve()
         )
-        if not (Path(environment["GITMANAGER_APP_SOURCE"]) / "git-manager.exe").is_file():
-            log_err("The staged Microsoft Store app payload is missing git-manager.exe.")
+        if not (Path(environment["GITMANAGER_APP_SOURCE"]) / "gitmanager.exe").is_file():
+            log_err("The staged Microsoft Store app payload is missing gitmanager.exe.")
             return 1
         command = [
             str(mpdev), "build", str(manifest),
@@ -1806,7 +2563,10 @@ def build_local_store_package(
             "--use-msbuild-message-format", "true",
         ]
         log_info(f"Building the Microsoft Store {platform_name} MSIX locally with MPDEV...")
-        result = subprocess.run(command, cwd=str(project_root), env=environment, check=False).returncode
+        result = run_command(
+            command, cwd=project_root, env=environment,
+            work=f"Build Microsoft Store {platform_name} MSIX", progress="2/2",
+        )
         if result != 0:
             return result
         packages = sorted(
@@ -1825,6 +2585,7 @@ def build_local_store_package(
     return 2
 
 
+@tracked_work("Publish build outputs")
 def publish_build_outputs(
     project_root: Path,
     release: bool,
@@ -1906,14 +2667,14 @@ def publish_build_outputs(
             f"gitm{suffix}": sidecar_dir / f"gitm-{target.triple}{suffix}",
             f"gitmanager-setup{suffix}": sidecar_dir / f"gitmanager-setup-{target.triple}{suffix}",
             f"crash_helper{suffix}": sidecar_dir / f"crash_helper-{target.triple}{suffix}",
-            f"git-manager-service{suffix}": sidecar_dir / f"git-manager-service-{target.triple}{suffix}",
+            f"gitmanager.service{suffix}": sidecar_dir / f"gitmanager.service-{target.triple}{suffix}",
         }
         names = (
-            f"git-manager{suffix}",
+            f"gitmanager{suffix}",
             f"gitm{suffix}",
             f"gitmanager-setup{suffix}",
             f"crash_helper{suffix}",
-            f"git-manager-service{suffix}",
+            f"gitmanager.service{suffix}",
             setup_alias,
         )
         app_dir = output_root / "app"
@@ -1967,6 +2728,101 @@ def publish_build_outputs(
         return 1
     return 0
 
+@tracked_work("Package local target")
+def package_local_target(
+    project_root: Path,
+    target: BuildTarget,
+    toolchain_arg: str,
+    release: bool,
+) -> int:
+    """Create installers for one already-compiled target; never compile its app again."""
+    if target.platform == "windows":
+        # CPython is staged in a shared source directory. Restore the selected
+        # target's runtime after the whole compile matrix, before Tauri bundles
+        # or MPDEV copies resources for this architecture.
+        runtime_result = prepare_windows_python_runtime(project_root)
+        if runtime_result != 0:
+            return runtime_result
+        packaging_inputs_result = verify_windows_packaging_inputs(project_root)
+        if packaging_inputs_result != 0:
+            return packaging_inputs_result
+
+    bundle_formats = (
+        "deb,rpm"
+        if target.platform == "linux" and target.triple == "armv7-unknown-linux-gnueabihf"
+        else None
+    )
+    log_info(
+        f"Installer phase: generating Tauri bundles for {target.selector}; "
+        "the workspace binaries were compiled in the previous phase."
+    )
+    bundle_result = run_tauri_bundle(
+        project_root,
+        target,
+        toolchain_arg,
+        release,
+        bundle_formats=bundle_formats,
+    )
+    if bundle_result != 0:
+        return bundle_result
+
+    include_mpdev = False
+    if target.platform == "windows":
+        if name_windows_setup_installer(project_root, release) is None:
+            return 1
+        stage_result = stage_windows_mpdev_package(project_root, toolchain_arg, release)
+        if stage_result != 0:
+            return stage_result
+        manifest_result, manifest = prepare_master_packager_manifest(project_root)
+        if manifest_result != 0 or manifest is None:
+            return manifest_result or 1
+        if os.environ.get("GITMANAGER_DEFER_MPDEV_PACKAGING") == "1":
+            log_info(
+                "MPDEV manifest is ready; release signing runs before MSI/MSIX generation."
+            )
+        else:
+            mpdev_result, packages = build_master_packager_installers(project_root, manifest)
+            if mpdev_result != 0 or not packages:
+                return mpdev_result or 1
+            include_mpdev = True
+
+    return publish_build_outputs(
+        project_root,
+        release,
+        True,
+        include_mpdev,
+        bundle_formats="deb,rpm" if target.platform == "linux" and target.triple == "armv7-unknown-linux-gnueabihf" else None,
+    )
+
+
+@tracked_work("Native build pipeline")
+def verify_windows_installer_tools() -> int:
+    """Fail before compilation when a required Windows installer tool is unavailable."""
+    if platform.system() != "Windows":
+        return 0
+
+    refresh_windows_packaging_path()
+    mpdev_cli = find_master_packager_dev_cli()
+    if mpdev_cli is None:
+        log_err(
+            "Master Packager Dev is mandatory for Windows MSI/MSIX builds. "
+            "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
+        )
+        return 1
+    nsis_available = bool(shutil.which("makensis")) or any(
+        (directory / "makensis.exe").is_file()
+        for directory in windows_packaging_search_directories()
+    )
+    if not nsis_available:
+        log_err(
+            "NSIS is required as the fallback Windows setup installer. "
+            "Install it with 'winget install --id NSIS.NSIS --exact' "
+            "or run 'py build.py setup-packaging-tools'."
+        )
+        return 1
+    return 0
+
+
 def run_build_or_dev(
     project_root: Path,
     mode: str,
@@ -1984,33 +2840,17 @@ def run_build_or_dev(
         if toolchain_arg:
             cmd.append(toolchain_arg)
         cmd.extend(["check", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
-        return subprocess.call(cmd)
+        return run_command(cmd, work="Cargo check", progress="1/1")
 
     if mode == "build" and os.environ.get("GITMANAGER_SKIP_CLOUD_NODE_BUNDLE") != "1":
         cloud_node_result = prepare_cloud_node_deployment(project_root)
         if cloud_node_result != 0:
             return cloud_node_result
 
-    if mode == "build" and platform.system() == "Windows" and bundle:
-        refresh_windows_packaging_path()
-        mpdev_cli = find_master_packager_dev_cli()
-        if mpdev_cli is None:
-            log_err(
-                "Master Packager Dev is mandatory for Windows MSI/MSIX builds. "
-                "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
-            )
-            return 1
-        nsis_available = bool(shutil.which("makensis")) or any(
-            (directory / "makensis.exe").is_file()
-            for directory in windows_packaging_search_directories()
-        )
-        if not nsis_available:
-            log_err(
-                "NSIS is required as the fallback Windows setup installer. "
-                "Install it with 'winget install --id NSIS.NSIS --exact' "
-                "or run 'py build.py setup-packaging-tools'."
-            )
-            return 1
+    if mode == "build" and bundle:
+        prerequisite_result = verify_windows_installer_tools()
+        if prerequisite_result != 0:
+            return prerequisite_result
 
     if mode == "build" and platform.system() == "Windows":
         runtime_result = prepare_windows_python_runtime(project_root)
@@ -2056,8 +2896,7 @@ def run_build_or_dev(
                     log_err("Could not prepare an explicit Windows signing override; refusing to build with an ambiguous signing configuration.")
                     return 1
                 cmd.extend(["--config", str(signing_config.resolve())])
-        log_info(f"Running Pure-Rust Tauri CLI: {' '.join(cmd)}")
-        rc = subprocess.call(cmd, cwd=str(src_tauri_dir))
+        rc = run_command(cmd, cwd=src_tauri_dir, work=f"Tauri {mode}", progress="1/1")
         if rc != 0 or mode != "build":
             return rc
 
@@ -2102,16 +2941,16 @@ def run_build_or_dev(
         cmd.append(toolchain_arg)
 
     if mode == "dev":
-        cmd.extend(["run", "--bin", "git-manager", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
+        cmd.extend(["run", "--bin", "gitmanager", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
     else:
         cmd.extend(["build", "--bins", "--manifest-path", str(src_tauri_dir / "Cargo.toml")])
         if release:
             cmd.append("--release")
 
-    log_info(f"Running Pure-Rust Cargo directly: {' '.join(cmd)}")
-    return subprocess.call(cmd, cwd=str(project_root))
+    return run_command(cmd, cwd=project_root, work=f"Cargo {mode}", progress="1/1")
 
 
+@tracked_work("Build command")
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="GitManager local dependency, architecture and installer build script"
@@ -2133,6 +2972,11 @@ def main() -> int:
         "--debug",
         action="store_true",
         help="Build in debug mode instead of release mode.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show gray diagnostic/debug lines during the build.",
     )
     parser.add_argument(
         "--install-tauri-cli",
@@ -2170,6 +3014,8 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    global VERBOSE_LOGGING
+    VERBOSE_LOGGING = VERBOSE_LOGGING or bool(args.verbose)
     project_root = Path(__file__).resolve().parent
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
 
@@ -2186,7 +3032,10 @@ def main() -> int:
     if args.mode == "setup-packaging-tools":
         return setup_windows_packaging_tools()
     if args.mode == "setup-build-tools":
-        return setup_build_environment(args.build_target, args.store_target)
+        log_work("Build environment", "1/1", "WORKING", "Preparing requested local build dependencies...")
+        result = setup_build_environment(args.build_target, args.store_target)
+        log_work("Build environment", "1/1", "DONE" if result == 0 else "FAILED", "Build environment setup finished.")
+        return result
     if args.mode == "prepare-runtime":
         return prepare_windows_python_runtime(project_root)
     if args.install_packaging_tools:
@@ -2198,19 +3047,18 @@ def main() -> int:
     if args.mode in ("frontend-build", "frontend-dev"):
         frontend_tool = project_root / "tools" / "nextjs_engine_source.py"
         frontend_mode = "build" if args.mode == "frontend-build" else "dev"
-        return subprocess.call([
-            sys.executable,
-            str(frontend_tool),
-            frontend_mode,
-            "--project-root",
-            str(project_root),
-        ])
+        return run_command(
+            [sys.executable, str(frontend_tool), frontend_mode, "--project-root", str(project_root)],
+            cwd=project_root, work=f"Frontend {frontend_mode}", progress="1/1",
+        )
 
     selected_targets = []
     if args.mode == "build":
+        log_work("Build selection", "1/2", "WORKING", "Resolving the requested local architectures...")
         try:
             selection = args.build_target or prompt_build_selection()
             selected_targets = resolve_local_build_targets(selection)
+            log_work("Build selection", "2/2", "DONE", f"Selected {len(selected_targets)} local target(s).")
         except (RuntimeError, ValueError) as error:
             log_err(str(error))
             return 2
@@ -2231,9 +3079,9 @@ def main() -> int:
                 )
                 return 2
 
-    print("=" * 72)
-    print(" GitManager — Local Tauri v2 Dependency & Toolchain Manager")
-    print("=" * 72)
+    log_info("=" * 72)
+    log_info("GitManager — Local Tauri v2 Dependency & Toolchain Manager")
+    log_info("=" * 72)
 
     check_os_system_dependencies()
     sanitize_tauri_v2_config(project_root)
@@ -2266,42 +3114,176 @@ def main() -> int:
     if args.mode == "prepare-sidecar":
         return build_gitm_sidecar(project_root, toolchain_arg, is_release)
 
+    if args.mode == "build" and os.environ.get("GITMANAGER_SKIP_CLOUD_NODE_BUNDLE") != "1":
+        cloud_node_result = prepare_cloud_node_deployment(project_root)
+        if cloud_node_result != 0:
+            return cloud_node_result
+        # The bootstrap is architecture-independent; prepare it once, before
+        # either compile matrix, instead of rebuilding the same ZIP per target.
+        os.environ["GITMANAGER_SKIP_CLOUD_NODE_BUNDLE"] = "1"
+
     if args.mode == "build":
-        results = []
-        for target in selected_targets:
-            configure_local_target(project_root, target)
-            if args.store_target:
-                result = build_local_store_package(
-                    project_root=project_root,
-                    store=args.store_target,
-                    target=target,
-                    toolchain_arg=toolchain_arg,
-                    has_cargo_tauri=has_cargo_tauri,
-                    release=is_release,
-                )
-            else:
+        if args.store_target:
+            if args.store_target == "msix":
+                refresh_windows_packaging_path()
+                if find_master_packager_dev_cli() is None:
+                    log_err(
+                        "Master Packager Dev is required for Microsoft Store MSIX packaging. "
+                        "Install it with 'winget install --id MasterPackager.MasterPackagerDev --exact'."
+                    )
+                    return 1
+
+            compile_results = []
+            log_work(
+                "Store build pipeline",
+                "1/2",
+                "WORKING",
+                f"Compiling all selected targets ({len(selected_targets)}) before Store packaging...",
+            )
+            for index, target in enumerate(selected_targets, start=1):
+                configure_local_target(project_root, target)
                 result = run_build_or_dev(
                     project_root=project_root,
                     mode="build",
                     toolchain_arg=toolchain_arg,
                     has_cargo_tauri=has_cargo_tauri,
                     release=is_release,
-                    bundle=args.build_type == "installer",
+                    bundle=False,
                 )
+                compile_results.append((target, result))
+                if result == 0:
+                    log_ok(f"Compiled Store app payload: {target.selector} ({index}/{len(selected_targets)}).")
+                else:
+                    log_err(f"Store app compilation failed for {target.selector} (exit code {result}).")
+
+            successful_targets = [target for target, result in compile_results if result == 0]
+            package_results = []
+            if successful_targets:
+                log_work(
+                    "Store build pipeline",
+                    "2/2",
+                    "WORKING",
+                    f"All Store app compilation passes finished; packaging {len(successful_targets)} target(s)...",
+                )
+                for index, target in enumerate(successful_targets, start=1):
+                    configure_local_target(project_root, target)
+                    result = build_local_store_package(
+                        project_root=project_root,
+                        store=args.store_target,
+                        target=target,
+                        toolchain_arg=toolchain_arg,
+                        has_cargo_tauri=has_cargo_tauri,
+                        release=is_release,
+                        already_compiled=True,
+                    )
+                    package_results.append((target, result))
+                    if result == 0:
+                        log_ok(f"Completed Store package: {target.selector} ({index}/{len(successful_targets)}).")
+                    else:
+                        log_err(f"Store packaging failed for {target.selector} (exit code {result}).")
+
+            failed = [(target, result) for target, result in compile_results + package_results if result != 0]
+            if failed:
+                log_err(
+                    f"{len(failed)} of {len(compile_results) + len(package_results)} Store build phase(s) failed: "
+                    + ", ".join(f"{target.selector} (exit {result})" for target, result in failed)
+                )
+                log_work("Store build pipeline", "2/2", "FAILED", "One or more Store compilation or packaging phases failed.")
+                return failed[0][1] or 1
+
+            log_work("Store build pipeline", "2/2", "DONE", "Every selected Store target compiled before packaging completed.")
+            return 0
+
+        if args.build_type == "installer":
+            if any(target.platform == "windows" for target in selected_targets):
+                prerequisite_result = verify_windows_installer_tools()
+                if prerequisite_result != 0:
+                    return prerequisite_result
+
+            compile_results = []
+            log_work(
+                "Build pipeline",
+                "1/2",
+                "WORKING",
+                f"Compiling all selected targets ({len(selected_targets)}) before creating installers...",
+            )
+            for index, target in enumerate(selected_targets, start=1):
+                configure_local_target(project_root, target)
+                result = run_build_or_dev(
+                    project_root=project_root,
+                    mode="build",
+                    toolchain_arg=toolchain_arg,
+                    has_cargo_tauri=has_cargo_tauri,
+                    release=is_release,
+                    bundle=False,
+                )
+                compile_results.append((target, result))
+                if result == 0:
+                    log_ok(f"Compiled workspace crates and application binaries: {target.selector} ({index}/{len(selected_targets)}).")
+                else:
+                    log_err(f"Compilation failed for {target.selector} (exit code {result}).")
+
+            successful_targets = [target for target, result in compile_results if result == 0]
+            package_results = []
+            if successful_targets:
+                log_work(
+                    "Build pipeline",
+                    "2/2",
+                    "WORKING",
+                    f"All compilation passes finished; now creating installers for {len(successful_targets)} target(s)...",
+                )
+                for index, target in enumerate(successful_targets, start=1):
+                    configure_local_target(project_root, target)
+                    result = package_local_target(
+                        project_root=project_root,
+                        target=target,
+                        toolchain_arg=toolchain_arg,
+                        release=is_release,
+                    )
+                    package_results.append((target, result))
+                    if result == 0:
+                        log_ok(f"Created all installers for {target.selector} ({index}/{len(successful_targets)}).")
+                    else:
+                        log_err(f"Installer generation failed for {target.selector} (exit code {result}).")
+
+            failed = [(target, result) for target, result in compile_results + package_results if result != 0]
+            if failed:
+                log_err(
+                    f"{len(failed)} of {len(compile_results) + len(package_results)} build phase(s) failed: "
+                    + ", ".join(f"{target.selector} (exit {result})" for target, result in failed)
+                )
+                log_work("Build pipeline", "2/2", "FAILED", "One or more compilation or installer phases failed.")
+                return failed[0][1] or 1
+
+            log_work("Build pipeline", "2/2", "DONE", "Every selected target compiled before installer generation completed.")
+            log_ok(f"Completed {len(selected_targets)} local installer target(s).")
+            return 0
+
+        results = []
+        for target in selected_targets:
+            configure_local_target(project_root, target)
+            result = run_build_or_dev(
+                project_root=project_root,
+                mode="build",
+                toolchain_arg=toolchain_arg,
+                has_cargo_tauri=has_cargo_tauri,
+                release=is_release,
+                bundle=False,
+            )
             results.append((target, result))
             if result == 0:
-                log_ok(f"Completed local build: {target.selector}")
+                log_ok(f"Completed app-only build: {target.selector}")
             else:
-                log_err(f"Local build failed for {target.selector} (exit code {result}).")
+                log_err(f"App-only build failed for {target.selector} (exit code {result}).")
 
         failed = [(target, result) for target, result in results if result != 0]
         if failed:
             log_err(
-                f"{len(failed)} of {len(results)} selected local target(s) failed: "
+                f"{len(failed)} of {len(results)} selected local app target(s) failed: "
                 + ", ".join(target.selector for target, _ in failed)
             )
             return failed[0][1] or 1
-        log_ok(f"Completed {len(results)} local build target(s).")
+        log_ok(f"Completed {len(results)} local app-only target(s).")
         return 0
 
     return run_build_or_dev(

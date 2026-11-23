@@ -17,7 +17,7 @@ use fs2::FileExt;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 
 use crate::archive;
-use crate::git_info::GitRepositoryInfo;
+use gitmanager_core::models::GitRepositoryInfo;
 use crate::scanner::{scan_repositories, ScanOptions};
 use crate::AppPreferences;
 
@@ -85,7 +85,7 @@ fn watcher_config_signature(
     preferences: &AppPreferences,
     repositories: Option<&[GitRepositoryInfo]>,
 ) -> String {
-    let repository_paths = repositories.map(|items| {
+    let repository_paths = repositories.map(|items: &[GitRepositoryInfo]| {
         items.iter().map(|repository| repository.path.as_str()).collect::<Vec<_>>()
     });
     serde_json::to_string(&(
@@ -125,8 +125,8 @@ pub fn restart_archive_watchers(preferences: &AppPreferences) -> bool {
     restart_archive_watchers_with_scan(preferences, None)
 }
 
-/// Starts archive watchers from the repository list the UI has already discovered.
-/// This prevents a second full directory scan during desktop startup.
+/// Starts archive watchers from the repository list published by gitmanager.service.
+/// This prevents a second full directory scan over the configured roots.
 pub fn restart_archive_watchers_with_repositories(
     preferences: &AppPreferences,
     repositories: Vec<GitRepositoryInfo>,
@@ -524,24 +524,27 @@ fn capture_enabled_archives(
     local_enabled: bool,
     remote_enabled: bool,
 ) {
-    if local_enabled {
-        if let Err(error) = archive::capture_repository(
-            repository_path,
-            Some(archive_root),
-            "local",
-        ) {
-            eprintln!("GitManager Local Archive for {repository_path}: {error}");
+    let repository_path_owned = repository_path.to_string();
+    crash_helper::with_repository_archive_lock(&repository_path_owned, || {
+        if local_enabled {
+            if let Err(error) = archive::capture_repository(
+                &repository_path_owned,
+                Some(archive_root),
+                "local",
+            ) {
+                eprintln!("GitManager Local Archive for {repository_path_owned}: {error}");
+            }
         }
-    }
-    if remote_enabled {
-        if let Err(error) = archive::capture_repository(
-            repository_path,
-            Some(archive_root),
-            "remote",
-        ) {
-            eprintln!("GitManager Remote Archive for {repository_path}: {error}");
+        if remote_enabled {
+            if let Err(error) = archive::capture_repository(
+                &repository_path_owned,
+                Some(archive_root),
+                "remote",
+            ) {
+                eprintln!("GitManager Remote Archive for {repository_path_owned}: {error}");
+            }
         }
-    }
+    });
 }
 
 #[cfg(test)]

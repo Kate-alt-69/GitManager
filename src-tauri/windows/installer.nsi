@@ -420,6 +420,12 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_FINISH
 
 Function RunMainBinary
+  ; Start the bootstrap helper so first-run setup runs through the same
+  ; service-aware flow as a first launch from Explorer.
+  IfFileExists "$INSTDIR\gitmanager-setup.exe" 0 run_main_binary
+  nsis_tauri_utils::RunAsUser "$INSTDIR\gitmanager-setup.exe" ""
+  Return
+run_main_binary:
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
 FunctionEnd
 
@@ -642,11 +648,12 @@ SectionEnd
 Section Install
   SetOutPath $INSTDIR
 
+  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+
+  ; Stop the detached per-user service only after the desktop has exited.
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
-
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -752,7 +759,12 @@ Function .onInstSuccess
     ${GetOptions} $CMDLINE "/R" $R0
     ${IfNot} ${Errors}
       ${GetOptions} $CMDLINE "/ARGS" $R0
+      IfFileExists "$INSTDIR\gitmanager-setup.exe" 0 run_main_after_install
+      nsis_tauri_utils::RunAsUser "$INSTDIR\gitmanager-setup.exe" ""
+      Goto run_after_install_done
+run_main_after_install:
       nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" "$R0"
+run_after_install_done:
     ${EndIf}
   ${EndIf}
 FunctionEnd
@@ -779,11 +791,12 @@ FunctionEnd
 
 Section Uninstall
 
+  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+
+  ; Shut down the detached service and helper before deleting their binaries.
   !ifmacrodef NSIS_HOOK_PREUNINSTALL
     !insertmacro NSIS_HOOK_PREUNINSTALL
   !endif
-
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
   ; Delete the app directory and its content from disk
   ; Copy main executable

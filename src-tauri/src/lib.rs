@@ -1,39 +1,32 @@
 mod process_utils;
-pub mod archive;
-pub mod archive_watcher;
-pub mod background_service;
-mod repository_workspace;
-pub mod git_info;
+pub use gitmanager_core::notification_center;
+pub use gitmanager_core::{AppPreferences, RepositoryPreferences};
 pub mod remote_providers;
-pub mod scanner;
+pub use gitmanager_core::repository_index;
 pub mod watcher_service;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 use serde::{Deserialize, Serialize};
-use git2::{Oid, Repository};
 use crate::process_utils::hidden_command;
 use serde_json::Value;
 use tauri::path::BaseDirectory;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::ShellExt;
 
-use git_info::{extract_git_repository_info, GitRepositoryInfo};
-use remote_providers::{
-    fetch_remote_account_repositories, ConnectedAccountSummary, ProviderAccountRequest,
-};
-use scanner::{
-    build_indexed_summary_with_scan_status, default_scan_roots, scan_repositories_with_report, IndexedRepoSummary, ScanOptions,
-};
+use gitmanager_core::models::GitRepositoryInfo;
+use remote_providers::{ConnectedAccountSummary, ProviderAccountRequest};
+use repository_index::{default_scan_roots, IndexedRepoSummary};
 use watcher_service::{
-    apply_repository_update, check_all_repos_for_updates, register_os_background_service,
-    send_os_desktop_notification, spawn_background_update_watcher, BackgroundWatcherControl,
+    register_os_background_service, BackgroundWatcherControl,
     RepoUpdateNotification, ServiceStatusInfo,
 };
 
@@ -41,62 +34,7 @@ use watcher_service::{
 pub struct AppState {
     pub cached_repos: Mutex<Vec<GitRepositoryInfo>>,
     pub connected_accounts: Mutex<Vec<ConnectedAccountSummary>>,
-    pub pending_updates: Mutex<Vec<RepoUpdateNotification>>,
     pub watcher: BackgroundWatcherControl,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(default, rename_all = "camelCase")]
-pub struct RepositoryPreferences {
-    pub auto_update: bool,
-    pub keep_remote_clean: bool,
-    pub commit_clean: bool,
-    pub cleaner_include_dependencies: bool,
-    pub cleaner_include_virtualenvs: bool,
-    pub cleaner_exclude_patterns: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct AppPreferences {
-    pub scan_roots: Vec<String>,
-    pub max_scan_depth: usize,
-    pub include_hidden_dirs: bool,
-    pub index_dependency_repositories: bool,
-    pub show_dependency_repositories: bool,
-    pub repository_settings: HashMap<String, RepositoryPreferences>,
-    pub first_run_complete: bool,
-    pub archive_root: String,
-    pub archive_local_enabled: bool,
-    pub archive_remote_enabled: bool,
-    pub archive_trigger: String,
-    pub archive_quiet_ms: u64,
-    pub cloud_node_address: String,
-}
-
-impl Default for AppPreferences {
-    fn default() -> Self {
-        Self {
-            scan_roots: default_scan_roots()
-                .into_iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect(),
-            max_scan_depth: 8,
-            include_hidden_dirs: false,
-            index_dependency_repositories: true,
-            show_dependency_repositories: true,
-            repository_settings: HashMap::new(),
-            first_run_complete: false,
-            archive_root: archive::default_archive_root()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            archive_local_enabled: true,
-            archive_remote_enabled: true,
-            archive_trigger: "manual".to_string(),
-            archive_quiet_ms: 1500,
-            cloud_node_address: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +44,13 @@ struct ApplicationDirectories {
     install_dir: String,
     config_dir: String,
     data_dir: String,
+    repo_metadata_dir: String,
+    git_data_dir: String,
+    account_metadata_dir: String,
+    account_git_data_dir: String,
+    remote_repo_metadata_dir: String,
+    remote_repo_git_data_dir: String,
+    cache_dir: String,
 }
 
 fn application_directory_layout(local_data: &Path) -> ApplicationDirectories {
@@ -113,27 +58,34 @@ fn application_directory_layout(local_data: &Path) -> ApplicationDirectories {
     let install_dir = software_root.join("GitManager");
     let config_dir = software_root.join("config").join("GitManager");
     let data_dir = software_root.join("data").join("GitManager");
+    let repo_metadata_dir = data_dir.join("repo").join("metadata");
+    let git_data_dir = data_dir.join("git_data");
+    let account_metadata_dir = data_dir.join("account").join("metadata");
+    let account_git_data_dir = data_dir.join("account").join("git_data");
+    let remote_repo_metadata_dir = data_dir.join("repo").join("remote").join("metadata");
+    let remote_repo_git_data_dir = data_dir.join("repo").join("remote").join("git_data");
+    let cache_dir = data_dir.join(".cache");
     ApplicationDirectories {
         software_root: software_root.to_string_lossy().to_string(),
         install_dir: install_dir.to_string_lossy().to_string(),
         config_dir: config_dir.to_string_lossy().to_string(),
         data_dir: data_dir.to_string_lossy().to_string(),
+        repo_metadata_dir: repo_metadata_dir.to_string_lossy().to_string(),
+        git_data_dir: git_data_dir.to_string_lossy().to_string(),
+        account_metadata_dir: account_metadata_dir.to_string_lossy().to_string(),
+        account_git_data_dir: account_git_data_dir.to_string_lossy().to_string(),
+        remote_repo_metadata_dir: remote_repo_metadata_dir.to_string_lossy().to_string(),
+        remote_repo_git_data_dir: remote_repo_git_data_dir.to_string_lossy().to_string(),
+        cache_dir: cache_dir.to_string_lossy().to_string(),
     }
 }
 
 fn application_directories() -> Result<ApplicationDirectories, String> {
-    // On Windows dirs::data_local_dir resolves to %LOCALAPPDATA%; on macOS/Linux
-    // it selects the corresponding per-user local application-data location.
+    // Resolve paths for Settings/diagnostics only. The required service owns
+    // directory creation through gitmanager_core::storage::ensure_data_layout.
     let local_data = dirs::data_local_dir()
         .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
-    let directories = application_directory_layout(&local_data);
-
-    fs::create_dir_all(&directories.config_dir)
-        .map_err(|error| format!("Could not create GitManager config directory: {error}"))?;
-    fs::create_dir_all(&directories.data_dir)
-        .map_err(|error| format!("Could not create GitManager data directory: {error}"))?;
-
-    Ok(directories)
+    Ok(application_directory_layout(&local_data))
 }
 
 #[tauri::command]
@@ -145,11 +97,18 @@ fn preferences_file(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let directories = application_directories()?;
     let path = PathBuf::from(directories.config_dir).join("preferences.json");
 
-    // Migrate the previous Tauri-managed preferences file once, without deleting the old copy.
+    // Migrate the previous Tauri-managed preferences file once, without
+    // deleting the old copy. The service creates this directory on all normal
+    // launches; Tauri creates only this config parent when an actual legacy
+    // settings file needs to be copied before the service starts.
     if !path.exists() {
         if let Ok(legacy_directory) = app_handle.path().app_config_dir() {
             let legacy_file = legacy_directory.join("preferences.json");
             if legacy_file.is_file() {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| format!("Could not prepare the GitManager preferences migration directory: {error}"))?;
+                }
                 fs::copy(&legacy_file, &path)
                     .map_err(|error| format!("Could not migrate existing GitManager preferences: {error}"))?;
             }
@@ -159,158 +118,47 @@ fn preferences_file(app_handle: &AppHandle) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn read_app_preferences_file(path: &Path) -> Result<AppPreferences, String> {
-    if !path.is_file() {
-        return Ok(AppPreferences::default());
-    }
-
-    let content = fs::read_to_string(path)
-        .map_err(|error| format!("Could not read GitManager preferences: {error}"))?;
-    if content.len() > 256 * 1024 {
-        return Err("GitManager preferences file is unexpectedly large.".to_string());
-    }
-
-    let mut preferences: AppPreferences = serde_json::from_str(&content)
-        .map_err(|error| format!("GitManager preferences are invalid JSON: {error}"))?;
-    // Keep disconnected drive roots in the saved setup so removable/external
-    // drives can be scanned again when they are mounted.
-    let mut retained_roots = Vec::new();
-    for raw_root in preferences.scan_roots.drain(..).take(32) {
-        let root = raw_root.trim();
-        if root.is_empty() {
-            continue;
-        }
-        let value = fs::canonicalize(root)
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_else(|_| root.to_string());
-        if !retained_roots.iter().any(|existing: &String| existing.eq_ignore_ascii_case(&value)) {
-            retained_roots.push(value);
-        }
-    }
-    preferences.scan_roots = retained_roots;
-    preferences.max_scan_depth = preferences.max_scan_depth.clamp(2, 16);
-    if preferences.archive_root.trim().is_empty() {
-        preferences.archive_root = archive::default_archive_root()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_default();
-    }
-    preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
-    if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
-        preferences.archive_trigger = "manual".to_string();
-    }
-    preferences.archive_quiet_ms = preferences.archive_quiet_ms.clamp(250, 60_000);
-    let saved_node_address = preferences.cloud_node_address.trim();
-    preferences.cloud_node_address = if saved_node_address.is_empty() {
-        String::new()
-    } else {
-        validate_rbe_node_base_url(saved_node_address)
-            .map(|address| address.to_string())
-            .unwrap_or_default()
-    };
-    Ok(preferences)
-}
-
-/// Loads the same validated preferences file from the standalone background
-/// service without requiring a Tauri AppHandle.
-pub fn load_background_preferences() -> Result<AppPreferences, String> {
-    let directories = application_directories()?;
-    let path = PathBuf::from(directories.config_dir).join("preferences.json");
-    read_app_preferences_file(&path)
+#[tauri::command]
+async fn load_app_preferences() -> Result<AppPreferences, String> {
+    request_core_service(
+        crash_helper::service_load_app_preferences,
+        "application preferences",
+    ).await
 }
 
 #[tauri::command]
-fn load_app_preferences(app_handle: AppHandle) -> Result<AppPreferences, String> {
-    let path = preferences_file(&app_handle)?;
-    read_app_preferences_file(&path)
+async fn load_repository_settings(
+    repo_path: String,
+    repo_id: Option<String>,
+) -> Result<RepositoryPreferences, String> {
+    request_core_service(
+        move || crash_helper::service_load_repository_preferences(repo_path, repo_id),
+        "repository preferences",
+    ).await
 }
 
+#[tauri::command]
+async fn save_repository_settings(
+    repo_path: String,
+    settings: RepositoryPreferences,
+) -> Result<RepositoryPreferences, String> {
+    let payload = serde_json::to_value(settings)
+        .map_err(|error| format!("Could not encode repository preferences: {error}"))?;
+    request_core_service(
+        move || crash_helper::service_save_repository_preferences(repo_path, payload),
+        "save repository preferences",
+    ).await
+}
 
-fn repository_settings_path(repo_path: &str) -> Result<PathBuf, String> {
-    if repo_path.trim().is_empty() { return Err("Select a local Git repository first.".to_string()); }
-    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
-    if repo.is_bare() { return Err("Repository-local settings require a non-bare working tree.".to_string()); }
-    let info_dir = repo.path().join("info");
-    fs::create_dir_all(&info_dir).map_err(|error| format!("Could not create repository-local Git info directory: {error}"))?;
-    Ok(info_dir.join("gitmanager-settings.json"))
-}
-fn write_repository_settings_file(path: &Path, settings: &RepositoryPreferences) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(settings).map_err(|error| format!("Could not serialize repository settings: {error}"))?;
-    if bytes.len() > 64 * 1024 { return Err("Repository settings exceed the 64 KiB safety limit.".to_string()); }
-    let temporary = path.with_extension("json.tmp");
-    let backup = path.with_extension("json.bak");
-    fs::write(&temporary, bytes).map_err(|error| format!("Could not write temporary repository settings: {error}"))?;
-    let had_previous = path.exists();
-    if had_previous {
-        if backup.exists() { fs::remove_file(&backup).map_err(|error| format!("Could not clear repository settings backup: {error}"))?; }
-        fs::rename(path, &backup).map_err(|error| format!("Could not stage previous repository settings: {error}"))?;
-    }
-    if let Err(error) = fs::rename(&temporary, path) {
-        if had_previous { let _ = fs::rename(&backup, path); }
-        return Err(format!("Could not save repository settings: {error}"));
-    }
-    if backup.exists() { let _ = fs::remove_file(&backup); }
-    Ok(())
-}
 #[tauri::command]
-fn load_repository_settings(app_handle: AppHandle, repo_path: String, repo_id: Option<String>) -> Result<RepositoryPreferences, String> {
-    let path = repository_settings_path(&repo_path)?;
-    if path.is_file() {
-        let content = fs::read_to_string(&path).map_err(|error| format!("Could not read repository-local settings: {error}"))?;
-        if content.len() > 64 * 1024 { return Err("Repository settings exceed the 64 KiB safety limit.".to_string()); }
-        return serde_json::from_str(&content).map_err(|error| format!("Repository-local settings are invalid JSON: {error}"));
-    }
-    let legacy = repo_id.and_then(|id| load_app_preferences(app_handle).ok()
-        .and_then(|preferences| preferences.repository_settings.get(&id).cloned()));
-    let settings = legacy.unwrap_or_default();
-    if settings != RepositoryPreferences::default() { write_repository_settings_file(&path, &settings)?; }
-    Ok(settings)
-}
-#[tauri::command]
-fn save_repository_settings(repo_path: String, settings: RepositoryPreferences) -> Result<RepositoryPreferences, String> {
-    if settings.cleaner_exclude_patterns.len() > 256 { return Err("A repository can have at most 256 cleaner exclusion patterns.".to_string()); }
-    let mut normalized = settings;
-    normalized.cleaner_exclude_patterns = normalized.cleaner_exclude_patterns.into_iter()
-        .map(|value| value.trim().replace('\\', "/"))
-        .filter(|value| !value.is_empty() && !value.starts_with('/') && !value.split('/').any(|part| part == ".."))
-        .take(256).collect();
-    let path = repository_settings_path(&repo_path)?;
-    write_repository_settings_file(&path, &normalized)?;
-    Ok(normalized)
-}
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CommitDetails {
-    oid: String, short_oid: String, summary: String, message: String, author_name: String,
-    author_email: String, authored_at: String, files_changed: usize, insertions: usize, deletions: usize,
-}
-fn read_commit_details(repo_path: &str, oid_text: &str) -> Result<CommitDetails, String> {
-    let repo = Repository::open(repo_path).map_err(|error| format!("Could not open Git repository: {error}"))?;
-    let oid = Oid::from_str(oid_text).map_err(|_| "The selected commit SHA is invalid.".to_string())?;
-    let commit = repo.find_commit(oid).map_err(|error| format!("Could not load selected commit: {error}"))?;
-    let tree = commit.tree().map_err(|error| format!("Could not read commit tree: {error}"))?;
-    let parent_tree = if commit.parent_count() > 0 {
-        Some(commit.parent(0).and_then(|parent| parent.tree()).map_err(|error| format!("Could not read parent commit tree: {error}"))?)
-    } else { None };
-    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
-        .map_err(|error| format!("Could not compare commit trees: {error}"))?;
-    let stats = diff.stats().map_err(|error| format!("Could not summarize commit changes: {error}"))?;
-    let author = commit.author();
-    let timestamp = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
-        .map(|value| value.format("%Y-%m-%d %H:%M:%S UTC").to_string()).unwrap_or_else(|| "Unknown date".to_string());
-    Ok(CommitDetails {
-        oid: oid.to_string(), short_oid: oid.to_string().chars().take(7).collect(),
-        summary: commit.summary().unwrap_or("(no commit message)").to_string(),
-        message: commit.message().unwrap_or("").trim().to_string(),
-        author_name: author.name().unwrap_or("Unknown Author").to_string(),
-        author_email: author.email().unwrap_or("unknown@local").to_string(),
-        authored_at: timestamp, files_changed: stats.files_changed(),
-        insertions: stats.insertions(), deletions: stats.deletions(),
+async fn get_commit_details(repo_path: String, oid: String) -> Result<gitmanager_core::models::CommitDetails, String> {
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::load_service_commit_details(repo_path, oid)
     })
-}
-#[tauri::command]
-async fn get_commit_details(repo_path: String, oid: String) -> Result<CommitDetails, String> {
-    tokio::task::spawn_blocking(move || read_commit_details(&repo_path, &oid))
-        .await.map_err(|error| format!("Commit detail task failed: {error}"))?
+    .await
+    .map_err(|error| format!("Commit detail service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned invalid commit details: {error}"))
 }
 
 
@@ -442,6 +290,19 @@ fn remove_flatpak_gitm_cli() -> Result<(), String> {
         .map_err(|error| format!("Could not remove {}: {error}", path.display()))
 }
 
+fn scan_roots_match(left: &str, right: &str) -> bool {
+    #[cfg(windows)]
+    {
+        left.eq_ignore_ascii_case(right)
+    }
+    #[cfg(not(windows))]
+    {
+        // Unix paths are case-sensitive. Do not discard a distinct directory
+        // such as /home/user/Projects when /home/user/projects is also selected.
+        left == right
+    }
+}
+
 fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     if roots.len() > 32 {
         return Err("GitManager supports up to 32 scan roots.".to_string());
@@ -460,7 +321,7 @@ fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
         let canonical = fs::canonicalize(&path)
             .map_err(|error| format!("Could not resolve scan root {raw}: {error}"))?;
         let value = canonical.to_string_lossy().to_string();
-        if !normalized.iter().any(|existing: &String| existing.eq_ignore_ascii_case(&value)) {
+        if !normalized.iter().any(|existing: &String| scan_roots_match(existing, &value)) {
             normalized.push(value);
         }
     }
@@ -471,61 +332,58 @@ fn normalize_scan_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     Ok(normalized)
 }
 
-fn write_app_preferences_file(path: &Path, preferences: &AppPreferences) -> Result<(), String> {
-    let temporary = path.with_extension("json.tmp");
-    let backup = path.with_extension("json.bak");
-    let content = serde_json::to_vec_pretty(preferences)
-        .map_err(|error| format!("Could not serialize GitManager preferences: {error}"))?;
-    fs::write(&temporary, content)
-        .map_err(|error| format!("Could not write GitManager preferences: {error}"))?;
+#[cfg(test)]
+mod scan_root_comparison_tests {
+    use super::scan_roots_match;
 
-    // Keep the previous valid file recoverable if the final rename fails.
-    let had_previous = path.exists();
-    if had_previous {
-        if backup.exists() {
-            fs::remove_file(&backup)
-                .map_err(|error| format!("Could not clear the old preferences backup: {error}"))?;
-        }
-        fs::rename(path, &backup)
-            .map_err(|error| format!("Could not stage the previous preferences file: {error}"))?;
+    #[test]
+    fn identical_scan_roots_are_always_deduplicated() {
+        assert!(scan_roots_match("/workspace/Projects", "/workspace/Projects"));
     }
-    if let Err(error) = fs::rename(&temporary, path) {
-        if had_previous {
-            let _ = fs::rename(&backup, path);
-        }
-        return Err(format!("Could not save GitManager preferences: {error}"));
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_scan_roots_are_compared_case_insensitively() {
+        assert!(scan_roots_match(r"C:\Users\Kate\Projects", r"c:\users\kate\projects"));
     }
-    if backup.exists() {
-        let _ = fs::remove_file(&backup);
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_scan_roots_preserve_case_distinct_directories() {
+        assert!(!scan_roots_match("/home/kate/Projects", "/home/kate/projects"));
     }
-    Ok(())
 }
 
 #[tauri::command]
-fn save_cloud_node_address(app_handle: AppHandle, address: String) -> Result<String, String> {
+async fn save_cloud_node_address(address: String) -> Result<String, String> {
     let address = address.trim();
     let normalized = if address.is_empty() {
         String::new()
     } else {
         validate_rbe_node_base_url(address)?.to_string()
     };
-    let path = preferences_file(&app_handle)?;
-    let mut preferences = read_app_preferences_file(&path)?;
+    let mut preferences: AppPreferences = request_core_service(
+        crash_helper::service_load_app_preferences,
+        "application preferences",
+    ).await?;
     preferences.cloud_node_address = normalized.clone();
-    write_app_preferences_file(&path, &preferences)?;
+    let payload = serde_json::to_value(preferences)
+        .map_err(|error| format!("Could not encode GitManager preferences: {error}"))?;
+    let _: AppPreferences = request_core_service(
+        move || crash_helper::service_save_app_preferences(payload),
+        "save application preferences",
+    ).await?;
     Ok(normalized)
 }
 
 #[tauri::command]
-fn save_app_preferences(
-    app_handle: AppHandle,
+async fn save_app_preferences(
     mut preferences: AppPreferences,
 ) -> Result<AppPreferences, String> {
     preferences.scan_roots = normalize_scan_roots(preferences.scan_roots)?;
     if !(2..=16).contains(&preferences.max_scan_depth) {
         return Err("Scan depth must be between 2 and 16.".to_string());
     }
-    preferences.archive_root = normalize_archive_root(&preferences.archive_root)?;
     preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
     if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
         return Err("Archive trigger must be manual, commit, or change.".to_string());
@@ -540,71 +398,62 @@ fn save_app_preferences(
         validate_rbe_node_base_url(saved_node_address)?.to_string()
     };
 
-    let path = preferences_file(&app_handle)?;
-    write_app_preferences_file(&path, &preferences)?;
-    // The next UI scan supplies discovered repositories to the archive watcher.
-    Ok(preferences)
+    let payload = serde_json::to_value(preferences)
+        .map_err(|error| format!("Could not encode GitManager preferences: {error}"))?;
+    request_core_service(
+        move || crash_helper::service_save_app_preferences(payload),
+        "save application preferences",
+    ).await
 }
 
-fn normalize_archive_root(raw: &str) -> Result<String, String> {
-    let candidate = if raw.trim().is_empty() {
-        archive::default_archive_root()?
-    } else {
-        let value = PathBuf::from(raw.trim());
-        if value.is_absolute() {
-            value
-        } else {
-            std::env::current_dir()
-                .map_err(|error| format!("Could not resolve current directory: {error}"))?
-                .join(value)
-        }
-    };
-    fs::create_dir_all(&candidate)
-        .map_err(|error| format!("Could not create archive storage directory: {error}"))?;
-    if !candidate.is_dir() {
-        return Err("Archive storage path must be a directory.".to_string());
-    }
-    candidate.canonicalize()
-        .map(|path| path.to_string_lossy().to_string())
-        .map_err(|error| format!("Could not resolve archive storage directory: {error}"))
+fn default_archive_root_path() -> Result<PathBuf, String> {
+    let local_data = dirs::data_local_dir()
+        .ok_or_else(|| "Could not resolve the current user's local application-data directory.".to_string())?;
+    Ok(local_data
+        .join("kastrick's_software")
+        .join("data")
+        .join("GitManager")
+        .join("archives"))
 }
 
 #[tauri::command]
 fn get_default_archive_directory() -> Result<String, String> {
-    archive::default_archive_root().map(|path| path.to_string_lossy().to_string())
+    default_archive_root_path().map(|path| path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn get_archive_cloud_storage_info(archive_root: String) -> Result<archive::ArchiveCloudStorageInfo, String> {
-    archive::archive_cloud_storage_info(&PathBuf::from(archive_root))
+async fn get_archive_cloud_storage_info(archive_root: String) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_get_archive_cloud_storage_info(archive_root),
+        "archive cloud storage information",
+    ).await
 }
 
 #[tauri::command]
 async fn configure_archive_cloud_storage(
     archive_root: String,
     provider_json: String,
-) -> Result<archive::ArchiveCloudStorageInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        archive::configure_archive_cloud_storage(Some(&archive_root), &provider_json)
-    })
-    .await
-    .map_err(|error| format!("Cloud archive configuration task failed: {error}"))?
+) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_configure_archive_cloud_storage(archive_root, provider_json),
+        "archive cloud storage configuration",
+    ).await
 }
 
 #[tauri::command]
-async fn disable_archive_cloud_storage(archive_root: String) -> Result<archive::ArchiveCloudStorageInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        archive::disable_archive_cloud_storage(Some(&archive_root))
-    })
-    .await
-    .map_err(|error| format!("Cloud archive configuration task failed: {error}"))?
+async fn disable_archive_cloud_storage(archive_root: String) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_disable_archive_cloud_storage(archive_root),
+        "archive cloud storage configuration",
+    ).await
 }
 
 #[tauri::command]
-async fn sync_archive_cloud_storage(archive_root: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || archive::sync_archive_cloud_storage(Some(&archive_root)))
-        .await
-        .map_err(|error| format!("Cloud archive sync task failed: {error}"))?
+async fn sync_archive_cloud_storage(archive_root: String) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_sync_archive_cloud_storage(archive_root),
+        "archive cloud storage synchronization",
+    ).await
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -776,9 +625,11 @@ async fn capture_repository_archive(
     repo_path: String,
     kind: String,
     archive_root: Option<String>,
-) -> Result<archive::ArchiveSnapshot, String> {
-    tokio::task::spawn_blocking(move || archive::capture_repository(&repo_path, archive_root.as_deref(), &kind))
-        .await.map_err(|error| format!("Archive capture task failed: {error}"))?
+) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_capture_repository_archive(repo_path, kind, archive_root),
+        "repository archive capture",
+    ).await
 }
 
 #[tauri::command]
@@ -786,9 +637,11 @@ async fn list_repository_archives(
     repo_path: String,
     kind: Option<String>,
     archive_root: Option<String>,
-) -> Result<Vec<archive::ArchiveSnapshot>, String> {
-    tokio::task::spawn_blocking(move || archive::list_repository_archives(&repo_path, archive_root.as_deref(), kind.as_deref()))
-        .await.map_err(|error| format!("Archive listing task failed: {error}"))?
+) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_list_repository_archives(repo_path, kind, archive_root),
+        "repository archive list",
+    ).await
 }
 
 #[tauri::command]
@@ -799,11 +652,13 @@ async fn restore_repository_archive(
     kind: String,
     archive_root: Option<String>,
     confirm_replace: bool,
-) -> Result<archive::ArchiveRestoreResult, String> {
-    tokio::task::spawn_blocking(move || archive::restore_repository_archive(
-        &repo_path, &destination_path, archive_root.as_deref(), &kind, &snapshot_id, confirm_replace
-    ))
-    .await.map_err(|error| format!("Archive restore task failed: {error}"))?
+) -> Result<Value, String> {
+    request_core_service(
+        move || crash_helper::service_restore_repository_archive(
+            repo_path, destination_path, snapshot_id, kind, archive_root, confirm_replace,
+        ),
+        "repository archive restore",
+    ).await
 }
 
 #[tauri::command]
@@ -815,156 +670,346 @@ fn get_default_scan_directories() -> Vec<String> {
 }
 
 #[tauri::command]
-async fn scan_machine_repositories(
-    root_paths: Vec<String>, max_depth: Option<usize>, include_hidden_dirs: Option<bool>,
-    filter_mode: Option<String>, index_dependency_repositories: Option<bool>, state: State<'_, AppState>,
-) -> Result<IndexedRepoSummary, String> {
-    let options = ScanOptions {
-        root_paths: root_paths.clone(),
-        max_depth,
-        include_hidden_dirs,
-        index_dependency_repositories,
-    };
-    // Directory walking and libgit2 inspection can be slow on large workspaces.
-    // Keep this work off the webview command thread so the desktop UI remains responsive.
-    let report = tokio::task::spawn_blocking(move || scan_repositories_with_report(options))
-        .await.map_err(|error| format!("Repository scan task failed: {error}"))??;
-    if let Ok(mut cache) = state.cached_repos.lock() { *cache = report.repositories.clone(); }
+async fn get_repository_index_generation() -> Result<String, String> {
+    request_core_service(
+        crash_helper::service_get_repository_index_generation,
+        "repository index generation",
+    ).await
+}
 
-    // Reuse discovery for archive watcher setup only when it exactly matches the
-    // saved preferences. Custom one-off scans do not replace configured watch roots.
-    if let Ok(preferences) = load_background_preferences() {
-        let scan_matches_preferences = root_paths == preferences.scan_roots
-            && max_depth.unwrap_or(8) == preferences.max_scan_depth
-            && include_hidden_dirs.unwrap_or(false) == preferences.include_hidden_dirs
-            && index_dependency_repositories.unwrap_or(true) == preferences.index_dependency_repositories;
-        if scan_matches_preferences {
-            archive_watcher::restart_archive_watchers_with_repositories(
-                &preferences,
-                report.repositories.clone(),
+#[tauri::command]
+async fn load_indexed_repositories(
+    filter_mode: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<IndexedRepoSummary, String> {
+    let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
+    let summary: IndexedRepoSummary = request_core_service(
+        move || crash_helper::service_load_indexed_repositories(requested),
+        "repository index snapshot",
+    ).await?;
+    if let Ok(mut cache) = state.cached_repos.lock() {
+        *cache = summary.repositories.clone();
+    }
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn scan_machine_repositories(
+    root_paths: Vec<String>,
+    max_depth: Option<usize>,
+    include_hidden_dirs: Option<bool>,
+    filter_mode: Option<String>,
+    index_dependency_repositories: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<IndexedRepoSummary, String> {
+    // Retain the public command contract; the service reads persisted settings
+    // and performs the filesystem walk. The UI only waits for a newer service
+    // generation and fetches the published snapshot through authenticated IPC.
+    let _requested_settings = (root_paths, max_depth, include_hidden_dirs, index_dependency_repositories);
+    let previous_generation = request_core_service::<String, _>(
+        crash_helper::service_get_repository_index_generation,
+        "repository index generation",
+    ).await?
+    .parse::<u64>()
+    .map_err(|error| format!("Core service returned an invalid repository index generation: {error}"))?;
+
+    crash_helper::request_service_scan()
+        .map_err(|error| format!("Could not request repository indexing from gitmanager.service: {error}"))?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let current_generation = request_core_service::<String, _>(
+            crash_helper::service_get_repository_index_generation,
+            "repository index generation",
+        ).await?
+        .parse::<u64>()
+        .map_err(|error| format!("Core service returned an invalid repository index generation: {error}"))?;
+
+        if current_generation > previous_generation {
+            let requested = filter_mode.clone().unwrap_or_else(|| "grouped".to_string());
+            let summary: IndexedRepoSummary = request_core_service(
+                move || crash_helper::service_load_indexed_repositories(requested),
+                "repository index snapshot",
+            ).await?;
+            if let Ok(mut cache) = state.cached_repos.lock() {
+                *cache = summary.repositories.clone();
+            }
+            return Ok(summary);
+        }
+
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "gitmanager.service has not published a refreshed repository index yet. The existing index is preserved; check Task Center → Service for diagnostics."
+                    .to_string(),
             );
         }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
-
-    let requested = filter_mode.unwrap_or_else(|| "grouped".to_string());
-    Ok(build_indexed_summary_with_scan_status(report.repositories, &requested, report.truncated))
 }
+
+#[tauri::command]
+async fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        // Preserve the one-time migration from Tauri's former app-config location.
+        // All normal preference reads and writes happen through gitmanager.service.
+        let _ = preferences_file(&app_handle)?;
+        watcher_service::ensure_required_service(app_handle)
+    })
+    .await
+    .map_err(|error| format!("Core service startup task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn get_core_service_status() -> Result<crash_helper::ServiceStatus, String> {
+    tokio::task::spawn_blocking(crash_helper::request_service_status)
+        .await
+        .map_err(|error| format!("Core service status task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn inspect_repository(repo_path: String) -> Result<GitRepositoryInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        let workdir = PathBuf::from(repo_path);
-        let git_dir = workdir.join(".git");
-        extract_git_repository_info(&workdir, &git_dir)
-    }).await.map_err(|error| format!("Repository inspection task failed: {error}"))?
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::load_service_repository_overview(repo_path)
+    })
+    .await
+    .map_err(|error| format!("Repository overview service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned invalid repository overview: {error}"))
+}
+
+#[tauri::command]
+async fn load_repository_commit_history(
+    repo_path: String,
+    offset: usize,
+    limit: usize,
+    branch_filter: Option<String>,
+    search_query: Option<String>,
+) -> Result<gitmanager_core::models::CommitHistoryPage, String> {
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::load_service_commit_history(
+            repo_path,
+            offset,
+            limit,
+            branch_filter,
+            search_query,
+        )
+    })
+    .await
+    .map_err(|error| format!("Commit history service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned invalid commit history: {error}"))
 }
 
 
 #[tauri::command]
 async fn list_repository_files(
-    repo_path: String, relative_path: Option<String>, source: Option<String>, branch: Option<String>,
-) -> Result<Vec<repository_workspace::RepositoryFileEntry>, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::list_repository_files(
-        &repo_path, relative_path.as_deref(), source.as_deref().unwrap_or("local"), branch.as_deref()
-    )).await.map_err(|error| format!("Repository file listing task failed: {error}"))?
+    repo_path: String,
+    relative_path: Option<String>,
+    source: Option<String>,
+    branch: Option<String>,
+) -> Result<Vec<gitmanager_core::models::RepositoryFileEntry>, String> {
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::load_service_repository_files(
+            repo_path,
+            relative_path,
+            source.unwrap_or_else(|| "local".to_string()),
+            branch,
+        )
+    })
+    .await
+    .map_err(|error| format!("Repository file listing service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned an invalid repository file listing: {error}"))
 }
 
 #[tauri::command]
 async fn read_repository_file(
-    repo_path: String, relative_path: String, source: Option<String>, branch: Option<String>,
+    repo_path: String,
+    relative_path: String,
+    source: Option<String>,
+    branch: Option<String>,
 ) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::read_repository_file(
-        &repo_path, &relative_path, source.as_deref().unwrap_or("local"), branch.as_deref()
-    )).await.map_err(|error| format!("Repository file read task failed: {error}"))?
+    let data = tokio::task::spawn_blocking(move || {
+        crash_helper::read_service_repository_file(
+            repo_path,
+            relative_path,
+            source.unwrap_or_else(|| "local".to_string()),
+            branch,
+        )
+    })
+    .await
+    .map_err(|error| format!("Repository file read service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned an invalid repository file preview: {error}"))
+}
+
+async fn request_core_service<T, F>(
+    operation: F,
+    description: &'static str,
+) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    F: FnOnce() -> Result<serde_json::Value, String> + Send + 'static,
+{
+    let data = tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| format!("{description} service request task failed: {error}"))??;
+    serde_json::from_value(data)
+        .map_err(|error| format!("Core service returned invalid {description}: {error}"))
 }
 
 #[tauri::command]
-async fn preview_repository_pull(repo_path: String) -> Result<repository_workspace::PullPreview, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::preview_repository_pull(&repo_path))
-        .await.map_err(|error| format!("Pull preview task failed: {error}"))?
+async fn save_conflict_resolution(
+    repo_path: String, relative_path: String, content: String,
+) -> Result<String, String> {
+    request_core_service(
+        move || crash_helper::service_save_conflict_resolution(repo_path, relative_path, content),
+        "conflict resolution",
+    ).await
 }
 
 #[tauri::command]
-async fn get_repository_changes(repo_path: String) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::get_repository_changes(&repo_path))
-        .await.map_err(|error| format!("Repository status task failed: {error}"))?
-}
-#[tauri::command]
-async fn read_repository_file_diff(repo_path: String, relative_path: String, staged: bool) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::read_repository_file_diff(&repo_path, &relative_path, staged))
-        .await.map_err(|error| format!("Repository diff task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn fetch_repository_remote(repo_path: String, remote_name: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::fetch_repository_remote(&repo_path, &remote_name))
-        .await.map_err(|error| format!("Remote fetch task failed: {error}"))?
+async fn preview_repository_pull(
+    repo_path: String,
+) -> Result<gitmanager_core::models::PullPreview, String> {
+    request_core_service(
+        move || crash_helper::service_preview_repository_pull(repo_path),
+        "pull preview",
+    ).await
 }
 
 #[tauri::command]
-async fn stage_repository_paths(repo_path: String, paths: Vec<String>) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::stage_repository_paths(&repo_path, &paths))
-        .await.map_err(|error| format!("Repository stage task failed: {error}"))?
+async fn get_repository_changes(
+    repo_path: String,
+) -> Result<Vec<gitmanager_core::models::WorktreeChange>, String> {
+    request_core_service(
+        move || crash_helper::service_get_repository_changes(repo_path),
+        "repository changes",
+    ).await
 }
 
 #[tauri::command]
-async fn unstage_repository_paths(repo_path: String, paths: Vec<String>) -> Result<Vec<repository_workspace::WorktreeChange>, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::unstage_repository_paths(&repo_path, &paths))
-        .await.map_err(|error| format!("Repository unstage task failed: {error}"))?
+async fn read_repository_file_diff(
+    repo_path: String, relative_path: String, staged: bool,
+) -> Result<String, String> {
+    request_core_service(
+        move || crash_helper::service_read_repository_file_diff(repo_path, relative_path, staged),
+        "repository diff",
+    ).await
 }
 
 #[tauri::command]
-async fn preview_repository_commit(repo_path: String) -> Result<repository_workspace::RepositoryCommitPreview, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::preview_repository_commit(&repo_path))
-        .await.map_err(|error| format!("Repository commit preview task failed: {error}"))?
+async fn fetch_repository_remote(
+    repo_path: String, remote_name: String,
+) -> Result<String, String> {
+    request_core_service(
+        move || crash_helper::service_fetch_repository_remote(repo_path, remote_name),
+        "remote fetch",
+    ).await
+}
+
+#[tauri::command]
+async fn stage_repository_paths(
+    repo_path: String, paths: Vec<String>,
+) -> Result<Vec<gitmanager_core::models::WorktreeChange>, String> {
+    request_core_service(
+        move || crash_helper::service_stage_repository_paths(repo_path, paths),
+        "stage",
+    ).await
+}
+
+#[tauri::command]
+async fn unstage_repository_paths(
+    repo_path: String, paths: Vec<String>,
+) -> Result<Vec<gitmanager_core::models::WorktreeChange>, String> {
+    request_core_service(
+        move || crash_helper::service_unstage_repository_paths(repo_path, paths),
+        "unstage",
+    ).await
+}
+
+#[tauri::command]
+async fn preview_repository_commit(
+    repo_path: String,
+) -> Result<gitmanager_core::models::RepositoryCommitPreview, String> {
+    request_core_service(
+        move || crash_helper::service_preview_repository_commit(repo_path),
+        "commit preview",
+    ).await
 }
 
 #[tauri::command]
 async fn create_repository_commit(
     repo_path: String, message: String, expected_index_tree: String,
-) -> Result<(String, Vec<repository_workspace::WorktreeChange>), String> {
-    tokio::task::spawn_blocking(move || repository_workspace::create_repository_commit(&repo_path, &message, &expected_index_tree))
-        .await.map_err(|error| format!("Repository commit task failed: {error}"))?
+) -> Result<(String, Vec<gitmanager_core::models::WorktreeChange>), String> {
+    request_core_service(
+        move || crash_helper::service_create_repository_commit(repo_path, message, expected_index_tree),
+        "commit",
+    ).await
 }
 
 #[tauri::command]
-async fn delete_repository_path(repo_path: String, relative_path: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::delete_repository_path(&repo_path, &relative_path))
-        .await.map_err(|error| format!("Repository delete task failed: {error}"))?
+async fn delete_repository_path(
+    repo_path: String, relative_path: String,
+) -> Result<String, String> {
+    request_core_service(
+        move || crash_helper::service_delete_repository_path(repo_path, relative_path),
+        "repository deletion",
+    ).await
 }
 
 #[tauri::command]
 async fn prepare_and_pull_repository_update(
-    repo_path: String, expected_branch: String, expected_local_oid: String,
-    expected_remote_oid: String, expected_status_token: String, mode: String,
-    stage_paths: Vec<String>, commit_message: Option<String>,
-) -> Result<repository_workspace::PullExecutionResult, String> {
-    tokio::task::spawn_blocking(move || repository_workspace::prepare_and_pull_repository_update(
-        &repo_path, &expected_branch, &expected_local_oid, &expected_remote_oid,
-        &expected_status_token, &mode, &stage_paths, commit_message.as_deref().unwrap_or("")
-    )).await.map_err(|error| format!("Confirmed Pull task failed: {error}"))?
+    repo_path: String,
+    expected_branch: String,
+    expected_local_oid: String,
+    expected_remote_oid: String,
+    expected_status_token: String,
+    mode: String,
+    stage_paths: Vec<String>,
+    commit_message: Option<String>,
+) -> Result<gitmanager_core::models::PullExecutionResult, String> {
+    request_core_service(
+        move || crash_helper::service_prepare_and_pull_repository_update(
+            repo_path,
+            expected_branch,
+            expected_local_oid,
+            expected_remote_oid,
+            expected_status_token,
+            mode,
+            stage_paths,
+            commit_message.unwrap_or_default(),
+        ),
+        "pull",
+    ).await
 }
 
-
 #[tauri::command]
-async fn list_local_repository_branches(repo_path: String) -> Result<Vec<git_info::BranchInfo>, String> {
-    tokio::task::spawn_blocking(move || git_info::list_local_repository_branches(Path::new(&repo_path)))
-        .await
-        .map_err(|error| format!("Branch listing task failed: {error}"))?
+async fn list_local_repository_branches(
+    repo_path: String,
+) -> Result<Vec<gitmanager_core::models::BranchInfo>, String> {
+    request_core_service(
+        move || crash_helper::service_list_local_repository_branches(repo_path),
+        "branch list",
+    ).await
 }
 
 #[tauri::command]
-async fn switch_repository_branch(repo_path: String, branch_name: String) -> Result<GitRepositoryInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        git_info::switch_repository_branch(Path::new(&repo_path), &branch_name)
-    })
-    .await
-    .map_err(|error| format!("Branch switch task failed: {error}"))?
+async fn switch_repository_branch(
+    repo_path: String, branch_name: String,
+) -> Result<GitRepositoryInfo, String> {
+    request_core_service(
+        move || crash_helper::service_switch_repository_branch(repo_path, branch_name),
+        "branch switch",
+    ).await
 }
 
 #[tauri::command]
 async fn detect_github_identity() -> Result<remote_providers::GitHubIdentity, String> {
-    tokio::task::spawn_blocking(remote_providers::detect_github_identity).await
-        .map_err(|error| format!("GitHub identity detection task failed: {error}"))?
+    request_core_service(
+        crash_helper::service_detect_github_identity,
+        "GitHub CLI identity",
+    ).await
 }
 
 /// Return the application version from the compiled Cargo package metadata.
@@ -1042,6 +1087,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 fn is_setup_mode() -> bool {
     std::env::var_os("GITMANAGER_SETUP_MODE").is_some()
+        || std::env::args_os().any(|argument| argument == "--setup")
 }
 
 /// Start the packaged setup companion and close the bootstrap window.
@@ -1053,7 +1099,7 @@ fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
     // that sibling itself, so the WebView cannot supply an arbitrary program path.
     let command = app_handle
         .shell()
-        .sidecar("gitmanager-setup")
+        .sidecar("binaries/gitmanager-setup")
         .map_err(|error| format!("GitManager Setup helper is unavailable: {error}"))?;
 
     let (_events, child) = command.spawn()
@@ -1068,33 +1114,62 @@ fn launch_first_run_setup(app_handle: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn load_connected_accounts(
+    state: State<'_, AppState>,
+) -> Result<Vec<ConnectedAccountSummary>, String> {
+    let payload = tokio::task::spawn_blocking(crash_helper::load_service_account_cache)
+        .await
+        .map_err(|error| format!("Account metadata service request failed: {error}"))??;
+    let records: Vec<gitmanager_core::account_store::StoredAccount> = serde_json::from_value(payload)
+        .map_err(|error| format!("Service returned invalid account metadata: {error}"))?;
+    let accounts = records
+        .into_iter()
+        .map(|record| ConnectedAccountSummary {
+            provider: record.metadata.provider,
+            account_login: record.metadata.account_login,
+            display_name: record.metadata.display_name,
+            email: record.metadata.email,
+            avatar_url: record.metadata.avatar_url,
+            profile_url: record.metadata.profile_url,
+            session_connected: false,
+            repositories: record.repositories,
+        })
+        .collect::<Vec<_>>();
+    if let Ok(mut cached) = state.connected_accounts.lock() {
+        *cached = accounts.clone();
+    }
+    Ok(accounts)
+}
+
+#[tauri::command]
 async fn connect_git_account(
     provider: String,
     username_or_host: String,
     access_token: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ConnectedAccountSummary, String> {
-    let summary = if provider.eq_ignore_ascii_case("github") && username_or_host.trim().is_empty()
-        && access_token.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
-        tokio::task::spawn_blocking(remote_providers::fetch_github_cli_account).await
-            .map_err(|error| format!("GitHub account connection task failed: {error}"))??
-    } else {
-        fetch_remote_account_repositories(ProviderAccountRequest { provider, username_or_host, access_token }).await?
-    };
+    let payload = serde_json::to_value(ProviderAccountRequest {
+        provider,
+        username_or_host,
+        access_token,
+    }).map_err(|error| format!("Could not encode provider account request: {error}"))?;
+    let summary: ConnectedAccountSummary = request_core_service(
+        move || crash_helper::service_connect_git_account(payload),
+        "provider account synchronization",
+    ).await?;
 
     if let Ok(mut accounts) = state.connected_accounts.lock() {
-        accounts.retain(|a| {
-            !(a.provider == summary.provider
-                && a.account_login.eq_ignore_ascii_case(&summary.account_login))
+        accounts.retain(|account| {
+            !(account.provider == summary.provider
+                && account.account_login.eq_ignore_ascii_case(&summary.account_login))
         });
         accounts.push(summary.clone());
     }
 
     if let Ok(mut cache) = state.cached_repos.lock() {
-        for r in &summary.repositories {
-            let exists = cache.iter().any(|existing| existing.id == r.id);
-            if !exists {
-                cache.push(r.clone());
+        for repository in &summary.repositories {
+            if !cache.iter().any(|existing| existing.id == repository.id) {
+                cache.push(repository.clone());
             }
         }
     }
@@ -1104,7 +1179,7 @@ async fn connect_git_account(
 
 #[tauri::command]
 async fn check_repo_updates_now(
-    root_paths: Vec<String>,
+    _root_paths: Vec<String>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<RepoUpdateNotification>, String> {
@@ -1113,55 +1188,78 @@ async fn check_repo_updates_now(
         "gitmanager://update-check-state",
         serde_json::json!({
             "checking": true,
-            "status": "Checking remote repositories for updates..."
+            "status": "Queuing remote check in GitManager Core Service..."
         }),
     );
 
-    let updates = tokio::task::spawn_blocking(move || check_all_repos_for_updates(root_paths))
+    let result = tokio::task::spawn_blocking(crash_helper::request_service_remote_check)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| format!("Remote-check request task failed: {error}"))?;
 
     state.watcher.checking_now.store(false, Ordering::Relaxed);
     let _ = app_handle.emit(
         "gitmanager://update-check-state",
         serde_json::json!({
             "checking": false,
-            "updates_count": updates.len()
+            "queued": result.is_ok()
         }),
     );
-
-    if let Ok(mut pending) = state.pending_updates.lock() {
-        *pending = updates.clone();
-    }
-
-    for upd in &updates {
-        send_os_desktop_notification(upd);
-        let _ = app_handle.emit("gitmanager://repo-update-available", upd);
-    }
-
-    Ok(updates)
+    result.map_err(|error| format!("Could not queue remote check in gitmanager.service: {error}"))?;
+    Ok(Vec::new())
 }
 
 #[tauri::command]
-async fn pull_repository_update(
-    repo_path: String,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let path_clone = repo_path.clone();
-    let result = tokio::task::spawn_blocking(move || apply_repository_update(Path::new(&path_clone)))
+async fn read_service_log_tail() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| -> Result<String, String> {
+        let service_log = watcher_service::read_service_log_tail()?;
+        let incidents = crash_helper::read_service_incident_tail()?;
+        Ok(format!(
+            "GITMANAGER CORE SERVICE LOG\n{}\n\nCRASH_HELPER INCIDENT HISTORY\n{}",
+            service_log.trim_end(),
+            incidents.trim_end(),
+        ))
+    })
+    .await
+    .map_err(|error| format!("Service diagnostics read task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_app_notifications() -> Result<Vec<notification_center::AppNotification>, String> {
+    request_core_service(
+        crash_helper::service_list_notifications,
+        "notification history",
+    ).await
+}
+
+#[tauri::command]
+async fn mark_app_notification_read(id: String) -> Result<(), String> {
+    request_core_service(
+        move || crash_helper::service_mark_notification_read(id),
+        "notification read update",
+    ).await
+}
+
+#[tauri::command]
+async fn dismiss_app_notification(id: String) -> Result<(), String> {
+    request_core_service(
+        move || crash_helper::service_dismiss_notification(id),
+        "notification dismissal",
+    ).await
+}
+
+#[tauri::command]
+async fn mark_all_app_notifications_read() -> Result<usize, String> {
+    request_core_service(
+        crash_helper::service_mark_all_notifications_read,
+        "bulk notification read update",
+    ).await
+}
+
+#[tauri::command]
+async fn report_ui_heartbeat() -> Result<(), String> {
+    tokio::task::spawn_blocking(crash_helper::report_ui_heartbeat_from_env)
         .await
-        .map_err(|e| e.to_string())??;
-
-    if let Ok(mut pending) = state.pending_updates.lock() {
-        pending.retain(|u| u.repo_path != repo_path);
-    }
-
-    Ok(result)
-}
-
-#[tauri::command]
-fn report_ui_heartbeat() -> Result<(), String> {
-    crash_helper::report_ui_heartbeat_from_env()
+        .map_err(|error| format!("UI heartbeat task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1198,11 +1296,9 @@ async fn control_background_service(
         "Linux systemd User Service"
     };
 
-    let pending = state
-        .pending_updates
-        .lock()
-        .map(|p| p.clone())
-        .unwrap_or_default();
+    // Remote-update results now live in the service-owned notification store.
+    // Keep this legacy response field empty for older settings clients.
+    let pending: Vec<RepoUpdateNotification> = Vec::new();
 
     Ok(ServiceStatusInfo {
         running_in_background: state.watcher.enabled.load(Ordering::Relaxed),
@@ -1615,21 +1711,308 @@ async fn sign_windows_installer(installer_path: String, thumbprint: String) -> R
         .map_err(|error| format!("Installer signing task failed: {error}"))?
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessUsageSummary {
+    average_cpu_percent: f32,
+    peak_cpu_percent: f32,
+    average_memory_bytes: u64,
+    peak_memory_bytes: u64,
+    process_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IdlePerformanceCapture {
+    sample_duration_seconds: u64,
+    sample_count: usize,
+    logical_processors: usize,
+    captured_at_unix_ms: u128,
+    ui_process_tree: ProcessUsageSummary,
+    service_process_tree: Option<ProcessUsageSummary>,
+    service_generation: u32,
+    service_protocol_version: u32,
+    notes: Vec<String>,
+}
+
+fn collect_process_tree(
+    system: &System,
+    root: Pid,
+    excluded: &HashSet<Pid>,
+) -> HashSet<Pid> {
+    let mut collected = HashSet::new();
+    if system.process(root.clone()).is_none() || excluded.contains(&root) {
+        return collected;
+    }
+    collected.insert(root);
+
+    loop {
+        let additions = system.processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                if collected.contains(pid) || excluded.contains(pid) {
+                    return None;
+                }
+                process.parent()
+                    .filter(|parent| collected.contains(parent))
+                    .map(|_| pid.clone())
+            })
+            .collect::<Vec<_>>();
+        if additions.is_empty() {
+            break;
+        }
+        collected.extend(additions);
+    }
+
+    collected
+}
+
+fn read_process_group(
+    system: &System,
+    pids: &HashSet<Pid>,
+    logical_processors: f32,
+) -> (f32, u64) {
+    let mut cpu_percent = 0.0f32;
+    let mut memory_bytes = 0u64;
+    for pid in pids {
+        if let Some(process) = system.process(pid.clone()) {
+            cpu_percent += process.cpu_usage() / logical_processors.max(1.0);
+            memory_bytes = memory_bytes.saturating_add(process.memory());
+        }
+    }
+    (cpu_percent, memory_bytes)
+}
+
+fn capture_idle_performance_sync() -> Result<IdlePerformanceCapture, String> {
+    const SAMPLE_INTERVAL: Duration = Duration::from_secs(3);
+    const SAMPLE_COUNT: usize = 20;
+
+    let service_status = crash_helper::request_service_status()
+        .map_err(|error| format!("The required core service is unavailable: {error}"))?;
+    if service_status.service_generation < crash_helper::SERVICE_GENERATION
+        || service_status.protocol_version < crash_helper::SERVICE_PROTOCOL_VERSION
+    {
+        return Err("The required GitManager core service is outdated. Restart the service before measuring idle performance.".to_string());
+    }
+    let service_pid = (service_status.process_id > 0)
+        .then(|| Pid::from_u32(service_status.process_id));
+
+    let logical_processors = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    let logical_processors_f32 = logical_processors as f32;
+
+    // Process enumeration is deliberately done only after an explicit user
+    // action. Normal application startup and idle operation do not use sysinfo.
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+
+    let service_processes = service_pid
+        .map(|pid| collect_process_tree(&system, pid, &HashSet::new()))
+        .unwrap_or_default();
+    if service_processes.is_empty() {
+        return Err("The core service process was not found in the operating-system process table.".to_string());
+    }
+    let ui_root = Pid::from_u32(std::process::id());
+    let ui_processes = collect_process_tree(&system, ui_root, &service_processes);
+    if ui_processes.is_empty() {
+        return Err("Could not find the GitManager UI process in the operating-system process table.".to_string());
+    }
+
+    let mut tracked = ui_processes.iter().cloned().collect::<HashSet<_>>();
+    tracked.extend(service_processes.iter().cloned());
+    let tracked = tracked.into_iter().collect::<Vec<_>>();
+
+    // Prime the CPU counters before collecting the 60-second window.
+    system.refresh_processes(ProcessesToUpdate::Some(&tracked), true);
+    std::thread::sleep(Duration::from_millis(500));
+    system.refresh_processes(ProcessesToUpdate::Some(&tracked), true);
+
+    let mut ui_cpu_total = 0.0f32;
+    let mut ui_cpu_peak = 0.0f32;
+    let mut ui_memory_total = 0u128;
+    let mut ui_memory_peak = 0u64;
+    let mut service_cpu_total = 0.0f32;
+    let mut service_cpu_peak = 0.0f32;
+    let mut service_memory_total = 0u128;
+    let mut service_memory_peak = 0u64;
+
+    for _ in 0..SAMPLE_COUNT {
+        std::thread::sleep(SAMPLE_INTERVAL);
+        system.refresh_processes(ProcessesToUpdate::Some(&tracked), true);
+
+        let (ui_cpu, ui_memory) =
+            read_process_group(&system, &ui_processes, logical_processors_f32);
+        ui_cpu_total += ui_cpu;
+        ui_cpu_peak = ui_cpu_peak.max(ui_cpu);
+        ui_memory_total += u128::from(ui_memory);
+        ui_memory_peak = ui_memory_peak.max(ui_memory);
+
+        if !service_processes.is_empty() {
+            let (service_cpu, service_memory) =
+                read_process_group(&system, &service_processes, logical_processors_f32);
+            service_cpu_total += service_cpu;
+            service_cpu_peak = service_cpu_peak.max(service_cpu);
+            service_memory_total += u128::from(service_memory);
+            service_memory_peak = service_memory_peak.max(service_memory);
+        }
+    }
+
+    let ui_summary = ProcessUsageSummary {
+        average_cpu_percent: ui_cpu_total / SAMPLE_COUNT as f32,
+        peak_cpu_percent: ui_cpu_peak,
+        average_memory_bytes: (ui_memory_total / SAMPLE_COUNT as u128) as u64,
+        peak_memory_bytes: ui_memory_peak,
+        process_count: ui_processes.len(),
+    };
+    let service_summary = if service_processes.is_empty() {
+        None
+    } else {
+        Some(ProcessUsageSummary {
+            average_cpu_percent: service_cpu_total / SAMPLE_COUNT as f32,
+            peak_cpu_percent: service_cpu_peak,
+            average_memory_bytes: (service_memory_total / SAMPLE_COUNT as u128) as u64,
+            peak_memory_bytes: service_memory_peak,
+            process_count: service_processes.len(),
+        })
+    };
+
+    Ok(IdlePerformanceCapture {
+        sample_duration_seconds: SAMPLE_INTERVAL.as_secs() * SAMPLE_COUNT as u64,
+        sample_count: SAMPLE_COUNT,
+        logical_processors,
+        captured_at_unix_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        ui_process_tree: ui_summary,
+        service_process_tree: service_summary,
+        service_generation: service_status.service_generation,
+        service_protocol_version: service_status.protocol_version,
+        notes: vec![
+            "CPU percentages are normalized across all logical processors.".to_string(),
+            "The UI group includes the Tauri process and descendant processes visible in the process tree.".to_string(),
+            "Close active scans, account sync and large diffs before starting an idle capture.".to_string(),
+        ],
+    })
+}
+
+#[tauri::command]
+async fn capture_idle_performance() -> Result<IdlePerformanceCapture, String> {
+    tokio::task::spawn_blocking(capture_idle_performance_sync)
+        .await
+        .map_err(|error| format!("Performance capture task failed: {error}"))?
+}
+
+/// Keeps low-frequency health and file-change monitoring outside the WebView.
+/// The frontend sleeps until one of these native events reports a real change.
+fn start_native_runtime_monitor(app_handle: AppHandle) {
+    let monitor_spawn = std::thread::Builder::new()
+        .name("gitmanager-native-runtime-monitor".to_string())
+        .spawn(move || {
+            let mut index_generation =
+                repository_index::repository_index_generation().unwrap_or_default();
+            let mut notification_generation =
+                notification_center::notification_store_modified_unix_nanos().unwrap_or_default();
+            let mut last_service_check = Instant::now();
+            let mut last_service_state: Option<(bool, u32, u32, u32, bool, bool, bool)> = None;
+
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+
+                if let Ok(generation) = repository_index::repository_index_generation() {
+                    if generation != index_generation {
+                        index_generation = generation;
+                        let _ = app_handle.emit(
+                            "gitmanager://repository-index-updated",
+                            generation.to_string(),
+                        );
+                    }
+                }
+
+                if let Ok(generation) =
+                    notification_center::notification_store_modified_unix_nanos()
+                {
+                    if generation != notification_generation {
+                        notification_generation = generation;
+                        let _ = app_handle.emit("gitmanager://notifications-updated", ());
+                    }
+                }
+
+                if last_service_check.elapsed() >= Duration::from_secs(5) {
+                    let (ready, generation, process_id, protocol_version, remote_check_pending, remote_check_running, indexing, message) =
+                        match crash_helper::request_service_status() {
+                            Ok(status) => (
+                                status.service_generation >= crash_helper::SERVICE_GENERATION
+                                    && status.protocol_version >= crash_helper::SERVICE_PROTOCOL_VERSION,
+                                status.service_generation,
+                                status.process_id,
+                                status.protocol_version,
+                                status.remote_check_pending,
+                                status.remote_check_running,
+                                status.indexing,
+                                status.message,
+                            ),
+                            Err(error) => (false, 0, 0, 0, false, false, false, error),
+                        };
+
+                    let changed = last_service_state
+                        .map(|(previous_ready, previous_generation, previous_pid, previous_protocol, previous_remote_pending, previous_remote_running, previous_indexing)| {
+                            previous_ready != ready
+                                || previous_generation != generation
+                                || previous_pid != process_id
+                                || previous_protocol != protocol_version
+                                || previous_remote_pending != remote_check_pending
+                                || previous_remote_running != remote_check_running
+                                || previous_indexing != indexing
+                        })
+                        .unwrap_or(true);
+                    if changed {
+                        let status_message = if remote_check_running {
+                            "Checking remote repository branches…".to_string()
+                        } else if remote_check_pending {
+                            "Remote repository check queued".to_string()
+                        } else {
+                            message
+                        };
+                        let _ = app_handle.emit(
+                            "gitmanager://service-health",
+                            serde_json::json!({
+                                "ready": ready,
+                                "generation": generation,
+                                "processId": process_id,
+                                "protocolVersion": protocol_version,
+                                "remoteCheckPending": remote_check_pending,
+                                "remoteCheckRunning": remote_check_running,
+                                "indexing": indexing,
+                                "message": status_message,
+                            }),
+                        );
+                        last_service_state = Some((
+                            ready, generation, process_id, protocol_version,
+                            remote_check_pending, remote_check_running, indexing,
+                        ));
+                    }
+                    last_service_check = Instant::now();
+                }
+            }
+        });
+
+    if let Err(error) = monitor_spawn {
+        eprintln!("GitManager native runtime monitor could not start: {error}");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
         .setup(|app| {
-            let state = app.state::<AppState>();
-            let preferences = load_app_preferences(app.handle().clone())
-                .unwrap_or_else(|_| AppPreferences::default());
-            // The next UI scan supplies discovered repositories to the archive watcher.
-            spawn_background_update_watcher(
-                app.handle().clone(),
-                state.watcher.enabled.clone(),
-                state.watcher.checking_now.clone(),
-                preferences.scan_roots,
-            );
+            // Discovery, remote polling and indexing stay in the service.
+            // This native monitor only relays lightweight state changes to
+            // the WebView. The UI heartbeat is intentionally emitted by React,
+            // so a frozen WebView cannot keep the watchdog falsely healthy.
+            start_native_runtime_monitor(app.handle().clone());
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -1659,10 +2042,17 @@ pub fn run() {
             get_commit_details,
             list_windows_signing_certificates,
             sign_windows_installer,
+            get_repository_index_generation,
+            load_indexed_repositories,
             scan_machine_repositories,
+            ensure_required_service,
+            get_core_service_status,
             inspect_repository,
+            load_repository_commit_history,
+            capture_idle_performance,
             list_repository_files,
             read_repository_file,
+            save_conflict_resolution,
             preview_repository_pull,
             prepare_and_pull_repository_update,
             get_repository_changes,
@@ -1680,9 +2070,14 @@ pub fn run() {
             open_external_url,
             is_setup_mode,
             launch_first_run_setup,
+            load_connected_accounts,
             connect_git_account,
             check_repo_updates_now,
-            pull_repository_update,
+            read_service_log_tail,
+            list_app_notifications,
+            mark_app_notification_read,
+            dismiss_app_notification,
+            mark_all_app_notifications_read,
             control_background_service,
             report_ui_heartbeat,
             resume_background_service,
@@ -1777,6 +2172,14 @@ mod application_path_tests {
         assert_eq!(PathBuf::from(paths.software_root), product_root);
         assert_eq!(PathBuf::from(paths.install_dir), product_root.join("GitManager"));
         assert_eq!(PathBuf::from(paths.config_dir), product_root.join("config").join("GitManager"));
-        assert_eq!(PathBuf::from(paths.data_dir), product_root.join("data").join("GitManager"));
+        let data = product_root.join("data").join("GitManager");
+        assert_eq!(PathBuf::from(paths.data_dir), data);
+        assert_eq!(PathBuf::from(paths.repo_metadata_dir), data.join("repo").join("metadata"));
+        assert_eq!(PathBuf::from(paths.git_data_dir), data.join("git_data"));
+        assert_eq!(PathBuf::from(paths.account_metadata_dir), data.join("account").join("metadata"));
+        assert_eq!(PathBuf::from(paths.account_git_data_dir), data.join("account").join("git_data"));
+        assert_eq!(PathBuf::from(paths.remote_repo_metadata_dir), data.join("repo").join("remote").join("metadata"));
+        assert_eq!(PathBuf::from(paths.remote_repo_git_data_dir), data.join("repo").join("remote").join("git_data"));
+        assert_eq!(PathBuf::from(paths.cache_dir), data.join(".cache"));
     }
 }

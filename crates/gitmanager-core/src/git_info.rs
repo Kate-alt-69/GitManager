@@ -1,73 +1,18 @@
 use git2::build::CheckoutBuilder;
-use git2::{BranchType, Repository, RepositoryState, Sort, StatusOptions};
-use serde::{Deserialize, Serialize};
+use git2::{BranchType, Oid, Repository, RepositoryState, Sort, StatusOptions};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommitNode {
-    pub oid: String,
-    pub short_oid: String,
-    pub message: String,
-    pub summary: String,
-    pub author_name: String,
-    pub author_email: String,
-    pub timestamp: i64,
-    pub date_iso: String,
-    pub parents: Vec<String>,
-    pub branches: Vec<String>,
-    pub tags: Vec<String>,
-    pub is_head: bool,
-    pub lane: usize,
-}
+use crate::models::{
+    BranchInfo,
+    CommitDetails,
+    CommitHistoryPage,
+    CommitNode,
+    GitRepositoryInfo,
+    RemoteEndpoint,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BranchInfo {
-    pub name: String,
-    pub is_head: bool,
-    pub is_remote: bool,
-    pub target_oid: String,
-    pub upstream: Option<String>,
-    pub is_default: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoteEndpoint {
-    pub name: String,
-    pub url: String,
-    pub provider: String, // "github", "gitlab", "custom", "none"
-    pub host: String,
-    pub owner: Option<String>,
-    pub repo_slug: Option<String>,
-    pub web_url: Option<String>,
-    pub icon_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitRepositoryInfo {
-    pub id: String,
-    pub name: String,
-    pub path: String,
-    pub git_dir: String,
-    pub parent_folder: String,
-    pub owner_name: String,
-    pub owner_email: String,
-    pub current_branch: String,
-    pub has_remote: bool,
-    pub primary_provider: String, // "github" | "gitlab" | "custom" | "local"
-    pub primary_remote_url: Option<String>,
-    pub web_url: Option<String>,
-    pub icon_url: String,
-    pub remotes: Vec<RemoteEndpoint>,
-    pub branches: Vec<BranchInfo>,
-    pub commits: Vec<CommitNode>,
-    pub dirty_files_count: usize,
-    pub total_commits_loaded: usize,
-    pub source_kind: String, // "local_scan" | "remote_account" | "synced"
-    #[serde(default)]
-    pub details_loaded: bool,
-}
 
 /// Parses a Git remote URL (SSH or HTTPS) to extract host, provider, owner, repo slug, and avatar/icon URL
 pub fn parse_remote_url(remote_name: &str, raw_url: &str) -> RemoteEndpoint {
@@ -137,17 +82,27 @@ pub fn parse_remote_url(remote_name: &str, raw_url: &str) -> RemoteEndpoint {
     }
 }
 
-/// Extracts full Git metadata for a selected repository.
+/// Extracts full Git metadata including the first, bounded commit-history snapshot.
 pub fn extract_git_repository_info(workdir: &Path, git_dir_path: &Path) -> Result<GitRepositoryInfo, String> {
-    extract_git_repository_info_with_detail(workdir, git_dir_path, true)
+    extract_git_repository_info_with_detail(workdir, git_dir_path, true, true)
+}
+
+/// Extracts repository, branch and working-tree metadata without walking commit history.
+pub fn extract_git_repository_overview(workdir: &Path, git_dir_path: &Path) -> Result<GitRepositoryInfo, String> {
+    extract_git_repository_info_with_detail(workdir, git_dir_path, true, false)
 }
 
 /// Extracts only repository-card metadata and HEAD.
 pub fn extract_git_repository_summary(workdir: &Path, git_dir_path: &Path) -> Result<GitRepositoryInfo, String> {
-    extract_git_repository_info_with_detail(workdir, git_dir_path, false)
+    extract_git_repository_info_with_detail(workdir, git_dir_path, false, false)
 }
 
-fn extract_git_repository_info_with_detail(workdir: &Path, git_dir_path: &Path, load_details: bool) -> Result<GitRepositoryInfo, String> {
+fn extract_git_repository_info_with_detail(
+    workdir: &Path,
+    git_dir_path: &Path,
+    load_details: bool,
+    load_commit_history: bool,
+) -> Result<GitRepositoryInfo, String> {
     let repo = Repository::open(workdir).map_err(|e| format!("Failed to open git repo at {:?}: {}", workdir, e))?;
 
     let name = workdir
@@ -243,7 +198,7 @@ fn extract_git_repository_info_with_detail(workdir: &Path, git_dir_path: &Path, 
     }
 
     let mut commits: Vec<CommitNode> = Vec::new();
-    if load_details {
+    if load_commit_history {
         let mut oid_tags: HashMap<String, Vec<String>> = HashMap::new();
         let _ = repo.tag_foreach(|oid, name_bytes| {
             let raw_name = String::from_utf8_lossy(name_bytes).to_string();
@@ -372,6 +327,206 @@ fn extract_git_repository_info_with_detail(workdir: &Path, git_dir_path: &Path, 
 }
 
 
+
+/// Reads a page of commit history on demand, optionally scoped to one local or
+/// remote branch and/or a case-insensitive SHA/message/author search.
+pub fn load_repository_commit_history(
+    workdir: &Path,
+    offset: usize,
+    limit: usize,
+    branch_filter: Option<&str>,
+    search_query: Option<&str>,
+) -> Result<CommitHistoryPage, String> {
+    const MAX_PAGE_SIZE: usize = 100;
+    const MAX_OFFSET: usize = 250_000;
+
+    if limit == 0 || limit > MAX_PAGE_SIZE {
+        return Err(format!("Commit history page size must be between 1 and {MAX_PAGE_SIZE}."));
+    }
+    if offset > MAX_OFFSET {
+        return Err(format!("Commit history offset exceeds the {MAX_OFFSET} safety limit."));
+    }
+
+    let repo = Repository::open(workdir)
+        .map_err(|error| format!("Failed to open Git repository at {}: {error}", workdir.display()))?;
+    let normalized_branch = branch_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let normalized_query = search_query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase);
+
+    let mut oid_branches: HashMap<String, Vec<String>> = HashMap::new();
+    if let Ok(branches) = repo.branches(None) {
+        for branch_result in branches.flatten() {
+            let (branch, _) = branch_result;
+            let name = branch.name().ok().flatten().unwrap_or("unknown").to_string();
+            if let Some(oid) = branch.get().target() {
+                oid_branches.entry(oid.to_string()).or_default().push(name);
+            }
+        }
+    }
+
+    let mut oid_tags: HashMap<String, Vec<String>> = HashMap::new();
+    let _ = repo.tag_foreach(|oid, name_bytes| {
+        let raw_name = String::from_utf8_lossy(name_bytes).to_string();
+        let clean_tag = raw_name.trim_start_matches("refs/tags/").to_string();
+        let resolved_oid = repo.find_tag(oid).ok()
+            .map(|tag| tag.target_id().to_string())
+            .unwrap_or_else(|| oid.to_string());
+        oid_tags.entry(resolved_oid).or_default().push(clean_tag);
+        true
+    });
+
+    let mut revwalk = repo.revwalk()
+        .map_err(|error| format!("Could not create commit history iterator: {error}"))?;
+    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .map_err(|error| format!("Could not configure commit history order: {error}"))?;
+
+    if let Some(branch_name) = normalized_branch {
+        let branch = repo.find_branch(branch_name, BranchType::Local)
+            .or_else(|_| repo.find_branch(branch_name, BranchType::Remote))
+            .map_err(|_| format!("Branch '{branch_name}' does not exist in this repository."))?;
+        let reference_name = branch.get().name()
+            .ok_or_else(|| format!("Branch '{branch_name}' has no valid Git reference name."))?
+            .to_string();
+        revwalk.push_ref(&reference_name)
+            .map_err(|error| format!("Could not traverse branch '{branch_name}': {error}"))?;
+    } else {
+        if revwalk.push_glob("refs/heads/*").is_err() {
+            if let Ok(head) = repo.head() {
+                if let Some(oid) = head.target() {
+                    let _ = revwalk.push(oid);
+                }
+            }
+        }
+        let _ = revwalk.push_glob("refs/remotes/*");
+    }
+
+    let head_oid = repo.head().ok()
+        .and_then(|reference| reference.target())
+        .map(|oid| oid.to_string());
+    let mut active_lanes: Vec<Option<String>> = Vec::new();
+    let mut matched = 0usize;
+    let mut commits = Vec::with_capacity(limit);
+    let mut has_more = false;
+
+    for oid_result in revwalk {
+        let Ok(oid) = oid_result else { continue; };
+        let Ok(commit) = repo.find_commit(oid) else { continue; };
+        let oid_string = oid.to_string();
+        let parents: Vec<String> = commit.parent_ids().map(|parent| parent.to_string()).collect();
+        // Advance graph lanes even for filtered/skipped commits so page N has
+        // the same lane assignments as a full walk from the beginning.
+        let lane = assign_commit_lane(&oid_string, &parents, &mut active_lanes);
+        let author = commit.author();
+        let author_name = author.name().unwrap_or("Unknown Author").to_string();
+        let author_email = author.email().unwrap_or("unknown@local").to_string();
+        let message = commit.message().unwrap_or("").trim().to_string();
+        let summary = commit.summary().unwrap_or("(no commit message)").to_string();
+        let short_oid = oid_string.chars().take(7).collect::<String>();
+
+        let matches_query = normalized_query.as_ref().is_none_or(|query| {
+            oid_string.to_lowercase().contains(query)
+                || short_oid.to_lowercase().contains(query)
+                || summary.to_lowercase().contains(query)
+                || message.to_lowercase().contains(query)
+                || author_name.to_lowercase().contains(query)
+                || author_email.to_lowercase().contains(query)
+        });
+        if !matches_query {
+            continue;
+        }
+
+        if matched < offset {
+            matched += 1;
+            continue;
+        }
+        if commits.len() == limit {
+            has_more = true;
+            break;
+        }
+
+        let seconds = commit.time().seconds();
+        let date_iso = chrono::DateTime::from_timestamp(seconds, 0)
+            .map(|date| date.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "Unknown date".to_string());
+        let mut commit_branches = oid_branches.remove(&oid_string).unwrap_or_default();
+        if let Some(branch_name) = normalized_branch {
+            if !commit_branches.iter().any(|name| name == branch_name) {
+                commit_branches.push(branch_name.to_string());
+            }
+        }
+        commits.push(CommitNode {
+            oid: oid_string.clone(),
+            short_oid,
+            message,
+            summary,
+            author_name,
+            author_email,
+            timestamp: seconds,
+            date_iso,
+            parents,
+            branches: commit_branches,
+            tags: oid_tags.remove(&oid_string).unwrap_or_default(),
+            is_head: head_oid.as_deref() == Some(oid_string.as_str()),
+            lane,
+        });
+        matched += 1;
+    }
+
+    Ok(CommitHistoryPage {
+        commits,
+        offset,
+        limit,
+        has_more,
+    })
+}
+
+
+
+/// Reads metadata and aggregate diff statistics for a single commit.
+pub fn load_commit_details(workdir: &Path, oid_text: &str) -> Result<CommitDetails, String> {
+    let repo = Repository::open(workdir)
+        .map_err(|error| format!("Could not open Git repository: {error}"))?;
+    let oid = Oid::from_str(oid_text)
+        .map_err(|_| "The selected commit SHA is invalid.".to_string())?;
+    let commit = repo.find_commit(oid)
+        .map_err(|error| format!("Could not load selected commit: {error}"))?;
+    let tree = commit.tree()
+        .map_err(|error| format!("Could not read commit tree: {error}"))?;
+    let parent_tree = if commit.parent_count() > 0 {
+        Some(commit.parent(0)
+            .and_then(|parent| parent.tree())
+            .map_err(|error| format!("Could not read parent commit tree: {error}"))?)
+    } else {
+        None
+    };
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .map_err(|error| format!("Could not compare commit trees: {error}"))?;
+    let stats = diff.stats()
+        .map_err(|error| format!("Could not summarize commit changes: {error}"))?;
+    let author = commit.author();
+    let authored_at = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
+        .map(|value| value.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| "Unknown date".to_string());
+    let oid_string = oid.to_string();
+
+    Ok(CommitDetails {
+        oid: oid_string.clone(),
+        short_oid: oid_string.chars().take(7).collect(),
+        summary: commit.summary().unwrap_or("(no commit message)").to_string(),
+        message: commit.message().unwrap_or("").trim().to_string(),
+        author_name: author.name().unwrap_or("Unknown Author").to_string(),
+        author_email: author.email().unwrap_or("unknown@local").to_string(),
+        authored_at,
+        files_changed: stats.files_changed(),
+        insertions: stats.insertions(),
+        deletions: stats.deletions(),
+    })
+}
+
 /// Lists local branches without loading commit history or walking the working tree.
 pub fn list_local_repository_branches(workdir: &Path) -> Result<Vec<BranchInfo>, String> {
     let repo = Repository::open(workdir)
@@ -458,7 +613,7 @@ pub fn switch_repository_branch(workdir: &Path, branch_name: &str) -> Result<Git
         repo.path().to_path_buf()
     };
 
-    extract_git_repository_info(workdir, &git_dir)
+    extract_git_repository_overview(workdir, &git_dir)
         .map_err(|error| format!("Branch switched, but repository details could not be refreshed: {error}"))
 }
 
@@ -487,6 +642,7 @@ mod branch_switch_tests {
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("tracked.txt")).unwrap();
         let tree_id = index.write_tree().unwrap();
+        drop(index);
         let tree = repo.find_tree(tree_id).unwrap();
         let main_oid = repo.commit(
             Some("refs/heads/main"),
@@ -502,16 +658,19 @@ mod branch_switch_tests {
         let main_commit = repo.find_commit(main_oid).unwrap();
         repo.branch("feature", &main_commit, false).unwrap();
 
+        // The feature branch initially points to the same commit and tree
+        // as main. Changing HEAD is sufficient; asking libgit2 to check out
+        // that identical tree can report a spurious conflict with the index.
         repo.set_head("refs/heads/feature").unwrap();
-        repo.checkout_head(None).unwrap();
         fs::write(path.join("tracked.txt"), "feature\n").unwrap();
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("tracked.txt")).unwrap();
         let tree_id = index.write_tree().unwrap();
+        drop(index);
         let tree = repo.find_tree(tree_id).unwrap();
         let parent = repo.head().unwrap().peel_to_commit().unwrap();
         repo.commit(
-            Some("HEAD"),
+            Some("refs/heads/feature"),
             &signature,
             &signature,
             "feature commit",
@@ -521,10 +680,15 @@ mod branch_switch_tests {
         drop(tree);
         drop(parent);
 
+        // Restore the fixture to a clean main worktree without invoking a
+        // second checkout operation. The branch-switch API below is the
+        // behavior these tests are intended to exercise.
         repo.set_head("refs/heads/main").unwrap();
-        let mut checkout = CheckoutBuilder::new();
-        checkout.force();
-        repo.checkout_head(Some(&mut checkout)).unwrap();
+        fs::write(path.join("tracked.txt"), "main\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("tracked.txt")).unwrap();
+        index.write().unwrap();
+        drop(index);
         drop(main_commit);
         drop(repo);
         path
@@ -545,7 +709,12 @@ mod branch_switch_tests {
         let path = repository_fixture();
         let updated = switch_repository_branch(&path, "feature").unwrap();
         assert_eq!(updated.current_branch, "feature");
-        assert_eq!(fs::read_to_string(path.join("tracked.txt")).unwrap(), "feature\n");
+        assert_eq!(
+            fs::read_to_string(path.join("tracked.txt"))
+                .unwrap()
+                .trim_end_matches(&['\r', '\n'][..]),
+            "feature"
+        );
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -608,4 +777,145 @@ fn assign_commit_lane(
     }
 
     lane
+}
+
+
+#[cfg(test)]
+mod commit_history_tests {
+    use super::*;
+    use git2::Signature;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn repository_with_commits(count: usize) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gitmanager-history-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).unwrap();
+
+        let repo = Repository::init(&path).unwrap();
+        let signature = Signature::now("GitManager Test", "gitmanager-test@invalid.local").unwrap();
+        let mut previous_oid = None;
+
+        for index in 0..count {
+            fs::write(path.join("history.txt"), format!("commit {index}\n")).unwrap();
+            let mut git_index = repo.index().unwrap();
+            git_index.add_path(Path::new("history.txt")).unwrap();
+            let tree_id = git_index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let message = if index == 125 {
+                format!("needle commit {index}")
+            } else {
+                format!("commit {index}")
+            };
+
+            let oid = if let Some(parent_oid) = previous_oid {
+                let parent = repo.find_commit(parent_oid).unwrap();
+                let oid = repo.commit(
+                    Some("refs/heads/main"),
+                    &signature,
+                    &signature,
+                    &message,
+                    &tree,
+                    &[&parent],
+                ).unwrap();
+                drop(parent);
+                oid
+            } else {
+                repo.commit(
+                    Some("refs/heads/main"),
+                    &signature,
+                    &signature,
+                    &message,
+                    &tree,
+                    &[],
+                ).unwrap()
+            };
+            previous_oid = Some(oid);
+            drop(tree);
+            drop(git_index);
+        }
+
+        repo.set_head("refs/heads/main").unwrap();
+        assert_eq!(repo.head().unwrap().target(), previous_oid);
+        drop(repo);
+        path
+    }
+
+    #[test]
+    fn commit_history_pages_include_commits_beyond_the_legacy_180_limit() {
+        let path = repository_with_commits(205);
+
+        let first = load_repository_commit_history(&path, 0, 100, None, None).unwrap();
+        let second = load_repository_commit_history(&path, 100, 100, None, None).unwrap();
+        let third = load_repository_commit_history(&path, 200, 100, None, None).unwrap();
+
+        assert_eq!(first.commits.len(), 100);
+        assert_eq!(second.commits.len(), 100);
+        assert_eq!(third.commits.len(), 5);
+        assert!(first.has_more);
+        assert!(second.has_more);
+        assert!(!third.has_more);
+        assert_eq!(first.commits[0].summary, "commit 204");
+        assert_eq!(third.commits.last().map(|commit| commit.summary.as_str()), Some("commit 0"));
+
+        let overview = extract_git_repository_overview(&path, &path.join(".git")).unwrap();
+        assert!(overview.details_loaded);
+        assert_eq!(overview.commits.len(), 1);
+        assert_eq!(overview.commits[0].summary, "commit 204");
+        assert!(overview.branches.iter().any(|branch| branch.name == "main"));
+
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn commit_history_search_and_branch_filters_apply_before_pagination() {
+        let path = repository_with_commits(205);
+
+        let page = load_repository_commit_history(
+            &path,
+            0,
+            20,
+            Some("main"),
+            Some("NEEDLE"),
+        ).unwrap();
+
+        assert_eq!(page.commits.len(), 1);
+        assert!(!page.has_more);
+        assert_eq!(page.commits[0].summary, "needle commit 125");
+        assert!(page.commits[0].branches.iter().any(|name| name == "main"));
+
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn commit_history_rejects_unbounded_page_requests() {
+        let path = repository_with_commits(1);
+        assert!(load_repository_commit_history(&path, 0, 101, None, None).is_err());
+        assert!(load_repository_commit_history(&path, 250_001, 20, None, None).is_err());
+        assert!(load_repository_commit_history(&path, 0, 0, None, None).is_err());
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn commit_details_are_loaded_from_the_shared_core() {
+        let path = repository_with_commits(1);
+        let repo = Repository::open(&path).unwrap();
+        let oid = repo.head().unwrap().target().unwrap().to_string();
+        drop(repo);
+
+        let details = load_commit_details(&path, &oid).unwrap();
+        assert_eq!(details.oid, oid);
+        assert_eq!(details.summary, "commit 0");
+        assert_eq!(details.files_changed, 1);
+        assert_eq!(details.insertions, 1);
+        assert_eq!(details.deletions, 0);
+
+        let _ = fs::remove_dir_all(path);
+    }
 }

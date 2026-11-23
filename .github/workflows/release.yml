@@ -182,14 +182,14 @@ jobs:
           $installer = Join-Path $profileDir "bundle/nsis/GitManager-Setup.exe"
           $setupHelper = Join-Path $profileDir "GitManager-Setup.exe"
           $required = @(
-            (Join-Path $profileDir "git-manager.exe"),
-            (Join-Path $profileDir "git-manager-service.exe"),
+            (Join-Path $profileDir "gitmanager.exe"),
+            (Join-Path $profileDir "gitmanager-service.exe"),
             (Join-Path $profileDir "crash_helper.exe"),
             (Join-Path $profileDir "gitm.exe"),
             $setupHelper,
             $installer,
-            (Join-Path $staging "git-manager.exe"),
-            (Join-Path $staging "resources/git-manager-service.exe"),
+            (Join-Path $staging "gitmanager.exe"),
+            (Join-Path $staging "resources/gitmanager.service.exe"),
             (Join-Path $staging "resources/crash_helper.exe"),
             (Join-Path $staging "resources/gitm.exe"),
             (Join-Path $staging "resources/gitmanager-setup.exe")
@@ -273,8 +273,8 @@ jobs:
           Copy-Item -Path "$profileDir/bundle/nsis/*" -Destination "$distDir/installer" -Recurse -Force
           Copy-Item -Path "build/.rcache/windows-installers/*.msi" -Destination "$distDir/installer" -Force
           Copy-Item -Path "build/.rcache/windows-installers/*.msix" -Destination "$distDir/installer" -Force
-          Copy-Item -Path "$profileDir/git-manager.exe" -Destination "$distDir/app" -Force
-          foreach ($name in @("gitm.exe", "gitmanager-setup.exe", "crash_helper.exe", "git-manager-service.exe", "GitManager-Setup.exe")) {
+          Copy-Item -Path "$profileDir/gitmanager.exe" -Destination "$distDir/app" -Force
+          foreach ($name in @("gitm.exe", "gitmanager-setup.exe", "crash_helper.exe", "gitmanager.service.exe", "GitManager-Setup.exe")) {
             $source = Join-Path $profileDir $name
             if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination "$distDir/app" -Force }
           }

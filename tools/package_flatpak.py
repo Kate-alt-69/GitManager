@@ -74,7 +74,7 @@ def stage_deb(deb: Path, staging: Path) -> None:
     copy_tree_contents(usr / "lib", staging / "lib")
     copy_tree_contents(usr / "share", staging / "share")
 
-    required = ("gitm", "crash_helper", "git-manager-service", "gitmanager-setup")
+    required = ("gitm", "crash_helper", "gitmanager.service", "gitmanager-setup")
     search_roots = (staging / "bin", staging / "lib")
     for name in required:
         if (staging / "bin" / name).is_file():

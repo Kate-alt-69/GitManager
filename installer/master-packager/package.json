@@ -11,7 +11,7 @@
   "publisher": "Kastrick",
   "version": "1.0.0.0",
   "platform": "x64",
-  "installDir": "%LOCALAPPDATA%\\kastrick's_software\\GitManager",
+  "installDir": "%LOCALAPPDATA%\\Programs\\Kastrick's Software\\GitManager",
   "icon": "frontend/static/image/git-managar-orange_default-black.png",
   "fileSystemEntries": [
     {
@@ -23,7 +23,7 @@
     {
       "name": "GitManager",
       "description": "Git workspace manager by Kastrick",
-      "target": "$.installDir\\git-manager.exe",
+      "target": "$.installDir\\gitmanager.exe",
       "icon": "frontend/static/image/git-managar-orange_default-black.png"
     }
   ],
@@ -36,7 +36,7 @@
     "packageDescription": "GitManager — a native Git workspace manager by Kastrick.",
     "digitalSignature": {
       "signWith": "GenerateTestCertificate",
-      "timestampServer": "http://timestamp.sectigo.com"
+      "timestampServer": "http://timestamp.acs.microsoft.com"
     }
   },
   "msi": {
@@ -52,9 +52,18 @@
       }
     ],
     "detectRunningProcesses": [
-      "git-manager.exe",
+      "gitmanager.exe",
       "crash_helper.exe",
-      "git-manager-service.exe"
+      "gitmanager.service.exe",
+      "git-manager.exe",
+      "git-manager-service.exe",
+      "gitmanager-service.exe",
+      "crash_helper-x86_64-pc-windows-msvc.exe",
+      "crash_helper-i686-pc-windows-msvc.exe",
+      "crash_helper-aarch64-pc-windows-msvc.exe",
+      "gitmanager.service-x86_64-pc-windows-msvc.exe",
+      "gitmanager.service-i686-pc-windows-msvc.exe",
+      "gitmanager.service-aarch64-pc-windows-msvc.exe"
     ],
     "packageDependencies": [
       {
@@ -75,7 +84,19 @@
       "promptAppsAfterInstall": [
         {
           "displayName": "Launch GitManager",
-          "file": "$.installDir\\git-manager.exe"
+          "file": "$.installDir\\resources\\gitmanager-setup.exe"
+        }
+      ]
+    },
+    "customActions": {
+      "exe": [
+        {
+          "name": "StopGitManagerCoreService",
+          "filePath": "$.installDir\\resources\\crash_helper.exe",
+          "arguments": "--stop-service",
+          "condition": "Installed",
+          "sequence": "StartOfExecution",
+          "continueOnError": true
         }
       ]
     }

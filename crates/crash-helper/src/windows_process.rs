@@ -5,17 +5,24 @@
 //! handle for the UI lifetime; closing it terminates the UI and inherited
 //! descendants without using a PID-based external process-tree command.
 
-use std::ffi::c_void;
+use std::ffi::{c_void, OsString};
 use std::mem::{size_of, zeroed};
+use std::os::windows::ffi::OsStringExt;
+use std::path::{Path, PathBuf};
 
 type Handle = *mut c_void;
 type Bool = i32;
 type Dword = u32;
 
 const PROCESS_TERMINATE: Dword = 0x0001;
+const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
+const SYNCHRONIZE: Dword = 0x0010_0000;
+const WAIT_OBJECT_0: Dword = 0;
+const WAIT_TIMEOUT: Dword = 0x0000_0102;
 const PROCESS_SET_QUOTA: Dword = 0x0100;
 const THREAD_SUSPEND_RESUME: Dword = 0x0002;
 const TH32CS_SNAPTHREAD: Dword = 0x0004;
+const JOB_OBJECT_LIMIT_BREAKAWAY_OK: Dword = 0x0000_0800;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: Dword = 0x0000_2000;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
 const INVALID_RESUME_COUNT: Dword = Dword::MAX;
@@ -80,6 +87,14 @@ extern "system" {
         information_length: Dword,
     ) -> Bool;
     fn OpenProcess(access: Dword, inherit_handle: Bool, process_id: Dword) -> Handle;
+    fn QueryFullProcessImageNameW(
+        process: Handle,
+        flags: Dword,
+        exe_name: *mut u16,
+        size: *mut Dword,
+    ) -> Bool;
+    fn TerminateProcess(process: Handle, exit_code: Dword) -> Bool;
+    fn WaitForSingleObject(handle: Handle, milliseconds: Dword) -> Dword;
     fn AssignProcessToJobObject(job: Handle, process: Handle) -> Bool;
     fn CreateToolhelp32Snapshot(flags: Dword, process_id: Dword) -> Handle;
     fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
@@ -118,6 +133,88 @@ pub(super) struct ProcessContainment {
     _job: OwnedHandle,
 }
 
+fn normalized_image_path(path: &Path) -> String {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let value = resolved.to_string_lossy().replace('/', "\\");
+    value
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&value)
+        .to_ascii_lowercase()
+}
+
+/// Terminate only the expected packaged service executable.
+///
+/// The process handle pins the kernel process object after OpenProcess, avoiding
+/// a PID-reuse race between checking the image path and terminating the target.
+pub(super) fn terminate_if_image_matches(
+    process_id: u32,
+    expected_executable: &Path,
+) -> Result<bool, String> {
+    if process_id <= 1 {
+        return Ok(false);
+    }
+
+    let process = OwnedHandle::new(
+        unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
+                0,
+                process_id,
+            )
+        },
+        "OpenProcess for verified GitManager service recovery",
+    )?;
+
+    // A process that exited while we were opening it has already released its
+    // lock (or is about to); it must not be replaced based on this stale PID.
+    match unsafe { WaitForSingleObject(process.0, 0) } {
+        WAIT_OBJECT_0 => return Ok(true),
+        WAIT_TIMEOUT => {}
+        _ => return Err(last_error("WaitForSingleObject before service recovery")),
+    }
+
+    let mut image_buffer = vec![0u16; 32_768];
+    let mut image_length = image_buffer.len() as Dword;
+    if unsafe {
+        QueryFullProcessImageNameW(
+            process.0,
+            0,
+            image_buffer.as_mut_ptr(),
+            &mut image_length,
+        )
+    } == 0
+    {
+        return Err(last_error("QueryFullProcessImageNameW for service recovery"));
+    }
+
+    let actual_executable = PathBuf::from(OsString::from_wide(
+        &image_buffer[..image_length as usize],
+    ));
+    if normalized_image_path(&actual_executable)
+        != normalized_image_path(expected_executable)
+    {
+        return Ok(false);
+    }
+
+    if unsafe { TerminateProcess(process.0, 1) } == 0 {
+        // The target may have exited naturally between the identity check and
+        // termination. Treat that as recovered only when this same handle is
+        // already signaled.
+        if unsafe { WaitForSingleObject(process.0, 0) } == WAIT_OBJECT_0 {
+            return Ok(true);
+        }
+        return Err(last_error("TerminateProcess for verified GitManager service"));
+    }
+
+    match unsafe { WaitForSingleObject(process.0, 5_000) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Err(format!(
+            "Verified GitManager service PID {process_id} did not exit within 5 seconds after termination."
+        )),
+        _ => Err(last_error("WaitForSingleObject after service termination")),
+    }
+}
+
 pub(super) fn attach_and_resume(process_id: u32) -> Result<ProcessContainment, String> {
     let job = OwnedHandle::new(
         unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) },
@@ -125,7 +222,10 @@ pub(super) fn attach_and_resume(process_id: u32) -> Result<ProcessContainment, S
     )?;
 
     let mut limits: JobExtendedLimitInformation = unsafe { zeroed() };
-    limits.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // The UI remains kill-on-close contained, but explicitly permits the
+    // required data service to break away into its own process lifetime.
+    limits.basic_limit_information.limit_flags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     let configured = unsafe {
         SetInformationJobObject(
             job.0,
@@ -193,6 +293,29 @@ mod tests {
         size_of, IoCounters, JobBasicLimitInformation, JobExtendedLimitInformation,
         ThreadEntry32,
     };
+
+    #[test]
+    fn service_processes_can_break_away_while_ui_remains_kill_on_close() {
+        use super::{JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
+        let flags = JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        assert_ne!(flags & JOB_OBJECT_LIMIT_BREAKAWAY_OK, 0);
+        assert_ne!(flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, 0);
+    }
+
+    #[test]
+    fn executable_identity_comparison_ignores_windows_path_case_and_separators() {
+        use super::normalized_image_path;
+        use std::path::Path;
+
+        assert_eq!(
+            normalized_image_path(Path::new(r"C:\Program Files\GitManager\gitmanager.service.exe")),
+            normalized_image_path(Path::new(r"c:/program files/gitmanager/GitManager.Service.exe")),
+        );
+        assert_ne!(
+            normalized_image_path(Path::new(r"C:\Program Files\GitManager\gitmanager.service.exe")),
+            normalized_image_path(Path::new(r"C:\Program Files\GitManager\gitmanager.exe")),
+        );
+    }
 
     #[test]
     fn win32_process_structures_match_the_x64_abi() {

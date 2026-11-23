@@ -13,6 +13,7 @@ import type {
 
 type WorkspaceSource = "local" | "remote";
 type PullMode = "" | "none" | "stash" | "commit";
+type WorkspaceFocus = "all" | "conflicts";
 
 function messageOf(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -38,13 +39,13 @@ function statusLabel(change: WorktreeChange): string {
 export function RepositoryWorkspace({
 	repo,
 	onRepositoryUpdated,
-	onPullCompleted,
 	onOpenCleaner,
+	focus = "all",
 }: {
 	repo: GitRepository;
 	onRepositoryUpdated: (repo: GitRepository) => void;
-	onPullCompleted: (repoPath: string) => void;
 	onOpenCleaner: () => void;
+	focus?: WorkspaceFocus;
 }) {
 	const remoteBranches = useMemo(
 		() => (repo.branches ?? []).filter((branch) => branch.is_remote),
@@ -72,6 +73,9 @@ export function RepositoryWorkspace({
 	const [previewTitle, setPreviewTitle] = useState("");
 	const [previewText, setPreviewText] = useState("");
 	const [previewKind, setPreviewKind] = useState<"file" | "diff">("file");
+	const [editorDraft, setEditorDraft] = useState("");
+	const [editorDirty, setEditorDirty] = useState(false);
+	const [savingResolution, setSavingResolution] = useState(false);
 	const [loadingFiles, setLoadingFiles] = useState(false);
 	const [loadingChanges, setLoadingChanges] = useState(false);
 	const [busy, setBusy] = useState(false);
@@ -170,6 +174,8 @@ export function RepositoryWorkspace({
 		setSelectedFile(null);
 		setPreviewTitle("");
 		setPreviewText("");
+		setEditorDraft("");
+		setEditorDirty(false);
 	}
 
 	function openParentDirectory() {
@@ -191,6 +197,8 @@ export function RepositoryWorkspace({
 		setSelectedFile(entry);
 		setPreviewTitle(entry.path);
 		setPreviewText("Loading file…");
+		setEditorDraft("");
+		setEditorDirty(false);
 		setPreviewKind("file");
 		setError("");
 		try {
@@ -200,7 +208,11 @@ export function RepositoryWorkspace({
 				source,
 				branch: source === "remote" ? remoteBranch : null,
 			});
-			if (requestId === previewRequestId.current) setPreviewText(text);
+			if (requestId === previewRequestId.current) {
+				setPreviewText(text);
+				setEditorDraft(text);
+				setEditorDirty(false);
+			}
 		} catch (cause) {
 			if (requestId === previewRequestId.current) {
 				setPreviewText("");
@@ -209,10 +221,36 @@ export function RepositoryWorkspace({
 		}
 	}
 
+	async function saveConflictResolution() {
+		if (focus !== "conflicts" || source !== "local" || !selectedFile || previewKind !== "file") return;
+		setSavingResolution(true);
+		setError("");
+		setNotice("Saving resolved file…");
+		try {
+			const result = await invoke<string>("save_conflict_resolution", {
+				repoPath: repo.path,
+				relativePath: selectedFile.path,
+				content: editorDraft,
+			});
+			setPreviewText(editorDraft);
+			setEditorDirty(false);
+			setNotice(result);
+			await refreshChanges();
+			await refreshRepositoryDetails();
+		} catch (cause) {
+			setError(messageOf(cause));
+			setNotice("");
+		} finally {
+			setSavingResolution(false);
+		}
+	}
+
 	async function previewDiff(change: WorktreeChange) {
 		const requestId = ++previewRequestId.current;
 		setPreviewTitle(change.path + (change.staged ? " · staged diff" : " · unstaged diff"));
 		setPreviewText("Loading diff…");
+		setEditorDraft("");
+		setEditorDirty(false);
 		setPreviewKind("diff");
 		setSelectedFile(null);
 		setError("");
@@ -417,7 +455,6 @@ export function RepositoryWorkspace({
 			});
 			setPullPreview(null);
 			setPullMode("");
-			onPullCompleted(repo.path);
 			setNotice(
 				result.message
 				+ (result.commitCreated ? " Local changes were committed and rebased." : "")
@@ -440,6 +477,9 @@ export function RepositoryWorkspace({
 	const selectedUnstagedCount = changes.filter((change) => selectedChangeSet.has(change.path) && (!change.staged || change.worktreeStatus !== "Clean")).length;
 	const stagedCount = changes.filter((change) => change.staged).length;
 	const unstagedCount = changes.filter((change) => !change.staged || change.worktreeStatus !== "Clean").length;
+	const visibleChanges = focus === "conflicts"
+		? changes.filter((change) => change.indexStatus === "Conflict" || change.worktreeStatus === "Conflict")
+		: changes;
 	const pathParts = currentPath.split("/").filter(Boolean);
 
 	return (
@@ -447,12 +487,15 @@ export function RepositoryWorkspace({
 			<div className="gm-workspace-heading">
 				<div>
 					<div className="gm-eyebrow">WORKING COPY</div>
-					<h2>Code &amp; Changes</h2>
-					<p>Browse files, review changes, stage selected paths and commit locally.</p>
+					<h2>{focus === "conflicts" ? "Conflict Resolver" : "Code &amp; Changes"}</h2>
+					<p>{focus === "conflicts"
+						? "Inspect unresolved paths, edit them in your local editor, then stage the resolved files."
+						: "Browse files, review changes, stage selected paths and commit locally."}</p>
 				</div>
 				<div className="gm-workspace-summary">
 					<span><strong>{stagedCount}</strong> staged</span>
 					<span><strong>{unstagedCount}</strong> unstaged</span>
+					{focus === "conflicts" && <span><strong>{visibleChanges.length}</strong> conflicts</span>}
 				</div>
 			</div>
 
@@ -484,19 +527,21 @@ export function RepositoryWorkspace({
 			<div className="gm-workspace-layout gm-workbench-layout">
 				<section className="gm-workspace-card gm-workspace-changes" aria-label="Source control">
 					<div className="gm-workspace-card-heading">
-						<div><h3>Source Control</h3><span>{changes.length === 0 ? "No pending changes" : `${changes.length} changed paths`}</span></div>
-						<span className={changes.length === 0 ? "gm-workspace-card-hint gm-workspace-clean" : "gm-workspace-card-hint"}>{changes.length === 0 ? "Clean" : "Changes"}</span>
+						<div><h3>{focus === "conflicts" ? "Unresolved Files" : "Source Control"}</h3><span>{visibleChanges.length === 0 ? "No matching paths" : `${visibleChanges.length} changed paths`}</span></div>
+						<span className={visibleChanges.length === 0 ? "gm-workspace-card-hint gm-workspace-clean" : "gm-workspace-card-hint"}>{visibleChanges.length === 0 ? "Clean" : focus === "conflicts" ? "Conflicts" : "Changes"}</span>
 					</div>
 					{loadingChanges ? (
 						<div className="gm-workspace-empty">Reading Git status…</div>
-					) : changes.length === 0 ? (
+					) : visibleChanges.length === 0 ? (
 						<div className="gm-workspace-empty gm-workspace-source-empty">
-							<strong>Working tree clean</strong>
-							<span>Changed files will appear here. Select a file to inspect its diff, then stage and commit it.</span>
+							<strong>{focus === "conflicts" ? "No unresolved conflicts" : "Working tree clean"}</strong>
+							<span>{focus === "conflicts"
+								? "GitManager has not detected any unmerged paths in this working tree."
+								: "Changed files will appear here. Select a file to inspect its diff, then stage and commit it."}</span>
 						</div>
 					) : (
 						<div className="gm-workspace-change-list">
-							{changes.map((change) => (
+							{visibleChanges.map((change) => (
 								<div className="gm-workspace-change" key={change.path}>
 									<label className="gm-workspace-check">
 										<input type="checkbox" checked={selectedChangeSet.has(change.path)} onChange={(event) => toggleSelectedPath(change.path, event.target.checked)} />
@@ -515,7 +560,7 @@ export function RepositoryWorkspace({
 					<div className="gm-workspace-actions">
 						<button type="button" className="gm-button gm-button-secondary" onClick={() => void runPathOperation("stage_repository_paths")} disabled={busy || selectedUnstagedCount === 0}>Stage</button>
 						<button type="button" className="gm-button gm-button-secondary" onClick={() => void runPathOperation("unstage_repository_paths")} disabled={busy || selectedStagedCount === 0}>Unstage</button>
-						<button type="button" className="gm-button gm-button-primary" onClick={() => void openCommitDialog()} disabled={busy || stagedCount === 0}>Commit</button>
+						{focus !== "conflicts" && <button type="button" className="gm-button gm-button-primary" onClick={() => void openCommitDialog()} disabled={busy || stagedCount === 0}>Commit</button>}
 					</div>
 				</section>
 
@@ -559,9 +604,28 @@ export function RepositoryWorkspace({
 				<aside className="gm-workspace-card gm-workspace-preview" aria-label="File editor and preview">
 					<div className="gm-workspace-card-heading">
 						<div><h3>{previewKind === "diff" ? "Diff Editor" : "Editor"}</h3><span>{previewTitle || "No file selected"}</span></div>
-						<button type="button" className="gm-workspace-mini" onClick={() => { previewRequestId.current += 1; setPreviewTitle(""); setPreviewText(""); setSelectedFile(null); }}>Clear</button>
+						<button type="button" className="gm-workspace-mini" onClick={() => { previewRequestId.current += 1; setPreviewTitle(""); setPreviewText(""); setEditorDraft(""); setEditorDirty(false); setSelectedFile(null); }}>Clear</button>
 					</div>
-					{previewText ? (
+					{focus === "conflicts" && source === "local" && selectedFile && previewKind === "file" ? (
+						<div className="gm-workspace-conflict-editor">
+							<div className="gm-workspace-conflict-editor-note">Edit the merged contents below. Saving writes only this currently conflicted file; use Stage in Source Control to mark it resolved.</div>
+							<textarea
+								className="gm-workspace-preview-text gm-workspace-conflict-textarea"
+								value={editorDraft}
+								onChange={(event) => { setEditorDraft(event.target.value); setEditorDirty(true); }}
+								disabled={previewText === "Loading file…" || savingResolution}
+								spellCheck={false}
+								aria-label="Resolved conflict file contents"
+								maxLength={1024 * 1024}
+							/>
+							<div className="gm-workspace-conflict-editor-actions">
+								<span>{editorDraft.length.toLocaleString()} characters{editorDirty ? " · unsaved" : ""}</span>
+								<button type="button" className="gm-button gm-button-primary" onClick={() => void saveConflictResolution()} disabled={!editorDirty || savingResolution || loadingFiles || previewText === "Loading file…"}>
+									{savingResolution ? "Saving…" : "Save resolved file"}
+								</button>
+							</div>
+						</div>
+					) : previewText ? (
 						<pre className="gm-workspace-preview-text">{previewText}</pre>
 					) : (
 						<div className="gm-workspace-empty gm-workspace-editor-empty">
