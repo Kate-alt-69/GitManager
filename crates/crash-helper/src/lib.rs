@@ -60,9 +60,9 @@ pub const SERVICE_PROTOCOL_VERSION: u32 = 4;
 const MAX_CONCURRENT_SERVICE_REQUESTS: usize = 32;
 pub const SERVICE_GENERATION: u32 = 5;
 
-// Set only by this process's authenticated Status connection. On Windows,
-// the kernel-reported named-pipe server PID remains available even when the
-// peer closes before completing its response frame.
+// Set only by this process's Status probe. On Windows, the kernel-reported
+// named-pipe server PID remains available even if the peer closes before
+// completing its response frame.
 #[cfg(windows)]
 static LAST_SERVICE_CONTROL_PEER_PID: AtomicU32 = AtomicU32::new(0);
 #[cfg(windows)]
@@ -329,6 +329,7 @@ fn send_windows_service_frame(
     payload: &[u8],
     connect_timeout: Duration,
     read_timeout: Duration,
+    record_peer_pid: bool,
 ) -> Result<(Vec<u8>, u32), String> {
     use interprocess::os::windows::named_pipe::tokio::{
         pipe_mode,
@@ -367,6 +368,11 @@ fn send_windows_service_frame(
             let server_pid = pipe
                 .server_process_id()
                 .map_err(|error| format!("Could not identify the GitManager pipe server PID: {error}"))?;
+            if record_peer_pid {
+                // Capture identity before framing or response reads: even a
+                // broken response must still leave a trustworthy recovery PID.
+                LAST_SERVICE_CONTROL_PEER_PID.store(server_pid, Ordering::Release);
+            }
 
             timeout(Duration::from_secs(15), async {
                 pipe.write_all(&frame).await?;
@@ -2226,11 +2232,8 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
         &encoded,
         connect_timeout,
         read_timeout,
+        matches!(&request.command, ServiceCommand::Status),
     )?;
-    #[cfg(windows)]
-    if matches!(&request.command, ServiceCommand::Status) {
-        LAST_SERVICE_CONTROL_PEER_PID.store(pipe_server_pid, Ordering::Release);
-    }
 
     #[cfg(unix)]
     let response_bytes = {
@@ -3071,7 +3074,7 @@ pub fn service_control_lock_owner_pid() -> Option<u32> {
 }
 
 /// Returns the kernel-reported server PID from this process's most recent
-/// authenticated Status connection. It is useful when a pre-metadata service
+/// Status pipe connection. It is useful when a pre-metadata service
 /// holds the lock but its lock file does not contain a PID.
 pub fn service_control_peer_pid() -> Option<u32> {
     #[cfg(windows)]
