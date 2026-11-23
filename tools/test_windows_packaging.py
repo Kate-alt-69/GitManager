@@ -577,12 +577,22 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("QueryFullProcessImageNameW", windows_process)
         self.assertIn("normalized_image_path(&actual_executable)", windows_process)
 
-    def test_windows_pipe_response_flushes_and_status_health_check_retries(self):
+    def test_windows_pipe_uses_overlapped_io_and_status_health_check_retries(self):
         helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
         frame_writer = helper.split("fn write_service_frame_with_timeout", 1)[1].split("\n}", 1)[0]
+        async_client = helper.split("fn send_windows_service_frame", 1)[1].split("\n}", 1)[0]
         status_request = helper.split("pub fn request_service_status", 1)[1].split("\n}", 1)[0]
         self.assertIn("stream.flush()", frame_writer)
+        self.assertIn("AsyncReadExt", async_client)
+        self.assertIn("AsyncWriteExt", async_client)
+        self.assertIn("pipe.read_exact(&mut header).await", async_client)
+        self.assertIn("pipe.write_all(&frame).await", async_client)
+        self.assertLess(
+            async_client.index("LAST_SERVICE_CONTROL_PEER_PID.store(server_pid"),
+            async_client.index("pipe.read_exact(&mut header).await"),
+        )
         self.assertIn("for attempt in 0..3", status_request)
+        self.assertIn("tokio::time::timeout", helper)
         self.assertIn("could not send", helper.lower())
 
     def test_docs_explain_msi_and_msix_service_shutdown_differences(self):
