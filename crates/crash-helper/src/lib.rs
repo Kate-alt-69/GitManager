@@ -23,7 +23,9 @@ use std::io::{self, BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -63,6 +65,8 @@ pub const SERVICE_GENERATION: u32 = 5;
 // peer closes before completing its response frame.
 #[cfg(windows)]
 static LAST_SERVICE_CONTROL_PEER_PID: AtomicU32 = AtomicU32::new(0);
+#[cfg(windows)]
+static WINDOWS_IPC_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Endpoint {
@@ -148,36 +152,13 @@ fn bind_service_local_listener(name: &str) -> io::Result<Listener> {
     }
 }
 
-fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<(LocalSocketStream, Option<u32>)> {
-    #[cfg(windows)]
-    {
-        use interprocess::os::windows::named_pipe::{
-            local_socket,
-            pipe_mode,
-            DuplexPipeStream,
-        };
-        // Use the direct named-pipe API here: ConnectOptions' local-socket
-        // timeout is not enforced for an overloaded Windows pipe.
-        let pipe = DuplexPipeStream::<pipe_mode::Bytes>::connect_by_path_with_wait_mode(
-            name,
-            ConnectWaitMode::Timeout(timeout),
-        )?;
-        let server_pid = pipe.server_process_id()?;
-        Ok((
-            LocalSocketStream::NamedPipe(local_socket::Stream::from(pipe)),
-            Some(server_pid),
-        ))
-    }
-
-    #[cfg(unix)]
-    {
-        let local_name = name.to_fs_name::<GenericFilePath>()?;
-        ConnectOptions::new()
-            .name(local_name)
-            .wait_mode(ConnectWaitMode::Timeout(timeout))
-            .connect_sync()
-            .map(|stream| (stream, None))
-    }
+#[cfg(unix)]
+fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<LocalSocketStream> {
+    let local_name = name.to_fs_name::<GenericFilePath>()?;
+    ConnectOptions::new()
+        .name(local_name)
+        .wait_mode(ConnectWaitMode::Timeout(timeout))
+        .connect_sync()
 }
 
 fn write_service_frame(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
@@ -321,6 +302,112 @@ fn write_service_frame_with_timeout(
     write_all_with_deadline(stream, &length.to_be_bytes(), deadline)?;
     write_all_with_deadline(stream, payload, deadline)?;
     stream.flush()
+}
+
+/// Windows client transport using overlapped named-pipe I/O.
+///
+/// PIPE_NOWAIT is not an asynchronous-I/O mechanism: an empty read can be
+/// surfaced as zero bytes before the service has replied. Tokio's named-pipe
+/// adapter uses the kernel's overlapped completion notifications instead.
+#[cfg(windows)]
+fn windows_ipc_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    match WINDOWS_IPC_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Could not initialize the Windows IPC runtime: {error}"))
+    }) {
+        Ok(runtime) => Ok(runtime),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+#[cfg(windows)]
+fn send_windows_service_frame(
+    pipe_name: &str,
+    payload: &[u8],
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> Result<(Vec<u8>, u32), String> {
+    use interprocess::os::windows::named_pipe::tokio::{
+        pipe_mode,
+        DuplexPipeStream,
+    };
+
+    if payload.is_empty() || payload.len() as u64 >= MAX_MESSAGE_BYTES {
+        return Err("Service IPC frame is empty or exceeds the message limit".to_string());
+    }
+    let length = u32::try_from(payload.len())
+        .map_err(|_| "Service IPC frame is too large".to_string())?;
+    let mut frame = Vec::with_capacity(payload.len() + 4);
+    frame.extend_from_slice(&length.to_be_bytes());
+    frame.extend_from_slice(payload);
+
+    let runtime = windows_ipc_runtime()?;
+    let pipe_name = pipe_name.to_string();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+    runtime.spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::time::timeout;
+
+        let result = async {
+            let mut pipe = timeout(
+                connect_timeout,
+                DuplexPipeStream::<pipe_mode::Bytes>::connect_by_path_with_wait_mode(
+                    pipe_name.as_str(),
+                    ConnectWaitMode::Timeout(connect_timeout),
+                ),
+            )
+            .await
+            .map_err(|_| "Timed out connecting to the GitManager service pipe".to_string())?
+            .map_err(|error| format!("Could not connect to GitManager service pipe: {error}"))?;
+
+            let server_pid = pipe
+                .server_process_id()
+                .map_err(|error| format!("Could not identify the GitManager pipe server PID: {error}"))?;
+
+            timeout(Duration::from_secs(15), async {
+                pipe.write_all(&frame).await?;
+                pipe.flush().await
+            })
+            .await
+            .map_err(|_| "Timed out sending the GitManager service request".to_string())?
+            .map_err(|error| format!("Could not send GitManager service request: {error}"))?;
+
+            let response = timeout(read_timeout, async {
+                let mut header = [0u8; 4];
+                pipe.read_exact(&mut header).await?;
+                let response_length = u32::from_be_bytes(header) as u64;
+                if response_length == 0 || response_length >= MAX_MESSAGE_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Service IPC response frame has an invalid length",
+                    ));
+                }
+                let mut response = vec![0u8; response_length as usize];
+                pipe.read_exact(&mut response).await?;
+                Ok::<Vec<u8>, io::Error>(response)
+            })
+            .await
+            .map_err(|_| format!(
+                "Timed out waiting {} seconds for the GitManager service response",
+                read_timeout.as_secs()
+            ))?
+            .map_err(|error| format!("Could not read GitManager service response: {error}"))?;
+
+            Ok::<(Vec<u8>, u32), String>((response, server_pid))
+        }
+        .await;
+
+        let _ = sender.send(result);
+    });
+
+    let maximum_wait = connect_timeout + Duration::from_secs(17) + read_timeout;
+    receiver
+        .recv_timeout(maximum_wait)
+        .map_err(|error| format!("Windows IPC worker did not complete: {error:?}"))?
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -2069,13 +2156,6 @@ fn send_legacy_tcp_status(endpoint: &Endpoint) -> Result<ServiceResponse, String
 }
 
 fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, String> {
-    #[cfg(windows)]
-    if matches!(&command, ServiceCommand::Status) {
-        // Never reuse a PID from an earlier connection if this probe cannot
-        // reach the current named-pipe server.
-        LAST_SERVICE_CONTROL_PEER_PID.store(0, Ordering::Release);
-    }
-
     let data_dir = gitmanager_data_dir()?;
     let endpoint_path = data_dir.join(ENDPOINT_FILE);
     let content = fs::read(&endpoint_path)
@@ -2133,25 +2213,6 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
     if endpoint.name != expected_name {
         return Err("Service-control socket name does not match this user's GitManager data directory.".to_string());
     }
-    let (mut stream, _pipe_server_pid) = connect_service_local_socket(&endpoint.name, connect_timeout)
-        .map_err(|error| format!("Could not connect to GitManager core service: {error}"))?;
-
-    #[cfg(windows)]
-    if matches!(&command, ServiceCommand::Status) {
-        LAST_SERVICE_CONTROL_PEER_PID.store(_pipe_server_pid.unwrap_or(0), Ordering::Release);
-    }
-
-    #[cfg(windows)]
-    stream.set_nonblocking(true)
-        .map_err(|error| format!("Could not enable bounded Windows named-pipe IPC: {error}"))?;
-    #[cfg(not(windows))]
-    {
-        stream.set_recv_timeout(Some(read_timeout))
-            .map_err(|error| format!("Could not set service IPC receive timeout: {error}"))?;
-        stream.set_send_timeout(Some(Duration::from_secs(15)))
-            .map_err(|error| format!("Could not set service IPC send timeout: {error}"))?;
-    }
-
     let request = ServiceRequest { token: endpoint.token, command };
     let encoded = serde_json::to_vec(&request)
         .map_err(|error| format!("Could not encode service-control request: {error}"))?;
@@ -2160,14 +2221,25 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
     }
 
     #[cfg(windows)]
+    let (response_bytes, pipe_server_pid) = send_windows_service_frame(
+        &endpoint.name,
+        &encoded,
+        connect_timeout,
+        read_timeout,
+    )?;
+    #[cfg(windows)]
+    if matches!(&request.command, ServiceCommand::Status) {
+        LAST_SERVICE_CONTROL_PEER_PID.store(pipe_server_pid, Ordering::Release);
+    }
+
+    #[cfg(unix)]
     let response_bytes = {
-        write_service_frame_with_timeout(&mut stream, &encoded, Duration::from_secs(15))
-            .map_err(|error| format!("Could not send service-control request: {error}"))?;
-        read_service_frame_with_timeout(&mut stream, read_timeout)
-            .map_err(|error| format!("Could not read service-control response: {error}"))?
-    };
-    #[cfg(not(windows))]
-    let response_bytes = {
+        let mut stream = connect_service_local_socket(&endpoint.name, connect_timeout)
+            .map_err(|error| format!("Could not connect to GitManager core service: {error}"))?;
+        stream.set_recv_timeout(Some(read_timeout))
+            .map_err(|error| format!("Could not set service IPC receive timeout: {error}"))?;
+        stream.set_send_timeout(Some(Duration::from_secs(15)))
+            .map_err(|error| format!("Could not set service IPC send timeout: {error}"))?;
         write_service_frame(&mut stream, &encoded)
             .map_err(|error| format!("Could not send service-control request: {error}"))?;
         read_service_frame(&mut stream)
@@ -2176,13 +2248,11 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
 
     let response = finish_service_response(endpoint.version, &response_bytes)?;
     #[cfg(windows)]
-    if let Some(pipe_server_pid) = _pipe_server_pid {
-        if !service_pipe_server_identity_matches(pipe_server_pid, response.status.process_id) {
-            return Err(format!(
-                "GitManager IPC peer identity mismatch: Windows named pipe is served by PID {pipe_server_pid}, but the authenticated status frame reported PID {}.",
-                response.status.process_id
-            ));
-        }
+    if !service_pipe_server_identity_matches(pipe_server_pid, response.status.process_id) {
+        return Err(format!(
+            "GitManager IPC peer identity mismatch: Windows named pipe is served by PID {pipe_server_pid}, but the authenticated status frame reported PID {}.",
+            response.status.process_id
+        ));
     }
     Ok(response)
 }
@@ -2453,6 +2523,9 @@ pub fn service_connect_git_account(payload: serde_json::Value) -> Result<serde_j
 }
 
 pub fn request_service_status() -> Result<ServiceStatus, String> {
+    #[cfg(windows)]
+    LAST_SERVICE_CONTROL_PEER_PID.store(0, Ordering::Release);
+
     let mut last_error = None;
     for attempt in 0..3 {
         match send_service_command(ServiceCommand::Status) {
