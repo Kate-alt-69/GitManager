@@ -31,6 +31,6 @@ sysinfo = { version = "=0.37.1", default-features = false, features = ["system"]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio = { version = "1.40", default-features = false, features = ["rt", "rt-multi-thread", "time"] }
 dirs = "5.0"
-crash-helper = { path = "../crates/crash-helper" }
+crash-helper = { path = "../crates/crash-helper", features = ["async-ipc"] }
 gitmanager-core = { path = "../crates/gitmanager-core" }
 fs2 = "0.4"
