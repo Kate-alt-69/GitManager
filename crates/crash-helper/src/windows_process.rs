@@ -137,7 +137,7 @@ fn normalized_image_path(path: &Path) -> String {
     let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let value = resolved.to_string_lossy().replace('/', "\\");
     value
-        .strip_prefix(r"\\?\\")
+        .strip_prefix(r"\\?\")
         .unwrap_or(&value)
         .to_ascii_lowercase()
 }
