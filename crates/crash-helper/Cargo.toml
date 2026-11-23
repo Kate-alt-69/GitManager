@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-core-service = ["dep:gitmanager-core"]
+core-service = ["dep:gitmanager-core", "async-ipc"]
 account-storage = ["core-service"]
 repository-data = ["core-service", "gitmanager-core/git-engine"]
 notification-storage = ["core-service"]
