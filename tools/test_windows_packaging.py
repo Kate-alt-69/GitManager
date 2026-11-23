@@ -565,10 +565,17 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE: Duration = Duration::from_secs(45)", helper)
         self.assertIn("external_service_lock_recovery_due(unhealthy_since, Instant::now())", supervisor)
         self.assertIn("let same_owner = service_control_lock_is_held()", supervisor)
-        self.assertIn("&& service_control_lock_owner_pid() == Some(pid)", supervisor)
-        self.assertIn("stop_obsolete_service_process(pid)", supervisor)
+        self.assertIn("let owner_pid = peer_pid.or(recorded_owner_pid)", supervisor)
+        self.assertIn("match (recorded_owner, connected_peer)", supervisor)
+        self.assertIn("recorded_pid == pid && peer_pid == pid", supervisor)
+        self.assertIn("stop_obsolete_service_process(pid, self.executable.as_deref())", supervisor)
         self.assertIn("wait_for_exclusive_lock_release(path, Duration::from_secs(4))", supervisor)
         self.assertIn("owner_pid.filter(|pid| *pid > 1 && *pid != std::process::id())", supervisor)
+
+        windows_process = (ROOT / "crates" / "crash-helper" / "src" / "windows_process.rs").read_text(encoding="utf-8")
+        self.assertIn("windows_process::terminate_if_image_matches(pid, expected_executable)", helper)
+        self.assertIn("QueryFullProcessImageNameW", windows_process)
+        self.assertIn("normalized_image_path(&actual_executable)", windows_process)
 
     def test_windows_pipe_response_flushes_and_status_health_check_retries(self):
         helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
