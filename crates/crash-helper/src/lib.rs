@@ -3173,10 +3173,20 @@ fn stop_obsolete_service_process(pid: u32, expected_executable: Option<&Path>) -
     }
 }
 
+const EXTERNAL_SERVICE_PEER_RECOVERY_GRACE: Duration = Duration::from_secs(8);
 const EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE: Duration = Duration::from_secs(45);
 
-fn external_service_lock_recovery_due(since: Instant, now: Instant) -> bool {
-    now.saturating_duration_since(since) >= EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE
+fn external_service_lock_recovery_due(
+    since: Instant,
+    now: Instant,
+    kernel_peer_observed: bool,
+) -> bool {
+    let grace = if kernel_peer_observed {
+        EXTERNAL_SERVICE_PEER_RECOVERY_GRACE
+    } else {
+        EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE
+    };
+    now.saturating_duration_since(since) >= grace
 }
 
 fn restart_delay(attempts: u32) -> Duration {
@@ -3308,14 +3318,17 @@ impl CoreServiceSupervisor {
                     ),
                     owner_pid.unwrap_or(0),
                     None,
-                    request_service_status(),
+                    Err("Authenticated service status probe did not complete.".to_string()),
                 );
                 self.lock_warning_recorded = true;
             }
 
             if let Some(pid) = owner_pid.filter(|pid| *pid > 1 && *pid != std::process::id()) {
-                if external_service_lock_recovery_due(unhealthy_since, Instant::now())
-                    && Instant::now() >= self.next_restart
+                if external_service_lock_recovery_due(
+                    unhealthy_since,
+                    Instant::now(),
+                    observed_peer_pid.is_some(),
+                ) && Instant::now() >= self.next_restart
                 {
                     // The PID file is only trusted while the kernel lock is
                     // held. Re-read both immediately before terminating to
@@ -3340,7 +3353,7 @@ impl CoreServiceSupervisor {
                             ),
                             pid,
                             None,
-                            request_service_status(),
+                            Err("Authenticated service status probe did not complete.".to_string()),
                         );
 
                         let termination_requested = stop_obsolete_service_process(pid, self.executable.as_deref());
@@ -3384,7 +3397,7 @@ impl CoreServiceSupervisor {
                                 ),
                                 pid,
                                 None,
-                                request_service_status(),
+                                Err("Authenticated service status probe did not complete.".to_string()),
                             );
                             self.lock_unhealthy_since = Some(Instant::now());
                             self.restart_attempts = self.restart_attempts.saturating_add(1);
@@ -4460,21 +4473,39 @@ mod tests {
     }
 
     #[test]
-    fn external_service_lock_recovery_waits_for_the_full_health_grace() {
+    fn external_service_lock_recovery_uses_peer_identity_for_shorter_grace() {
         let started = std::time::Instant::now();
         assert!(
             !super::external_service_lock_recovery_due(
                 started,
-                started + Duration::from_secs(44),
+                started + Duration::from_secs(7),
+                true,
             ),
-            "an external service must not be terminated before its recovery grace expires"
+            "a kernel-identified service must receive a short health grace"
+        );
+        assert!(
+            super::external_service_lock_recovery_due(
+                started,
+                started + Duration::from_secs(8),
+                true,
+            ),
+            "a persistently unresponsive kernel-identified peer becomes recoverable"
+        );
+        assert!(
+            !super::external_service_lock_recovery_due(
+                started,
+                started + Duration::from_secs(44),
+                false,
+            ),
+            "a metadata-only PID must retain the longer conservative grace"
         );
         assert!(
             super::external_service_lock_recovery_due(
                 started,
                 started + Duration::from_secs(45),
+                false,
             ),
-            "a persistently unresponsive lock owner becomes recoverable after the grace"
+            "a persistently unresponsive metadata-only owner becomes recoverable"
         );
     }
 
