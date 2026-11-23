@@ -21,7 +21,8 @@ repository-data = ["core-service", "gitmanager-core/git-engine"]
 notification-storage = ["core-service"]
 preferences-storage = ["core-service"]
 archive-operations = ["repository-data", "dep:gitmanager-archive"]
-provider-sync = ["repository-data", "account-storage", "dep:reqwest", "dep:tokio"]
+async-ipc = ["dep:tokio", "interprocess/tokio"]
+provider-sync = ["repository-data", "account-storage", "dep:reqwest", "async-ipc"]
 
 [dependencies]
 gitmanager-core = { path = "../gitmanager-core", optional = true }
@@ -35,4 +36,4 @@ serde_json = "1.0"
 uuid = { version = "1.11", features = ["v4"] }
 widestring = "1.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
-tokio = { version = "1.40", default-features = false, features = ["rt", "rt-multi-thread", "net", "time"], optional = true }
+tokio = { version = "1.40", default-features = false, features = ["rt", "rt-multi-thread", "net", "time", "io-util"], optional = true }
