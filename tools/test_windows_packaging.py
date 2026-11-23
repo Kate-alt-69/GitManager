@@ -563,7 +563,9 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         )[0]
 
         self.assertIn("EXTERNAL_SERVICE_LOCK_RECOVERY_GRACE: Duration = Duration::from_secs(45)", helper)
-        self.assertIn("external_service_lock_recovery_due(unhealthy_since, Instant::now())", supervisor)
+        self.assertIn("external_service_lock_recovery_due(", supervisor)
+        self.assertIn("observed_peer_pid.is_some()", supervisor)
+        self.assertIn("EXTERNAL_SERVICE_PEER_RECOVERY_GRACE: Duration = Duration::from_secs(8)", helper)
         self.assertIn("let same_owner = service_control_lock_is_held()", supervisor)
         self.assertIn("let owner_pid = peer_pid.or(recorded_owner_pid)", supervisor)
         self.assertIn("match (recorded_owner, connected_peer)", supervisor)
