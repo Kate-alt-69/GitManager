@@ -23,7 +23,7 @@ use std::io::{self, BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -57,6 +57,12 @@ const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 pub const SERVICE_PROTOCOL_VERSION: u32 = 4;
 const MAX_CONCURRENT_SERVICE_REQUESTS: usize = 32;
 pub const SERVICE_GENERATION: u32 = 5;
+
+// Set only by this process's authenticated Status connection. On Windows,
+// the kernel-reported named-pipe server PID remains available even when the
+// peer closes before completing its response frame.
+#[cfg(windows)]
+static LAST_SERVICE_CONTROL_PEER_PID: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Endpoint {
@@ -142,7 +148,7 @@ fn bind_service_local_listener(name: &str) -> io::Result<Listener> {
     }
 }
 
-fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<LocalSocketStream> {
+fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<(LocalSocketStream, Option<u32>)> {
     #[cfg(windows)]
     {
         use interprocess::os::windows::named_pipe::{
@@ -156,7 +162,11 @@ fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<Loc
             name,
             ConnectWaitMode::Timeout(timeout),
         )?;
-        Ok(LocalSocketStream::NamedPipe(local_socket::Stream::from(pipe)))
+        let server_pid = pipe.server_process_id()?;
+        Ok((
+            LocalSocketStream::NamedPipe(local_socket::Stream::from(pipe)),
+            Some(server_pid),
+        ))
     }
 
     #[cfg(unix)]
@@ -166,6 +176,7 @@ fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<Loc
             .name(local_name)
             .wait_mode(ConnectWaitMode::Timeout(timeout))
             .connect_sync()
+            .map(|stream| (stream, None))
     }
 }
 
@@ -2058,6 +2069,13 @@ fn send_legacy_tcp_status(endpoint: &Endpoint) -> Result<ServiceResponse, String
 }
 
 fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, String> {
+    #[cfg(windows)]
+    if matches!(&command, ServiceCommand::Status) {
+        // Never reuse a PID from an earlier connection if this probe cannot
+        // reach the current named-pipe server.
+        LAST_SERVICE_CONTROL_PEER_PID.store(0, Ordering::Release);
+    }
+
     let data_dir = gitmanager_data_dir()?;
     let endpoint_path = data_dir.join(ENDPOINT_FILE);
     let content = fs::read(&endpoint_path)
@@ -2115,8 +2133,13 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
     if endpoint.name != expected_name {
         return Err("Service-control socket name does not match this user's GitManager data directory.".to_string());
     }
-    let mut stream = connect_service_local_socket(&endpoint.name, connect_timeout)
+    let (mut stream, _pipe_server_pid) = connect_service_local_socket(&endpoint.name, connect_timeout)
         .map_err(|error| format!("Could not connect to GitManager core service: {error}"))?;
+
+    #[cfg(windows)]
+    if matches!(&command, ServiceCommand::Status) {
+        LAST_SERVICE_CONTROL_PEER_PID.store(_pipe_server_pid.unwrap_or(0), Ordering::Release);
+    }
 
     #[cfg(windows)]
     stream.set_nonblocking(true)
@@ -2151,9 +2174,22 @@ fn send_service_request(command: ServiceCommand) -> Result<ServiceResponse, Stri
             .map_err(|error| format!("Could not read service-control response: {error}"))?
     };
 
-    finish_service_response(endpoint.version, &response_bytes)
+    let response = finish_service_response(endpoint.version, &response_bytes)?;
+    #[cfg(windows)]
+    if let Some(pipe_server_pid) = _pipe_server_pid {
+        if !service_pipe_server_identity_matches(pipe_server_pid, response.status.process_id) {
+            return Err(format!(
+                "GitManager IPC peer identity mismatch: Windows named pipe is served by PID {pipe_server_pid}, but the authenticated status frame reported PID {}.",
+                response.status.process_id
+            ));
+        }
+    }
+    Ok(response)
 }
 
+fn service_pipe_server_identity_matches(pipe_server_pid: u32, reported_service_pid: u32) -> bool {
+    pipe_server_pid > 1 && pipe_server_pid == reported_service_pid
+}
 
 fn send_service_command(command: ServiceCommand) -> Result<ServiceStatus, String> {
     send_service_request(command).map(|response| response.status)
@@ -2961,6 +2997,21 @@ pub fn service_control_lock_owner_pid() -> Option<u32> {
     (pid > 1).then_some(pid)
 }
 
+/// Returns the kernel-reported server PID from this process's most recent
+/// authenticated Status connection. It is useful when a pre-metadata service
+/// holds the lock but its lock file does not contain a PID.
+pub fn service_control_peer_pid() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        let pid = LAST_SERVICE_CONTROL_PEER_PID.load(Ordering::Acquire);
+        (pid > 1).then_some(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// Checks the kernel-enforced service lock without trusting the owner PID file.
 /// Any inspection error fails closed so startup cannot create a duplicate.
 pub fn service_control_lock_is_held() -> bool {
@@ -3020,28 +3071,23 @@ fn spawn_core_service_process(executable: &Path) -> Result<Child, String> {
     })
 }
 
-fn stop_obsolete_service_process(pid: u32) -> bool {
+fn stop_obsolete_service_process(pid: u32, expected_executable: Option<&Path>) -> bool {
     if pid <= 1 || pid == std::process::id() {
         return false;
     }
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        Command::new("taskkill.exe")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
+        let Some(expected_executable) = expected_executable else {
+            return false;
+        };
+        windows_process::terminate_if_image_matches(pid, expected_executable)
             .unwrap_or(false)
     }
 
     #[cfg(unix)]
     {
+        let _ = expected_executable;
         Command::new("kill")
             .args(["-TERM", &pid.to_string()])
             .stdin(Stdio::null())
@@ -3124,7 +3170,7 @@ impl CoreServiceSupervisor {
             Ok(status),
         );
 
-        if !stop_obsolete_service_process(pid) {
+        if !stop_obsolete_service_process(pid, self.executable.as_deref()) {
             return false;
         }
 
@@ -3161,7 +3207,9 @@ impl CoreServiceSupervisor {
         // duplicate; give the owner a recovery grace, then terminate only the
         // PID recorded under that same kernel-enforced lock.
         if self.child.is_none() && service_control_lock_is_held() {
-            let owner_pid = service_control_lock_owner_pid();
+            // The pipe's kernel-reported server PID is the fallback for
+            // pre-metadata services whose lock file is empty or malformed.
+            let owner_pid = service_control_lock_owner_pid().or_else(service_control_peer_pid);
             if self.lock_owner_pid != owner_pid {
                 self.lock_owner_pid = owner_pid;
                 self.lock_unhealthy_since = Some(Instant::now());
@@ -3191,8 +3239,13 @@ impl CoreServiceSupervisor {
                     // The PID file is only trusted while the kernel lock is
                     // held. Re-read both immediately before terminating to
                     // avoid acting on a stale PID after an ownership change.
+                    let recorded_owner = service_control_lock_owner_pid();
+                    let connected_peer = service_control_peer_pid();
                     let same_owner = service_control_lock_is_held()
-                        && service_control_lock_owner_pid() == Some(pid);
+                        && match recorded_owner {
+                            Some(recorded_pid) => recorded_pid == pid,
+                            None => connected_peer == Some(pid),
+                        };
                     if same_owner {
                         append_incident(
                             &format!(
@@ -3205,7 +3258,7 @@ impl CoreServiceSupervisor {
                             request_service_status(),
                         );
 
-                        let termination_requested = stop_obsolete_service_process(pid);
+                        let termination_requested = stop_obsolete_service_process(pid, self.executable.as_deref());
                         let lock_path = gitmanager_data_dir()
                             .ok()
                             .map(|directory| directory.join(LOCK_FILE));
@@ -4887,6 +4940,14 @@ mod tests {
             assert_eq!(encoded["command"]["action"], action);
             assert!(encoded["command"]["repo_path"].is_string());
         }
+    }
+
+    #[test]
+    fn named_pipe_peer_pid_must_match_authenticated_service_status() {
+        assert!(super::service_pipe_server_identity_matches(4321, 4321));
+        assert!(!super::service_pipe_server_identity_matches(0, 4321));
+        assert!(!super::service_pipe_server_identity_matches(4321, 0));
+        assert!(!super::service_pipe_server_identity_matches(4321, 9876));
     }
 
     #[test]
