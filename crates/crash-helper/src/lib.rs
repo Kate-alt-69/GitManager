@@ -331,10 +331,7 @@ fn send_windows_service_frame(
     read_timeout: Duration,
     record_peer_pid: bool,
 ) -> Result<(Vec<u8>, u32), String> {
-    use interprocess::os::windows::named_pipe::tokio::{
-        pipe_mode,
-        DuplexPipeStream,
-    };
+    use interprocess::os::windows::named_pipe::{pipe_mode, tokio::DuplexPipeStream};
 
     if payload.is_empty() || payload.len() as u64 >= MAX_MESSAGE_BYTES {
         return Err("Service IPC frame is empty or exceeds the message limit".to_string());
