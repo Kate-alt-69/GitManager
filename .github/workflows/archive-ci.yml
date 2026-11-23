@@ -134,7 +134,7 @@ jobs:
       - name: Check crash-helper service features independently
         shell: bash
         run: |
-          for feature in account-storage repository-data notification-storage preferences-storage archive-operations provider-sync; do
+          for feature in async-ipc account-storage repository-data notification-storage preferences-storage archive-operations provider-sync; do
             echo "Checking crash-helper feature: $feature"
             cargo check --locked -p crash-helper --no-default-features --features "$feature"
           done
