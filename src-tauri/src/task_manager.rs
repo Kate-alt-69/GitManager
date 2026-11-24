@@ -421,12 +421,17 @@ fn ensure_clean_worktree(repo_path: &Path) -> Result<(), String> {
 
 fn restore_exact_stash(repo_path: &Path, stash_oid: &str) -> Result<String, String> {
 	ensure_clean_worktree(repo_path)?;
-	let position = stash_position(repo_path, stash_oid)?
-		.ok_or_else(|| "The stash created by this task is no longer present; refusing to pop a different stash.".to_string())?;
+	stash_position(repo_path, stash_oid)?
+		.ok_or_else(|| "The stash created by this task is no longer present; refusing to apply a different stash.".to_string())?;
 	let apply = git_output(repo_path, &["stash", "apply", "--index", stash_oid])?;
 	if !apply.status.success() {
 		return Err(String::from_utf8_lossy(&apply.stderr).trim().to_string());
 	}
+	// Re-resolve the exact OID after apply so a stash inserted or removed by
+	// another Git process during the apply does not shift the saved position.
+	let Some(position) = stash_position(repo_path, stash_oid)? else {
+		return Ok("Restored the exact stash; its stash-list entry was removed concurrently.".to_string());
+	};
 	let reference = format!("stash@{{{position}}}");
 	let drop = git_output(repo_path, &["stash", "drop", &reference])?;
 	if drop.status.success() {
