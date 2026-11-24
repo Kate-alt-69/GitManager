@@ -91,6 +91,30 @@ class RequestRetryTests(unittest.TestCase):
         self.assertEqual(open_url.call_count, 1)
 
 
+class EngineDependencyIntegrityTests(unittest.TestCase):
+    def test_rejects_invalid_bundled_p_queue_package_json(self):
+        with tempfile.TemporaryDirectory(prefix="gitmanager-next-metadata-") as temporary:
+            workspace = Path(temporary)
+            package = workspace / "node_modules" / "next" / "dist" / "compiled" / "p-queue" / "package.json"
+            package.parent.mkdir(parents=True)
+            package.write_text('{"name": "p-queue",', encoding="utf-8")
+
+            error = engine_source.validate_next_compiled_metadata(workspace)
+
+            self.assertIsNotNone(error)
+            self.assertIn("package metadata is invalid", error)
+            self.assertIn("p-queue", error)
+
+    def test_accepts_valid_bundled_p_queue_package_json(self):
+        with tempfile.TemporaryDirectory(prefix="gitmanager-next-metadata-") as temporary:
+            workspace = Path(temporary)
+            package = workspace / "node_modules" / "next" / "dist" / "compiled" / "p-queue" / "package.json"
+            package.parent.mkdir(parents=True)
+            package.write_text('{"name": "p-queue", "version": "1.0.0"}', encoding="utf-8")
+
+            self.assertIsNone(engine_source.validate_next_compiled_metadata(workspace))
+
+
 class EngineWorkspaceOverlayTests(unittest.TestCase):
     def test_uses_gitmanager_error_hooks_without_modifying_engine_source(self):
         with tempfile.TemporaryDirectory(prefix="gitmanager-engine-overlay-") as temporary:
