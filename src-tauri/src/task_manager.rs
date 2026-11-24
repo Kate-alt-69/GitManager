@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -65,6 +65,16 @@ pub struct TaskHistoryEntry {
 	pub overwritten: bool,
 	pub revert_note: String,
 	pub before_ref: Option<String>,
+	#[serde(default)]
+	pub after_ref: Option<String>,
+	#[serde(default)]
+	pub before_index_snapshot: Option<String>,
+	#[serde(default)]
+	pub after_index_snapshot: Option<String>,
+	#[serde(default)]
+	pub before_index_existed: bool,
+	#[serde(default)]
+	pub stash_oid: Option<String>,
 	pub undo_cache_path: Option<String>,
 }
 
@@ -99,6 +109,50 @@ pub struct EnqueueTaskRequest {
 	pub commit_message: Option<String>,
 	pub branch: Option<String>,
 	pub paths: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TaskExecutionMetadata {
+	before_ref: Option<String>,
+	after_ref: Option<String>,
+	before_index_snapshot: Option<String>,
+	after_index_snapshot: Option<String>,
+	before_index_existed: bool,
+	stash_oid: Option<String>,
+	reversible: bool,
+}
+
+struct HistoryOperationGuard {
+	repo_key: String,
+}
+
+impl Drop for HistoryOperationGuard {
+	fn drop(&mut self) {
+		let mgr = manager();
+		let lanes = mgr.lanes.lock().unwrap_or_else(|p| p.into_inner());
+		let has_pending = lanes.get(&self.repo_key).map(|queue| !queue.is_empty()).unwrap_or(false);
+		let mut active = mgr.active_lane_keys.lock().unwrap_or_else(|p| p.into_inner());
+		active.remove(&self.repo_key);
+		drop(active);
+		drop(lanes);
+		if has_pending && !mgr.paused.load(Ordering::Relaxed) {
+			spawn_lane_worker_if_idle(self.repo_key.clone());
+		}
+	}
+}
+
+fn reserve_history_operation(repo_key: &str) -> Result<HistoryOperationGuard, String> {
+	let mgr = manager();
+	let lanes = mgr.lanes.lock().unwrap_or_else(|p| p.into_inner());
+	if lanes.get(repo_key).map(|queue| !queue.is_empty()).unwrap_or(false) {
+		return Err("This repository has queued Git tasks; wait for its lane to become idle before Undo/Redo.".to_string());
+	}
+	let mut active = mgr.active_lane_keys.lock().unwrap_or_else(|p| p.into_inner());
+	if active.get(repo_key).copied().unwrap_or(false) {
+		return Err("A Git operation is still running for this repository; retry Undo/Redo when it finishes.".to_string());
+	}
+	active.insert(repo_key.to_string(), true);
+	Ok(HistoryOperationGuard { repo_key: repo_key.to_string() })
 }
 
 struct TaskManagerState {
@@ -191,6 +245,214 @@ fn undo_cache_dir() -> PathBuf {
 		.join("task-undo-cache")
 }
 
+fn git_output(repo_path: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+	process_utils::hidden_command("git")
+		.args(args)
+		.current_dir(repo_path)
+		.output()
+		.map_err(|error| format!("Could not execute git {}: {error}", args.first().copied().unwrap_or("")))
+}
+
+fn git_text(repo_path: &Path, args: &[&str]) -> Result<String, String> {
+	let output = git_output(repo_path, args)?;
+	if !output.status.success() {
+		let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+		return Err(if stderr.is_empty() { format!("git {} failed.", args.first().copied().unwrap_or("")) } else { stderr });
+	}
+	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_index_path(repo_path: &Path) -> Result<PathBuf, String> {
+	let raw = git_text(repo_path, &["rev-parse", "--git-path", "index"])?;
+	let path = PathBuf::from(raw);
+	Ok(if path.is_absolute() { path } else { repo_path.join(path) })
+}
+
+fn capture_index_snapshot(repo_path: &Path, task_id: u64, label: &str) -> Result<(bool, Option<String>), String> {
+	let index = git_index_path(repo_path)?;
+	let lock = index.with_file_name("index.lock");
+	if lock.exists() {
+		return Err("Git index is locked by another Git operation; cannot capture a safe staging snapshot.".to_string());
+	}
+	if !index.exists() {
+		return Ok((false, None));
+	}
+	let before = std::fs::read(&index).map_err(|error| format!("Could not read Git index for staging snapshot: {error}"))?;
+	if lock.exists() {
+		return Err("Git index changed while preparing a staging snapshot; retry the task.".to_string());
+	}
+	let root = undo_cache_dir();
+	std::fs::create_dir_all(&root).map_err(|error| format!("Could not prepare index snapshot cache: {error}"))?;
+	let snapshot_dir = unique_undo_cache_path(&root, task_id);
+	std::fs::create_dir_all(&snapshot_dir).map_err(|error| format!("Could not create index snapshot directory: {error}"))?;
+	let snapshot = snapshot_dir.join(format!("{label}.index"));
+	std::fs::write(&snapshot, &before).map_err(|error| format!("Could not save Git index snapshot: {error}"))?;
+	let after = std::fs::read(&index).map_err(|error| format!("Could not verify Git index snapshot: {error}"))?;
+	if before != after || lock.exists() {
+		let _ = std::fs::remove_file(&snapshot);
+		let _ = std::fs::remove_dir(&snapshot_dir);
+		return Err("Git index changed while the staging snapshot was being captured; retry the task.".to_string());
+	}
+	Ok((true, Some(snapshot.to_string_lossy().to_string())))
+}
+
+fn index_matches_snapshot(repo_path: &Path, expected_path: Option<&str>, expected_exists: bool) -> Result<bool, String> {
+	let index = git_index_path(repo_path)?;
+	if !expected_exists {
+		return Ok(!index.exists());
+	}
+	let Some(snapshot) = expected_path else {
+		return Err("The saved Git index snapshot is missing.".to_string());
+	};
+	if !index.is_file() {
+		return Ok(false);
+	}
+	let current = std::fs::read(&index).map_err(|error| format!("Could not read current Git index: {error}"))?;
+	let expected = std::fs::read(snapshot).map_err(|error| format!("Could not read saved Git index snapshot: {error}"))?;
+	Ok(current == expected)
+}
+
+fn restore_index_snapshot(
+	repo_path: &Path,
+	expected_path: Option<&str>,
+	expected_exists: bool,
+	restore_path: Option<&str>,
+	restore_exists: bool,
+) -> Result<(), String> {
+	let index = git_index_path(repo_path)?;
+	let lock = index.with_file_name("index.lock");
+	let mut lock_file = std::fs::OpenOptions::new()
+		.write(true)
+		.create_new(true)
+		.open(&lock)
+		.map_err(|error| {
+			if error.kind() == std::io::ErrorKind::AlreadyExists {
+				"Git index is locked by another Git operation; retry Undo/Redo after it finishes.".to_string()
+			} else {
+				format!("Could not acquire the Git index lock for Undo/Redo: {error}")
+			}
+		})?;
+
+	let matches = match index_matches_snapshot(repo_path, expected_path, expected_exists) {
+		Ok(matches) => matches,
+		Err(error) => {
+			drop(lock_file);
+			let _ = std::fs::remove_file(&lock);
+			return Err(error);
+		}
+	};
+	if !matches {
+		drop(lock_file);
+		let _ = std::fs::remove_file(&lock);
+		return Err("Git index has changed since this task; refusing to overwrite newer staged work.".to_string());
+	}
+	if restore_exists {
+		let Some(snapshot) = restore_path else {
+			drop(lock_file);
+			let _ = std::fs::remove_file(&lock);
+			return Err("The Git index snapshot needed for Undo/Redo is unavailable.".to_string());
+		};
+		let bytes = match std::fs::read(snapshot) {
+			Ok(bytes) => bytes,
+			Err(error) => {
+				drop(lock_file);
+				let _ = std::fs::remove_file(&lock);
+				return Err(format!("Could not read the saved Git index snapshot: {error}"));
+			}
+		};
+		if let Err(error) = lock_file.write_all(&bytes).and_then(|_| lock_file.sync_all()) {
+			drop(lock_file);
+			let _ = std::fs::remove_file(&lock);
+			return Err(format!("Could not prepare the restored Git index: {error}"));
+		}
+	}
+	drop(lock_file);
+
+	if !restore_exists {
+		if index.exists() {
+			if let Err(error) = std::fs::remove_file(&index) {
+				let _ = std::fs::remove_file(&lock);
+				return Err(format!("Could not restore the previously absent Git index: {error}"));
+			}
+		}
+		std::fs::remove_file(&lock).map_err(|error| format!("Could not release the Git index lock: {error}"))?;
+		return Ok(());
+	}
+
+	static INDEX_RESTORE_NONCE: AtomicU64 = AtomicU64::new(0);
+	let nonce = INDEX_RESTORE_NONCE.fetch_add(1, Ordering::Relaxed);
+	let backup = index.with_file_name(format!("index.gitmanager-{nonce}.bak"));
+	let had_index = index.exists();
+	if had_index {
+		if let Err(error) = std::fs::rename(&index, &backup) {
+			let _ = std::fs::remove_file(&lock);
+			return Err(format!("Could not safely replace the Git index: {error}"));
+		}
+	}
+	if let Err(error) = std::fs::rename(&lock, &index) {
+		if had_index {
+			let _ = std::fs::rename(&backup, &index);
+		}
+		let _ = std::fs::remove_file(&lock);
+		return Err(format!("Could not install the restored Git index: {error}"));
+	}
+	if had_index {
+		let _ = std::fs::remove_file(backup);
+	}
+	Ok(())
+}
+
+fn current_stash_oid(repo_path: &Path) -> Option<String> {
+	git_text(repo_path, &["rev-parse", "--verify", "refs/stash"]).ok().filter(|value| !value.is_empty())
+}
+
+fn stash_position(repo_path: &Path, oid: &str) -> Result<Option<usize>, String> {
+	let list = git_text(repo_path, &["stash", "list", "--format=%H"])?;
+	Ok(list.lines().position(|line| line.trim() == oid))
+}
+
+fn ensure_clean_worktree(repo_path: &Path) -> Result<(), String> {
+	let status = git_text(repo_path, &["status", "--porcelain"])?;
+	if !status.is_empty() {
+		return Err("Working tree is not clean; refusing to apply or re-stash over unrelated changes.".to_string());
+	}
+	Ok(())
+}
+
+fn restore_exact_stash(repo_path: &Path, stash_oid: &str) -> Result<String, String> {
+	ensure_clean_worktree(repo_path)?;
+	let position = stash_position(repo_path, stash_oid)?
+		.ok_or_else(|| "The stash created by this task is no longer present; refusing to pop a different stash.".to_string())?;
+	let apply = git_output(repo_path, &["stash", "apply", "--index", stash_oid])?;
+	if !apply.status.success() {
+		return Err(String::from_utf8_lossy(&apply.stderr).trim().to_string());
+	}
+	let reference = format!("stash@{{{position}}}");
+	let drop = git_output(repo_path, &["stash", "drop", &reference])?;
+	if drop.status.success() {
+		Ok("Restored and removed the exact stash entry created by this task.".to_string())
+	} else {
+		Ok(format!(
+			"Restored the exact stash, but Git could not remove its stash-list entry; it remains as a recovery copy. {}",
+			String::from_utf8_lossy(&drop.stderr).trim()
+		))
+	}
+}
+
+fn commit_tree_oid(repo_path: &Path, oid: &str) -> Result<String, String> {
+	git_text(repo_path, &["rev-parse", &format!("{oid}^{{tree}}")])
+}
+
+fn index_tree_oid(repo_path: &Path) -> Result<String, String> {
+	git_text(repo_path, &["write-tree"])
+}
+
+fn undo_cache_dir_for_repo(repo_path: &Path) -> PathBuf {
+	// Keep clone undo moves on the same volume as the cloned directory so
+	// Windows and Unix can rename atomically instead of failing with EXDEV.
+	repo_path.parent().unwrap_or_else(|| Path::new(".")).join(".gitmanager-undo-cache")
+}
+
 fn parse_git_progress_percent(line: &str) -> Option<(u8, String)> {
 	let pct_pos = line.find('%')?;
 	let prefix = &line[..pct_pos];
@@ -258,7 +520,7 @@ fn spawn_lane_worker_if_idle(repo_key: String) {
 			};
 
 			let Some(task) = next_task else { break };
-			let (ok, summary, before_ref) = execute_single_task(&repo_key, &task);
+			let (ok, summary, metadata) = execute_single_task(&repo_key, &task);
 
 			// Remove finished task from active lane and append to history.
 			{
@@ -292,11 +554,16 @@ fn spawn_lane_worker_if_idle(repo_key: String) {
 						kind: task.kind.clone(),
 						title: task.title.clone(),
 						finished_at: now_epoch(),
-						reversible: ok && task.reversible,
+						reversible: ok && task.reversible && metadata.reversible,
 						status: if ok { "applied".to_string() } else { "failed".to_string() },
 						overwritten: false,
 						revert_note: summary,
-						before_ref,
+						before_ref: metadata.before_ref,
+						after_ref: metadata.after_ref,
+						before_index_snapshot: metadata.before_index_snapshot,
+						after_index_snapshot: metadata.after_index_snapshot,
+						before_index_existed: metadata.before_index_existed,
+						stash_oid: metadata.stash_oid,
 						undo_cache_path: None,
 					},
 				);
@@ -320,12 +587,11 @@ fn spawn_lane_worker_if_idle(repo_key: String) {
 	});
 }
 
-fn execute_single_task(repo_key: &str, task: &QueuedTaskItem) -> (bool, String, Option<String>) {
+fn execute_single_task(repo_key: &str, task: &QueuedTaskItem) -> (bool, String, TaskExecutionMetadata) {
 	let target_path = PathBuf::from(&task.disk_path);
-	let before_ref = if target_path.is_dir() {
-		current_head_oid(&target_path)
-	} else {
-		None
+	let mut metadata = TaskExecutionMetadata {
+		before_ref: if target_path.is_dir() { current_head_oid(&target_path) } else { None },
+		..TaskExecutionMetadata::default()
 	};
 
 	match task.kind.as_str() {
@@ -333,47 +599,43 @@ fn execute_single_task(repo_key: &str, task: &QueuedTaskItem) -> (bool, String, 
 			let raw_url = task.args_payload.clone_url.as_deref().unwrap_or("");
 			let url = expand_clone_shorthand(raw_url);
 			if url.is_empty() {
-				return (false, "Missing clone URL.".to_string(), None);
+				return (false, "Missing clone URL.".to_string(), metadata);
 			}
 			if let Some(parent) = target_path.parent() {
 				let _ = std::fs::create_dir_all(parent);
 			}
 			let mut child = match process_utils::hidden_command("git")
 				.args(["clone", "--progress", &url, &task.disk_path])
-				// Git's progress stream is written to stderr. Discard stdout so a
-				// child cannot block forever on an unread stdout pipe.
 				.stdout(Stdio::null())
 				.stderr(Stdio::piped())
 				.spawn()
 			{
-				Ok(c) => c,
-				Err(err) => return (false, format!("Failed to start git clone: {err}"), None),
+				Ok(child) => child,
+				Err(error) => return (false, format!("Failed to start git clone: {error}"), metadata),
 			};
-
 			if let Some(stderr) = child.stderr.take() {
-				let reader = BufReader::new(stderr);
-				for line in reader.lines().map_while(Result::ok) {
-					if let Some((pct, phase)) = parse_git_progress_percent(&line) {
-						update_task_progress(repo_key, task.id, pct, phase, Some(line));
+				for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+					if let Some((percent, phase)) = parse_git_progress_percent(&line) {
+						update_task_progress(repo_key, task.id, percent, phase, Some(line));
 					} else if !line.trim().is_empty() {
 						update_task_progress(repo_key, task.id, 30, line.trim().to_string(), Some(line));
 					}
 				}
 			}
 			match child.wait() {
-				Ok(st) if st.success() => (
-					true,
-					"Cloned repository — revert moves folder to safe undo cache".to_string(),
-					None,
-				),
-				Ok(st) => (false, format!("git clone exited with status {st}"), None),
-				Err(err) => (false, format!("git clone error: {err}"), None),
+				Ok(status) if status.success() => {
+					metadata.reversible = true;
+					(true, "Cloned repository — revert moves folder to safe undo cache".to_string(), metadata)
+				}
+				Ok(status) => (false, format!("git clone exited with status {status}"), metadata),
+				Err(error) => (false, format!("git clone error: {error}"), metadata),
 			}
 		}
-		"pull" => run_simple_git(repo_key, task, &target_path, &["pull", "--ff-only"], "Fast-forward pull completed", before_ref),
-		"fetch" => run_simple_git(repo_key, task, &target_path, &["fetch", "--all", "--prune"], "Fetched remote refs", before_ref),
-		"push" => run_simple_git(repo_key, task, &target_path, &["push"], "Remote push — non-reversible", before_ref),
 		"stage" => {
+			let (before_exists, before_snapshot) = match capture_index_snapshot(&target_path, task.id, "before") {
+				Ok(snapshot) => snapshot,
+				Err(error) => return (false, error, metadata),
+			};
 			let mut args = vec!["add".to_string()];
 			if task.args_payload.paths.is_empty() {
 				args.push("-A".to_string());
@@ -381,20 +643,67 @@ fn execute_single_task(repo_key: &str, task: &QueuedTaskItem) -> (bool, String, 
 				args.extend(task.args_payload.paths.clone());
 			}
 			let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-			run_simple_git(repo_key, task, &target_path, &refs, "Staged files — revert unstages", before_ref)
+			let (ok, note) = run_simple_git(repo_key, task, &target_path, &refs, "Staged selected files — Undo restores the exact previous index");
+			if !ok {
+				return (false, note, metadata);
+			}
+			let (after_exists, after_snapshot) = match capture_index_snapshot(&target_path, task.id, "after") {
+				Ok(snapshot) => snapshot,
+				Err(error) => {
+					return (true, format!("Staging completed, but this task is not undoable because its post-stage index snapshot could not be saved: {error}"), metadata);
+				}
+			};
+			metadata.before_index_existed = before_exists;
+			metadata.before_index_snapshot = before_snapshot;
+			metadata.after_index_snapshot = after_snapshot;
+			metadata.reversible = after_exists;
+			(true, note, metadata)
 		}
 		"commit" => {
-			let msg = task
-				.args_payload
-				.commit_message
-				.as_deref()
-				.filter(|m| !m.trim().is_empty())
+			let message = task.args_payload.commit_message.as_deref()
+				.filter(|message| !message.trim().is_empty())
 				.unwrap_or("Update from GitManager");
-			run_simple_git(repo_key, task, &target_path, &["commit", "-m", msg], "Committed — revert soft-resets to parent HEAD", before_ref)
+			let (ok, note) = run_simple_git(repo_key, task, &target_path, &["commit", "-m", message], "Committed — Undo soft-resets to the recorded parent HEAD");
+			if ok {
+				metadata.after_ref = current_head_oid(&target_path);
+				metadata.reversible = metadata.before_ref.is_some() && metadata.after_ref.is_some();
+			}
+			(ok, note, metadata)
 		}
-		"stash_push" => run_simple_git(repo_key, task, &target_path, &["stash", "push", "-m", "GitManager TaskManager"], "Stashed changes — revert pops stash", before_ref),
-		"stash_pop" => run_simple_git(repo_key, task, &target_path, &["stash", "pop"], "Popped stash to working tree", before_ref),
-		other => (false, format!("Unsupported task kind '{other}'"), before_ref),
+		"stash_push" => {
+			let before_stash = current_stash_oid(&target_path);
+			let message = format!("GitManager TaskManager task {}", task.id);
+			let (ok, note) = run_simple_git(repo_key, task, &target_path, &["stash", "push", "-m", &message], "Stashed changes");
+			if !ok {
+				return (false, note, metadata);
+			}
+			let after_stash = current_stash_oid(&target_path);
+			if after_stash.is_some() && after_stash != before_stash {
+				metadata.stash_oid = after_stash;
+				metadata.reversible = true;
+				(true, "Stashed changes — Undo restores this exact stash entry".to_string(), metadata)
+			} else {
+				(true, "Nothing to stash; no stash entry was created.".to_string(), metadata)
+			}
+		}
+		"pull" => run_simple_git(repo_key, task, &target_path, &["pull", "--ff-only"], "Fast-forward pull completed").pipe_metadata(&target_path, metadata),
+		"fetch" => run_simple_git(repo_key, task, &target_path, &["fetch", "--all", "--prune"], "Fetched remote refs").pipe_metadata(&target_path, metadata),
+		"push" => run_simple_git(repo_key, task, &target_path, &["push"], "Remote push — non-reversible").pipe_metadata(&target_path, metadata),
+		"stash_pop" => run_simple_git(repo_key, task, &target_path, &["stash", "pop"], "Popped stash to working tree").pipe_metadata(&target_path, metadata),
+		other => (false, format!("Unsupported task kind '{other}'"), metadata),
+	}
+}
+
+trait TaskResultMetadata {
+	fn pipe_metadata(self, repo_path: &Path, metadata: TaskExecutionMetadata) -> (bool, String, TaskExecutionMetadata);
+}
+
+impl TaskResultMetadata for (bool, String) {
+	fn pipe_metadata(self, repo_path: &Path, mut metadata: TaskExecutionMetadata) -> (bool, String, TaskExecutionMetadata) {
+		if self.0 {
+			metadata.after_ref = current_head_oid(repo_path);
+		}
+		(self.0, self.1, metadata)
 	}
 }
 
@@ -404,25 +713,19 @@ fn run_simple_git(
 	cwd: &Path,
 	args: &[&str],
 	ok_note: &str,
-	before_ref: Option<String>,
-) -> (bool, String, Option<String>) {
+) -> (bool, String) {
 	update_task_progress(repo_key, task.id, 35, format!("Running git {}…", args.first().copied().unwrap_or("")), None);
-	let out = match process_utils::hidden_command("git")
-		.args(args)
-		.current_dir(cwd)
-		.output()
-	{
-		Ok(o) => o,
-		Err(err) => return (false, format!("Could not execute git: {err}"), before_ref),
+	let output = match git_output(cwd, args) {
+		Ok(output) => output,
+		Err(error) => return (false, error),
 	};
-	let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-	let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-	if out.status.success() {
+	let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+	let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+	if output.status.success() {
 		update_task_progress(repo_key, task.id, 100, "Done".to_string(), if stdout.is_empty() { None } else { Some(stdout) });
-		(true, ok_note.to_string(), before_ref)
+		(true, ok_note.to_string())
 	} else {
-		let detail = if !stderr.is_empty() { stderr } else { stdout };
-		(false, detail, before_ref)
+		(false, if !stderr.is_empty() { stderr } else { stdout })
 	}
 }
 
@@ -581,152 +884,214 @@ pub async fn set_task_queue_paused(paused: bool) -> Result<bool, String> {
 	Ok(paused)
 }
 
-/// Safely reverts a reversible completed task (e.g. moves cloned repo to undo cache or soft-resets commit).
+/// Reverts a completed task only when the exact Git state produced by that task is still present.
 #[tauri::command]
 pub async fn revert_history_task(task_id: u64) -> Result<String, String> {
 	tokio::task::spawn_blocking(move || {
 		let mgr = manager();
 		let entry = {
 			let history = mgr.history.lock().unwrap_or_else(|p| p.into_inner());
-			history
-				.iter()
-				.find(|h| h.id == task_id)
-				.cloned()
+			history.iter().find(|history| history.id == task_id).cloned()
 				.ok_or_else(|| "Task history entry not found.".to_string())?
 		};
 		if !entry.reversible || entry.status != "applied" {
 			return Err("This task cannot be reverted.".to_string());
 		}
-
+		let _lane_guard = reserve_history_operation(&entry.repo_key)?;
 		let disk_path = PathBuf::from(&entry.disk_path);
 		let mut cache_path_saved: Option<String> = None;
-
-		match entry.kind.as_str() {
+		let note = match entry.kind.as_str() {
 			"clone" => {
 				if !disk_path.exists() {
 					return Err("Cloned directory no longer exists on disk.".to_string());
 				}
-				let cache_root = undo_cache_dir();
-				std::fs::create_dir_all(&cache_root)
-					.map_err(|err| format!("Could not prepare undo cache: {err}"))?;
-				let dest = unique_undo_cache_path(&cache_root, entry.id);
-				if dest.exists() {
+				let cache_root = undo_cache_dir_for_repo(&disk_path);
+				std::fs::create_dir_all(&cache_root).map_err(|error| format!("Could not prepare undo cache: {error}"))?;
+				let destination = unique_undo_cache_path(&cache_root, entry.id);
+				if destination.exists() {
 					return Err("A unique undo-cache destination already exists; refusing to overwrite it.".to_string());
 				}
-				std::fs::rename(&disk_path, &dest)
-					.map_err(|err| format!("Could not move cloned repo to undo cache: {err}"))?;
-				cache_path_saved = Some(dest.to_string_lossy().to_string());
+				std::fs::rename(&disk_path, &destination)
+					.map_err(|error| format!("Could not move cloned repo to undo cache: {error}"))?;
+				cache_path_saved = Some(destination.to_string_lossy().to_string());
+				"Moved cloned repository to its undo cache.".to_string()
 			}
 			"commit" => {
-				let Some(ref before) = entry.before_ref else {
-					return Err("No parent commit recorded for soft reset.".to_string());
+				let Some(after) = entry.after_ref.as_deref() else {
+					return Err("The commit OID created by this task was not recorded; refusing an unsafe reset.".to_string());
 				};
-				let out = process_utils::hidden_command("git")
-					.args(["reset", "--soft", before])
-					.current_dir(&disk_path)
-					.output()
-					.map_err(|err| format!("Could not soft-reset commit: {err}"))?;
-				if !out.status.success() {
-					return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+				let Some(before) = entry.before_ref.as_deref() else {
+					return Err("The parent HEAD for this commit was not recorded.".to_string());
+				};
+				if current_head_oid(&disk_path).as_deref() != Some(after) {
+					return Err("HEAD has moved since this commit; refusing to reset newer commits.".to_string());
 				}
+				if index_tree_oid(&disk_path)? != commit_tree_oid(&disk_path, after)? {
+					return Err("The index has changed since this commit; refusing to disturb newer staged work.".to_string());
+				}
+				let output = git_output(&disk_path, &["reset", "--soft", before])?;
+				if !output.status.success() {
+					return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+				}
+				"Soft-reset the exact commit created by this task.".to_string()
 			}
 			"stage" => {
-				let out = process_utils::hidden_command("git")
-					.args(["reset"])
-					.current_dir(&disk_path)
-					.output()
-					.map_err(|err| format!("Could not unstage files: {err}"))?;
-				if !out.status.success() {
-					return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-				}
+				restore_index_snapshot(
+					&disk_path,
+					entry.after_index_snapshot.as_deref(),
+					true,
+					entry.before_index_snapshot.as_deref(),
+					entry.before_index_existed,
+				)?;
+				"Restored the exact index from before this staging task; working-tree files were left untouched.".to_string()
 			}
 			"stash_push" => {
-				let out = process_utils::hidden_command("git")
-					.args(["stash", "pop"])
-					.current_dir(&disk_path)
-					.output()
-					.map_err(|err| format!("Could not pop stashed changes: {err}"))?;
-				if !out.status.success() {
-					return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+				let Some(stash_oid) = entry.stash_oid.as_deref() else {
+					return Err("The exact stash OID created by this task was not recorded.".to_string());
+				};
+				ensure_clean_worktree(&disk_path)?;
+				let position = stash_position(&disk_path, stash_oid)?
+					.ok_or_else(|| "The stash created by this task is no longer present; refusing to pop a different stash.".to_string())?;
+				let apply = git_output(&disk_path, &["stash", "apply", "--index", stash_oid])?;
+				if !apply.status.success() {
+					return Err(String::from_utf8_lossy(&apply.stderr).trim().to_string());
+				}
+				let reference = format!("stash@{{{position}}}");
+				let drop = git_output(&disk_path, &["stash", "drop", &reference])?;
+				if drop.status.success() {
+					"Restored and removed the exact stash entry created by this task.".to_string()
+				} else {
+					format!(
+						"Restored the exact stash, but Git could not remove its stash-list entry; it remains as a recovery copy. {}",
+						String::from_utf8_lossy(&drop.stderr).trim()
+					)
 				}
 			}
 			_ => return Err("Reverting this task kind is not supported.".to_string()),
-		}
-
+		};
 		let mut history = mgr.history.lock().unwrap_or_else(|p| p.into_inner());
-		if let Some(h) = history.iter_mut().find(|h| h.id == task_id) {
-			h.status = "reverted".to_string();
-			h.undo_cache_path = cache_path_saved;
+		if let Some(item) = history.iter_mut().find(|item| item.id == task_id) {
+			item.status = "reverted".to_string();
+			item.undo_cache_path = cache_path_saved;
+			item.revert_note = note.clone();
 		}
-		Ok(format!("Reverted: {}", entry.title))
+		Ok(format!("Reverted: {} — {}", entry.title, note))
 	})
 	.await
-	.map_err(|err| format!("Revert task failed: {err}"))?
+	.map_err(|error| format!("Revert task failed: {error}"))?
 }
 
-/// Restores a previously reverted task forward only if no newer task has overwritten its disk/Git state.
+/// Reapplies a reverted task only when the exact pre-task state is still present.
 #[tauri::command]
 pub async fn redo_history_task(task_id: u64) -> Result<String, String> {
 	tokio::task::spawn_blocking(move || {
 		let mgr = manager();
 		let entry = {
 			let history = mgr.history.lock().unwrap_or_else(|p| p.into_inner());
-			history
-				.iter()
-				.find(|h| h.id == task_id)
-				.cloned()
+			history.iter().find(|history| history.id == task_id).cloned()
 				.ok_or_else(|| "Task history entry not found.".to_string())?
 		};
 		if entry.status != "reverted" {
 			return Err("Task is not in a reverted state.".to_string());
 		}
 		if entry.overwritten {
-			return Err("Cannot go forward: a newer task has overwritten this repository state.".to_string());
+			return Err("Cannot go forward: a newer TaskManager operation has overwritten this repository state.".to_string());
 		}
-
+		let _lane_guard = reserve_history_operation(&entry.repo_key)?;
 		let disk_path = PathBuf::from(&entry.disk_path);
-		if entry.kind == "clone" {
-			if disk_path.exists() {
-				let mut history = mgr.history.lock().unwrap_or_else(|p| p.into_inner());
-				if let Some(h) = history.iter_mut().find(|h| h.id == task_id) {
-					h.overwritten = true;
+		let mut replacement_stash_oid: Option<String> = None;
+		let note = match entry.kind.as_str() {
+			"clone" => {
+				if disk_path.exists() {
+					let mut history = mgr.history.lock().unwrap_or_else(|p| p.into_inner());
+					if let Some(item) = history.iter_mut().find(|item| item.id == task_id) {
+						item.overwritten = true;
+					}
+					return Err("Cannot restore clone: another folder already occupies that disk path.".to_string());
 				}
-				return Err("Cannot restore clone: another folder already occupies that disk path.".to_string());
+				let Some(cache_path) = entry.undo_cache_path.as_deref() else {
+					return Err("Undo cache for this clone is no longer available.".to_string());
+				};
+				std::fs::rename(cache_path, &disk_path)
+					.map_err(|error| format!("Could not restore cloned repository: {error}"))?;
+				"Restored the cloned repository from its undo cache.".to_string()
 			}
-			let Some(ref cache_path) = entry.undo_cache_path else {
-				return Err("Undo cache for this clone is no longer available.".to_string());
-			};
-			std::fs::rename(cache_path, &disk_path)
-				.map_err(|err| format!("Could not restore cloned repository: {err}"))?;
-		} else if entry.kind == "stash_push" {
-			let out = process_utils::hidden_command("git")
-				.args(["stash", "push", "-m", "GitManager TaskManager Redo"])
-				.current_dir(&disk_path)
-				.output()
-				.map_err(|err| format!("Could not re-stash changes: {err}"))?;
-			if !out.status.success() {
-				return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+			"commit" => {
+				let Some(before) = entry.before_ref.as_deref() else {
+					return Err("The original parent HEAD was not recorded.".to_string());
+				};
+				let Some(after) = entry.after_ref.as_deref() else {
+					return Err("The commit OID created by this task was not recorded.".to_string());
+				};
+				if current_head_oid(&disk_path).as_deref() != Some(before) {
+					return Err("HEAD no longer matches the state produced by Undo; refusing to move it.".to_string());
+				}
+				if index_tree_oid(&disk_path)? != commit_tree_oid(&disk_path, after)? {
+					return Err("The staged index no longer matches the original commit; refusing to redo over newer staged work.".to_string());
+				}
+				let output = git_output(&disk_path, &["reset", "--soft", after])?;
+				if !output.status.success() {
+					return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+				}
+				"Restored the exact commit created by this task.".to_string()
 			}
-		} else {
-			return Err("Redo forward for this task type requires re-running the action.".to_string());
-		}
-
+			"stage" => {
+				restore_index_snapshot(
+					&disk_path,
+					entry.before_index_snapshot.as_deref(),
+					entry.before_index_existed,
+					entry.after_index_snapshot.as_deref(),
+					true,
+				)?;
+				"Restaged the exact index captured after the original task; working-tree files were left untouched.".to_string()
+			}
+			"stash_push" => {
+				ensure_clean_worktree(&disk_path)?;
+				let before_stash = current_stash_oid(&disk_path);
+				let message = format!("GitManager TaskManager redo {}", entry.id);
+				let output = git_output(&disk_path, &["stash", "push", "-m", &message])?;
+				if !output.status.success() {
+					return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+				}
+				let after_stash = current_stash_oid(&disk_path);
+				if after_stash.is_none() || after_stash == before_stash {
+					return Err("Redo did not create a new stash entry; the working tree may contain no changes.".to_string());
+				}
+				replacement_stash_oid = after_stash;
+				"Re-stashed the restored changes and recorded the new exact stash OID.".to_string()
+			}
+			_ => return Err("Redo forward for this task type is not supported.".to_string()),
+		};
 		let mut history = mgr.history.lock().unwrap_or_else(|p| p.into_inner());
-		if let Some(h) = history.iter_mut().find(|h| h.id == task_id) {
-			h.status = "applied".to_string();
-			h.undo_cache_path = None;
+		if let Some(item) = history.iter_mut().find(|item| item.id == task_id) {
+			item.status = "applied".to_string();
+			item.undo_cache_path = None;
+			if replacement_stash_oid.is_some() {
+				item.stash_oid = replacement_stash_oid;
+			}
+			item.revert_note = note.clone();
 		}
-		Ok(format!("Restored forward: {}", entry.title))
+		Ok(format!("Restored forward: {} — {}", entry.title, note))
 	})
 	.await
-	.map_err(|err| format!("Redo task failed: {err}"))?
+	.map_err(|error| format!("Redo task failed: {error}"))?
 }
 
 #[cfg(test)]
 mod task_manager_tests {
-	use super::{normalize_repo_key, unique_undo_cache_path};
+	use super::*;
 	use std::fs;
 	use std::time::{SystemTime, UNIX_EPOCH};
+	fn cleanup_snapshot(path: Option<&str>) {
+		if let Some(path) = path {
+			let snapshot = PathBuf::from(path);
+			let _ = fs::remove_file(&snapshot);
+			if let Some(parent) = snapshot.parent() {
+				let _ = fs::remove_dir(parent);
+			}
+		}
+	}
+
 
 	#[cfg(not(windows))]
 	#[test]
@@ -753,4 +1118,132 @@ mod task_manager_tests {
 
 		fs::remove_dir_all(root).unwrap();
 	}
+	fn init_test_repo() -> PathBuf {
+		let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+		let root = std::env::temp_dir().join(format!("gitmanager-task-undo-test-{nonce}"));
+		fs::create_dir_all(&root).unwrap();
+		assert!(git_output(&root, &["init", "-q"]).unwrap().status.success());
+		assert!(git_output(&root, &["config", "user.name", "GitManager Tests"]).unwrap().status.success());
+		assert!(git_output(&root, &["config", "user.email", "gitmanager-tests@example.invalid"]).unwrap().status.success());
+		fs::write(root.join("tracked.txt"), "initial\\n").unwrap();
+		assert!(git_output(&root, &["add", "tracked.txt"]).unwrap().status.success());
+		assert!(git_output(&root, &["commit", "-m", "initial"]).unwrap().status.success());
+		root
+	}
+
+	#[test]
+	fn stage_undo_and_redo_restore_only_the_exact_index_snapshot() {
+		let repo = init_test_repo();
+		fs::write(repo.join("tracked.txt"), "modified\\n").unwrap();
+		assert!(git_output(&repo, &["add", "tracked.txt"]).unwrap().status.success());
+		fs::write(repo.join("second.txt"), "still present\\n").unwrap();
+		let (before_exists, before) = capture_index_snapshot(&repo, 101, "before").unwrap();
+		assert!(git_output(&repo, &["add", "second.txt"]).unwrap().status.success());
+		let (after_exists, after) = capture_index_snapshot(&repo, 101, "after").unwrap();
+		restore_index_snapshot(&repo, after.as_deref(), after_exists, before.as_deref(), before_exists).unwrap();
+		assert_eq!(git_text(&repo, &["diff", "--cached", "--name-only"]).unwrap(), "tracked.txt");
+		assert_eq!(fs::read_to_string(repo.join("second.txt")).unwrap(), "still present\\n");
+		restore_index_snapshot(&repo, before.as_deref(), before_exists, after.as_deref(), after_exists).unwrap();
+		assert_eq!(git_text(&repo, &["diff", "--cached", "--name-only"]).unwrap().lines().collect::<Vec<_>>(), vec!["second.txt", "tracked.txt"]);
+		cleanup_snapshot(before.as_deref());
+		cleanup_snapshot(after.as_deref());
+		fs::remove_dir_all(repo).unwrap();
+	}
+
+	#[test]
+	fn stage_undo_refuses_to_overwrite_newer_staged_work() {
+		let repo = init_test_repo();
+		fs::write(repo.join("tracked.txt"), "task change\\n").unwrap();
+		let (before_exists, before) = capture_index_snapshot(&repo, 102, "before").unwrap();
+		assert!(git_output(&repo, &["add", "tracked.txt"]).unwrap().status.success());
+		let (after_exists, after) = capture_index_snapshot(&repo, 102, "after").unwrap();
+		fs::write(repo.join("tracked.txt"), "external change\\n").unwrap();
+		assert!(git_output(&repo, &["add", "tracked.txt"]).unwrap().status.success());
+		let result = restore_index_snapshot(&repo, after.as_deref(), after_exists, before.as_deref(), before_exists);
+		assert!(result.unwrap_err().contains("index has changed"));
+		cleanup_snapshot(before.as_deref());
+		cleanup_snapshot(after.as_deref());
+		fs::remove_dir_all(repo).unwrap();
+	}
+
+	#[test]
+	fn stash_undo_restores_the_recorded_oid_not_the_newer_top_stash() {
+		let repo = init_test_repo();
+		fs::write(repo.join("tracked.txt"), "task stash\\n").unwrap();
+		assert!(git_output(&repo, &["stash", "push", "-m", "task stash"]).unwrap().status.success());
+		let task_stash = current_stash_oid(&repo).unwrap();
+		fs::write(repo.join("tracked.txt"), "newer unrelated stash\\n").unwrap();
+		assert!(git_output(&repo, &["stash", "push", "-m", "newer stash"]).unwrap().status.success());
+		let newer_stash = current_stash_oid(&repo).unwrap();
+		assert_ne!(task_stash, newer_stash);
+		let note = restore_exact_stash(&repo, &task_stash).unwrap();
+		assert!(note.contains("exact stash"));
+		assert_eq!(fs::read_to_string(repo.join("tracked.txt")).unwrap(), "task stash\\n");
+		assert!(stash_position(&repo, &newer_stash).unwrap().is_some());
+		assert!(stash_position(&repo, &task_stash).unwrap().is_none());
+		fs::remove_dir_all(repo).unwrap();
+	}
+
+	fn init_test_repo() -> PathBuf {
+		let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+		let root = std::env::temp_dir().join(format!("gitmanager-task-undo-test-{nonce}"));
+		fs::create_dir_all(&root).unwrap();
+		assert!(git_output(&root, &["init", "-q"]).unwrap().status.success());
+		assert!(git_output(&root, &["config", "user.name", "GitManager Tests"]).unwrap().status.success());
+		assert!(git_output(&root, &["config", "user.email", "gitmanager-tests@example.invalid"]).unwrap().status.success());
+		fs::write(root.join("tracked.txt"), "initial\\n").unwrap();
+		assert!(git_output(&root, &["add", "tracked.txt"]).unwrap().status.success());
+		assert!(git_output(&root, &["commit", "-m", "initial"]).unwrap().status.success());
+		root
+	}
+
+	#[test]
+	fn stage_undo_and_redo_restore_only_the_exact_index_snapshot() {
+		let repo = init_test_repo();
+		fs::write(repo.join("tracked.txt"), "modified\\n").unwrap();
+		assert!(git_output(&repo, &["add", "tracked.txt"]).unwrap().status.success());
+		fs::write(repo.join("second.txt"), "still present\\n").unwrap();
+		let (before_exists, before) = capture_index_snapshot(&repo, 101, "before").unwrap();
+		assert!(git_output(&repo, &["add", "second.txt"]).unwrap().status.success());
+		let (after_exists, after) = capture_index_snapshot(&repo, 101, "after").unwrap();
+		restore_index_snapshot(&repo, after.as_deref(), after_exists, before.as_deref(), before_exists).unwrap();
+		assert_eq!(git_text(&repo, &["diff", "--cached", "--name-only"]).unwrap(), "tracked.txt");
+		assert_eq!(fs::read_to_string(repo.join("second.txt")).unwrap(), "still present\\n");
+		restore_index_snapshot(&repo, before.as_deref(), before_exists, after.as_deref(), after_exists).unwrap();
+		assert_eq!(git_text(&repo, &["diff", "--cached", "--name-only"]).unwrap().lines().collect::<Vec<_>>(), vec!["second.txt", "tracked.txt"]);
+		fs::remove_dir_all(repo).unwrap();
+	}
+
+	#[test]
+	fn stage_undo_refuses_to_overwrite_newer_staged_work() {
+		let repo = init_test_repo();
+		fs::write(repo.join("tracked.txt"), "task change\\n").unwrap();
+		let (before_exists, before) = capture_index_snapshot(&repo, 102, "before").unwrap();
+		assert!(git_output(&repo, &["add", "tracked.txt"]).unwrap().status.success());
+		let (after_exists, after) = capture_index_snapshot(&repo, 102, "after").unwrap();
+		fs::write(repo.join("tracked.txt"), "external change\\n").unwrap();
+		assert!(git_output(&repo, &["add", "tracked.txt"]).unwrap().status.success());
+		let result = restore_index_snapshot(&repo, after.as_deref(), after_exists, before.as_deref(), before_exists);
+		assert!(result.unwrap_err().contains("index has changed"));
+		fs::remove_dir_all(repo).unwrap();
+	}
+
+	#[test]
+	fn stash_undo_restores_the_recorded_oid_not_the_newer_top_stash() {
+		let repo = init_test_repo();
+		fs::write(repo.join("tracked.txt"), "task stash\\n").unwrap();
+		assert!(git_output(&repo, &["stash", "push", "-m", "task stash"]).unwrap().status.success());
+		let task_stash = current_stash_oid(&repo).unwrap();
+		fs::write(repo.join("tracked.txt"), "newer unrelated stash\\n").unwrap();
+		assert!(git_output(&repo, &["stash", "push", "-m", "newer stash"]).unwrap().status.success());
+		let newer_stash = current_stash_oid(&repo).unwrap();
+		assert_ne!(task_stash, newer_stash);
+		let note = restore_exact_stash(&repo, &task_stash).unwrap();
+		assert!(note.contains("exact stash"));
+		assert_eq!(fs::read_to_string(repo.join("tracked.txt")).unwrap(), "task stash\\n");
+		assert!(stash_position(&repo, &newer_stash).unwrap().is_some());
+		assert!(stash_position(&repo, &task_stash).unwrap().is_none());
+		fs::remove_dir_all(repo).unwrap();
+	}
+
 }
