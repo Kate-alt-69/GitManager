@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { invoke, openDialog } from "../lib/tauri";
 import type { AppPreferences, ApplicationDirectories } from "../lib/types";
+import { THEME_OPTIONS, type ClassicThemeMode } from "../lib/classic-theme";
 import { Button, Field, Glyph, Switch } from "./shared-ui";
 
 function sameScanRootPath(left: string, right: string): boolean {
@@ -26,6 +27,8 @@ export function SettingsPage({
 	onOpenCleaner,
 	onOpenService,
 	onOpenPerformance,
+	themeMode = "git-dark",
+	onChangeTheme,
 }: {
 	preferences: AppPreferences;
 	directories: ApplicationDirectories | null;
@@ -34,6 +37,8 @@ export function SettingsPage({
 	onOpenCleaner: () => void;
 	onOpenService: () => void;
 	onOpenPerformance: () => void;
+	themeMode?: ClassicThemeMode;
+	onChangeTheme?: (mode: ClassicThemeMode) => void;
 }) {
 	const [tab, setTab] = useState<SettingsTab>("general");
 	const [draft, setDraft] = useState(preferences);
@@ -329,6 +334,25 @@ export function SettingsPage({
 							{flatpakCliMessage && <p className="gm-muted-copy" role="status">{flatpakCliMessage}</p>}
 						</section>
 					)}
+					<section className="gm-panel gm-theme-panel">
+						<div className="gm-panel-heading"><div><h2>Appearance &amp; Theme</h2><p>Choose the workspace palette that fits your environment.</p></div></div>
+						<div className="gm-theme-grid">
+							{THEME_OPTIONS.map((option) => (
+								<button
+									key={option.id}
+									type="button"
+									className={themeMode === option.id ? "gm-theme-card active" : "gm-theme-card"}
+									onClick={() => onChangeTheme?.(option.id)}
+								>
+									<span className={`gm-theme-swatch gm-swatch-${option.id}`} />
+									<div>
+										<strong>{option.label}</strong>
+										<small>{option.description}</small>
+									</div>
+								</button>
+							))}
+						</div>
+					</section>
 					<section className="gm-panel gm-settings-card">
 						<div className="gm-panel-heading"><div><h2>Repository discovery</h2><p>Choose which directories GitManager scans for local repositories.</p></div><span className="gm-panel-icon">⌕</span></div>
 						<div className="gm-root-list">
@@ -343,7 +367,10 @@ export function SettingsPage({
 							<Button onClick={() => void chooseScanRoot()}>Browse…</Button>
 						</div>
 						<div className="gm-form-grid">
-							<Field label="Maximum scan depth" value={draft.maxScanDepth} onChange={(value) => patch({ maxScanDepth: Math.min(16, Math.max(2, Number(value) || 8)) })} type="number" />
+							<div className="gm-inline-info-card">
+								<strong>Unlimited recursive scan depth</strong>
+								<p>GitManager scans every folder under your scan roots without a depth cap while automatically filtering out package-manager and build cache <code>.git</code> folders (<code>node_modules</code>, <code>.cargo</code>, <code>vendor</code>, <code>target</code>, <code>.venv</code>, caches).</p>
+							</div>
 						</div>
 						<Switch label="Include hidden directories" checked={draft.includeHiddenDirs} onChange={(value) => patch({ includeHiddenDirs: value })} description="Include folders such as .config or hidden workspaces." />
 						<Switch label="Index dependency repositories" checked={draft.indexDependencyRepositories} onChange={(value) => patch({ indexDependencyRepositories: value })} description="Only search node_modules, vendor and build folders when no regular repositories are found." />

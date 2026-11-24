@@ -14,7 +14,7 @@ Features:
      the best already-installed toolchain.
 3. Validates and auto-sanitizes `src-tauri/tauri.conf.json` for Tauri v2 schema compliance
    (e.g. ensuring `withGlobalTauri` is placed strictly under `app`, never under `build`,
-   and verifying `frontendDist` points to `../ui`).
+   and verifying `frontendDist` points to Next.js Engine static output).
 4. Checks for the Rust `tauri-cli` (`cargo tauri`) crate binary:
    - Uses the already-installed `cargo-tauri` version if present.
    - If `cargo-tauri` is not installed, offers `--install-tauri-cli` or falls back cleanly
@@ -417,6 +417,9 @@ def run_command(
     remaining_streams = {"stdout", "stderr"}
     heartbeat_seconds = max(float(heartbeat_seconds), 0.08)
     terminal_progress = _supports_inline_progress(sys.stdout)
+    active_diag_kind: Optional[str] = None
+    collected_errors: List[Dict[str, str]] = []
+    collected_warnings: List[str] = []
     try:
         while remaining_streams:
             try:
@@ -431,21 +434,54 @@ def run_command(
                 remaining_streams.discard(channel)
                 continue
 
-            if terminal_progress and channel == "stdout" and is_cargo_progress_line(args, line):
-                # Cargo's repetitive Compiling/Checking lines update the current
-                # activity text instead of pushing dozens of lines through the TUI.
-                log_work(label, progress, "WORKING", line.strip())
+            stripped = line.strip()
+            lowered = stripped.lower()
+
+            # Cargo writes Compiling/Checking/Finished progress to stderr as well as stdout.
+            if terminal_progress and is_cargo_progress_line(args, line):
+                active_diag_kind = None
+                log_work(label, progress, "WORKING", stripped)
                 continue
 
-            lowered = line.lower()
-            if re.search(r"\b(error|fatal)\b", lowered):
+            # Stateful diagnostic block classification so warning continuation lines
+            # (--> file:line, | source, = note:) stay yellow and never blend with red errors.
+            is_error_start = bool(
+                re.match(r"^(error(\[[a-z0-9]+\])?:|fatal:|traceback\b|err!)", lowered)
+                or re.search(r"\berror\s+ts\d+:", lowered)
+            )
+            is_warning_start = bool(re.match(r"^(warning(\[[a-z0-9_]+\])?:|warn:)", lowered))
+            is_diag_continuation = bool(
+                active_diag_kind is not None
+                and (
+                    stripped == ""
+                    or stripped.startswith(("-->", ":::", "|", "=", "help:", "note:"))
+                    or bool(re.match(r"^\d+\s*\|", stripped))
+                    or line.startswith((" ", "\t"))
+                )
+            )
+
+            if is_error_start:
+                active_diag_kind = "error"
                 line_color = "red"
-            elif re.search(r"\b(warn|warning)\b", lowered):
+                if not lowered.startswith("error: could not compile") and not lowered.startswith("error: aborting due to"):
+                    collected_errors.append({"headline": stripped, "location": ""})
+            elif is_warning_start:
+                active_diag_kind = "warning"
                 line_color = "yellow"
-            elif re.search(r"\b(debug|trace)\b", lowered):
-                line_color = "gray"
+                if not lowered.startswith("warning: build failed") and not re.search(r"generated \d+ warning", lowered):
+                    collected_warnings.append(stripped)
+            elif is_diag_continuation:
+                line_color = "red" if active_diag_kind == "error" else "yellow"
+                if active_diag_kind == "error" and stripped.startswith("-->") and collected_errors and not collected_errors[-1]["location"]:
+                    collected_errors[-1]["location"] = stripped
             else:
-                line_color = "red" if channel == "stderr" else "white"
+                active_diag_kind = None
+                if re.search(r"\b(debug|trace)\b", lowered):
+                    line_color = "gray"
+                elif is_cargo_progress_line(args, line) or lowered.startswith(("compiling ", "checking ", "finished ", "fresh ", "downloading ", "updating ")):
+                    line_color = "cyan"
+                else:
+                    line_color = "white"
 
             if is_mpdev_offline_mode_error(args, line):
                 error_stream = sys.stdout if terminal_progress else sys.stderr
@@ -464,6 +500,34 @@ def run_command(
                 )
                 _emit(f"[ {label} ] {line}", color=line_color, stream=output_stream)
         return_code = process.wait()
+
+        # Render a clean boxed TUI summary card when errors or warnings occurred.
+        if collected_errors or (collected_warnings and return_code != 0) or (return_code == 0 and collected_warnings):
+            elapsed_card = max(time.monotonic() - started_at, 0.001)
+            status_word = "OK" if return_code == 0 else f"FAILED (exit {return_code})"
+            box_color = "red" if collected_errors or return_code != 0 else "yellow"
+            summary_stream = sys.stdout if terminal_progress else sys.stderr
+            _emit(f"┌─ Build Summary: {label} ──────────────────────────────────────────────", color=box_color, stream=summary_stream)
+            _emit(
+                f"│  Status: {status_word}  ·  Errors: {len(collected_errors)}  ·  Warnings: {len(collected_warnings)}  ·  Time: {elapsed_card:.1f}s",
+                color=box_color,
+                stream=summary_stream,
+            )
+            if collected_errors:
+                _emit("├─ ERRORS ──────────────────────────────────────────────────────────────────", color="red", stream=summary_stream)
+                for idx, item in enumerate(collected_errors[:12], 1):
+                    _emit(f"│  {idx}. {item['headline']}", color="red", stream=summary_stream)
+                    if item["location"]:
+                        _emit(f"│     {item['location']}", color="gray", stream=summary_stream)
+                if len(collected_errors) > 12:
+                    _emit(f"│  ... and {len(collected_errors) - 12} more error(s).", color="red", stream=summary_stream)
+            if collected_warnings:
+                _emit("├─ WARNINGS ────────────────────────────────────────────────────────────────", color="yellow", stream=summary_stream)
+                for idx, wline in enumerate(collected_warnings[:6], 1):
+                    _emit(f"│  {idx}. {wline}", color="yellow", stream=summary_stream)
+                if len(collected_warnings) > 6:
+                    _emit(f"│  ... and {len(collected_warnings) - 6} more warning(s).", color="yellow", stream=summary_stream)
+            _emit("└───────────────────────────────────────────────────────────────────────────", color=box_color, stream=summary_stream)
     except KeyboardInterrupt:
         process.terminate()
         try:

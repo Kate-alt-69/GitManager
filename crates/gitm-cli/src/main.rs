@@ -123,6 +123,10 @@ fn run() -> Result<(), String> {
         "inspect" => command_inspect(&args[1..]),
         "update" => command_update(&args[1..]),
         "status" => command_status(&args[1..]),
+        "view" => command_view(&args[1..]),
+        "clone" => command_clone(&args[1..]),
+        "actions" | "pipelines" => command_actions(&args[1..]),
+        "release" | "releases" => command_release(&args[1..]),
         "log" | "history-commits" => command_log(&args[1..]),
         "branch" | "branches" => command_branches(&args[1..]),
         "remote" | "remotes" => command_remotes(&args[1..]),
@@ -508,42 +512,625 @@ fn command_update(args: &[String]) -> Result<(), String> {
     }
 }
 
+struct StatusCommitItem {
+	short_oid: String,
+	summary: String,
+	author: String,
+	relative_time: String,
+}
+
+struct StatusFileItem {
+	code: char,
+	category: &'static str,
+	path: String,
+}
+
+struct StatusCardData {
+	repo_name: String,
+	branch: String,
+	upstream: Option<String>,
+	head_short: String,
+	behind_count: usize,
+	ahead_count: usize,
+	behind_top: Vec<StatusCommitItem>,
+	ahead_top: Vec<StatusCommitItem>,
+	staged: Vec<StatusFileItem>,
+	modified: Vec<StatusFileItem>,
+	untracked: Vec<StatusFileItem>,
+}
+
+fn format_relative_epoch(epoch_secs: i64) -> String {
+	let now = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map(|d| d.as_secs() as i64)
+		.unwrap_or(epoch_secs);
+	let delta = (now - epoch_secs).max(0);
+	if delta < 60 {
+		return "just now".to_string();
+	}
+	let mins = delta / 60;
+	if mins < 60 {
+		return format!("{mins}m ago");
+	}
+	let hours = mins / 60;
+	if hours < 24 {
+		return format!("{hours}h ago");
+	}
+	let days = hours / 24;
+	format!("{days}d ago")
+}
+
+/// Collects up to `limit` commit summaries reachable from `include` while hiding `exclude`.
+fn collect_top_commits(
+	repository: &Repository,
+	include: git2::Oid,
+	exclude: git2::Oid,
+	limit: usize,
+) -> Vec<StatusCommitItem> {
+	let mut items = Vec::new();
+	let Ok(mut walk) = repository.revwalk() else {
+		return items;
+	};
+	let _ = walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME);
+	if walk.push(include).is_err() || walk.hide(exclude).is_err() {
+		return items;
+	}
+	for oid in walk.flatten().take(limit) {
+		if let Ok(commit) = repository.find_commit(oid) {
+			let full = oid.to_string();
+			let short_oid = full[..full.len().min(7)].to_string();
+			let summary = commit.summary().unwrap_or("(no message)").to_string();
+			let author = commit.author().name().unwrap_or("Unknown").to_string();
+			let relative_time = format_relative_epoch(commit.time().seconds());
+			items.push(StatusCommitItem {
+				short_oid,
+				summary,
+				author,
+				relative_time,
+			});
+		}
+	}
+	items
+}
+
+/// Builds the StatusCard snapshot (Top 5 Behind, Top 5 Ahead, and cleanly grouped
+/// Staged / Modified / Untracked files) for both CLI output and interactive TUI.
+fn collect_status_card(path: &Path, repository: &Repository) -> Result<StatusCardData, String> {
+	let repo_name = path
+		.file_name()
+		.and_then(|n| n.to_str())
+		.unwrap_or("repository")
+		.to_string();
+	let head_ref = repository.head().ok();
+	let branch = head_ref
+		.as_ref()
+		.and_then(|head| head.shorthand().map(str::to_owned))
+		.unwrap_or_else(|| "(detached HEAD)".to_string());
+	let head_oid = head_ref.as_ref().and_then(|head| head.target());
+	let head_short = head_oid
+		.map(|oid| {
+			let s = oid.to_string();
+			s[..s.len().min(7)].to_string()
+		})
+		.unwrap_or_else(|| "unborn".to_string());
+
+	let mut upstream_name = None;
+	let mut behind_count = 0usize;
+	let mut ahead_count = 0usize;
+	let mut behind_top = Vec::new();
+	let mut ahead_top = Vec::new();
+
+	if let Some(local_oid) = head_oid {
+		if let Ok(local_branch) = repository.find_branch(&branch, BranchType::Local) {
+			if let Ok(upstream_branch) = local_branch.upstream() {
+				upstream_name = upstream_branch
+					.name()
+					.ok()
+					.flatten()
+					.map(str::to_owned);
+				if let Some(remote_oid) = upstream_branch.get().target() {
+					if let Ok((ahead, behind)) = repository.graph_ahead_behind(local_oid, remote_oid) {
+						ahead_count = ahead;
+						behind_count = behind;
+					}
+					if behind_count > 0 {
+						behind_top = collect_top_commits(repository, remote_oid, local_oid, 5);
+					}
+					if ahead_count > 0 {
+						ahead_top = collect_top_commits(repository, local_oid, remote_oid, 5);
+					}
+				}
+			}
+		}
+	}
+
+	let mut options = StatusOptions::new();
+	options
+		.include_untracked(true)
+		.recurse_untracked_dirs(true)
+		.include_ignored(false)
+		.renames_head_to_index(true)
+		.renames_index_to_workdir(true);
+	let statuses = repository
+		.statuses(Some(&mut options))
+		.map_err(|error| format!("Could not read worktree status: {error}"))?;
+
+	let mut staged = Vec::new();
+	let mut modified = Vec::new();
+	let mut untracked = Vec::new();
+
+	for entry in statuses.iter() {
+		let st = entry.status();
+		let file = entry.path().unwrap_or("<non-UTF-8 path>").to_string();
+		if st.is_index_new()
+			|| st.is_index_modified()
+			|| st.is_index_deleted()
+			|| st.is_index_renamed()
+			|| st.is_index_typechange()
+		{
+			let code = if st.is_index_new() {
+				'+'
+			} else if st.is_index_deleted() {
+				'-'
+			} else if st.is_index_renamed() {
+				'R'
+			} else {
+				'~'
+			};
+			staged.push(StatusFileItem {
+				code,
+				category: "Staged",
+				path: file.clone(),
+			});
+		}
+		if st.is_wt_modified()
+			|| st.is_wt_deleted()
+			|| st.is_wt_renamed()
+			|| st.is_wt_typechange()
+		{
+			let code = if st.is_wt_deleted() {
+				'-'
+			} else if st.is_wt_renamed() {
+				'R'
+			} else {
+				'~'
+			};
+			modified.push(StatusFileItem {
+				code,
+				category: "Modified",
+				path: file.clone(),
+			});
+		}
+		if st.is_wt_new() {
+			untracked.push(StatusFileItem {
+				code: '?',
+				category: "Untracked",
+				path: file,
+			});
+		}
+	}
+
+	Ok(StatusCardData {
+		repo_name,
+		branch,
+		upstream: upstream_name,
+		head_short,
+		behind_count,
+		ahead_count,
+		behind_top,
+		ahead_top,
+		staged,
+		modified,
+		untracked,
+	})
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+	if text.chars().count() <= max_chars {
+		return text.to_string();
+	}
+	let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+	out.push('…');
+	out
+}
+
+/// Prints the clean boxed StatusCard (Top 5 Behind / Top 5 Ahead + grouped files).
+fn print_status_card(card: &StatusCardData) {
+	let upstream_label = card.upstream.as_deref().unwrap_or("no upstream");
+	let sync_summary = if card.upstream.is_none() {
+		"local only".to_string()
+	} else if card.behind_count == 0 && card.ahead_count == 0 {
+		"✓ up to date".to_string()
+	} else {
+		format!("↓ {} behind  ·  ↑ {} ahead", card.behind_count, card.ahead_count)
+	};
+
+	println!("┌────────────────────────────────────────────────────────────────────────────┐");
+	println!(
+		"│ {:<30} {:<24} {:>18} │",
+		truncate_text(&format!("{} ({})", card.repo_name, card.head_short), 30),
+		truncate_text(&format!("{} ↔ {}", card.branch, upstream_label), 24),
+		truncate_text(&sync_summary, 18),
+	);
+	println!("├────────────────────────────────────────────────────────────────────────────┤");
+
+	if card.behind_count > 0 || card.ahead_count > 0 {
+		println!("│ BEHIND (Top 5 of {})                                                       │", card.behind_count);
+		if card.behind_top.is_empty() {
+			println!("│   (none)                                                                   │");
+		} else {
+			for item in &card.behind_top {
+				println!(
+					"│   ↓ {}  {:<49} {:>12} │",
+					item.short_oid,
+					truncate_text(&item.summary, 49),
+					truncate_text(&item.relative_time, 12),
+				);
+			}
+			if card.behind_count > card.behind_top.len() {
+				println!("│   + {} more behind…                                                        │", card.behind_count - card.behind_top.len());
+			}
+		}
+
+		println!("├────────────────────────────────────────────────────────────────────────────┤");
+		println!("│ AHEAD (Top 5 of {})                                                        │", card.ahead_count);
+		if card.ahead_top.is_empty() {
+			println!("│   (none)                                                                   │");
+		} else {
+			for item in &card.ahead_top {
+				println!(
+					"│   ↑ {}  {:<49} {:>12} │",
+					item.short_oid,
+					truncate_text(&item.summary, 49),
+					truncate_text(&item.relative_time, 12),
+				);
+			}
+			if card.ahead_count > card.ahead_top.len() {
+				println!("│   + {} more ahead…                                                         │", card.ahead_count - card.ahead_top.len());
+			}
+		}
+		println!("├────────────────────────────────────────────────────────────────────────────┤");
+	}
+
+	let total_files = card.staged.len() + card.modified.len() + card.untracked.len();
+	println!(
+		"│ FILES: {} staged · {} modified · {} untracked                                │",
+		card.staged.len(),
+		card.modified.len(),
+		card.untracked.len(),
+	);
+
+	if total_files == 0 {
+		println!("│   ✓ Working tree clean — nothing uncommitted.                              │");
+	} else {
+		for (label, list) in [
+			("Staged (ready to commit)", &card.staged),
+			("Modified (not staged)", &card.modified),
+			("Untracked (new files)", &card.untracked),
+		] {
+			if !list.is_empty() {
+				println!("│   {label}:");
+				for file in list {
+					println!("│     [{}] {}", file.code, file.path);
+				}
+			}
+		}
+	}
+	println!("└────────────────────────────────────────────────────────────────────────────┘");
+	println!("Tip: Run `gitm status -i` for interactive StatusCard & file viewer, or `gitm view <file>`.");
+}
+
+/// Opens a clean, scrollable line-numbered file viewer in the terminal.
+/// Press `d` to toggle unified diff vs HEAD, `↑/↓/PgUp/PgDn` to scroll, `q/Esc` to return.
+fn run_clean_file_viewer(repo_path: &Path, repository: &Repository, rel_path: &str) -> Result<(), String> {
+	let full_path = repo_path.join(rel_path);
+	let raw_content = std::fs::read_to_string(&full_path)
+		.map_err(|error| format!("Could not read {}: {error}", full_path.display()))?;
+	let file_lines: Vec<String> = raw_content.lines().map(str::to_owned).collect();
+
+	// Prepare optional diff lines against HEAD for instant `d` toggle.
+	let mut diff_lines: Vec<String> = Vec::new();
+	if let Ok(mut diff_opts) = Ok::<git2::DiffOptions, String>(git2::DiffOptions::new()) {
+		diff_opts.pathspec(rel_path);
+		if let Ok(diff) = repository.diff_index_to_workdir(None, Some(&mut diff_opts)) {
+			let _ = diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+				let origin = line.origin();
+				let text = String::from_utf8_lossy(line.content()).trim_end_matches(&['\r', '\n'][..]).to_string();
+				diff_lines.push(format!("{origin}{text}"));
+				true
+			});
+		}
+	}
+
+	let mut stdout = io::stdout();
+	terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+	let _ = execute!(stdout, EnterAlternateScreen);
+
+	let mut scroll: usize = 0;
+	let mut show_diff = false;
+	let result: Result<(), String> = (|| {
+		loop {
+			let (cols, rows) = terminal::size().unwrap_or((100, 30));
+			let view_rows = (rows as usize).saturating_sub(4).max(4);
+			let active_lines = if show_diff && !diff_lines.is_empty() {
+				&diff_lines
+			} else {
+				&file_lines
+			};
+			if scroll >= active_lines.len() && !active_lines.is_empty() {
+				scroll = active_lines.len().saturating_sub(1);
+			}
+
+			let _ = execute!(stdout, Clear(ClearType::All), crossterm::cursor::MoveTo(0, 0));
+			let mode_label = if show_diff { "DIFF" } else { "FILE" };
+			let _ = queue!(
+				stdout,
+				SetForegroundColor(Color::DarkYellow),
+				Print(format!(
+					" [{}] {}  ({} lines)  —  ↑/↓ scroll · d toggle diff · q back\r\n",
+					mode_label,
+					rel_path,
+					active_lines.len()
+				)),
+				ResetColor,
+				Print(format!("{}\r\n", "─".repeat((cols as usize).min(120))))
+			);
+
+			for (offset, line) in active_lines.iter().skip(scroll).take(view_rows).enumerate() {
+				let line_no = scroll + offset + 1;
+				let clipped = truncate_text(line, (cols as usize).saturating_sub(9));
+				if show_diff && line.starts_with('+') {
+					let _ = queue!(stdout, SetForegroundColor(Color::Green), Print(format!("{:>5} │ {}\r\n", line_no, clipped)), ResetColor);
+				} else if show_diff && line.starts_with('-') {
+					let _ = queue!(stdout, SetForegroundColor(Color::Red), Print(format!("{:>5} │ {}\r\n", line_no, clipped)), ResetColor);
+				} else {
+					let _ = queue!(stdout, Print(format!("{:>5} │ {}\r\n", line_no, clipped)));
+				}
+			}
+			let _ = stdout.flush();
+
+			if let Ok(Event::Key(key)) = event::read() {
+				if key.kind != KeyEventKind::Press {
+					continue;
+				}
+				match key.code {
+					KeyCode::Char('q') | KeyCode::Esc => break,
+					KeyCode::Down | KeyCode::Char('j') => {
+						if scroll + 1 < active_lines.len() {
+							scroll += 1;
+						}
+					}
+					KeyCode::Up | KeyCode::Char('k') => {
+						scroll = scroll.saturating_sub(1);
+					}
+					KeyCode::PageDown => {
+						scroll = (scroll + view_rows).min(active_lines.len().saturating_sub(1));
+					}
+					KeyCode::PageUp => {
+						scroll = scroll.saturating_sub(view_rows);
+					}
+					KeyCode::Char('d') => {
+						if !diff_lines.is_empty() {
+							show_diff = !show_diff;
+							scroll = 0;
+						}
+					}
+					_ => {}
+				}
+			}
+		}
+		Ok(())
+	})();
+
+	let _ = execute!(stdout, LeaveAlternateScreen);
+	let _ = terminal::disable_raw_mode();
+	result
+}
+
+/// Interactive `crossterm` StatusCard TUI: switch between Behind (Top 5),
+/// Ahead (Top 5), and Files (Staged/Modified/Untracked) and press Enter to view.
+fn run_interactive_status_card(repo_path: &Path, repository: &Repository, card: &StatusCardData) -> Result<(), String> {
+	let all_files: Vec<&StatusFileItem> = card
+		.staged
+		.iter()
+		.chain(card.modified.iter())
+		.chain(card.untracked.iter())
+		.collect();
+
+	let mut stdout = io::stdout();
+	terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+	let _ = execute!(stdout, EnterAlternateScreen);
+
+	let mut active_tab: usize = 2; // 0 = Behind, 1 = Ahead, 2 = Files
+	let mut selected: usize = 0;
+	let mut status_note = String::from("←/→ switch tab · ↑/↓ select · Enter inspect/view · q quit");
+
+	let result: Result<(), String> = (|| {
+		loop {
+			let list_len = match active_tab {
+				0 => card.behind_top.len(),
+				1 => card.ahead_top.len(),
+				_ => all_files.len(),
+			};
+			if list_len == 0 {
+				selected = 0;
+			} else if selected >= list_len {
+				selected = list_len - 1;
+			}
+
+			let _ = execute!(stdout, Clear(ClearType::All), crossterm::cursor::MoveTo(0, 0));
+			let upstream_label = card.upstream.as_deref().unwrap_or("no upstream");
+			let _ = queue!(
+				stdout,
+				SetForegroundColor(Color::DarkYellow),
+				Print(format!(
+					" GitManager StatusCard — {} ({} ↔ {})  [↓ {} behind · ↑ {} ahead]\r\n",
+					card.repo_name, card.branch, upstream_label, card.behind_count, card.ahead_count
+				)),
+				ResetColor
+			);
+
+			let tabs = [
+				format!("Behind (Top 5 / {})", card.behind_count),
+				format!("Ahead (Top 5 / {})", card.ahead_count),
+				format!("Files ({})", all_files.len()),
+			];
+			let _ = queue!(stdout, Print(" "));
+			for (idx, label) in tabs.iter().enumerate() {
+				if idx == active_tab {
+					let _ = queue!(stdout, SetForegroundColor(Color::Cyan), Print(format!("[{label}]  ")), ResetColor);
+				} else {
+					let _ = queue!(stdout, Print(format!(" {label}   ")));
+				}
+			}
+			let _ = queue!(stdout, Print("\r\n────────────────────────────────────────────────────────────────────────────\r\n"));
+
+			match active_tab {
+				0 => {
+					if card.behind_top.is_empty() {
+						let _ = queue!(stdout, Print("  ✓ No incoming commits behind upstream.\r\n"));
+					} else {
+						for (idx, item) in card.behind_top.iter().enumerate() {
+							let marker = if idx == selected { "▸" } else { " " };
+							let _ = queue!(
+								stdout,
+								Print(format!(" {marker} ↓ {}  {:<46} {}\r\n", item.short_oid, truncate_text(&item.summary, 46), item.relative_time))
+							);
+						}
+					}
+				}
+				1 => {
+					if card.ahead_top.is_empty() {
+						let _ = queue!(stdout, Print("  ✓ No local commits ahead of upstream.\r\n"));
+					} else {
+						for (idx, item) in card.ahead_top.iter().enumerate() {
+							let marker = if idx == selected { "▸" } else { " " };
+							let _ = queue!(
+								stdout,
+								Print(format!(" {marker} ↑ {}  {:<46} {}\r\n", item.short_oid, truncate_text(&item.summary, 46), item.relative_time))
+							);
+						}
+					}
+				}
+				_ => {
+					if all_files.is_empty() {
+						let _ = queue!(stdout, Print("  ✓ Working tree clean.\r\n"));
+					} else {
+						for (idx, file) in all_files.iter().enumerate() {
+							let marker = if idx == selected { "▸" } else { " " };
+							let color = match file.category {
+								"Staged" => Color::Green,
+								"Modified" => Color::Yellow,
+								_ => Color::Cyan,
+							};
+							let _ = queue!(
+								stdout,
+								SetForegroundColor(color),
+								Print(format!(" {marker} [{:<9} {}] {}\r\n", file.category, file.code, file.path)),
+								ResetColor
+							);
+						}
+					}
+				}
+			}
+
+			let _ = queue!(
+				stdout,
+				Print("\r\n────────────────────────────────────────────────────────────────────────────\r\n"),
+				Print(format!(" {status_note}\r\n"))
+			);
+			let _ = stdout.flush();
+
+			if let Ok(Event::Key(key)) = event::read() {
+				if key.kind != KeyEventKind::Press {
+					continue;
+				}
+				match key.code {
+					KeyCode::Char('q') | KeyCode::Esc => break,
+					KeyCode::Right | KeyCode::Tab => {
+						active_tab = (active_tab + 1) % 3;
+						selected = 0;
+					}
+					KeyCode::Left => {
+						active_tab = (active_tab + 2) % 3;
+						selected = 0;
+					}
+					KeyCode::Down | KeyCode::Char('j') => {
+						if list_len > 0 {
+							selected = (selected + 1) % list_len;
+						}
+					}
+					KeyCode::Up | KeyCode::Char('k') => {
+						if list_len > 0 {
+							selected = (selected + list_len - 1) % list_len;
+						}
+					}
+					KeyCode::Enter => {
+						if active_tab == 2 {
+							if let Some(file) = all_files.get(selected) {
+								let _ = execute!(stdout, LeaveAlternateScreen);
+								let _ = terminal::disable_raw_mode();
+								if let Err(err) = run_clean_file_viewer(repo_path, repository, &file.path) {
+									status_note = err;
+								}
+								let _ = terminal::enable_raw_mode();
+								let _ = execute!(stdout, EnterAlternateScreen);
+							}
+						} else if active_tab == 0 {
+							if let Some(c) = card.behind_top.get(selected) {
+								status_note = format!("Commit {} by {}: {}", c.short_oid, c.author, c.summary);
+							}
+						} else if active_tab == 1 {
+							if let Some(c) = card.ahead_top.get(selected) {
+								status_note = format!("Commit {} by {}: {}", c.short_oid, c.author, c.summary);
+							}
+						}
+					}
+					_ => {}
+				}
+			}
+		}
+		Ok(())
+	})();
+
+	let _ = execute!(stdout, LeaveAlternateScreen);
+	let _ = terminal::disable_raw_mode();
+	result
+}
+
 fn command_status(args: &[String]) -> Result<(), String> {
-    let (path, repository) = open_repository(args)?;
-    let branch = repository.head()
-        .ok()
-        .and_then(|head| head.shorthand().map(str::to_owned))
-        .unwrap_or_else(|| "(detached or unborn HEAD)".to_string());
-    let head = repository.head()
-        .ok()
-        .and_then(|head| head.target())
-        .map(|oid| oid.to_string())
-        .unwrap_or_else(|| "(no commit yet)".to_string());
+	let interactive = args.iter().any(|a| a == "-i" || a == "--interactive");
+	let filtered_args: Vec<String> = args
+		.iter()
+		.filter(|a| *a != "-i" && *a != "--interactive")
+		.cloned()
+		.collect();
+	let (path, repository) = open_repository(&filtered_args)?;
+	let card = collect_status_card(&path, &repository)?;
+	if interactive && io::stdout().is_terminal() {
+		run_interactive_status_card(&path, &repository, &card)
+	} else {
+		print_status_card(&card);
+		Ok(())
+	}
+}
 
-    let mut options = StatusOptions::new();
-    options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .include_ignored(false)
-        .renames_head_to_index(true)
-        .renames_index_to_workdir(true);
-    let statuses = repository.statuses(Some(&mut options))
-        .map_err(|error| format!("Could not read worktree status: {error}"))?;
-
-    println!("Repository: {}", path.display());
-    println!("Branch:     {branch}");
-    println!("HEAD:       {}", &head[..head.len().min(12)]);
-    println!("Worktree:   {} changed path(s)", statuses.len());
-    if statuses.is_empty() {
-        println!("Working tree clean.");
-    } else {
-        for entry in statuses.iter() {
-            let state = format!("{:?}", entry.status());
-            let file = entry.path().unwrap_or("<non-UTF-8 path>");
-            println!("{state:<28} {file}");
-        }
-    }
-    Ok(())
+fn command_view(args: &[String]) -> Result<(), String> {
+	let Some(rel_path) = args.first() else {
+		return Err("Usage: gitm view <RELATIVE_FILE_PATH> [REPO_PATH]".to_string());
+	};
+	let repo_args = if args.len() > 1 { &args[1..] } else { &[] };
+	let (path, repository) = open_repository(repo_args)?;
+	if io::stdout().is_terminal() {
+		run_clean_file_viewer(&path, &repository, rel_path)
+	} else {
+		let content = std::fs::read_to_string(path.join(rel_path))
+			.map_err(|error| format!("Could not read {rel_path}: {error}"))?;
+		for (idx, line) in content.lines().enumerate() {
+			println!("{:>5} │ {line}", idx + 1);
+		}
+		Ok(())
+	}
 }
 
 fn command_log(args: &[String]) -> Result<(), String> {
@@ -1719,4 +2306,149 @@ fn human_bytes(bytes: u64) -> String {
         unit += 1;
     }
     format!("{value:.1} {}", UNITS[unit])
+}
+
+fn detect_cli_provider(repo_path: &Path) -> &'static str {
+	let output = std::process::Command::new("git")
+		.args(["remote", "get-url", "origin"])
+		.current_dir(repo_path)
+		.output();
+	if let Ok(out) = output {
+		if out.status.success() {
+			let url = String::from_utf8_lossy(&out.stdout).to_lowercase();
+			if url.contains("gitlab") {
+				return "gitlab";
+			}
+		}
+	}
+	if repo_path.join(".gitlab-ci.yml").is_file() {
+		"gitlab"
+	} else {
+		"github"
+	}
+}
+
+fn passthrough_cli(binary: &str, args: &[String], cwd: &Path) -> Result<(), String> {
+	let status = std::process::Command::new(binary)
+		.args(args)
+		.current_dir(cwd)
+		.status()
+		.map_err(|err| format!("Could not run `{binary}` (is it installed on PATH?): {err}"))?;
+	if status.success() {
+		Ok(())
+	} else {
+		Err(format!("`{binary}` exited with status {status}."))
+	}
+}
+
+/// Manages GitHub Actions (`gh`) or GitLab CI (`glab`) runs from the `gitm` CLI.
+fn command_actions(args: &[String]) -> Result<(), String> {
+	let cwd = env::current_dir().map_err(|err| err.to_string())?;
+	let provider = detect_cli_provider(&cwd);
+	let sub = args.first().map(String::as_str).unwrap_or("list");
+	match sub {
+		"--help" | "-h" | "help" => {
+			println!("gitm actions [list | run <workflow> | logs <run-id>]");
+			println!("Wraps `gh` (GitHub Actions) or `glab` (GitLab CI) for the current repository.");
+			Ok(())
+		}
+		"list" => {
+			if provider == "gitlab" {
+				passthrough_cli("glab", &["ci".into(), "list".into()], &cwd)
+			} else {
+				passthrough_cli("gh", &["run".into(), "list".into(), "--limit".into(), "15".into()], &cwd)
+			}
+		}
+		"run" => {
+			let Some(target) = args.get(1) else {
+				return Err("Usage: gitm actions run <workflow-file-or-branch>".to_string());
+			};
+			if provider == "gitlab" {
+				passthrough_cli("glab", &["ci".into(), "run".into(), "--branch".into(), target.clone()], &cwd)
+			} else {
+				passthrough_cli("gh", &["workflow".into(), "run".into(), target.clone()], &cwd)
+			}
+		}
+		"logs" => {
+			let Some(run_id) = args.get(1) else {
+				return Err("Usage: gitm actions logs <run-id>".to_string());
+			};
+			if provider == "gitlab" {
+				passthrough_cli("glab", &["ci".into(), "get".into(), "-p".into(), run_id.clone()], &cwd)
+			} else {
+				passthrough_cli("gh", &["run".into(), "view".into(), run_id.clone(), "--log".into()], &cwd)
+			}
+		}
+		other => Err(format!("Unknown actions subcommand '{other}'. Use list, run, or logs.")),
+	}
+}
+
+/// Lists or creates GitHub/GitLab releases from the `gitm` CLI.
+fn command_release(args: &[String]) -> Result<(), String> {
+	let cwd = env::current_dir().map_err(|err| err.to_string())?;
+	let provider = detect_cli_provider(&cwd);
+	let sub = args.first().map(String::as_str).unwrap_or("list");
+	match sub {
+		"--help" | "-h" | "help" => {
+			println!("gitm release [list | create <tag> [--title TITLE] [--notes NOTES]]");
+			Ok(())
+		}
+		"list" => {
+			if provider == "gitlab" {
+				passthrough_cli("glab", &["release".into(), "list".into()], &cwd)
+			} else {
+				passthrough_cli("gh", &["release".into(), "list".into(), "--limit".into(), "15".into()], &cwd)
+			}
+		}
+		"create" => {
+			let Some(tag) = args.get(1) else {
+				return Err("Usage: gitm release create <tag> [--title TITLE] [--notes NOTES]".to_string());
+			};
+			let title = option_value(&args[2..], "--title")
+				.map(str::to_owned)
+				.unwrap_or_else(|| tag.clone());
+			let notes = option_value(&args[2..], "--notes")
+				.map(str::to_owned)
+				.unwrap_or_else(|| format!("Release {tag}"));
+			if provider == "gitlab" {
+				passthrough_cli(
+					"glab",
+					&["release".into(), "create".into(), tag.clone(), "--name".into(), title, "--notes".into(), notes],
+					&cwd,
+				)
+			} else {
+				passthrough_cli(
+					"gh",
+					&["release".into(), "create".into(), tag.clone(), "--title".into(), title, "--notes".into(), notes],
+					&cwd,
+				)
+			}
+		}
+		other => Err(format!("Unknown release subcommand '{other}'. Use list or create.")),
+	}
+}
+
+/// Clones a repository with live Git progress output.
+/// Supports `github:owner/repo` and `gitlab:owner/repo` shorthands.
+fn command_clone(args: &[String]) -> Result<(), String> {
+	let Some(raw_target) = args.first() else {
+		return Err("Usage: gitm clone <url|github:owner/repo|gitlab:owner/repo> [dest]".to_string());
+	};
+	if raw_target == "--help" || raw_target == "-h" {
+		println!("gitm clone <url|github:owner/repo|gitlab:owner/repo> [dest]");
+		return Ok(());
+	}
+	let url = if let Some(slug) = raw_target.strip_prefix("github:") {
+		format!("https://github.com/{}.git", slug.trim().trim_end_matches(".git"))
+	} else if let Some(slug) = raw_target.strip_prefix("gitlab:") {
+		format!("https://gitlab.com/{}.git", slug.trim().trim_end_matches(".git"))
+	} else {
+		raw_target.clone()
+	};
+	let mut cmd_args = vec!["clone".to_string(), "--progress".to_string(), url];
+	if let Some(dest) = args.get(1) {
+		cmd_args.push(dest.clone());
+	}
+	let cwd = env::current_dir().map_err(|err| err.to_string())?;
+	passthrough_cli("git", &cmd_args, &cwd)
 }

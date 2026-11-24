@@ -12,12 +12,8 @@ fn main() -> ExitCode {
         }
     };
 
-    match Command::new(&app_path)
-        .arg("--setup")
-        .env("GITMANAGER_SETUP_MODE", "1")
-        .spawn()
-    {
-        Ok(_) => ExitCode::SUCCESS,
+    match spawn_detached_application(&app_path) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             show_error(&format!(
                 "GitManager Setup could not start the application at:\n{}\n\n{}",
@@ -118,4 +114,49 @@ fn show_windows_error(message: &str) {
     unsafe {
         MessageBoxW(0, body.as_ptr(), title.as_ptr(), 0x0000_0010);
     }
+}
+
+/// Spawns `gitmanager.exe` detached from any parent installer Job Object
+/// (`msiexec.exe` / Windows Installer) so Task Manager groups GitManager and
+/// its sidecars under GitManager rather than under Windows Installer.
+fn spawn_detached_application(app_path: &Path) -> std::io::Result<()> {
+	#[cfg(windows)]
+	{
+		use std::os::windows::process::CommandExt;
+		const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+		const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+		const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+		// First try breaking away from the MSI Job Object cleanly.
+		let breakaway = Command::new(app_path)
+			.arg("--setup")
+			.env("GITMANAGER_SETUP_MODE", "1")
+			.creation_flags(CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+			.spawn();
+		if breakaway.is_ok() {
+			return Ok(());
+		}
+
+		// If the installer job forbids breakaway, hand off through Explorer so
+		// GitManager becomes a top-level user app rather than a child of msiexec.
+		if let Ok(_) = Command::new("explorer.exe").arg(app_path).spawn() {
+			return Ok(());
+		}
+
+		Command::new(app_path)
+			.arg("--setup")
+			.env("GITMANAGER_SETUP_MODE", "1")
+			.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+			.spawn()?;
+		Ok(())
+	}
+
+	#[cfg(not(windows))]
+	{
+		Command::new(app_path)
+			.arg("--setup")
+			.env("GITMANAGER_SETUP_MODE", "1")
+			.spawn()?;
+		Ok(())
+	}
 }

@@ -3,11 +3,13 @@ node_modules/
 dist/
 .vite/
 
-# Rust / Tauri
+# Rust / Tauri / Python
 /build/
 /target/
 src-tauri/target/
 src-tauri/gen/
+**/__pycache__/**
+**/Cargo.lock/**
 
 # OS metadata
 .DS_Store

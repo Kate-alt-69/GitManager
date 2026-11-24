@@ -31,10 +31,13 @@ const IGNORED_DIRECTORY_NAMES: &[&str] = &[
     "sys", "dev", "volumes",
 ];
 const DEPENDENCY_DIRECTORY_NAMES: &[&str] = &[
-    "node_modules", "target", "vendor", ".cargo", ".rustup", ".npm", ".pnpm-store",
-    ".yarn", "venv", ".venv", "env", "site-packages", "dist-packages", "__pycache__",
-    ".gradle", ".nuget", "bower_components", "pods", "dist", "build", "bin", "obj",
-    "third_party", "third-party",
+    "node_modules", "target", "vendor", ".cargo", ".rustup", ".npm", ".pnpm", ".pnpm-store",
+    ".yarn", ".bun", "venv", ".venv", "env", "site-packages", "dist-packages", "__pycache__",
+    ".gradle", ".m2", ".nuget", ".pub-cache", ".pip", ".poetry", ".uv", ".tox", ".nox",
+    "bower_components", "pods", "dist", "build", "out", ".next", ".nuxt", ".turbo",
+    ".cache", ".rcache", ".parcel-cache", ".vite", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "cache", "caches", "tmp", "temp", "bin", "obj", "third_party", "third-party",
+    "scoop", "chocolatey", "homebrew", "cellar", "appdata", ".vscode", ".idea",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +81,7 @@ pub fn scan_repositories_with_report(options: ScanOptions) -> Result<ScanReport,
     // It keeps only one two-thread crawl active across the whole user session.
     let _process_scan_lease = acquire_process_scan_lease()?;
     let config = Arc::new(ScanConfig {
-        max_depth: options.max_depth.unwrap_or(8).clamp(2, 16),
+        max_depth: options.max_depth.unwrap_or(0),
         include_hidden: options.include_hidden_dirs.unwrap_or(false),
         index_dependencies: options.index_dependency_repositories.unwrap_or(true),
     });
@@ -218,7 +221,7 @@ fn scan_worker(shared: ScanShared) {
 }
 
 fn scan_one_directory(task: &ScanTask, shared: &ScanShared) -> Vec<ScanTask> {
-    if shared.truncated.load(Ordering::Relaxed) || task.depth >= shared.config.max_depth {
+    if shared.truncated.load(Ordering::Relaxed) || (shared.config.max_depth > 0 && task.depth >= shared.config.max_depth) {
         return Vec::new();
     }
     if shared.directories_seen.fetch_add(1, Ordering::Relaxed) + 1 > MAX_SCAN_DIRECTORIES {
@@ -258,7 +261,7 @@ fn scan_one_directory(task: &ScanTask, shared: &ScanShared) -> Vec<ScanTask> {
         }
 
         let Ok(kind) = entry.file_type() else { continue };
-        if !kind.is_dir() || kind.is_symlink() || depth >= shared.config.max_depth { continue; }
+        if !kind.is_dir() || kind.is_symlink() || (shared.config.max_depth > 0 && depth >= shared.config.max_depth) { continue; }
         if !should_visit_directory(
             &path, &task.root, depth, shared.config.include_hidden, shared.dependency_fallback,
         ) { continue; }
@@ -339,10 +342,7 @@ fn normalize_scan_roots(mut candidates: Vec<PathBuf>) -> Vec<PathBuf> {
 
 
 fn path_has_dependency_component(path: &Path) -> bool {
-    path.components().any(|component| {
-        let part = component.as_os_str().to_string_lossy().to_lowercase();
-        DEPENDENCY_DIRECTORY_NAMES.contains(&part.as_str())
-    })
+    crate::repository_index::is_dependency_repository_path(&path.to_string_lossy())
 }
 
 fn should_visit_directory(

@@ -93,6 +93,7 @@ export function Button({
 	disabled = false,
 	className = "",
 	type = "button",
+	title,
 }: {
 	children: ReactNode;
 	onClick?: () => void;
@@ -100,6 +101,7 @@ export function Button({
 	disabled?: boolean;
 	className?: string;
 	type?: "button" | "submit";
+	title?: string;
 }) {
 	return (
 		<button
@@ -107,6 +109,7 @@ export function Button({
 			className={`gm-button gm-button-${variant} ${className}`}
 			onClick={onClick}
 			disabled={disabled}
+			title={title}
 		>
 			{children}
 		</button>

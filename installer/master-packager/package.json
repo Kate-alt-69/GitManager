@@ -33,7 +33,7 @@
       "internetClient",
       "privateNetworkClientServer"
     ],
-    "packageDescription": "GitManager — a native Git workspace manager by Kastrick.",
+    "packageDescription": "GitManager \u2014 a native Git workspace manager by Kastrick.",
     "digitalSignature": {
       "signWith": "GenerateTestCertificate",
       "timestampServer": "http://timestamp.acs.microsoft.com"
@@ -63,7 +63,8 @@
       "crash_helper-aarch64-pc-windows-msvc.exe",
       "gitmanager.service-x86_64-pc-windows-msvc.exe",
       "gitmanager.service-i686-pc-windows-msvc.exe",
-      "gitmanager.service-aarch64-pc-windows-msvc.exe"
+      "gitmanager.service-aarch64-pc-windows-msvc.exe",
+      "gitm.exe"
     ],
     "packageDependencies": [
       {
@@ -96,6 +97,20 @@
           "arguments": "--stop-service",
           "condition": "Installed",
           "sequence": "StartOfExecution",
+          "continueOnError": true
+        }
+      ]
+    }
+  },
+  "installer": {
+    "customActions": {
+      "exe": [
+        {
+          "name": "ResetGitManagerFirstRunOnUninstall",
+          "filePath": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "arguments": "-NoProfile -ExecutionPolicy Bypass -Command \"$cfg = Join-Path $env:LOCALAPPDATA 'kastrick''s_software\\config\\GitManager\\preferences.json'; if (Test-Path $cfg) { try { $j = Get-Content -Raw $cfg | ConvertFrom-Json; $j.firstRunComplete = $false; $j | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $cfg } catch { Remove-Item -Force $cfg -ErrorAction SilentlyContinue } }; Remove-Item -Force ($cfg + '.previous'), ($cfg + '.bak') -ErrorAction SilentlyContinue\"",
+          "condition": "REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE",
+          "sequence": "EndOfExecution",
           "continueOnError": true
         }
       ]

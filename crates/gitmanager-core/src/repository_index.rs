@@ -274,16 +274,26 @@ pub fn default_scan_roots() -> Vec<PathBuf> {
 }
 
 const DEPENDENCY_DIRECTORY_NAMES: &[&str] = &[
-    "node_modules", "target", "vendor", ".cargo", ".rustup", ".npm", ".pnpm-store",
-    ".yarn", "venv", ".venv", "env", "site-packages", "dist-packages", "__pycache__",
-    ".gradle", ".nuget", "bower_components", "pods", "dist", "build", "bin", "obj",
-    "third_party", "third-party",
+    "node_modules", "target", "vendor", ".cargo", ".rustup", ".npm", ".pnpm", ".pnpm-store",
+    ".yarn", ".bun", "venv", ".venv", "env", "site-packages", "dist-packages", "__pycache__",
+    ".gradle", ".m2", ".nuget", ".pub-cache", ".pip", ".poetry", ".uv", ".tox", ".nox",
+    "bower_components", "pods", "dist", "build", "out", ".next", ".nuxt", ".turbo",
+    ".cache", ".rcache", ".parcel-cache", ".vite", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "cache", "caches", "tmp", "temp", "bin", "obj", "third_party", "third-party",
+    "scoop", "chocolatey", "homebrew", "cellar", "appdata", ".vscode", ".idea",
 ];
 
 pub fn is_dependency_repository_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    if normalized.contains("/go/pkg/mod/") || normalized.contains("/.git/modules/") {
+        return true;
+    }
     Path::new(path).components().any(|component| {
         let part = component.as_os_str().to_string_lossy().to_lowercase();
         DEPENDENCY_DIRECTORY_NAMES.contains(&part.as_str())
+            || part.ends_with("-cache")
+            || part.ends_with("_cache")
+            || part.ends_with(".cache")
     })
 }
 

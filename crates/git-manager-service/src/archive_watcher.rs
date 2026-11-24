@@ -221,7 +221,7 @@ fn restart_archive_watchers_with_scan(
                 Some(repositories) => repositories,
                 None => match scan_repositories(ScanOptions {
                     root_paths: roots,
-                    max_depth: Some(max_depth.clamp(2, 16)),
+                    max_depth: Some(max_depth),
                     include_hidden_dirs: Some(include_hidden),
                     index_dependency_repositories: Some(index_dependencies),
                 }) {

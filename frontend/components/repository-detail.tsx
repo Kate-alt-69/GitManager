@@ -1,15 +1,18 @@
 "use client";
 
+import { RingLoadingIndicator } from "./repo-ring-badge";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { invoke } from "../lib/tauri";
 import type { AppPreferences, ArchiveSnapshot, CommitHistoryPage, GitRepository } from "../lib/types";
 import type { RepositoryDestination } from "../lib/internal-routing";
 import { Button, Glyph, RepoAvatar } from "./shared-ui";
+import { StatusCard } from "./status-card";
 
 const RepositoryWorkspace = dynamic(
 	() => import("./repository-workspace").then((module) => module.RepositoryWorkspace),
-	{ ssr: false, loading: () => <div className="gm-workspace-loading">Loading repository workspace…</div> },
+	{ ssr: false, loading: () => <RingLoadingIndicator label="Loading repository workspace…" /> },
 );
 
 function relativeDate(timestamp: number): string {
@@ -307,6 +310,7 @@ export function RepositoryDetail({
 
 	return (
 		<section className="gm-detail-view">
+			<StatusCard repo={repo} onOpenPull={() => onNavigateDestination({ kind: "pull-browser" })} />
 			<div className="gm-detail-heading">
 				<div className="gm-detail-heading-main">
 					<button className="gm-back-link" onClick={onClose} type="button"><Glyph>‹</Glyph> All repositories</button>

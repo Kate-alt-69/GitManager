@@ -4,6 +4,7 @@ import { useState } from "react";
 import { invoke } from "../lib/tauri";
 import type { ConnectedAccount } from "../lib/types";
 import { Button, EmptyState, Field, ProviderMark, RepoAvatar } from "./shared-ui";
+import { CliAuthCard } from "./cli-auth-card";
 
 export function AccountsPage({
 	accounts,
@@ -43,6 +44,7 @@ export function AccountsPage({
 			<div className="gm-page-heading">
 				<div><div className="gm-eyebrow">REMOTE PROVIDERS</div><h1>Accounts</h1><p>Connect provider identities to browse repositories outside your local scan roots. Cached account metadata is retained between launches.</p></div>
 			</div>
+			<CliAuthCard />
 			<div className="gm-account-layout">
 				<div className="gm-panel gm-connect-panel">
 					<div className="gm-panel-heading"><div><h2>Connect an account</h2><p>GitManager does not save personal access tokens. GitHub CLI credentials remain managed by gh.</p></div></div>

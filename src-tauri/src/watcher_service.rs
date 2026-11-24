@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use crate::process_utils::hidden_command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::thread;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +147,7 @@ mod tests {
 
 }
 
+#[cfg(any(unix, test))]
 fn is_legacy_service_command(command: &str) -> bool {
     command.split_whitespace().any(|argument| {
         let argument = argument.trim_matches('"').trim_matches('\'');
@@ -299,7 +300,7 @@ fn systemd_exec_start(arguments: &[String]) -> String {
         .join(" ")
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -310,46 +311,67 @@ fn xml_escape(value: &str) -> String {
 }
 
 fn resolve_background_service_executable(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|error| format!("Could not resolve GitManager's executable: {error}"))?;
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let mut directories = Vec::new();
+	let current_exe = std::env::current_exe()
+		.map_err(|error| format!("Could not resolve GitManager's executable: {error}"))?;
+	let suffix = if cfg!(windows) { ".exe" } else { "" };
+	let expected_name = format!("gitmanager.service{suffix}");
+	let mut directories = Vec::new();
 
-    if let Some(parent) = current_exe.parent() {
-        directories.push(parent.to_path_buf());
-    }
-    if let Ok(resources) = app_handle.path().resource_dir() {
-        directories.push(resources);
-    }
-    if let Some(parent) = current_exe.parent().and_then(Path::parent) {
-        directories.push(parent.join("Resources"));
-        directories.push(parent.join("resources"));
-    }
+	if let Some(parent) = current_exe.parent() {
+		directories.push(parent.to_path_buf());
+		directories.push(parent.join("resources"));
+		directories.push(parent.join("Resources"));
+		directories.push(parent.join("binaries"));
+		directories.push(parent.join("resources").join("binaries"));
+	}
+	if let Ok(resources) = app_handle.path().resource_dir() {
+		directories.push(resources.clone());
+		directories.push(resources.join("binaries"));
+	}
+	if let Some(grandparent) = current_exe.parent().and_then(Path::parent) {
+		directories.push(grandparent.join("Resources"));
+		directories.push(grandparent.join("resources"));
+		directories.push(grandparent.join("binaries"));
+	}
 
-    for directory in directories {
-        let direct = directory.join(format!("gitmanager.service{suffix}"));
-        if direct.is_file() {
-            return Ok(direct);
-        }
-        if let Ok(entries) = std::fs::read_dir(&directory) {
-            let mut candidates = entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.is_file()
-                        && path.file_name()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.starts_with("gitmanager.service-") && name.ends_with(suffix))
-                })
-                .collect::<Vec<_>>();
-            candidates.sort();
-            if let Some(path) = candidates.into_iter().next() {
-                return Ok(path);
-            }
-        }
-    }
+	for directory in &directories {
+		for direct_name in [
+			format!("gitmanager.service{suffix}"),
+			format!("gitmanager-service{suffix}"),
+		] {
+			let direct = directory.join(direct_name);
+			if direct.is_file() {
+				return Ok(direct);
+			}
+		}
+		if let Ok(entries) = std::fs::read_dir(directory) {
+			let mut candidates = entries
+				.flatten()
+				.map(|entry| entry.path())
+				.filter(|path| {
+					path.is_file()
+						&& path.file_name()
+							.and_then(|name| name.to_str())
+							.is_some_and(|raw| {
+								let name = raw.to_ascii_lowercase();
+								(name == format!("gitmanager.service{suffix}")
+									|| name == format!("gitmanager-service{suffix}")
+									|| name.starts_with("gitmanager.service-")
+									|| name.starts_with("gitmanager-service-"))
+									&& name.ends_with(suffix)
+							})
+				})
+				.collect::<Vec<_>>();
+			candidates.sort();
+			if let Some(path) = candidates.into_iter().next() {
+				return Ok(path);
+			}
+		}
+	}
 
-    Err("The packaged gitmanager.service executable was not found. Rebuild the installer with the service sidecar included.".to_string())
+	Err(format!(
+		"The packaged {expected_name} executable was not found. Rebuild the installer with the service sidecar included."
+	))
 }
 
 const SERVICE_LOG_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
@@ -683,61 +705,150 @@ pub fn ensure_required_service(app_handle: AppHandle) -> Result<String, String> 
 pub fn register_os_background_service(app_handle: AppHandle) -> Result<String, String> {
     let service_exe = resolve_background_service_executable(&app_handle)?;
 
-    #[cfg(target_os = "windows")]
-    {
-        let task_name = "GitManager Core Service";
-        let task_command = format!("\"{}\"", service_exe.display());
-        let create = hidden_command("schtasks.exe")
-            .args(["/Create", "/SC", "ONLOGON", "/TN", task_name, "/TR"])
-            .arg(&task_command)
-            .args(["/RL", "LIMITED", "/F"])
-            .output()
-            .map_err(|error| format!("Could not invoke Windows Task Scheduler: {error}"))?;
-        if !create.status.success() {
-            let detail = String::from_utf8_lossy(&create.stderr);
-            let detail = if detail.trim().is_empty() {
-                String::from_utf8_lossy(&create.stdout).into_owned()
-            } else {
-                detail.into_owned()
-            };
-            return Err(format!("Could not register GitManager Core Service: {}", detail.trim()));
-        }
+	#[cfg(target_os = "windows")]
+	{
+		const TASK_NAME: &str = "GitManager Core Service";
+		const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+		const RUN_VALUE: &str = "GitManagerCoreService";
 
-        // Setup normally runs while crash_helper already has the required
-        // service alive. Register the logon task without launching a second
-        // copy that would immediately fail the exclusive service lock.
-        let service_already_running = crash_helper::service_control_lock_is_held();
-        if !service_already_running {
-            let start = hidden_command("schtasks.exe")
-                .args(["/Run", "/TN", task_name])
-                .output()
-                .map_err(|error| format!("Could not start GitManager Core Service: {error}"))?;
-            if !start.status.success() {
-                let detail = String::from_utf8_lossy(&start.stderr);
-                let detail = if detail.trim().is_empty() {
-                    String::from_utf8_lossy(&start.stdout).into_owned()
-                } else {
-                    detail.into_owned()
-                };
-                return Err(format!("GitManager Core Service was registered but could not start: {}", detail.trim()));
-            }
-        }
+		// Clean up the legacy PR #9 Windows SCM service name if present.
+		let _ = hidden_command("sc.exe").args(["stop", "GitManagerUpdateSvc"]).output();
+		let _ = hidden_command("sc.exe").args(["delete", "GitManagerUpdateSvc"]).output();
 
-        let _ = hidden_command("sc.exe").args(["stop", "GitManagerUpdateSvc"]).output();
-        let _ = hidden_command("sc.exe").args(["delete", "GitManagerUpdateSvc"]).output();
+		// Build a Task Scheduler 1.2 XML definition (compatible with Windows 7, 8,
+		// 10, and 11) that disables the default 72-hour execution timeout and
+		// battery-kill settings while XML-escaping paths like `kastrick's_software`.
+		let escaped_exe = xml_escape(&service_exe.to_string_lossy());
+		let working_dir = service_exe
+			.parent()
+			.map(|parent| xml_escape(&parent.to_string_lossy()))
+			.unwrap_or_default();
+		let task_xml = format!(
+			r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>GitManager per-user background repository, watcher, and archive service.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escaped_exe}</Command>
+      <WorkingDirectory>{working_dir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"#
+		);
 
-        return Ok(if service_already_running {
-            format!(
-                "Registered GitManager Core Service for sign-in. The existing service instance is already running at {}.",
-                service_exe.display()
-            )
-        } else {
-            format!(
-                "Registered and started the independent Windows background service at {}.",
-                service_exe.display()
-            )
-        });
-    }
+		let xml_path = std::env::temp_dir().join(format!(
+			"gitmanager-core-task-{}.xml",
+			std::process::id()
+		));
+		// Task Scheduler XML imports reliably across Windows 7–11 when UTF-16LE BOM-encoded.
+		let mut utf16_bytes = Vec::with_capacity(2 + task_xml.len() * 2);
+		utf16_bytes.extend_from_slice(&[0xFF, 0xFE]);
+		for unit in task_xml.encode_utf16() {
+			utf16_bytes.extend_from_slice(&unit.to_le_bytes());
+		}
+		let task_created = if fs::write(&xml_path, &utf16_bytes).is_ok() {
+			let output = hidden_command("schtasks.exe")
+				.args(["/Create", "/TN", TASK_NAME, "/XML"])
+				.arg(&xml_path)
+				.arg("/F")
+				.output();
+			let _ = fs::remove_file(&xml_path);
+			output.map(|result| result.status.success()).unwrap_or(false)
+		} else {
+			false
+		};
+
+		let service_already_running = crash_helper::service_control_lock_is_held();
+
+		if task_created {
+			// Remove any older HKCU\Run fallback entry so the service is not launched twice.
+			let _ = hidden_command("reg.exe")
+				.args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
+				.output();
+			if !service_already_running {
+				let _ = hidden_command("schtasks.exe")
+					.args(["/Run", "/TN", TASK_NAME])
+					.output();
+			}
+			return Ok(format!(
+				"Registered GitManager Core Service via Windows Task Scheduler (unlimited runtime, battery-safe) at {}.",
+				service_exe.display()
+			));
+		}
+
+		// Standard (non-admin) Windows 7–11 accounts often cannot create ONLOGON
+		// tasks via schtasks.exe. Fall back cleanly to HKCU\...\Run so sign-in
+		// startup works on every Windows PC without requiring UAC elevation.
+		let run_value_data = format!("\"{}\"", service_exe.display());
+		let reg_add = hidden_command("reg.exe")
+			.args([
+				"add",
+				RUN_KEY,
+				"/v",
+				RUN_VALUE,
+				"/t",
+				"REG_SZ",
+				"/d",
+				&run_value_data,
+				"/f",
+			])
+			.output()
+			.map_err(|error| format!("Could not invoke Windows registry utility: {error}"))?;
+		if !reg_add.status.success() {
+			let detail = String::from_utf8_lossy(&reg_add.stderr);
+			let detail = if detail.trim().is_empty() {
+				String::from_utf8_lossy(&reg_add.stdout).into_owned()
+			} else {
+				detail.into_owned()
+			};
+			return Err(format!(
+				"Could not register GitManager Core Service for Windows sign-in: {}",
+				detail.trim()
+			));
+		}
+
+		return Ok(format!(
+			"Registered GitManager Core Service via Windows User Startup (HKCU Run) at {}.",
+			service_exe.display()
+		));
+	}
 
     #[cfg(target_os = "linux")]
     {
@@ -885,4 +996,128 @@ WantedBy=default.target
 
     #[allow(unreachable_code)]
     Err("Background service registration is unavailable on this platform.".to_string())
+}
+
+
+/// Queries the actual OS service/startup manager rather than relying on an
+/// in-memory boolean. Returns `(registered, human_readable_kind)`.
+pub fn is_os_service_registered() -> (bool, String) {
+	#[cfg(target_os = "windows")]
+	{
+		if hidden_command("sc.exe")
+			.args(["query", "GitManagerCoreService"])
+			.output()
+			.map(|out| out.status.success())
+			.unwrap_or(false)
+		{
+			return (true, "Windows Service (SCM)".to_string());
+		}
+		if hidden_command("schtasks.exe")
+			.args(["/Query", "/TN", "GitManager Core Service"])
+			.output()
+			.map(|out| out.status.success())
+			.unwrap_or(false)
+		{
+			return (true, "Windows Task Scheduler (user logon)".to_string());
+		}
+		if hidden_command("reg.exe")
+			.args([
+				"query",
+				r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+				"/v",
+				"GitManagerCoreService",
+			])
+			.output()
+			.map(|out| out.status.success())
+			.unwrap_or(false)
+		{
+			return (true, "Windows User Startup (HKCU Run)".to_string());
+		}
+		return (false, "Windows Service / User Startup".to_string());
+	}
+
+	#[cfg(target_os = "linux")]
+	{
+		let enabled = hidden_command("systemctl")
+			.args(["--user", "is-enabled", "gitmanager-core.service"])
+			.output()
+			.map(|out| out.status.success())
+			.unwrap_or(false);
+		return (enabled, "Linux systemd User Service".to_string());
+	}
+
+	#[cfg(target_os = "macos")]
+	{
+		let plist_exists = dirs::home_dir()
+			.map(|home| home.join("Library/LaunchAgents/com.gitmanager.core.plist").is_file())
+			.unwrap_or(false);
+		return (plist_exists, "macOS LaunchAgent (launchd)".to_string());
+	}
+
+	#[allow(unreachable_code)]
+	(false, "OS Background Service".to_string())
+}
+
+/// Cleanly unregisters GitManager's OS sign-in service on Windows, Linux, or macOS.
+pub fn unregister_os_background_service() -> Result<String, String> {
+	#[cfg(target_os = "windows")]
+	{
+		let _ = hidden_command("schtasks.exe")
+			.args(["/End", "/TN", "GitManager Core Service"])
+			.output();
+		let _ = hidden_command("schtasks.exe")
+			.args(["/Delete", "/TN", "GitManager Core Service", "/F"])
+			.output();
+		let _ = hidden_command("reg.exe")
+			.args([
+				"delete",
+				r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+				"/v",
+				"GitManagerCoreService",
+				"/f",
+			])
+			.output();
+		let _ = hidden_command("sc.exe")
+			.args(["stop", "GitManagerCoreService"])
+			.output();
+		let _ = hidden_command("sc.exe")
+			.args(["delete", "GitManagerCoreService"])
+			.output();
+		return Ok("Removed GitManager Core Service Windows startup registration.".to_string());
+	}
+
+	#[cfg(target_os = "linux")]
+	{
+		let _ = hidden_command("systemctl")
+			.args(["--user", "disable", "--now", "gitmanager-core.service"])
+			.output();
+		if let Some(home) = dirs::home_dir() {
+			let unit = home.join(".config/systemd/user/gitmanager-core.service");
+			let _ = fs::remove_file(unit);
+		}
+		let _ = hidden_command("systemctl")
+			.args(["--user", "daemon-reload"])
+			.output();
+		return Ok("Removed GitManager Linux systemd user service registration.".to_string());
+	}
+
+	#[cfg(target_os = "macos")]
+	{
+		if let Ok(uid_out) = hidden_command("id").arg("-u").output() {
+			let uid = String::from_utf8_lossy(&uid_out.stdout).trim().to_string();
+			if !uid.is_empty() && uid.bytes().all(|b| b.is_ascii_digit()) {
+				let target = format!("gui/{uid}/com.gitmanager.core");
+				let _ = hidden_command("launchctl").args(["bootout", &target]).output();
+				let _ = hidden_command("launchctl").args(["disable", &target]).output();
+			}
+		}
+		if let Some(home) = dirs::home_dir() {
+			let plist = home.join("Library/LaunchAgents/com.gitmanager.core.plist");
+			let _ = fs::remove_file(plist);
+		}
+		return Ok("Removed GitManager macOS LaunchAgent registration.".to_string());
+	}
+
+	#[allow(unreachable_code)]
+	Err("Background service unregistration is unavailable on this platform.".to_string())
 }

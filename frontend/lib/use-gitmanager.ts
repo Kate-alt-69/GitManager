@@ -193,6 +193,33 @@ export function useGitManager() {
 		}
 	}, [refreshNotifications]);
 
+	const resetStorageAndRescan = useCallback(async (): Promise<void> => {
+		if (!isTauriRuntime()) {
+			setStatus("Open GitManager as a desktop app to reset workspace storage.");
+			return;
+		}
+		setReloadingData(true);
+		setError("");
+		setStatus("Resetting cached workspace storage & index…");
+		try {
+			await invoke<string>("ensure_required_service");
+			setServiceReady(true);
+			await invoke<string>("reset_workspace_storage");
+			indexGeneration.current = "0";
+			setRepositories([]);
+			setDependencies([]);
+			setIndexReady(false);
+			await performScan(preferences);
+			setStatus("Storage refreshed & workspace re-indexed");
+		} catch (cause) {
+			const message = cause instanceof Error ? cause.message : String(cause);
+			setError(message);
+			setStatus("Could not reset workspace storage");
+		} finally {
+			setReloadingData(false);
+		}
+	}, [performScan, preferences]);
+
 	const markNotificationRead = useCallback(async (id: string) => {
 		try {
 			await invoke("mark_app_notification_read", { id });
@@ -457,12 +484,18 @@ export function useGitManager() {
 						setSetupOpen(true);
 					}
 				} else {
-					// The service owns first-run discovery. Render cached data immediately
-					// and let the native index-change event hydrate the first new index.
 					setLoading(false);
-					setStatus(indexGeneration.current === "0"
-						? "GitManager Core Service is indexing repositories…"
-						: "Repository index loaded");
+					const cachedCount = Array.isArray(cachedIndex?.repositories)
+						? cachedIndex.repositories.filter((repo) => repo.source_kind === "local_scan").length
+						: 0;
+					if (cachedCount === 0 && resolved.scanRoots.length > 0) {
+						setStatus("Scanning configured folders for Git repositories…");
+						void performScan(resolved);
+					} else {
+						setStatus(indexGeneration.current === "0"
+							? "GitManager Core Service is indexing repositories…"
+							: "Repository index loaded");
+					}
 				}
 
 				// GitHub CLI detection is intentionally deferred to Accounts.
@@ -522,6 +555,6 @@ export function useGitManager() {
 		version, preferences, setPreferences, directories,
 		repositories, dependencies, accounts, accountsLoading, loadAccounts, notifications, setupOpen, setSetupOpen,
 		status, error, setError, scan, retryService, savePreferences, queueRemoteCheck, switchBranch, updateRepository, connectAccount,
-		refreshNotifications, markNotificationRead, dismissNotification, markAllNotificationsRead,
+		refreshNotifications, markNotificationRead, dismissNotification, markAllNotificationsRead, resetStorageAndRescan,
 	};
 }

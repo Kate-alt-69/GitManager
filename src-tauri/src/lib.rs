@@ -1,3 +1,6 @@
+mod actions_cli;
+mod provider_extras;
+mod task_manager;
 mod process_utils;
 pub use gitmanager_core::notification_center;
 pub use gitmanager_core::{AppPreferences, RepositoryPreferences};
@@ -5,7 +8,7 @@ pub mod remote_providers;
 pub use gitmanager_core::repository_index;
 pub mod watcher_service;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -26,7 +29,7 @@ use gitmanager_core::models::GitRepositoryInfo;
 use remote_providers::{ConnectedAccountSummary, ProviderAccountRequest};
 use repository_index::{default_scan_roots, IndexedRepoSummary};
 use watcher_service::{
-    register_os_background_service, BackgroundWatcherControl,
+    is_os_service_registered, register_os_background_service, unregister_os_background_service, BackgroundWatcherControl,
     RepoUpdateNotification, ServiceStatusInfo,
 };
 
@@ -381,8 +384,8 @@ async fn save_app_preferences(
     mut preferences: AppPreferences,
 ) -> Result<AppPreferences, String> {
     preferences.scan_roots = normalize_scan_roots(preferences.scan_roots)?;
-    if !(2..=16).contains(&preferences.max_scan_depth) {
-        return Err("Scan depth must be between 2 and 16.".to_string());
+    if preferences.max_scan_depth > 64 {
+        return Err("Scan depth must be 0 (unlimited) or up to 64.".to_string());
     }
     preferences.archive_trigger = preferences.archive_trigger.trim().to_ascii_lowercase();
     if !matches!(preferences.archive_trigger.as_str(), "manual" | "commit" | "change") {
@@ -745,6 +748,186 @@ async fn scan_machine_repositories(
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
+}
+
+
+/// Clears stale repository index snapshots and disposable cache files under
+/// GitManager's per-user data directory, then asks the core service for a fresh
+/// repository scan without touching any actual Git working trees or user prefs.
+
+/// Resolves the directory containing the packaged `gitm` CLI executable.
+fn resolve_gitm_cli_executable(app_handle: &AppHandle) -> Result<PathBuf, String> {
+	let current_exe = std::env::current_exe()
+		.map_err(|error| format!("Could not resolve GitManager executable: {error}"))?;
+	let suffix = if cfg!(windows) { ".exe" } else { "" };
+	let mut dirs_to_check = Vec::new();
+	if let Some(parent) = current_exe.parent() {
+		dirs_to_check.push(parent.to_path_buf());
+		dirs_to_check.push(parent.join("resources"));
+	}
+	if let Ok(res) = app_handle.path().resource_dir() {
+		dirs_to_check.push(res);
+	}
+	for dir in dirs_to_check {
+		let direct = dir.join(format!("gitm{suffix}"));
+		if direct.is_file() {
+			return Ok(direct);
+		}
+		if let Ok(entries) = std::fs::read_dir(&dir) {
+			for entry in entries.flatten() {
+				let path = entry.path();
+				if path.is_file()
+					&& path
+						.file_name()
+						.and_then(|n| n.to_str())
+						.is_some_and(|n| n.starts_with("gitm-") && n.ends_with(suffix))
+				{
+					return Ok(path);
+				}
+			}
+		}
+	}
+	Err("Could not locate the packaged gitm CLI executable.".to_string())
+}
+
+/// Checks whether the `gitm` CLI directory is currently registered on the user's PATH.
+#[tauri::command]
+async fn get_gitm_cli_path_status(app_handle: AppHandle) -> Result<bool, String> {
+	tokio::task::spawn_blocking(move || {
+		let gitm_exe = match resolve_gitm_cli_executable(&app_handle) {
+			Ok(path) => path,
+			Err(_) => return Ok(false),
+		};
+		#[cfg(windows)]
+		{
+			let target_dir = gitm_exe
+				.parent()
+				.map(|p| p.to_string_lossy().to_string())
+				.unwrap_or_default();
+			let output = process_utils::hidden_command("powershell.exe")
+				.args([
+					"-NoProfile",
+					"-Command",
+					"[Environment]::GetEnvironmentVariable('Path', 'User')",
+				])
+				.output();
+			if let Ok(out) = output {
+				let current = String::from_utf8_lossy(&out.stdout);
+				let found = current
+					.split(';')
+					.any(|entry| entry.trim().eq_ignore_ascii_case(target_dir.trim()));
+				return Ok(found);
+			}
+			Ok(false)
+		}
+		#[cfg(unix)]
+		{
+			let _ = gitm_exe;
+			let link_path = dirs::home_dir()
+				.map(|home| home.join(".local/bin/gitm"));
+			Ok(link_path.is_some_and(|p| p.exists()))
+		}
+	})
+	.await
+	.map_err(|error| format!("Could not check gitm PATH status: {error}"))?
+}
+
+/// Installs or removes the `gitm` CLI on the current user's PATH (works across
+/// Windows NSIS/MSI/MSIX, macOS, and Linux without requiring administrator elevation).
+#[tauri::command]
+async fn set_gitm_cli_path_integration(app_handle: AppHandle, enabled: bool) -> Result<String, String> {
+	tokio::task::spawn_blocking(move || {
+		let gitm_exe = resolve_gitm_cli_executable(&app_handle)?;
+		#[cfg(windows)]
+		{
+			let target_dir = gitm_exe
+				.parent()
+				.ok_or_else(|| "gitm executable has no parent directory.".to_string())?
+				.to_string_lossy()
+				.replace('\'', "''");
+			let script = if enabled {
+				format!(
+					"$d='{target_dir}'; $p=[Environment]::GetEnvironmentVariable('Path','User'); if(-not $p){{$p=''}}; $parts=$p -split ';' | Where-Object {{ $_ -and $_.Trim() -ne '' }}; if(-not ($parts | Where-Object {{ $_.Trim().ToLowerInvariant() -eq $d.ToLowerInvariant() }})){{ $parts += $d; [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User') }}"
+				)
+			} else {
+				format!(
+					"$d='{target_dir}'; $p=[Environment]::GetEnvironmentVariable('Path','User'); if($p){{ $parts=$p -split ';' | Where-Object {{ $_ -and $_.Trim().ToLowerInvariant() -ne $d.ToLowerInvariant() }}; [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User') }}"
+				)
+			};
+			let out = process_utils::hidden_command("powershell.exe")
+				.args(["-NoProfile", "-Command", &script])
+				.output()
+				.map_err(|error| format!("Could not update Windows user PATH: {error}"))?;
+			if !out.status.success() {
+				return Err(format!(
+					"Failed to update Windows user PATH: {}",
+					String::from_utf8_lossy(&out.stderr).trim()
+				));
+			}
+			return Ok(if enabled {
+				format!("Added gitm CLI ({target_dir}) to your Windows user PATH. Open a new terminal and run `gitm status`.")
+			} else {
+				"Removed gitm CLI from your Windows user PATH.".to_string()
+			});
+		}
+		#[cfg(unix)]
+		{
+			let bin_dir = dirs::home_dir()
+				.ok_or_else(|| "Could not resolve home directory.".to_string())?
+				.join(".local/bin");
+			let link_path = bin_dir.join("gitm");
+			if enabled {
+				std::fs::create_dir_all(&bin_dir)
+					.map_err(|error| format!("Could not create ~/.local/bin: {error}"))?;
+				if link_path.exists() || link_path.symlink_metadata().is_ok() {
+					let _ = std::fs::remove_file(&link_path);
+				}
+				std::os::unix::fs::symlink(&gitm_exe, &link_path)
+					.map_err(|error| format!("Could not link gitm into ~/.local/bin: {error}"))?;
+				Ok(format!("Linked gitm CLI at {}. Ensure ~/.local/bin is in your PATH.", link_path.display()))
+			} else {
+				if link_path.exists() || link_path.symlink_metadata().is_ok() {
+					let _ = std::fs::remove_file(&link_path);
+				}
+				Ok("Removed ~/.local/bin/gitm symlink.".to_string())
+			}
+		}
+	})
+	.await
+	.map_err(|error| format!("Could not update gitm CLI PATH integration: {error}"))?
+}
+
+#[tauri::command]
+async fn reset_workspace_storage() -> Result<String, String> {
+	tokio::task::spawn_blocking(|| {
+		let local_data = dirs::data_local_dir()
+			.ok_or_else(|| "Could not resolve local application data directory.".to_string())?;
+		let data_root = local_data
+			.join("kastrick's_software")
+			.join("data")
+			.join("GitManager");
+
+		let index_files = [
+			data_root.join("repo").join("metadata").join("index.json"),
+			data_root.join("repo").join("metadata").join("index.generation"),
+		];
+		for path in &index_files {
+			if path.is_file() {
+				let _ = std::fs::remove_file(path);
+			}
+		}
+
+		let cache_dir = data_root.join(".cache");
+		if cache_dir.is_dir() {
+			let _ = std::fs::remove_dir_all(&cache_dir);
+			let _ = std::fs::create_dir_all(&cache_dir);
+		}
+
+		let _ = crash_helper::request_service_scan();
+		Ok("Workspace cache and repository index cleared; fresh scan queued.".to_string())
+	})
+	.await
+	.map_err(|error| format!("Storage reset task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1269,45 +1452,55 @@ fn resume_background_service() -> Result<crash_helper::ServiceStatus, String> {
 
 #[tauri::command]
 async fn control_background_service(
-    enable_in_app: Option<bool>,
-    install_os_service: Option<bool>,
-    app_handle: AppHandle,
-    state: State<'_, AppState>,
+	enable_in_app: Option<bool>,
+	install_os_service: Option<bool>,
+	app_handle: AppHandle,
+	state: State<'_, AppState>,
 ) -> Result<ServiceStatusInfo, String> {
-    if let Some(en) = enable_in_app {
-        state.watcher.enabled.store(en, Ordering::Relaxed);
-    }
+	if let Some(en) = enable_in_app {
+		state.watcher.enabled.store(en, Ordering::Relaxed);
+		let _ = tokio::task::spawn_blocking(move || {
+			if en {
+				crash_helper::request_service_resume()
+			} else {
+				crash_helper::request_service_suspend(600)
+			}
+		})
+		.await;
+	}
 
-    if install_os_service == Some(true) {
-        tokio::task::spawn_blocking(move || register_os_background_service(app_handle))
-            .await
-            .map_err(|error| format!("Background service registration task failed: {error}"))??;
-        state
-            .watcher
-            .os_service_registered
-            .store(true, Ordering::Relaxed);
-    }
+	match install_os_service {
+		Some(true) => {
+			tokio::task::spawn_blocking(move || register_os_background_service(app_handle))
+				.await
+				.map_err(|error| format!("Background service registration task failed: {error}"))??;
+		}
+		Some(false) => {
+			tokio::task::spawn_blocking(unregister_os_background_service)
+				.await
+				.map_err(|error| format!("Background service unregistration task failed: {error}"))??;
+		}
+		None => {}
+	}
 
-    let os_kind = if cfg!(target_os = "windows") {
-        "Windows Task Scheduler (user logon)"
-    } else if cfg!(target_os = "macos") {
-        "macOS LaunchAgent (launchd)"
-    } else {
-        "Linux systemd User Service"
-    };
+	let (os_registered, os_kind) = tokio::task::spawn_blocking(is_os_service_registered)
+		.await
+		.unwrap_or_else(|_| (false, "OS Background Service".to_string()));
+	state
+		.watcher
+		.os_service_registered
+		.store(os_registered, Ordering::Relaxed);
 
-    // Remote-update results now live in the service-owned notification store.
-    // Keep this legacy response field empty for older settings clients.
-    let pending: Vec<RepoUpdateNotification> = Vec::new();
+	let pending: Vec<RepoUpdateNotification> = Vec::new();
 
-    Ok(ServiceStatusInfo {
-        running_in_background: state.watcher.enabled.load(Ordering::Relaxed),
-        checking_now: state.watcher.checking_now.load(Ordering::Relaxed),
-        os_service_registered: state.watcher.os_service_registered.load(Ordering::Relaxed),
-        os_service_kind: os_kind.to_string(),
-        poll_interval_seconds: 120,
-        pending_updates: pending,
-    })
+	Ok(ServiceStatusInfo {
+		running_in_background: state.watcher.enabled.load(Ordering::Relaxed),
+		checking_now: state.watcher.checking_now.load(Ordering::Relaxed),
+		os_service_registered: os_registered,
+		os_service_kind: os_kind,
+		poll_interval_seconds: 120,
+		pending_updates: pending,
+	})
 }
 
 
@@ -2045,6 +2238,9 @@ pub fn run() {
             get_repository_index_generation,
             load_indexed_repositories,
             scan_machine_repositories,
+            get_gitm_cli_path_status,
+            set_gitm_cli_path_integration,
+            reset_workspace_storage,
             ensure_required_service,
             get_core_service_status,
             inspect_repository,
@@ -2083,6 +2279,32 @@ pub fn run() {
             resume_background_service,
             cleaner_preview,
             cleaner_apply,
+            actions_cli::get_cli_auth_status,
+            actions_cli::cli_auth_login_token,
+            actions_cli::cli_auth_start_web_login,
+            actions_cli::list_repo_workflows,
+            actions_cli::list_workflow_runs,
+            actions_cli::trigger_workflow_run,
+            actions_cli::get_workflow_run_logs,
+            actions_cli::write_repository_file,
+            actions_cli::export_troubleshoot_diagnostics,
+            provider_extras::list_repo_releases,
+            provider_extras::generate_release_notes,
+            provider_extras::create_repo_release,
+            provider_extras::list_repo_issues,
+            provider_extras::create_repo_issue,
+            provider_extras::set_repo_issue_state,
+            provider_extras::create_branch_from_issue,
+            provider_extras::list_ci_variables,
+            provider_extras::set_ci_variable,
+            provider_extras::get_branch_protection_status,
+            task_manager::get_task_manager_snapshot,
+            task_manager::enqueue_repo_task,
+            task_manager::cancel_repo_task,
+            task_manager::reorder_repo_task,
+            task_manager::set_task_queue_paused,
+            task_manager::revert_history_task,
+            task_manager::redo_history_task,
             set_repository_commit_clean
         ])
         .run(tauri::generate_context!())

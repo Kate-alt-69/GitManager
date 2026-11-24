@@ -99,6 +99,15 @@ ${PREFIX}stop_cleanup_done:
   ${If} $UpdateMode <> 1
     nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "GitManager Core Service" /F'
     Pop $R9
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "GitManagerCoreService"
+    nsExec::ExecToLog '"$SYSDIR\sc.exe" stop GitManagerCoreService'
+    Pop $R9
+    nsExec::ExecToLog '"$SYSDIR\sc.exe" delete GitManagerCoreService'
+    Pop $R9
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$$d = \"$INSTDIR\"; $$p = [Environment]::GetEnvironmentVariable(\'Path\',\'User\'); if ($$p) { $$parts = $$p -split \';\' | Where-Object { $$_ -and $$_.Trim().ToLowerInvariant() -ne $$d.ToLowerInvariant() }; [Environment]::SetEnvironmentVariable(\'Path\', ($$parts -join \';\'), \'User\') }"'
+    Pop $R9
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$$cfg = Join-Path $$env:LOCALAPPDATA \"kastrick's_software\\config\\GitManager\\preferences.json\"; if (Test-Path $$cfg) { try { $$j = Get-Content -Raw $$cfg | ConvertFrom-Json; $$j.firstRunComplete = $$false; $$j | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $$cfg } catch { Remove-Item -Force $$cfg -ErrorAction SilentlyContinue } }; Remove-Item -Force ($$cfg + '.previous'), ($$cfg + '.bak') -ErrorAction SilentlyContinue"'
+    Pop $R9
   ${EndIf}
 !macroend
 

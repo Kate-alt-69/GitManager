@@ -387,6 +387,10 @@ Function PageLeaveReinstall
   reinst_done:
 FunctionEnd
 
+; 4b. Choose optional components (including gitm CLI on PATH)
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+!insertmacro MUI_PAGE_COMPONENTS
+
 ; 5. Choose install directory page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_DIRECTORY
@@ -749,6 +753,12 @@ Section Install
   ${If} $PassiveMode = 1
     SetAutoClose true
   ${EndIf}
+SectionEnd
+
+Section "Install gitm CLI (add to user PATH)" SecGitmCliPath
+  DetailPrint "Adding GitManager gitm CLI ($INSTDIR) to current user PATH..."
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$$d = \"$INSTDIR\"; $$p = [Environment]::GetEnvironmentVariable(\'Path\',\'User\'); if (-not $$p) { $$p = \'\' }; $$parts = $$p -split \';\' | Where-Object { $$_ -and $$_.Trim() -ne \'\' }; if (-not ($$parts | Where-Object { $$_.Trim().ToLowerInvariant() -eq $$d.ToLowerInvariant() })) { $$parts += $$d; [Environment]::SetEnvironmentVariable(\'Path\', ($$parts -join \';\'), \'User\') }"'
+  Pop $R9
 SectionEnd
 
 Function .onInstSuccess

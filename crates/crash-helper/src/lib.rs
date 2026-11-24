@@ -6,15 +6,17 @@
 
 use fs2::FileExt;
 use interprocess::local_socket::{
-    prelude::*,
-    GenericFilePath,
-    Listener,
-    ListenerOptions,
-    ListenerNonblockingMode,
-    Stream as LocalSocketStream,
+	GenericFilePath,
+	ListenerOptions,
 };
 #[cfg(unix)]
-use interprocess::local_socket::ConnectOptions;
+use interprocess::local_socket::{
+	prelude::*,
+	ConnectOptions,
+	Listener,
+	ListenerNonblockingMode,
+	Stream as LocalSocketStream,
+};
 use interprocess::ConnectWaitMode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -125,31 +127,144 @@ fn prepare_service_socket_directory(directory: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolves the current process user's Windows SID string (e.g. `S-1-5-21-...`)
+/// so the Named Pipe DACL explicitly allows the interactive user's UI to talk
+/// to the service even across UAC elevation boundaries on Windows 7–11.
+#[cfg(windows)]
+fn current_windows_user_sid() -> Option<String> {
+	use std::ffi::c_void;
+	use std::os::windows::ffi::OsStringExt;
+
+	const TOKEN_QUERY: u32 = 0x0008;
+	const TOKEN_USER_CLASS: u32 = 1;
+
+	#[repr(C)]
+	struct SidAndAttributes {
+		sid: *mut c_void,
+		attributes: u32,
+	}
+
+	#[link(name = "kernel32")]
+	extern "system" {
+		fn GetCurrentProcess() -> *mut c_void;
+		fn CloseHandle(handle: *mut c_void) -> i32;
+		fn LocalFree(mem: *mut c_void) -> *mut c_void;
+	}
+
+	#[link(name = "advapi32")]
+	extern "system" {
+		fn OpenProcessToken(
+			process_handle: *mut c_void,
+			desired_access: u32,
+			token_handle: *mut *mut c_void,
+		) -> i32;
+		fn GetTokenInformation(
+			token_handle: *mut c_void,
+			token_information_class: u32,
+			token_information: *mut c_void,
+			token_information_length: u32,
+			return_length: *mut u32,
+		) -> i32;
+		fn ConvertSidToStringSidW(sid: *mut c_void, string_sid: *mut *mut u16) -> i32;
+	}
+
+	let mut token: *mut c_void = std::ptr::null_mut();
+	if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+		return None;
+	}
+
+	let mut needed: u32 = 0;
+	unsafe {
+		let _ = GetTokenInformation(
+			token,
+			TOKEN_USER_CLASS,
+			std::ptr::null_mut(),
+			0,
+			&mut needed,
+		);
+	}
+	if needed == 0 {
+		unsafe { let _ = CloseHandle(token); }
+		return None;
+	}
+
+	let mut buffer = vec![0u8; needed as usize];
+	let ok = unsafe {
+		GetTokenInformation(
+			token,
+			TOKEN_USER_CLASS,
+			buffer.as_mut_ptr().cast::<c_void>(),
+			needed,
+			&mut needed,
+		)
+	};
+	unsafe { let _ = CloseHandle(token); }
+	if ok == 0 {
+		return None;
+	}
+
+	let user = unsafe { &*(buffer.as_ptr().cast::<SidAndAttributes>()) };
+	let mut wide_ptr: *mut u16 = std::ptr::null_mut();
+	if unsafe { ConvertSidToStringSidW(user.sid, &mut wide_ptr) } == 0 || wide_ptr.is_null() {
+		return None;
+	}
+
+	let mut len = 0usize;
+	unsafe {
+		while *wide_ptr.add(len) != 0 {
+			len += 1;
+		}
+		let slice = std::slice::from_raw_parts(wide_ptr, len);
+		let sid_string = std::ffi::OsString::from_wide(slice)
+			.to_string_lossy()
+			.into_owned();
+		let _ = LocalFree(wide_ptr.cast::<c_void>());
+		Some(sid_string)
+	}
+}
+
+/// Builds a strict per-user Windows SDDL granting access to the current user
+/// SID (including across UAC elevation), Local System, and Administrators.
+#[cfg(windows)]
+fn windows_service_pipe_sddl() -> String {
+	match current_windows_user_sid() {
+		Some(sid) if sid.starts_with("S-1-") => {
+			format!("D:P(A;;GA;;;{sid})(A;;GA;;;SY)(A;;GA;;;BA)")
+		}
+		_ => "D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)".to_string(),
+	}
+}
+
+#[cfg(windows)]
+fn bind_windows_tokio_listener(
+	name: &str,
+) -> io::Result<interprocess::local_socket::tokio::Listener> {
+	use interprocess::local_socket::tokio::prelude::*;
+	use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+	use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+	use widestring::U16CString;
+
+	let local_name = name.to_fs_name::<GenericFilePath>()?;
+	let sddl_text = windows_service_pipe_sddl();
+	let sddl = U16CString::from_str(&sddl_text)
+		.map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+	let descriptor = SecurityDescriptor::deserialize(&sddl)?;
+	ListenerOptions::new()
+		.name(local_name)
+		.security_descriptor(descriptor)
+		.create_tokio()
+}
+
+#[cfg(unix)]
 fn bind_service_local_listener(name: &str) -> io::Result<Listener> {
-    let local_name = name.to_fs_name::<GenericFilePath>()?;
-    let options = ListenerOptions::new()
-        .name(local_name)
-        .nonblocking(ListenerNonblockingMode::Accept);
+	use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
 
-    #[cfg(windows)]
-    {
-        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
-        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-        use widestring::U16CString;
-
-        // Owner Rights + Local System; no broad Users/Everyone ACE.
-        let sddl = U16CString::from_str("D:P(A;;GA;;;OW)(A;;GA;;;SY)")
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        let descriptor = SecurityDescriptor::deserialize(&sddl)?;
-        options.security_descriptor(descriptor).create_sync()
-    }
-
-    #[cfg(unix)]
-    {
-        use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
-
-        options.mode(0o600).create_sync()
-    }
+	let local_name = name.to_fs_name::<GenericFilePath>()?;
+	ListenerOptions::new()
+		.name(local_name)
+		.nonblocking(ListenerNonblockingMode::Accept)
+		.mode(0o600)
+		.create_sync()
 }
 
 #[cfg(unix)]
@@ -161,6 +276,7 @@ fn connect_service_local_socket(name: &str, timeout: Duration) -> io::Result<Loc
         .connect_sync()
 }
 
+#[allow(dead_code)]
 fn write_service_frame(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
     if payload.is_empty() || payload.len() as u64 >= MAX_MESSAGE_BYTES {
         return Err(io::Error::new(
@@ -175,6 +291,7 @@ fn write_service_frame(stream: &mut impl Write, payload: &[u8]) -> io::Result<()
     stream.flush()
 }
 
+#[allow(dead_code)]
 fn read_service_frame(stream: &mut impl Read) -> io::Result<Vec<u8>> {
     let mut header = [0u8; 4];
     stream.read_exact(&mut header)?;
@@ -193,6 +310,7 @@ fn read_service_frame(stream: &mut impl Read) -> io::Result<Vec<u8>> {
 /// Read an exact byte count from a nonblocking stream without losing partial data.
 /// Windows named pipes do not implement socket receive timeouts, so callers enable
 /// nonblocking mode and use this deadline-aware loop instead.
+#[allow(dead_code)]
 fn read_exact_with_deadline(
     reader: &mut impl Read,
     buffer: &mut [u8],
@@ -235,6 +353,7 @@ fn read_exact_with_deadline(
 }
 
 /// Send all bytes through a nonblocking stream until the complete write or deadline.
+#[allow(dead_code)]
 fn write_all_with_deadline(
     writer: &mut impl Write,
     buffer: &[u8],
@@ -266,6 +385,7 @@ fn write_all_with_deadline(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn read_service_frame_with_timeout(
     stream: &mut impl Read,
     timeout: Duration,
@@ -285,6 +405,7 @@ fn read_service_frame_with_timeout(
     Ok(payload)
 }
 
+#[allow(dead_code)]
 fn write_service_frame_with_timeout(
     stream: &mut impl Write,
     payload: &[u8],
@@ -794,94 +915,168 @@ pub fn start_service_control_server() -> Result<ServiceControlServer, String> {
     if let Some(directory) = &socket_directory {
         prepare_service_socket_directory(directory)?;
     }
-    let listener = bind_service_local_listener(&socket_name)
-        .map_err(|error| format!("Could not create the per-user local service socket: {error}"))?;
+	#[cfg(unix)]
+	let listener = bind_service_local_listener(&socket_name)
+		.map_err(|error| format!("Could not create the per-user local service socket: {error}"))?;
 
-    let endpoint_path = data_dir.join(ENDPOINT_FILE);
-    let endpoint = Endpoint {
-        version: SERVICE_PROTOCOL_VERSION,
-        name: socket_name,
-        address: String::new(),
-        token: Uuid::new_v4().to_string(),
-    };
-    write_private_json(&endpoint_path, &endpoint)
-        .map_err(|error| format!("Could not publish service-control endpoint: {error}"))?;
+	#[cfg(windows)]
+	let windows_listener = {
+		let runtime = windows_ipc_runtime()?;
+		let _guard = runtime.enter();
+		bind_windows_tokio_listener(&socket_name)
+			.map_err(|error| format!("Could not create the Windows Named Pipe listener: {error}"))?
+	};
 
-    let state = Arc::new(ServiceState::load(data_dir.join(SUSPENSION_FILE)));
-    let running = Arc::new(AtomicBool::new(true));
-    let scan_requested = Arc::new(AtomicBool::new(false));
-    let remote_check_requested = Arc::new(AtomicBool::new(false));
-    let remote_check_running = Arc::new(AtomicBool::new(false));
-    let indexing = Arc::new(AtomicBool::new(false));
-    let shutdown_requested = Arc::new(AtomicBool::new(false));
-    let active_requests = Arc::new(AtomicUsize::new(0));
-    let thread_state = Arc::clone(&state);
-    let thread_running = Arc::clone(&running);
-    let thread_scan_requested = Arc::clone(&scan_requested);
-    let thread_remote_check_requested = Arc::clone(&remote_check_requested);
-    let thread_remote_check_running = Arc::clone(&remote_check_running);
-    let thread_indexing = Arc::clone(&indexing);
-    let thread_shutdown_requested = Arc::clone(&shutdown_requested);
-    let thread_active_requests = Arc::clone(&active_requests);
-    let token = endpoint.token.clone();
+	let endpoint_path = data_dir.join(ENDPOINT_FILE);
+	let endpoint = Endpoint {
+		version: SERVICE_PROTOCOL_VERSION,
+		name: socket_name,
+		address: String::new(),
+		token: Uuid::new_v4().to_string(),
+	};
+	write_private_json(&endpoint_path, &endpoint)
+		.map_err(|error| format!("Could not publish service-control endpoint: {error}"))?;
 
-    let worker = thread::Builder::new()
-        .name("gitmanager-service-control".to_string())
-        .spawn(move || {
-            while thread_running.load(Ordering::Relaxed) {
-                match listener.accept() {
-                    Ok(stream) => {
-                        if !reserve_service_request_slot(&thread_active_requests) {
-                            // Keep request handling bounded, but make overload
-                            // visible. Closing a pipe without a response looks
-                            // like a dead service to clients and can trigger
-                            // duplicate launch attempts.
-                            eprintln!(
-                                "GitManager service IPC: rejected a request because all {} handler slots are occupied.",
-                                MAX_CONCURRENT_SERVICE_REQUESTS
-                            );
-                            drop(stream);
-                            continue;
-                        }
+	let state = Arc::new(ServiceState::load(data_dir.join(SUSPENSION_FILE)));
+	let running = Arc::new(AtomicBool::new(true));
+	let scan_requested = Arc::new(AtomicBool::new(false));
+	let remote_check_requested = Arc::new(AtomicBool::new(false));
+	let remote_check_running = Arc::new(AtomicBool::new(false));
+	let indexing = Arc::new(AtomicBool::new(false));
+	let shutdown_requested = Arc::new(AtomicBool::new(false));
+	let active_requests = Arc::new(AtomicUsize::new(0));
+	let thread_state = Arc::clone(&state);
+	let thread_running = Arc::clone(&running);
+	let thread_scan_requested = Arc::clone(&scan_requested);
+	let thread_remote_check_requested = Arc::clone(&remote_check_requested);
+	let thread_remote_check_running = Arc::clone(&remote_check_running);
+	let thread_indexing = Arc::clone(&indexing);
+	let thread_shutdown_requested = Arc::clone(&shutdown_requested);
+	let thread_active_requests = Arc::clone(&active_requests);
+	let token = endpoint.token.clone();
 
-                        let request_token = token.clone();
-                        let request_state = Arc::clone(&thread_state);
-                        let request_scan = Arc::clone(&thread_scan_requested);
-                        let request_remote_check = Arc::clone(&thread_remote_check_requested);
-                        let request_remote_running = Arc::clone(&thread_remote_check_running);
-                        let request_indexing = Arc::clone(&thread_indexing);
-                        let request_shutdown = Arc::clone(&thread_shutdown_requested);
-                        let request_running = Arc::clone(&thread_running);
-                        let request_counter = Arc::clone(&thread_active_requests);
-                        if let Err(error) = thread::Builder::new()
-                            .name("gitmanager-service-request".to_string())
-                            .spawn(move || {
-                                handle_service_connection(
-                                    stream,
-                                    &request_token,
-                                    &request_state,
-                                    &request_scan,
-                                    &request_remote_check,
-                                    &request_remote_running,
-                                    &request_indexing,
-                                    &request_shutdown,
-                                    &request_running,
-                                );
-                                request_counter.fetch_sub(1, Ordering::Release);
-                            })
-                        {
-                            thread_active_requests.fetch_sub(1, Ordering::Release);
-                            eprintln!("GitManager service could not dispatch a control request: {error}");
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(100));
-                    }
-                    Err(_) => thread::sleep(Duration::from_millis(250)),
-                }
-            }
-        })
-        .map_err(|error| format!("Could not start service-control worker: {error}"))?;
+	#[cfg(windows)]
+	let worker = thread::Builder::new()
+		.name("gitmanager-service-control".to_string())
+		.spawn(move || {
+			use interprocess::local_socket::traits::tokio::Listener as _;
+			let Ok(runtime) = windows_ipc_runtime() else {
+				eprintln!("GitManager service IPC: Windows async runtime unavailable.");
+				return;
+			};
+			runtime.block_on(async move {
+				// Overlapped async accept eliminates PIPE_NOWAIT WriteZero bugs
+				// and the 100ms polling sleep so concurrent UI calls connect immediately.
+				while thread_running.load(Ordering::Relaxed) {
+					match tokio::time::timeout(
+						Duration::from_millis(150),
+						windows_listener.accept(),
+					)
+					.await
+					{
+						Ok(Ok(stream)) => {
+							if !reserve_service_request_slot(&thread_active_requests) {
+								eprintln!(
+									"GitManager service IPC: rejected a request because all {} handler slots are occupied.",
+									MAX_CONCURRENT_SERVICE_REQUESTS
+								);
+								drop(stream);
+								continue;
+							}
+
+							let request_token = token.clone();
+							let request_state = Arc::clone(&thread_state);
+							let request_scan = Arc::clone(&thread_scan_requested);
+							let request_remote_check = Arc::clone(&thread_remote_check_requested);
+							let request_remote_running = Arc::clone(&thread_remote_check_running);
+							let request_indexing = Arc::clone(&thread_indexing);
+							let request_shutdown = Arc::clone(&thread_shutdown_requested);
+							let request_running = Arc::clone(&thread_running);
+							let request_counter = Arc::clone(&thread_active_requests);
+
+							tokio::spawn(async move {
+								handle_windows_service_connection(
+									stream,
+									request_token,
+									request_state,
+									request_scan,
+									request_remote_check,
+									request_remote_running,
+									request_indexing,
+									request_shutdown,
+									request_running,
+								)
+								.await;
+								request_counter.fetch_sub(1, Ordering::Release);
+							});
+						}
+						Ok(Err(error)) => {
+							eprintln!("GitManager service IPC: Windows Named Pipe accept error: {error}");
+							tokio::time::sleep(Duration::from_millis(50)).await;
+						}
+						Err(_) => {
+							// Periodic wakeup to observe graceful shutdown flag.
+						}
+					}
+				}
+			});
+		})
+		.map_err(|error| format!("Could not start service-control worker: {error}"))?;
+
+	#[cfg(unix)]
+	let worker = thread::Builder::new()
+		.name("gitmanager-service-control".to_string())
+		.spawn(move || {
+			while thread_running.load(Ordering::Relaxed) {
+				match listener.accept() {
+					Ok(stream) => {
+						if !reserve_service_request_slot(&thread_active_requests) {
+							eprintln!(
+								"GitManager service IPC: rejected a request because all {} handler slots are occupied.",
+								MAX_CONCURRENT_SERVICE_REQUESTS
+							);
+							drop(stream);
+							continue;
+						}
+
+						let request_token = token.clone();
+						let request_state = Arc::clone(&thread_state);
+						let request_scan = Arc::clone(&thread_scan_requested);
+						let request_remote_check = Arc::clone(&thread_remote_check_requested);
+						let request_remote_running = Arc::clone(&thread_remote_check_running);
+						let request_indexing = Arc::clone(&thread_indexing);
+						let request_shutdown = Arc::clone(&thread_shutdown_requested);
+						let request_running = Arc::clone(&thread_running);
+						let request_counter = Arc::clone(&thread_active_requests);
+						if let Err(error) = thread::Builder::new()
+							.name("gitmanager-service-request".to_string())
+							.spawn(move || {
+								handle_service_connection(
+									stream,
+									&request_token,
+									&request_state,
+									&request_scan,
+									&request_remote_check,
+									&request_remote_running,
+									&request_indexing,
+									&request_shutdown,
+									&request_running,
+								);
+								request_counter.fetch_sub(1, Ordering::Release);
+							})
+						{
+							thread_active_requests.fetch_sub(1, Ordering::Release);
+							eprintln!("GitManager service could not dispatch a control request: {error}");
+						}
+					}
+					Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+						thread::sleep(Duration::from_millis(20));
+					}
+					Err(_) => thread::sleep(Duration::from_millis(100)),
+				}
+			}
+		})
+		.map_err(|error| format!("Could not start service-control worker: {error}"))?;
 
     Ok(ServiceControlServer {
         state,
@@ -1786,40 +1981,24 @@ pub fn with_repository_archive_lock<T>(
     operation()
 }
 
-fn handle_service_connection(
-    mut stream: LocalSocketStream,
-    token: &str,
-    state: &ServiceState,
-    scan_requested: &AtomicBool,
-    remote_check_requested: &AtomicBool,
-    remote_check_running: &AtomicBool,
-    indexing: &AtomicBool,
-    shutdown_requested: &AtomicBool,
-    running: &AtomicBool,
-) {
-    #[cfg(windows)]
-    if let Err(error) = stream.set_nonblocking(true) {
-        eprintln!("GitManager service could not enable bounded named-pipe I/O: {error}");
-        return;
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = stream.set_recv_timeout(Some(Duration::from_secs(5)));
-        let _ = stream.set_send_timeout(Some(Duration::from_secs(15)));
-    }
-
-    #[cfg(windows)]
-    let request_frame = read_service_frame_with_timeout(&mut stream, Duration::from_secs(5));
-    #[cfg(not(windows))]
-    let request_frame = read_service_frame(&mut stream);
-
-    let mut shutdown_after_response = false;
-    if let Err(error) = &request_frame {
-        eprintln!(
-            "GitManager service IPC: rejected an incomplete/invalid client request: {error}"
-        );
-    }
-    let response = match request_frame {
+/// Executes an authenticated IPC request frame and returns `(response_bytes, shutdown_after_response)`.
+/// Shared by both the Windows Tokio overlapped pipe handler and the Unix socket handler.
+fn dispatch_service_request_frame(
+	request_frame: io::Result<Vec<u8>>,
+	token: &str,
+	state: &ServiceState,
+	scan_requested: &AtomicBool,
+	remote_check_requested: &AtomicBool,
+	remote_check_running: &AtomicBool,
+	indexing: &AtomicBool,
+) -> (Option<Vec<u8>>, bool) {
+	let mut shutdown_after_response = false;
+	if let Err(error) = &request_frame {
+		eprintln!(
+			"GitManager service IPC: rejected an incomplete/invalid client request: {error}"
+		);
+	}
+	let response = match request_frame {
         Err(error) => ServiceResponse {
             ok: false,
             status: state.status("Invalid service-control request"),
@@ -2056,51 +2235,171 @@ fn handle_service_connection(
         }
     };
 
-    if let Ok(encoded) = serde_json::to_vec(&response) {
-        let response_bytes = if encoded.len() as u64 >= MAX_MESSAGE_BYTES {
-            serde_json::to_vec(&ServiceResponse {
-                ok: false,
-                status: state.status("Service response exceeded its size limit"),
-                error: Some("The service response is too large to send over local IPC.".to_string()),
-                data: None,
-            }).unwrap_or_default()
-        } else {
-            encoded
-        };
-        #[cfg(windows)]
-        let response_sent = match write_service_frame_with_timeout(
-            &mut stream,
-            &response_bytes,
-            Duration::from_secs(15),
-        ) {
-            Ok(()) => true,
-            Err(error) => {
-                eprintln!(
-                    "GitManager service IPC: could not send {}-byte response frame: {error}",
-                    response_bytes.len()
-                );
-                false
-            }
-        };
-        #[cfg(not(windows))]
-        let response_sent = match write_service_frame(&mut stream, &response_bytes) {
-            Ok(()) => true,
-            Err(error) => {
-                eprintln!(
-                    "GitManager service IPC: could not send {}-byte response frame: {error}",
-                    response_bytes.len()
-                );
-                false
-            }
-        };
+	let encoded = match serde_json::to_vec(&response) {
+		Ok(bytes) if (bytes.len() as u64) < MAX_MESSAGE_BYTES => Some(bytes),
+		Ok(_) => serde_json::to_vec(&ServiceResponse {
+			ok: false,
+			status: state.status("Service response exceeded its size limit"),
+			error: Some("The service response is too large to send over local IPC.".to_string()),
+			data: None,
+		})
+		.ok(),
+		Err(_) => None,
+	};
+	(encoded, shutdown_after_response)
+}
 
-        // Do not stop the listener until the caller has received its
-        // acknowledgement; then reject new work and let the service drain.
-        if response_sent && shutdown_after_response {
-            shutdown_requested.store(true, Ordering::Release);
-            running.store(false, Ordering::Release);
-        }
-    }
+/// Handles a single Windows overlapped Named Pipe connection using Tokio async I/O.
+/// Dispatches blocking Git/archive/index commands on `spawn_blocking` so long
+/// operations never stall concurrent UI status or read requests.
+#[cfg(windows)]
+async fn handle_windows_service_connection(
+	mut stream: interprocess::local_socket::tokio::Stream,
+	token: String,
+	state: Arc<ServiceState>,
+	scan_requested: Arc<AtomicBool>,
+	remote_check_requested: Arc<AtomicBool>,
+	remote_check_running: Arc<AtomicBool>,
+	indexing: Arc<AtomicBool>,
+	shutdown_requested: Arc<AtomicBool>,
+	running: Arc<AtomicBool>,
+) {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+	let request_frame: io::Result<Vec<u8>> = match tokio::time::timeout(
+		Duration::from_secs(5),
+		async {
+			let mut header = [0u8; 4];
+			stream.read_exact(&mut header).await?;
+			let length = u32::from_be_bytes(header) as u64;
+			if length == 0 || length >= MAX_MESSAGE_BYTES {
+				return Err(io::Error::new(
+					io::ErrorKind::InvalidData,
+					"Service IPC frame has an invalid length",
+				));
+			}
+			let mut payload = vec![0u8; length as usize];
+			stream.read_exact(&mut payload).await?;
+			Ok(payload)
+		},
+	)
+	.await
+	{
+		Ok(result) => result,
+		Err(_) => Err(io::Error::new(
+			io::ErrorKind::TimedOut,
+			"Timed out waiting for Windows Named Pipe request frame",
+		)),
+	};
+
+	let dispatch_result = tokio::task::spawn_blocking(move || {
+		dispatch_service_request_frame(
+			request_frame,
+			&token,
+			&state,
+			&scan_requested,
+			&remote_check_requested,
+			&remote_check_running,
+			&indexing,
+		)
+	})
+	.await;
+
+	let (maybe_bytes, shutdown_after_response) = match dispatch_result {
+		Ok(pair) => pair,
+		Err(error) => {
+			eprintln!("GitManager service IPC: request worker panicked: {error}");
+			return;
+		}
+	};
+
+	if let Some(response_bytes) = maybe_bytes {
+		if response_bytes.is_empty() || response_bytes.len() as u64 >= MAX_MESSAGE_BYTES {
+			return;
+		}
+		let Ok(length) = u32::try_from(response_bytes.len()) else {
+			return;
+		};
+		let mut frame = Vec::with_capacity(response_bytes.len() + 4);
+		frame.extend_from_slice(&length.to_be_bytes());
+		frame.extend_from_slice(&response_bytes);
+
+		let write_result = tokio::time::timeout(Duration::from_secs(15), async {
+			stream.write_all(&frame).await?;
+			stream.flush().await
+		})
+		.await;
+
+		let response_sent = match write_result {
+			Ok(Ok(())) => true,
+			Ok(Err(error)) => {
+				eprintln!(
+					"GitManager service IPC: could not send {}-byte response frame: {error}",
+					response_bytes.len()
+				);
+				false
+			}
+			Err(_) => {
+				eprintln!(
+					"GitManager service IPC: timed out sending {}-byte response frame.",
+					response_bytes.len()
+				);
+				false
+			}
+		};
+
+		if response_sent && shutdown_after_response {
+			shutdown_requested.store(true, Ordering::Release);
+			running.store(false, Ordering::Release);
+		}
+	}
+}
+
+#[cfg(unix)]
+fn handle_service_connection(
+	mut stream: LocalSocketStream,
+	token: &str,
+	state: &ServiceState,
+	scan_requested: &AtomicBool,
+	remote_check_requested: &AtomicBool,
+	remote_check_running: &AtomicBool,
+	indexing: &AtomicBool,
+	shutdown_requested: &AtomicBool,
+	running: &AtomicBool,
+) {
+	let _ = stream.set_recv_timeout(Some(Duration::from_secs(5)));
+	let _ = stream.set_send_timeout(Some(Duration::from_secs(15)));
+
+	let request_frame = read_service_frame(&mut stream);
+	let (maybe_bytes, shutdown_after_response) = dispatch_service_request_frame(
+		request_frame,
+		token,
+		state,
+		scan_requested,
+		remote_check_requested,
+		remote_check_running,
+		indexing,
+	);
+
+	if let Some(response_bytes) = maybe_bytes {
+		let response_sent = match write_service_frame(&mut stream, &response_bytes) {
+			Ok(()) => true,
+			Err(error) => {
+				eprintln!(
+					"GitManager service IPC: could not send {}-byte response frame: {error}",
+					response_bytes.len()
+				);
+				false
+			}
+		};
+
+		// Do not stop the listener until the caller has received its
+		// acknowledgement; then reject new work and let the service drain.
+		if response_sent && shutdown_after_response {
+			shutdown_requested.store(true, Ordering::Release);
+			running.store(false, Ordering::Release);
+		}
+	}
 }
 
 
@@ -2837,7 +3136,7 @@ fn find_crash_helper(current_exe: &Path) -> Option<PathBuf> {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     let triple = host_target_triple();
 
-    let mut directories = vec![
+    let directories = vec![
         executable_dir.to_path_buf(),
         executable_dir.join("resources"),
         executable_dir.join("Resources"),
@@ -2898,7 +3197,7 @@ fn find_core_service_executable(application: &Path) -> Option<PathBuf> {
     let executable_dir = application.parent()?;
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     let triple = host_target_triple();
-    let mut directories = vec![
+    let directories = vec![
         executable_dir.to_path_buf(),
         executable_dir.join("resources"),
         executable_dir.join("Resources"),
@@ -3360,7 +3659,7 @@ impl CoreServiceSupervisor {
                         let lock_path = gitmanager_data_dir()
                             .ok()
                             .map(|directory| directory.join(LOCK_FILE));
-                        let mut lock_released = lock_path.as_deref().is_some_and(|path| {
+                        let lock_released = lock_path.as_deref().is_some_and(|path| {
                             wait_for_exclusive_lock_release(path, Duration::from_secs(4))
                         });
 
@@ -3707,23 +4006,70 @@ fn gitmanager_data_dir() -> Result<PathBuf, String> {
     Ok(local_data.join(DATA_ROOT).join("data").join("GitManager"))
 }
 
-fn write_private_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension(format!("tmp-{}", Uuid::new_v4()));
-    let mut file = OpenOptions::new().create_new(true).write(true).open(&temporary)?;
-    serde_json::to_writer(&mut file, value).map_err(std::io::Error::other)?;
-    file.sync_all()?;
-    set_private_permissions(&temporary)?;
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    fs::rename(&temporary, path)?;
-    Ok(())
+/// Atomically replaces `path` with `temporary` on Windows (Windows 7–11) so
+/// concurrent readers never observe a missing `service-control.json` file.
+#[cfg(windows)]
+fn replace_file_atomically(temporary: &Path, target: &Path) -> std::io::Result<()> {
+	use std::os::windows::ffi::OsStrExt;
+
+	const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+	const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+	#[link(name = "kernel32")]
+	extern "system" {
+		fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+	}
+
+	let src_wide: Vec<u16> = temporary
+		.as_os_str()
+		.encode_wide()
+		.chain(std::iter::once(0))
+		.collect();
+	let dst_wide: Vec<u16> = target
+		.as_os_str()
+		.encode_wide()
+		.chain(std::iter::once(0))
+		.collect();
+
+	let moved = unsafe {
+		MoveFileExW(
+			src_wide.as_ptr(),
+			dst_wide.as_ptr(),
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+		)
+	};
+	if moved == 0 {
+		return Err(std::io::Error::last_os_error());
+	}
+	Ok(())
 }
 
-fn set_private_permissions(path: &Path) -> std::io::Result<()> {
+fn write_private_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+	if let Some(parent) = path.parent() {
+		fs::create_dir_all(parent)?;
+	}
+	let temporary = path.with_extension(format!("tmp-{}", Uuid::new_v4()));
+	{
+		let mut file = OpenOptions::new().create_new(true).write(true).open(&temporary)?;
+		serde_json::to_writer(&mut file, value).map_err(std::io::Error::other)?;
+		file.sync_all()?;
+	}
+	set_private_permissions(&temporary)?;
+	#[cfg(windows)]
+	{
+		if let Err(error) = replace_file_atomically(&temporary, path) {
+			let _ = fs::remove_file(&temporary);
+			return Err(error);
+		}
+	}
+	#[cfg(not(windows))]
+	{
+		fs::rename(&temporary, path)?;
+	}
+	Ok(())
+}
+
+fn set_private_permissions(_path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -3778,7 +4124,7 @@ fn append_incident(reason: &str, pid: u32, exit_code: Option<i32>, service_resul
     }
 }
 
-fn read_ui_message(mut stream: TcpStream) -> Option<UiMessage> {
+fn read_ui_message(stream: TcpStream) -> Option<UiMessage> {
     stream.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
     let mut bytes = Vec::new();
     stream.take(MAX_MESSAGE_BYTES).read_to_end(&mut bytes).ok()?;
@@ -3993,14 +4339,14 @@ fn service_process_is_running(pid: u32) -> bool {
 
         #[link(name = "kernel32")]
         extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> isize;
-            fn GetExitCodeProcess(process: isize, exit_code: *mut u32) -> i32;
-            fn CloseHandle(handle: isize) -> i32;
+            fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> *mut std::ffi::c_void;
+            fn GetExitCodeProcess(process: *mut std::ffi::c_void, exit_code: *mut u32) -> i32;
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
             fn GetLastError() -> u32;
         }
 
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle == 0 {
+        if handle.is_null() {
             return windows_process_open_failure_means_running(unsafe { GetLastError() });
         }
         let mut exit_code = 0u32;

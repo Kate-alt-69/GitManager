@@ -635,7 +635,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     project_root = args.project_root.resolve()
-    if not (project_root / "src-tauri").is_dir() or not (project_root / "ui").is_dir():
+    if not (project_root / "src-tauri").is_dir() or not (project_root / "frontend").is_dir():
         log_error("The supplied project root is not a GitManager repository.")
         return 2
     return build_frontend(project_root, args.mode)

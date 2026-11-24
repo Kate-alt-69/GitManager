@@ -5,6 +5,19 @@ import { invoke, listen } from "../lib/tauri";
 import type { CoreServiceStatus } from "../lib/types";
 import { Button } from "./shared-ui";
 
+interface OsServiceInfo {
+	running_in_background: boolean;
+	checking_now: boolean;
+	os_service_registered: boolean;
+	os_service_kind: string;
+	poll_interval_seconds: number;
+}
+
+/**
+ * Classic developer diagnostics & OS service control view.
+ * Queries live IPC health (`get_core_service_status`) and actual OS sign-in
+ * registration (`control_background_service`) across Windows 7–11, Linux, and macOS.
+ */
 export function ServiceManagerPage({
 	serviceReady,
 	status,
@@ -15,8 +28,11 @@ export function ServiceManagerPage({
 	onStart: () => void;
 }) {
 	const [details, setDetails] = useState<CoreServiceStatus | null>(null);
+	const [osService, setOsService] = useState<OsServiceInfo | null>(null);
 	const [loading, setLoading] = useState(false);
+	const [osBusy, setOsBusy] = useState(false);
 	const [error, setError] = useState("");
+	const [notice, setNotice] = useState("");
 	const [logs, setLogs] = useState<string | null>(null);
 	const [logsLoading, setLogsLoading] = useState(false);
 
@@ -24,9 +40,13 @@ export function ServiceManagerPage({
 		setLoading(true);
 		setError("");
 		try {
-			setDetails(await invoke<CoreServiceStatus>("get_core_service_status"));
+			const [ipcStatus, osInfo] = await Promise.all([
+				invoke<CoreServiceStatus>("get_core_service_status").catch(() => null),
+				invoke<OsServiceInfo>("control_background_service", {}).catch(() => null),
+			]);
+			setDetails(ipcStatus);
+			if (osInfo) setOsService(osInfo);
 		} catch (cause) {
-			setDetails(null);
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
 			setLoading(false);
@@ -74,6 +94,27 @@ export function ServiceManagerPage({
 		};
 	}, [refresh]);
 
+	async function toggleOsRegistration(register: boolean) {
+		setOsBusy(true);
+		setError("");
+		setNotice("");
+		try {
+			const updated = await invoke<OsServiceInfo>("control_background_service", {
+				installOsService: register,
+			});
+			setOsService(updated);
+			setNotice(
+				register
+					? `Registered OS startup via ${updated.os_service_kind}.`
+					: "Removed OS startup service registration.",
+			);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setOsBusy(false);
+		}
+	}
+
 	async function toggleLogs() {
 		if (logs !== null) {
 			setLogs(null);
@@ -94,9 +135,9 @@ export function ServiceManagerPage({
 		<div className="gm-page-content gm-diagnostics-page">
 			<div className="gm-page-heading">
 				<div>
-					<div className="gm-eyebrow">SYSTEM DIAGNOSTICS</div>
+					<div className="gm-eyebrow">CORE ENGINE &amp; IPC</div>
 					<h1>Service Manager</h1>
-					<p>Inspect the required per-user data engine, its authenticated protocol and recent diagnostics.</p>
+					<p>Inspect the independent background service, overlapped local IPC health, and OS startup registration.</p>
 				</div>
 				<div className={serviceReady ? "gm-diagnostics-state ready" : "gm-diagnostics-state offline"}>
 					<i /> {serviceReady ? "Core service ready" : "Core service offline"}
@@ -105,13 +146,18 @@ export function ServiceManagerPage({
 
 			<div className="gm-diagnostics-grid">
 				<section className="gm-panel gm-diagnostic-panel">
-					<div className="gm-panel-heading"><div><h2>Service process</h2><p>Runs under the current user's permissions, outside the UI's kill-on-exit job; crash_helper monitors its health.</p></div></div>
+					<div className="gm-panel-heading">
+						<div>
+							<h2>Service process &amp; IPC</h2>
+							<p>Communicates over authenticated overlapped Named Pipes (Windows) or private Unix sockets (Linux/macOS).</p>
+						</div>
+					</div>
 					<dl className="gm-diagnostics-facts">
 						<div><dt>Process ID</dt><dd>{details?.process_id || "—"}</dd></div>
 						<div><dt>Protocol version</dt><dd>{details?.protocol_version || "—"}</dd></div>
 						<div><dt>Service generation</dt><dd>{details?.service_generation || "—"}</dd></div>
-						<div><dt>Repository indexing</dt><dd>{details ? details.indexing ? "Running" : "Idle" : "Unknown"}</dd></div>
-						<div><dt>Background work</dt><dd>{details?.suspended ? `Paused · ${details.remaining_seconds}s remaining` : details ? "Active" : "Unknown"}</dd></div>
+						<div><dt>Repository indexing</dt><dd>{details ? (details.indexing ? "Running" : "Idle") : "Unknown"}</dd></div>
+						<div><dt>Background work</dt><dd>{details?.suspended ? `Paused · ${details.remaining_seconds}s` : details ? "Active" : "Unknown"}</dd></div>
 						<div><dt>Remote check</dt><dd>{details?.remote_check_running ? "Running" : details?.remote_check_pending ? "Queued" : "Idle"}</dd></div>
 					</dl>
 					<div className="gm-diagnostic-message">{details?.message || status}</div>
@@ -122,12 +168,30 @@ export function ServiceManagerPage({
 				</section>
 
 				<section className="gm-panel gm-diagnostic-panel">
-					<div className="gm-panel-heading"><div><h2>Service diagnostics</h2><p>Read the latest bounded service log and crash_helper incident history.</p></div></div>
-					<div className="gm-diagnostic-message">
-						The service owns repository discovery, indexing and persistent account/cache operations. crash_helper records unexpected exits, startup failures and recent service-log output here.
+					<div className="gm-panel-heading">
+						<div>
+							<h2>OS startup registration</h2>
+							<p>Supports Windows 7–11 (SCM / Task Scheduler XML / HKCU Run), Linux systemd user units, and macOS LaunchAgents.</p>
+						</div>
 					</div>
+					<dl className="gm-diagnostics-facts">
+						<div><dt>Status</dt><dd>{osService?.os_service_registered ? "Registered" : "Not registered"}</dd></div>
+						<div><dt>Mechanism</dt><dd>{osService?.os_service_kind || "Detecting…"}</dd></div>
+					</dl>
+					{notice && <div className="gm-diagnostic-message">{notice}</div>}
 					<div className="gm-panel-actions">
-						<Button onClick={() => void toggleLogs()} disabled={logsLoading}>{logsLoading ? "Loading…" : logs !== null ? "Hide service log" : "View service log"}</Button>
+						{osService?.os_service_registered ? (
+							<Button variant="danger" onClick={() => void toggleOsRegistration(false)} disabled={osBusy}>
+								{osBusy ? "Updating…" : "Unregister OS service"}
+							</Button>
+						) : (
+							<Button variant="primary" onClick={() => void toggleOsRegistration(true)} disabled={osBusy}>
+								{osBusy ? "Registering…" : "Register OS service"}
+							</Button>
+						)}
+						<Button onClick={() => void toggleLogs()} disabled={logsLoading}>
+							{logsLoading ? "Loading…" : logs !== null ? "Hide service log" : "View service log"}
+						</Button>
 					</div>
 					{logs !== null && <pre className="gm-diagnostic-log">{logs || "No service log output yet."}</pre>}
 				</section>

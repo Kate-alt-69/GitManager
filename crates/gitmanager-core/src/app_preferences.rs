@@ -55,7 +55,7 @@ impl Default for AppPreferences {
                 .into_iter()
                 .map(|path| path.to_string_lossy().to_string())
                 .collect(),
-            max_scan_depth: 8,
+            max_scan_depth: 0,
             include_hidden_dirs: false,
             index_dependency_repositories: true,
             show_dependency_repositories: true,
@@ -126,7 +126,7 @@ pub fn load_background_preferences() -> Result<AppPreferences, String> {
         }
     }
     preferences.scan_roots = retained_roots;
-    preferences.max_scan_depth = preferences.max_scan_depth.clamp(2, 16);
+    preferences.max_scan_depth = preferences.max_scan_depth.min(64);
     if preferences.archive_root.trim().is_empty() {
         preferences.archive_root = default_archive_root_string();
     }
@@ -142,8 +142,8 @@ pub fn load_background_preferences() -> Result<AppPreferences, String> {
 /// Persists the validated application preferences from the required service.
 /// The desktop may normalize user input, but it never writes this file itself.
 pub fn save_background_preferences(preferences: &mut AppPreferences) -> Result<(), String> {
-    if !(2..=16).contains(&preferences.max_scan_depth) {
-        return Err("Scan depth must be between 2 and 16.".to_string());
+    if preferences.max_scan_depth > 64 {
+        return Err("Scan depth must be 0 (unlimited) or up to 64.".to_string());
     }
     if preferences.scan_roots.len() > 32 {
         return Err("GitManager supports up to 32 scan roots.".to_string());
