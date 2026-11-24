@@ -1433,7 +1433,7 @@ def run_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, s
 
 
 @tracked_work("Cargo dependency graph audit")
-def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[int]:
+def report_dependency_count(project_root: Path, toolchain_arg: str) -> None:
     """Count the actual build graphs for the app and its packaged sidecars.
 
     Cargo's progress bar reports compilation units (including build scripts and
@@ -1446,7 +1446,7 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
             target_triple = resolve_rust_target_triple(toolchain_arg)
     except RuntimeError as error:
         log_warn(f"Could not determine target for the Cargo dependency audit: {error}")
-        return None
+        return
 
     command_prefix = ["cargo"]
     if toolchain_arg:
@@ -1499,7 +1499,10 @@ def report_dependency_count(project_root: Path, toolchain_arg: str) -> Optional[
             f"All requested build targets together: {len(complete_build_packages)} "
             "unique packages (not Cargo compilation units)."
         )
-    return app_count or None
+    # This is a reporting stage, not a process stage: returning the package count
+    # is interpreted by @tracked_work as an exit code and falsely marks the
+    # audit as failed (for example, exit code 388).
+    return
 
 
 

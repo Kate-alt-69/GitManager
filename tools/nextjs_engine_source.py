@@ -518,6 +518,20 @@ def prepare_workspace(project_root: Path, source_root: Path) -> Path:
     return workspace
 
 
+def validate_next_compiled_metadata(workspace: Path) -> str | None:
+    """Catch malformed bundled package manifests before Node loads the Next.js CLI."""
+    package_path = workspace / "node_modules" / "next" / "dist" / "compiled" / "p-queue" / "package.json"
+    if not package_path.is_file():
+        return "Next.js is missing its bundled p-queue package manifest: " + str(package_path)
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return "Next.js bundled p-queue package metadata is invalid (" + str(error) + "): " + str(package_path)
+    if not isinstance(package, dict):
+        return "Next.js bundled p-queue package metadata must contain a JSON object: " + str(package_path)
+    return None
+
+
 def install_engine_build_dependencies(workspace: Path) -> int:
     manifest = workspace / "package.json"
     node_modules = workspace / "node_modules"
@@ -530,8 +544,14 @@ def install_engine_build_dependencies(workspace: Path) -> int:
         except (OSError, json.JSONDecodeError):
             previous = {}
         if previous.get("package_json_sha256") == package_digest:
-            log_ok("Engine Node.js build dependencies are already prepared.")
-            return 0
+            metadata_error = validate_next_compiled_metadata(workspace)
+            if metadata_error is None:
+                log_ok("Engine Node.js build dependencies are already prepared.")
+                return 0
+            log_info(metadata_error)
+            log_info("Discarding the invalid generated dependency tree before reinstalling it.")
+            shutil.rmtree(node_modules, ignore_errors=True)
+            stamp.unlink(missing_ok=True)
 
     npm = shutil.which("npm")
     if not npm:
@@ -540,16 +560,35 @@ def install_engine_build_dependencies(workspace: Path) -> int:
     log_info("Installing build dependencies in the isolated full-repository Engine workspace.")
     environment = dict(os.environ)
     environment["NEXT_TELEMETRY_DISABLED"] = "1"
-    result = run_command([npm, "install", "--ignore-scripts", "--no-audit", "--no-fund"], workspace, environment)
+    install_args = [npm, "install", "--ignore-scripts", "--no-audit", "--no-fund"]
+    result = run_command(install_args, workspace, environment)
     if result != 0:
         log_error("Could not install the build-time dependencies required by the fetched Engine source.")
         return result
+
+    metadata_error = validate_next_compiled_metadata(workspace)
+    if metadata_error is not None:
+        # npm can report success while a package's bundled metadata is unusable
+        # by Node at runtime. Rebuild only this GitManager-owned workspace tree,
+        # preferring the registry over stale cached package content, and retry once.
+        log_info(metadata_error)
+        log_info("Rebuilding the isolated Node.js dependency tree once with registry-preferred package retrieval.")
+        shutil.rmtree(node_modules, ignore_errors=True)
+        result = run_command(install_args + ["--prefer-online"], workspace, environment)
+        if result != 0:
+            log_error("The clean retry could not install the Engine build-time dependencies.")
+            return result
+        metadata_error = validate_next_compiled_metadata(workspace)
+        if metadata_error is not None:
+            log_error(metadata_error)
+            log_error("The Next.js package metadata remains invalid after a clean reinstall; refusing to start the frontend build.")
+            return 1
+
     if not next_binary.is_file():
         log_error("The Engine dependency install completed without a Next.js executable.")
         return 1
     stamp.write_text(json.dumps({"package_json_sha256": package_digest}, indent=2) + "\n", encoding="utf-8")
     return 0
-
 
 def build_frontend(project_root: Path, mode: str) -> int:
     try:

@@ -130,7 +130,27 @@ fn now_epoch() -> u64 {
 }
 
 fn normalize_repo_key(disk_path: &str) -> String {
-	disk_path.trim().replace('\\', "/").to_lowercase()
+	let normalized = disk_path.trim().replace('\\', "/");
+	// Windows paths are case-insensitive; do not collapse case-distinct paths
+	// on Linux or on case-sensitive macOS volumes.
+	#[cfg(windows)]
+	{
+		normalized.to_lowercase()
+	}
+	#[cfg(not(windows))]
+	{
+		normalized
+	}
+}
+
+fn unique_undo_cache_path(root: &Path, task_id: u64) -> PathBuf {
+	static CACHE_NONCE: AtomicU64 = AtomicU64::new(0);
+	let timestamp = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.map(|duration| duration.as_nanos())
+		.unwrap_or_default();
+	let nonce = CACHE_NONCE.fetch_add(1, Ordering::Relaxed);
+	root.join(format!("task-{task_id}-{timestamp}-{nonce}"))
 }
 
 /// Expands shorthand `github:owner/repo` or `gitlab:owner/repo` into HTTPS clone URLs.
@@ -286,8 +306,17 @@ fn spawn_lane_worker_if_idle(repo_key: String) {
 			}
 		}
 
+		// Release the lane while holding the queue lock. If enqueue raced with
+		// worker shutdown, either the enqueuer or this worker will restart it.
+		let lanes = mgr.lanes.lock().unwrap_or_else(|p| p.into_inner());
+		let has_pending = lanes.get(&repo_key).map(|queue| !queue.is_empty()).unwrap_or(false);
 		let mut active = mgr.active_lane_keys.lock().unwrap_or_else(|p| p.into_inner());
 		active.remove(&repo_key);
+		drop(active);
+		drop(lanes);
+		if has_pending && !mgr.paused.load(Ordering::Relaxed) {
+			spawn_lane_worker_if_idle(repo_key.clone());
+		}
 	});
 }
 
@@ -311,7 +340,9 @@ fn execute_single_task(repo_key: &str, task: &QueuedTaskItem) -> (bool, String, 
 			}
 			let mut child = match process_utils::hidden_command("git")
 				.args(["clone", "--progress", &url, &task.disk_path])
-				.stdout(Stdio::piped())
+				// Git's progress stream is written to stderr. Discard stdout so a
+				// child cannot block forever on an unread stdout pipe.
+				.stdout(Stdio::null())
 				.stderr(Stdio::piped())
 				.spawn()
 			{
@@ -440,10 +471,19 @@ pub async fn get_task_manager_snapshot() -> Result<TaskManagerSnapshot, String> 
 /// Queues a Git task into the target repository's serialized disk-path lane.
 #[tauri::command]
 pub async fn enqueue_repo_task(request: EnqueueTaskRequest) -> Result<u64, String> {
+	let kind = request.kind.trim().to_lowercase();
+	if !matches!(kind.as_str(), "clone" | "stage" | "commit" | "push" | "pull" | "fetch" | "stash_push" | "stash_pop") {
+		return Err(format!("Unsupported task kind '{kind}'."));
+	}
+	if request.disk_path.trim().is_empty() {
+		return Err("A repository disk path is required.".to_string());
+	}
+	if kind == "clone" && request.clone_url.as_deref().map(str::trim).unwrap_or("").is_empty() {
+		return Err("A clone URL is required for clone tasks.".to_string());
+	}
 	let mgr = manager();
 	let id = mgr.next_id.fetch_add(1, Ordering::Relaxed);
 	let repo_key = normalize_repo_key(&request.disk_path);
-	let kind = request.kind.trim().to_lowercase();
 	let reversible = matches!(kind.as_str(), "clone" | "commit" | "stage" | "stash_push");
 	let title = request.title.unwrap_or_else(|| match kind.as_str() {
 		"clone" => format!("Cloning {}", request.clone_url.as_deref().unwrap_or(&request.repo_name)),
@@ -569,9 +609,9 @@ pub async fn revert_history_task(task_id: u64) -> Result<String, String> {
 				let cache_root = undo_cache_dir();
 				std::fs::create_dir_all(&cache_root)
 					.map_err(|err| format!("Could not prepare undo cache: {err}"))?;
-				let dest = cache_root.join(format!("task-{}", entry.id));
+				let dest = unique_undo_cache_path(&cache_root, entry.id);
 				if dest.exists() {
-					let _ = std::fs::remove_dir_all(&dest);
+					return Err("A unique undo-cache destination already exists; refusing to overwrite it.".to_string());
 				}
 				std::fs::rename(&disk_path, &dest)
 					.map_err(|err| format!("Could not move cloned repo to undo cache: {err}"))?;
@@ -680,4 +720,37 @@ pub async fn redo_history_task(task_id: u64) -> Result<String, String> {
 	})
 	.await
 	.map_err(|err| format!("Redo task failed: {err}"))?
+}
+
+#[cfg(test)]
+mod task_manager_tests {
+	use super::{normalize_repo_key, unique_undo_cache_path};
+	use std::fs;
+	use std::time::{SystemTime, UNIX_EPOCH};
+
+	#[cfg(not(windows))]
+	#[test]
+	fn repository_keys_preserve_case_on_case_sensitive_platforms() {
+		assert_ne!(normalize_repo_key("/tmp/Repo"), normalize_repo_key("/tmp/repo"));
+	}
+
+	#[test]
+	fn undo_cache_paths_do_not_reuse_task_ids() {
+		let nonce = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap_or_default()
+			.as_nanos();
+		let root = std::env::temp_dir().join(format!("gitmanager-undo-cache-test-{nonce}"));
+		fs::create_dir_all(&root).unwrap();
+
+		let first = unique_undo_cache_path(&root, 1);
+		fs::create_dir_all(&first).unwrap();
+		fs::write(first.join("sentinel.txt"), "keep me").unwrap();
+		let second = unique_undo_cache_path(&root, 1);
+
+		assert_ne!(first, second);
+		assert_eq!(fs::read_to_string(first.join("sentinel.txt")).unwrap(), "keep me");
+
+		fs::remove_dir_all(root).unwrap();
+	}
 }
