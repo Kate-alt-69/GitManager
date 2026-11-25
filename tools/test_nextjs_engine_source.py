@@ -215,6 +215,34 @@ class EngineSourceCacheTests(unittest.TestCase):
             self.assertEqual(result[1], metadata["commit"])
             self.assertEqual(result[2], metadata["branch_head"])
 
+    def test_refresh_failure_backoff_avoids_repeating_the_network_check(self):
+        with tempfile.TemporaryDirectory(prefix="gitmanager-engine-cache-") as temporary:
+            cache_root = Path(temporary)
+            source, _metadata = self._write_verified_source(
+                cache_root,
+                resolved_at="2000-01-01T00:00:00+00:00",
+            )
+            with (
+                mock.patch.dict(engine_source.os.environ, {"GITMANAGER_ENGINE_CACHE_TTL_SECONDS": "0"}),
+                mock.patch.object(engine_source, "resolve_engine_branch_head", side_effect=RuntimeError("GitHub offline")),
+            ):
+                engine_source.ensure_engine_source(cache_root)
+
+            stamped = json.loads((source / ".gitmanager-source.json").read_text(encoding="utf-8"))
+            self.assertIn("refresh_attempted_at", stamped)
+
+            with (
+                mock.patch.dict(engine_source.os.environ, {"GITMANAGER_ENGINE_CACHE_TTL_SECONDS": "900"}),
+                mock.patch.object(
+                    engine_source,
+                    "resolve_engine_branch_head",
+                    side_effect=AssertionError("refresh backoff should avoid another request"),
+                ),
+            ):
+                result = engine_source.ensure_engine_source(cache_root)
+
+            self.assertEqual(result[0], source)
+
     def test_unchanged_ci_green_branch_head_skips_actions_history_scan(self):
         with tempfile.TemporaryDirectory(prefix="gitmanager-engine-cache-") as temporary:
             cache_root = Path(temporary)
