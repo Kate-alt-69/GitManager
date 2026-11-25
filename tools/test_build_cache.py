@@ -43,6 +43,23 @@ class WorkspaceBuildCacheTests(unittest.TestCase):
                 )
             self.assertNotEqual(first, changed)
 
+    def test_fingerprint_includes_compiler_environment(self):
+        with tempfile.TemporaryDirectory(prefix="gitmanager-rust-cache-") as temporary:
+            root = Path(temporary)
+            self.make_workspace(root)
+            versions = self.rust_tool_versions()
+            with patch.dict("build.os.environ", {"PATH": "toolchain-a"}, clear=False):
+                with patch("build.run_capture", side_effect=versions):
+                    first, _ = build.workspace_build_fingerprint(
+                        root, "x86_64-pc-windows-msvc", "release", ""
+                    )
+            with patch.dict("build.os.environ", {"PATH": "toolchain-b"}, clear=False):
+                with patch("build.run_capture", side_effect=versions):
+                    changed, _ = build.workspace_build_fingerprint(
+                        root, "x86_64-pc-windows-msvc", "release", ""
+                    )
+            self.assertNotEqual(first, changed)
+
     def test_cache_requires_every_expected_artifact_and_matching_hashes(self):
         with tempfile.TemporaryDirectory(prefix="gitmanager-rust-cache-") as temporary:
             root = Path(temporary)
@@ -130,6 +147,8 @@ class WorkspaceBuildCacheTests(unittest.TestCase):
             source = root / "src-tauri" / "src" / "main.rs"
             # Make the source input newer than the existing binaries.
             source.write_text("fn main() { /* changed after the cached build */ }\n", encoding="utf-8")
+            import os, time
+            os.utime(source, ns=(time.time_ns() + 5_000_000_000, time.time_ns() + 5_000_000_000))
             with patch.dict(
                 "build.os.environ",
                 {"CARGO_TARGET_DIR": str(target_dir), "CARGO_BUILD_TARGET": target},
