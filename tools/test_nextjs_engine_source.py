@@ -276,6 +276,40 @@ class EngineSourceCacheTests(unittest.TestCase):
 
             self.assertTrue((source / ".gitmanager-source.json").is_file())
 
+    def test_archive_refresh_failure_uses_previous_verified_source_without_force(self):
+        with tempfile.TemporaryDirectory(prefix="gitmanager-engine-cache-") as temporary:
+            cache_root = Path(temporary)
+            source, metadata = self._write_verified_source(
+                cache_root,
+                resolved_at="2000-01-01T00:00:00+00:00",
+            )
+            fresh_checks = {
+                name: {
+                    "id": index + 200,
+                    "conclusion": "success",
+                    "updated_at": "2026-11-25T01:00:00Z",
+                    "html_url": "https://github.com/Kastrick8/nextjs-engine/actions/runs/" + str(index + 200),
+                }
+                for index, name in enumerate(engine_source.REQUIRED_CHECKS)
+            }
+
+            with (
+                mock.patch.dict(engine_source.os.environ, {"GITMANAGER_ENGINE_CACHE_TTL_SECONDS": "0"}),
+                mock.patch.object(engine_source, "resolve_engine_branch_head", return_value="d" * 40),
+                mock.patch.object(
+                    engine_source,
+                    "resolve_latest_green_commit",
+                    return_value=("c" * 40, "d" * 40, fresh_checks),
+                ),
+                mock.patch.object(engine_source, "request_bytes", side_effect=RuntimeError("archive download failed")),
+            ):
+                result = engine_source.ensure_engine_source(cache_root)
+
+            self.assertEqual(result[0], source)
+            self.assertEqual(result[1], metadata["commit"])
+            self.assertEqual(result[2], metadata["branch_head"])
+            self.assertTrue((source / "src" / "engine" / "index.ts").is_file())
+
     def test_failed_new_archive_download_preserves_the_previous_verified_source(self):
         with tempfile.TemporaryDirectory(prefix="gitmanager-engine-cache-") as temporary:
             cache_root = Path(temporary)
