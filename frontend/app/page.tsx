@@ -1,7 +1,5 @@
-/**
- * Deliberately empty landing route while the GitManager UI is being rebuilt.
- * The backend runtime bridge remains mounted by the root layout.
- */
+import { GitManagerApp } from "../components/gitmanager-app";
+
 export default function HomePage() {
-  return null;
+  return <GitManagerApp />;
 }
