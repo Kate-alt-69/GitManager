@@ -3332,6 +3332,11 @@ def main() -> int:
         help="Ignore verified Rust workspace artifacts and run Cargo compilation again.",
     )
     parser.add_argument(
+        "--refresh-engine-source",
+        action="store_true",
+        help="Force the Tauri frontend hook to resolve the newest CI-green Next.js Engine source.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show gray diagnostic/debug lines during the build.",
@@ -3376,6 +3381,8 @@ def main() -> int:
     VERBOSE_LOGGING = VERBOSE_LOGGING or bool(args.verbose)
     if args.force_rust_build:
         os.environ["GITMANAGER_FORCE_RUST_BUILD"] = "1"
+    if args.refresh_engine_source:
+        os.environ["GITMANAGER_ENGINE_REFRESH"] = "1"
     project_root = Path(__file__).resolve().parent
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
 
