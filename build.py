@@ -2259,7 +2259,12 @@ def workspace_build_fingerprint(
             key: value
             for key, value in sorted(os.environ.items())
             if key.startswith(("CARGO_", "RUST"))
-            or key in {"CC", "CXX", "AR", "LINKER"}
+            or key in {
+                "CC", "CXX", "AR", "LINKER", "PATH", "LIB", "INCLUDE",
+                "VCToolsInstallDir", "WindowsSdkDir", "SDKROOT",
+                "MACOSX_DEPLOYMENT_TARGET", "CFLAGS", "CXXFLAGS", "LDFLAGS",
+                "PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR",
+            }
         },
     }
 
