@@ -2217,16 +2217,19 @@ def workspace_build_input_files(project_root: Path) -> List[Path]:
             if path.is_file():
                 files.add(path)
 
-    cargo_config_roots = [project_root / ".cargo"]
-    cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
-    cargo_config_roots.append(cargo_home)
-    for cargo_config in cargo_config_roots:
-        if cargo_config.is_dir():
-            for path in cargo_config.rglob("*"):
-                if path.is_file() and path.name in {"config", "config.toml"}:
-                    files.add(path)
+    project_cargo_config = project_root / ".cargo"
+    if project_cargo_config.is_dir():
+        for path in project_cargo_config.rglob("*"):
+            if path.is_file() and path.name in {"config", "config.toml"}:
+                files.add(path)
 
-    return sorted(files, key=lambda path: path.relative_to(project_root).as_posix())
+    cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
+    for config_name in ("config", "config.toml"):
+        path = cargo_home / config_name
+        if path.is_file():
+            files.add(path)
+
+    return sorted(files, key=lambda path: str(path.resolve()).replace("\\", "/"))
 
 
 def file_sha256(path: Path) -> str:
@@ -2283,7 +2286,10 @@ def workspace_build_fingerprint(
     digest.update(rustc_version.strip().encode("utf-8"))
 
     for path in inputs:
-        relative = path.relative_to(project_root).as_posix()
+        try:
+            relative = path.relative_to(project_root).as_posix()
+        except ValueError:
+            relative = "@external/" + path.resolve().as_posix()
         digest.update(b"\0file\0")
         digest.update(relative.encode("utf-8", errors="surrogateescape"))
         digest.update(b"\0")
