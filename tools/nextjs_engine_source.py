@@ -106,6 +106,7 @@ def request_bytes(
 
         request = urllib.request.Request(url, headers=request_headers)
         response_offset = total
+        range_expected_bytes = None
         try:
             with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 parsed = urllib.parse.urlsplit(response.geturl())
@@ -122,6 +123,11 @@ def request_bytes(
                                 "The Engine archive server returned an invalid Content-Range while resuming; "
                                 "refusing to combine unrelated archive bytes."
                             )
+                        range_start, range_end = int(match.group(1)), int(match.group(2))
+                        range_total = match.group(3)
+                        if range_end < range_start or (range_total != "*" and range_end >= int(range_total)):
+                            raise RuntimeError("The Engine archive server returned inconsistent Content-Range bounds.")
+                        range_expected_bytes = range_end - range_start + 1
                     elif status == 200:
                         # A server may ignore Range or the If-Range validator may
                         # no longer match. Its 200 body is a complete replacement.
@@ -141,6 +147,11 @@ def request_bytes(
                     match = re.fullmatch(r"bytes (\d+)-(\d+)/(?:\d+|\*)", content_range.strip())
                     if not match or int(match.group(1)) != 0:
                         raise RuntimeError("The Engine archive server returned an unexpected partial response.")
+                    range_start, range_end = int(match.group(1)), int(match.group(2))
+                    range_total = match.group(3)
+                    if range_end < range_start or (range_total != "*" and range_end >= int(range_total)):
+                        raise RuntimeError("The Engine archive server returned inconsistent Content-Range bounds.")
+                    range_expected_bytes = range_end - range_start + 1
 
                 declared = response.headers.get("Content-Length")
                 expected_response_bytes = None
@@ -149,6 +160,8 @@ def request_bytes(
                         expected_response_bytes = int(declared)
                         if expected_response_bytes < 0 or expected_response_bytes + response_offset > limit:
                             raise RuntimeError("The Engine response exceeds the configured download limit.")
+                        if range_expected_bytes is not None and expected_response_bytes != range_expected_bytes:
+                            raise RuntimeError("The Engine archive Content-Length disagrees with Content-Range.")
                     except ValueError:
                         raise RuntimeError("The Engine response returned an invalid content length.")
 
@@ -171,14 +184,21 @@ def request_bytes(
                         raise RuntimeError("The Engine response exceeds the configured download limit.")
                     chunks.append(chunk)
 
-                if expected_response_bytes is not None and response_bytes != expected_response_bytes:
+                expected_bytes = expected_response_bytes if expected_response_bytes is not None else range_expected_bytes
+                if expected_bytes is not None and response_bytes != expected_bytes:
                     raise http.client.IncompleteRead(
                         b"",
-                        max(0, expected_response_bytes - response_bytes),
+                        max(0, expected_bytes - response_bytes),
                     )
                 return b"".join(chunks)
         except urllib.error.HTTPError as error:
-            if error.code not in RETRYABLE_HTTP_STATUS:
+            if error.code == 416 and resumable and total:
+                log_info("The Engine archive server rejected the resume offset; restarting the archive download.")
+                chunks = []
+                total = 0
+                resume_validator = None
+                last_error = error
+            elif error.code not in RETRYABLE_HTTP_STATUS:
                 raise RuntimeError("Could not access the Next.js Engine source: " + str(error)) from error
             last_error = error
             if error.fp is not None:
