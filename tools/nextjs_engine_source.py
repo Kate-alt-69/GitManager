@@ -482,11 +482,14 @@ def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Di
             )
             return source_root, commit, branch_head, cached_checks
 
-        if branch_head_hint == cached_metadata.get("branch_head"):
+        if (
+            branch_head_hint == cached_metadata.get("branch_head")
+            and cached_metadata.get("commit") == branch_head_hint
+        ):
             commit = str(cached_metadata["commit"])
             refreshed = _source_metadata_payload(branch_head_hint, commit, cached_checks)
             _atomic_write_json(source_root / ".gitmanager-source.json", refreshed)
-            log_ok("Engine branch is unchanged; reusing the verified source without scanning Actions history.")
+            log_ok("Engine branch is unchanged and already CI-green; reusing it without scanning Actions history.")
             return source_root, commit, branch_head_hint, cached_checks
 
     try:
