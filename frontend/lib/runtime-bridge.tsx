@@ -1,17 +1,27 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, type ReactNode } from "react";
 import { invoke } from "./tauri";
 import { useGitManager } from "./use-gitmanager";
 
+type GitManagerRuntimeState = ReturnType<typeof useGitManager>;
+
+const GitManagerRuntimeContext = createContext<GitManagerRuntimeState | null>(null);
+
+export function useGitManagerRuntime(): GitManagerRuntimeState {
+  const value = useContext(GitManagerRuntimeContext);
+  if (!value) {
+    throw new Error("useGitManagerRuntime must be used inside GitManagerRuntime.");
+  }
+  return value;
+}
+
 /**
- * Keeps the existing UI-to-backend integration alive without rendering or
- * depending on any of the retired application UI.
- *
- * The three-second heartbeat is part of the native crash-supervisor contract.
+ * Owns the existing UI-to-backend hook once and shares its snapshot with the
+ * UI. The native watchdog heartbeat remains unchanged.
  */
 export function GitManagerRuntime({ children }: { children: ReactNode }) {
-  useGitManager();
+  const runtime = useGitManager();
 
   useEffect(() => {
     let active = true;
@@ -28,5 +38,9 @@ export function GitManagerRuntime({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  return <>{children}</>;
+  return (
+    <GitManagerRuntimeContext.Provider value={runtime}>
+      {children}
+    </GitManagerRuntimeContext.Provider>
+  );
 }
