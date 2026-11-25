@@ -41,6 +41,8 @@ MAX_ARCHIVE_BYTES = 250 * 1024 * 1024
 MAX_MEMBER_BYTES = 80 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 50000
 REQUEST_ATTEMPTS = 3
+API_REQUEST_ATTEMPTS = 2
+API_REQUEST_TIMEOUT_SECONDS = 15
 RETRYABLE_HTTP_STATUS = frozenset((408, 429, 500, 502, 503, 504))
 DEFAULT_ENGINE_CACHE_TTL_SECONDS = 6 * 60 * 60
 FRONTEND_BUILD_CACHE_FILE = ".gitmanager-next-build-cache.json"
@@ -58,7 +60,14 @@ def log_error(message: str) -> None:
     print("[ERR ] " + message, file=sys.stderr, flush=True)
 
 
-def request_bytes(url: str, limit: int, accept: str) -> bytes:
+def request_bytes(
+    url: str,
+    limit: int,
+    accept: str,
+    *,
+    attempts: int = REQUEST_ATTEMPTS,
+    timeout_seconds: int = 60,
+) -> bytes:
     parsed_url = urllib.parse.urlsplit(url)
     if parsed_url.scheme != "https" or parsed_url.hostname not in {"api.github.com", "codeload.github.com"}:
         raise RuntimeError("Refusing to request Engine source data from an untrusted host.")
@@ -77,9 +86,9 @@ def request_bytes(url: str, limit: int, accept: str) -> bytes:
 
     request = urllib.request.Request(url, headers=headers)
     last_error = None
-    for attempt in range(REQUEST_ATTEMPTS):
+    for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 parsed = urllib.parse.urlsplit(response.geturl())
                 if parsed.scheme != "https" or parsed.hostname not in {"api.github.com", "codeload.github.com"}:
                     raise RuntimeError("Refusing an Engine download redirect to an untrusted host.")
@@ -113,7 +122,7 @@ def request_bytes(url: str, limit: int, accept: str) -> bytes:
             # body and retry the complete bounded request from the beginning.
             last_error = error
 
-        if attempt + 1 < REQUEST_ATTEMPTS:
+        if attempt + 1 < attempts:
             delay = min(2 ** attempt, 4)
             log_info(
                 "GitHub source request was interrupted; retrying in "
@@ -121,21 +130,27 @@ def request_bytes(url: str, limit: int, accept: str) -> bytes:
                 + "s (attempt "
                 + str(attempt + 2)
                 + "/"
-                + str(REQUEST_ATTEMPTS)
+                + str(attempts)
                 + ")."
             )
             time.sleep(delay)
 
     raise RuntimeError(
         "Could not access the Next.js Engine source after "
-        + str(REQUEST_ATTEMPTS)
+        + str(attempts)
         + " attempts: "
         + str(last_error)
     ) from last_error
 
 
 def github_json(url: str) -> Dict[str, object]:
-    payload = request_bytes(url, MAX_API_BYTES, "application/vnd.github+json")
+    payload = request_bytes(
+        url,
+        MAX_API_BYTES,
+        "application/vnd.github+json",
+        attempts=API_REQUEST_ATTEMPTS,
+        timeout_seconds=API_REQUEST_TIMEOUT_SECONDS,
+    )
     try:
         decoded = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -145,11 +160,22 @@ def github_json(url: str) -> Dict[str, object]:
     return decoded
 
 
-def resolve_latest_green_commit() -> Tuple[str, str, Dict[str, Dict[str, object]]]:
-    """Pick the newest main-3 commit with all required CI runs green and reachable."""
+def resolve_engine_branch_head() -> str:
+    """Read only the current Engine branch SHA; used for the unchanged-cache fast path."""
     branch_url = ENGINE_API + "/branches/" + urllib.parse.quote(ENGINE_BRANCH, safe="")
     branch = github_json(branch_url)
     branch_head = str((branch.get("commit") or {}).get("sha") or "")
+    if not re.fullmatch(r"[0-9a-f]{40}", branch_head):
+        raise RuntimeError("Could not resolve the current Engine main-3 branch head.")
+    return branch_head
+
+
+def resolve_latest_green_commit(
+    branch_head: str | None = None,
+) -> Tuple[str, str, Dict[str, Dict[str, object]]]:
+    """Pick the newest main-3 commit with all required CI runs green and reachable."""
+    if branch_head is None:
+        branch_head = resolve_engine_branch_head()
     if not re.fullmatch(r"[0-9a-f]{40}", branch_head):
         raise RuntimeError("Could not resolve the current Engine main-3 branch head.")
 
@@ -441,8 +467,30 @@ def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Di
             )
             return source_root, commit, branch_head, cached_checks
 
+    branch_head_hint = None
+    if cached_metadata is not None and cached_checks is not None and not refresh_requested:
+        try:
+            branch_head_hint = resolve_engine_branch_head()
+        except (RuntimeError, OSError, urllib.error.URLError) as error:
+            commit = str(cached_metadata["commit"])
+            branch_head = str(cached_metadata["branch_head"])
+            log_info(
+                "Could not check the Engine branch head; using the previously verified "
+                + commit
+                + ". Cause: "
+                + str(error)
+            )
+            return source_root, commit, branch_head, cached_checks
+
+        if branch_head_hint == cached_metadata.get("branch_head"):
+            commit = str(cached_metadata["commit"])
+            refreshed = _source_metadata_payload(branch_head_hint, commit, cached_checks)
+            _atomic_write_json(source_root / ".gitmanager-source.json", refreshed)
+            log_ok("Engine branch is unchanged; reusing the verified source without scanning Actions history.")
+            return source_root, commit, branch_head_hint, cached_checks
+
     try:
-        commit, branch_head, checks = resolve_latest_green_commit()
+        commit, branch_head, checks = resolve_latest_green_commit(branch_head_hint)
     except (RuntimeError, OSError, urllib.error.URLError) as error:
         if cached_metadata is None or cached_checks is None:
             raise
