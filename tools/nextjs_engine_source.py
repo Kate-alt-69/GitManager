@@ -512,7 +512,7 @@ def _engine_cache_ttl_seconds() -> int:
 
 
 def _source_cache_age_seconds(metadata: Dict[str, object]) -> float:
-    checked_at = metadata.get("resolved_at")
+    checked_at = metadata.get("refresh_attempted_at") or metadata.get("resolved_at")
     if not checked_at:
         # Older GitManager cache manifests recorded the successful CI runs but
         # not when they were checked. Treat that already-verified snapshot as
@@ -547,6 +547,15 @@ def _source_metadata_payload(
             for name in REQUIRED_CHECKS
         },
     }
+
+
+def _record_source_refresh_attempt(source_root: Path, metadata: Dict[str, object]) -> None:
+    updated = dict(metadata)
+    updated["refresh_attempted_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        _atomic_write_json(source_root / ".gitmanager-source.json", updated)
+    except OSError as error:
+        log_info("Could not record the Engine refresh retry window: " + str(error))
 
 
 def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Dict[str, object]]]:
@@ -592,6 +601,7 @@ def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Di
         except (RuntimeError, OSError, urllib.error.URLError) as error:
             commit = str(cached_metadata["commit"])
             branch_head = str(cached_metadata["branch_head"])
+            _record_source_refresh_attempt(source_root, cached_metadata)
             log_info(
                 "Could not check the Engine branch head; using the previously verified "
                 + commit
@@ -617,6 +627,7 @@ def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Di
             raise
         commit = str(cached_metadata["commit"])
         branch_head = str(cached_metadata["branch_head"])
+        _record_source_refresh_attempt(source_root, cached_metadata)
         log_info(
             "GitHub Engine refresh failed; continuing with the previously verified "
             + commit
@@ -672,6 +683,7 @@ def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Di
                 raise
             fallback_commit = str(fallback_metadata["commit"])
             fallback_head = str(fallback_metadata["branch_head"])
+            _record_source_refresh_attempt(source_root, fallback_metadata)
             log_info(
                 "Could not refresh the Engine archive; continuing with the previously verified "
                 + fallback_commit
