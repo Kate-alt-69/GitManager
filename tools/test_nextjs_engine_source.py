@@ -19,8 +19,9 @@ SPEC.loader.exec_module(engine_source)
 
 
 class FakeResponse:
-    def __init__(self, *, chunks=(), error=None, url=None):
-        self.headers = {}
+    def __init__(self, *, chunks=(), error=None, url=None, status=200, headers=None):
+        self.headers = dict(headers or {})
+        self.status = status
         self._chunks = list(chunks)
         self._error = error
         self._url = url or "https://api.github.com/repos/Kastrick8/nextjs-engine/branches/main-3"
@@ -55,6 +56,57 @@ class RequestRetryTests(unittest.TestCase):
 
         self.assertEqual(payload, b'{"commit":{"sha":"abc"}}')
         self.assertEqual(open_url.call_count, 2)
+
+    def test_resumes_interrupted_codeload_archive_from_the_partial_byte_offset(self):
+        url = "https://codeload.github.com/Kastrick8/nextjs-engine/tar.gz/" + "a" * 40
+        partial = FakeResponse(
+            chunks=[b"abc"],
+            error=http.client.IncompleteRead(b"def", 3),
+            url=url,
+            headers={"ETag": '"engine-archive-v1"'},
+        )
+        remainder = FakeResponse(
+            chunks=[b"ghi"],
+            url=url,
+            status=206,
+            headers={
+                "Content-Range": "bytes 6-8/9",
+                "Content-Length": "3",
+                "ETag": '"engine-archive-v1"',
+            },
+        )
+        with (
+            mock.patch.object(engine_source.urllib.request, "urlopen", side_effect=[partial, remainder]) as open_url,
+            mock.patch.object(engine_source.time, "sleep"),
+        ):
+            payload = engine_source.request_bytes(url, 1024, "application/vnd.github+json")
+
+        self.assertEqual(payload, b"abcdefghi")
+        self.assertEqual(open_url.call_count, 2)
+        resume_request = open_url.call_args_list[1].args[0]
+        headers = {key.lower(): value for key, value in resume_request.header_items()}
+        self.assertEqual(headers.get("range"), "bytes=6-")
+        self.assertEqual(headers.get("if-range"), '"engine-archive-v1"')
+
+    def test_restarts_codeload_download_when_server_ignores_range(self):
+        url = "https://codeload.github.com/Kastrick8/nextjs-engine/tar.gz/" + "b" * 40
+        partial = FakeResponse(
+            chunks=[b"old"],
+            error=http.client.IncompleteRead(b"-partial", 10),
+            url=url,
+        )
+        complete = FakeResponse(chunks=[b"complete-archive"], url=url, status=200)
+        with (
+            mock.patch.object(engine_source.urllib.request, "urlopen", side_effect=[partial, complete]) as open_url,
+            mock.patch.object(engine_source.time, "sleep"),
+        ):
+            payload = engine_source.request_bytes(url, 1024, "application/vnd.github+json")
+
+        self.assertEqual(payload, b"complete-archive")
+        self.assertEqual(open_url.call_count, 2)
+        resume_request = open_url.call_args_list[1].args[0]
+        headers = {key.lower(): value for key, value in resume_request.header_items()}
+        self.assertEqual(headers.get("range"), "bytes=10-")
 
     def test_retries_temporary_github_server_errors(self):
         unavailable = urllib.error.HTTPError(self.URL, 503, "Service unavailable", {}, None)
