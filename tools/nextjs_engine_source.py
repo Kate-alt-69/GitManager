@@ -135,8 +135,16 @@ def request_bytes(
                             )
                         range_start, range_end = int(match.group(1)), int(match.group(2))
                         range_total = match.group(3)
-                        if range_end < range_start or (range_total != "*" and range_end >= int(range_total)):
-                            raise RuntimeError("The Engine archive server returned inconsistent Content-Range bounds.")
+                        if (
+                            range_end < range_start
+                            or (
+                                range_total != "*"
+                                and range_end != int(range_total) - 1
+                            )
+                        ):
+                            raise RuntimeError(
+                                "The Engine archive server returned inconsistent or incomplete Content-Range bounds."
+                            )
                         range_expected_bytes = range_end - range_start + 1
                     elif status == 200:
                         # A server may ignore Range or the If-Range validator may
@@ -159,8 +167,16 @@ def request_bytes(
                         raise RuntimeError("The Engine archive server returned an unexpected partial response.")
                     range_start, range_end = int(match.group(1)), int(match.group(2))
                     range_total = match.group(3)
-                    if range_end < range_start or (range_total != "*" and range_end >= int(range_total)):
-                        raise RuntimeError("The Engine archive server returned inconsistent Content-Range bounds.")
+                    if (
+                        range_end < range_start
+                        or (
+                            range_total != "*"
+                            and range_end != int(range_total) - 1
+                        )
+                    ):
+                        raise RuntimeError(
+                            "The Engine archive server returned inconsistent or incomplete Content-Range bounds."
+                        )
                     range_expected_bytes = range_end - range_start + 1
 
                 declared = response.headers.get("Content-Length")
