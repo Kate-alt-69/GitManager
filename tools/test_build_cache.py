@@ -118,7 +118,9 @@ class WorkspaceBuildCacheTests(unittest.TestCase):
             target = "x86_64-pc-windows-msvc"
             target_dir = root / "build" / ".rcache"
             profile_dir = target_dir / target / "release"
-            (profile_dir / ".fingerprint").mkdir(parents=True)
+            fingerprint_dir = profile_dir / ".fingerprint"
+            fingerprint_dir.mkdir(parents=True)
+            (fingerprint_dir / "cargo-fingerprint").write_text("present", encoding="utf-8")
             artifacts = []
             for name in ("gitm.exe", "gitmanager-setup.exe", "crash_helper.exe", "gitmanager.service.exe"):
                 artifact = profile_dir / name
