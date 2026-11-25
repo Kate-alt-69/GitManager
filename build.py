@@ -2190,6 +2190,218 @@ def resolve_rust_target_triple(toolchain_arg: str) -> str:
     raise RuntimeError("Could not determine the Rust target triple for the gitm sidecar.")
 
 
+
+WORKSPACE_BUILD_CACHE_SCHEMA = 1
+
+
+def workspace_build_input_files(project_root: Path) -> List[Path]:
+    """Return every repository-local input that can affect workspace Rust outputs."""
+    files = set()
+    for relative in ("Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"):
+        path = project_root / relative
+        if path.is_file():
+            files.add(path)
+
+    excluded_directories = {".git", ".cache", "__pycache__", "node_modules", "target"}
+    for source_root_name in ("src-tauri", "crates"):
+        source_root = project_root / source_root_name
+        if not source_root.is_dir():
+            continue
+        for path in source_root.rglob("*"):
+            relative = path.relative_to(source_root)
+            if any(part in excluded_directories for part in relative.parts):
+                continue
+            # Sidecars are generated build outputs, not Rust source inputs.
+            if source_root_name == "src-tauri" and relative.parts and relative.parts[0] == "binaries":
+                continue
+            if path.is_file():
+                files.add(path)
+
+    cargo_config_roots = [project_root / ".cargo"]
+    cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
+    cargo_config_roots.append(cargo_home)
+    for cargo_config in cargo_config_roots:
+        if cargo_config.is_dir():
+            for path in cargo_config.rglob("*"):
+                if path.is_file() and path.name in {"config", "config.toml"}:
+                    files.add(path)
+
+    return sorted(files, key=lambda path: path.relative_to(project_root).as_posix())
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def workspace_build_fingerprint(
+    project_root: Path,
+    target_triple: str,
+    profile: str,
+    toolchain_arg: str,
+) -> Tuple[str, List[Path]]:
+    """Fingerprint Rust sources, manifests, compiler, target, profile and build flags."""
+    inputs = workspace_build_input_files(project_root)
+    digest = hashlib.sha256()
+    digest.update(f"gitmanager-workspace-build-cache:{WORKSPACE_BUILD_CACHE_SCHEMA}\n".encode("utf-8"))
+    build_identity = {
+        "target": target_triple,
+        "profile": profile,
+        "toolchain_arg": toolchain_arg,
+        "cargo_target_dir": str(cargo_target_root(project_root).resolve()),
+        "environment": {
+            key: value
+            for key, value in sorted(os.environ.items())
+            if key.startswith(("CARGO_", "RUST"))
+            or key in {"CC", "CXX", "AR", "LINKER"}
+        },
+    }
+
+    cargo_command = ["cargo"]
+    if toolchain_arg:
+        cargo_command.append(toolchain_arg)
+    cargo_command.append("--version")
+    cargo_code, cargo_version, cargo_error = run_capture(cargo_command)
+    if cargo_code != 0 or not cargo_version.strip():
+        raise RuntimeError(f"Could not identify the selected Cargo toolchain: {cargo_error.strip()}")
+
+    if toolchain_arg.startswith("+") and shutil.which("rustup"):
+        rustc_command = ["rustup", "run", toolchain_arg[1:], "rustc", "--version", "--verbose"]
+    else:
+        rustc_command = ["rustc", "--version", "--verbose"]
+    rustc_code, rustc_version, rustc_error = run_capture(rustc_command)
+    if rustc_code != 0 or not rustc_version.strip():
+        raise RuntimeError(f"Could not identify the selected Rust compiler: {rustc_error.strip()}")
+
+    digest.update(json.dumps(build_identity, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    digest.update(b"\0cargo\0")
+    digest.update(cargo_version.strip().encode("utf-8"))
+    digest.update(b"\0rustc\0")
+    digest.update(rustc_version.strip().encode("utf-8"))
+
+    for path in inputs:
+        relative = path.relative_to(project_root).as_posix()
+        digest.update(b"\0file\0")
+        digest.update(relative.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+
+    return digest.hexdigest(), inputs
+
+
+def workspace_build_cache_path(
+    project_root: Path,
+    target_triple: str,
+    profile: str,
+) -> Path:
+    target_dir = cargo_target_root(project_root)
+    safe_target = re.sub(r"[^A-Za-z0-9_.-]+", "_", target_triple)
+    return target_dir / ".gitmanager-build-cache" / f"workspace-{safe_target}-{profile}.json"
+
+
+def workspace_build_cache_matches(
+    cache_path: Path,
+    fingerprint: str,
+    artifacts: List[Tuple[Path, str]],
+) -> bool:
+    """Accept a cache hit only when every expected output still matches its recorded digest."""
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if (
+        not isinstance(cache, dict)
+        or cache.get("schema") != WORKSPACE_BUILD_CACHE_SCHEMA
+        or cache.get("fingerprint") != fingerprint
+        or not isinstance(cache.get("artifacts"), dict)
+    ):
+        return False
+
+    recorded = cache["artifacts"]
+    for artifact_path, artifact_name in artifacts:
+        entry = recorded.get(artifact_name)
+        if not isinstance(entry, dict) or not artifact_path.is_file():
+            return False
+        try:
+            if artifact_path.stat().st_size <= 0:
+                return False
+            if entry.get("size") != artifact_path.stat().st_size:
+                return False
+            if entry.get("sha256") != file_sha256(artifact_path):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def write_workspace_build_cache(
+    cache_path: Path,
+    fingerprint: str,
+    artifacts: List[Tuple[Path, str]],
+    target_triple: str,
+    profile: str,
+) -> None:
+    """Atomically persist the inputs and output digests after a successful Cargo build."""
+    recorded = {}
+    for artifact_path, artifact_name in artifacts:
+        recorded[artifact_name] = {
+            "size": artifact_path.stat().st_size,
+            "sha256": file_sha256(artifact_path),
+        }
+    cache = {
+        "schema": WORKSPACE_BUILD_CACHE_SCHEMA,
+        "target": target_triple,
+        "profile": profile,
+        "fingerprint": fingerprint,
+        "artifacts": recorded,
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = cache_path.with_name(
+        f"{cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        temporary.write_text(json.dumps(cache, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, cache_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def adopt_existing_workspace_build(
+    project_root: Path,
+    fingerprint: str,
+    inputs: List[Path],
+    artifacts: List[Tuple[Path, str]],
+    target_triple: str,
+    profile: str,
+    cache_path: Path,
+) -> bool:
+    """Adopt prior Cargo outputs only when Cargo fingerprints exist and outputs post-date inputs."""
+    profile_dir = target_profile_dir(project_root, release=(profile == "release"))
+    fingerprint_dir = profile_dir / ".fingerprint"
+    if not fingerprint_dir.is_dir() or not any(fingerprint_dir.iterdir()):
+        return False
+    if not inputs or any(not path.is_file() for path in inputs):
+        return False
+    try:
+        newest_input_ns = max(path.stat().st_mtime_ns for path in inputs)
+        for artifact_path, _ in artifacts:
+            if not artifact_path.is_file() or artifact_path.stat().st_size <= 0:
+                return False
+            if artifact_path.stat().st_mtime_ns < newest_input_ns:
+                return False
+        write_workspace_build_cache(
+            cache_path, fingerprint, artifacts, target_triple, profile
+        )
+        return True
+    except OSError:
+        return False
+
+
 @tracked_work("Sidecar build and staging")
 def build_gitm_sidecar(
     project_root: Path,
@@ -2248,31 +2460,94 @@ def build_gitm_sidecar(
         log_err(f"Could not prepare Tauri sidecar placeholders: {error}")
         return 1
 
-    command = ["cargo"]
-    if toolchain_arg:
-        command.append(toolchain_arg)
-    command.extend(["build", "--workspace", "--lib", "--bins"])
-    if target_triple:
-        command.extend(["--target", target_triple])
-    if release:
-        command.append("--release")
+    try:
+        fingerprint, build_inputs = workspace_build_fingerprint(
+            project_root, binary_triple, profile, toolchain_arg
+        )
+    except (OSError, RuntimeError) as error:
+        fingerprint = None
+        build_inputs = []
+        log_warn(f"Rust build cache could not be validated; compiling normally: {error}")
 
-    log_info(
-        "Compiling every workspace crate library and binary before any installer is created."
-    )
-    result = run_command(
-        command,
-        cwd=project_root,
-        work=f"Build workspace ({binary_triple})",
-        progress="1/1",
-    )
-    if result != 0:
-        for placeholder in placeholders:
+    cache_path = workspace_build_cache_path(project_root, binary_triple, profile)
+    force_rebuild = os.environ.get("GITMANAGER_FORCE_RUST_BUILD", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    cache_hit = False
+    if fingerprint and not force_rebuild:
+        cache_hit = workspace_build_cache_matches(cache_path, fingerprint, artifacts)
+        if not cache_hit:
+            # On the first run with this feature, reuse the current outputs from
+            # a recent successful Cargo build instead of forcing one more compile.
+            cache_hit = adopt_existing_workspace_build(
+                project_root,
+                fingerprint,
+                build_inputs,
+                artifacts,
+                binary_triple,
+                profile,
+                cache_path,
+            )
+            if cache_hit:
+                log_ok("Adopted the existing Cargo outputs into the verified build cache.")
+
+    if force_rebuild:
+        log_info("Forced Rust rebuild requested; ignoring the workspace build cache.")
+    elif cache_hit:
+        log_ok(
+            f"Verified Rust workspace cache hit for {binary_triple} ({profile}); "
+            "skipping Cargo compilation."
+        )
+    else:
+        command = ["cargo"]
+        if toolchain_arg:
+            command.append(toolchain_arg)
+        command.extend(["build", "--workspace", "--lib", "--bins"])
+        if target_triple:
+            command.extend(["--target", target_triple])
+        if release:
+            command.append("--release")
+
+        log_info(
+            "Compiling every workspace crate library and binary before any installer is created."
+        )
+        result = run_command(
+            command,
+            cwd=project_root,
+            work=f"Build workspace ({binary_triple})",
+            progress="1/1",
+        )
+        if result != 0:
+            for placeholder in placeholders:
+                try:
+                    placeholder.unlink(missing_ok=True)
+                except OSError as error:
+                    log_warn(f"Could not remove temporary sidecar placeholder {placeholder}: {error}")
+            return result
+
+        missing = [
+            str(source)
+            for source, _ in artifacts
+            if not source.is_file() or source.stat().st_size == 0
+        ]
+        if missing:
+            log_err("Cargo completed but workspace binaries are missing or empty: " + ", ".join(missing))
+            return 1
+
+        if fingerprint:
             try:
-                placeholder.unlink(missing_ok=True)
-            except OSError as error:
-                log_warn(f"Could not remove temporary sidecar placeholder {placeholder}: {error}")
-        return result
+                completed_fingerprint, _ = workspace_build_fingerprint(
+                    project_root, binary_triple, profile, toolchain_arg
+                )
+                if completed_fingerprint == fingerprint:
+                    write_workspace_build_cache(
+                        cache_path, completed_fingerprint, artifacts, binary_triple, profile
+                    )
+                    log_ok(f"Saved verified Rust workspace outputs to {cache_path}.")
+                else:
+                    log_warn("Rust inputs changed during compilation; skipping cache creation for this build.")
+            except (OSError, RuntimeError) as error:
+                log_warn(f"Rust build succeeded, but its cache manifest could not be verified: {error}")
 
     missing = [
         str(source)
@@ -2280,7 +2555,7 @@ def build_gitm_sidecar(
         if not source.is_file() or source.stat().st_size == 0
     ]
     if missing:
-        log_err("Cargo completed but workspace binaries are missing or empty: " + ", ".join(missing))
+        log_err("Cached Cargo outputs are missing or empty: " + ", ".join(missing))
         return 1
 
     staged: List[Path] = []
@@ -3041,6 +3316,11 @@ def main() -> int:
         help="Build in debug mode instead of release mode.",
     )
     parser.add_argument(
+        "--force-rust-build",
+        action="store_true",
+        help="Ignore verified Rust workspace artifacts and run Cargo compilation again.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show gray diagnostic/debug lines during the build.",
@@ -3083,6 +3363,8 @@ def main() -> int:
     args = parser.parse_args()
     global VERBOSE_LOGGING
     VERBOSE_LOGGING = VERBOSE_LOGGING or bool(args.verbose)
+    if args.force_rust_build:
+        os.environ["GITMANAGER_FORCE_RUST_BUILD"] = "1"
     project_root = Path(__file__).resolve().parent
     os.environ["CARGO_TARGET_DIR"] = str(project_root / "build" / ".rcache")
 
