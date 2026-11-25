@@ -281,9 +281,9 @@ def verify_engine_source(source_root: Path) -> None:
         raise RuntimeError("The resolved Engine source is incomplete: " + ", ".join(missing))
     try:
         manifest = json.loads((source_root / "package.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RuntimeError("The resolved Engine package manifest could not be read.") from error
-    if manifest.get("name") != "nextjs-engine":
+    if not isinstance(manifest, dict) or manifest.get("name") != "nextjs-engine":
         raise RuntimeError("The Engine source repository package identity did not match.")
 
 
@@ -752,6 +752,8 @@ def _frontend_build_fingerprint(
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RuntimeError("The generated Engine workspace marker is invalid; cannot reuse a frontend build.") from error
+    if not isinstance(marker, dict):
+        raise RuntimeError("The generated Engine workspace marker must contain a JSON object.")
     frontend_sha256 = str(marker.get("frontend_sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", frontend_sha256) or marker.get("engine_commit") != engine_commit:
         raise RuntimeError("The generated Engine workspace does not match the resolved Engine/frontend inputs.")
@@ -788,10 +790,13 @@ def _frontend_build_fingerprint(
     # Next.js can inline NEXT_PUBLIC_* values and can also use other NEXT_*
     # configuration variables during compilation. Hash them without persisting
     # their values in the cache manifest.
-    for key in sorted(
+    relevant_environment = {
         key for key in environment
-        if key.startswith("NEXT_PUBLIC_") or (key.startswith("NEXT_") and key != "NEXT_TELEMETRY_DISABLED")
-    ):
+        if key in {"NODE_ENV", "NODE_OPTIONS", "TZ", "LANG", "LC_ALL"}
+        or key.startswith("NEXT_PUBLIC_")
+        or (key.startswith("NEXT_") and key != "NEXT_TELEMETRY_DISABLED")
+    }
+    for key in sorted(relevant_environment):
         digest.update(key.encode("utf-8"))
         digest.update(b"\0")
         digest.update(environment[key].encode("utf-8"))
