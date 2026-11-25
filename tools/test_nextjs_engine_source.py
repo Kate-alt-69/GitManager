@@ -207,6 +207,23 @@ class EngineSourceCacheTests(unittest.TestCase):
             self.assertEqual(result[0], source)
             self.assertEqual(result[1], metadata["commit"])
 
+    def test_forced_refresh_does_not_silently_fall_back_to_cached_source(self):
+        with tempfile.TemporaryDirectory(prefix="gitmanager-engine-cache-") as temporary:
+            cache_root = Path(temporary)
+            source, _metadata = self._write_verified_source(cache_root)
+            with (
+                mock.patch.dict(engine_source.os.environ, {"GITMANAGER_ENGINE_REFRESH": "1"}),
+                mock.patch.object(
+                    engine_source,
+                    "resolve_latest_green_commit",
+                    side_effect=RuntimeError("GitHub unavailable"),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "GitHub unavailable"):
+                    engine_source.ensure_engine_source(cache_root)
+
+            self.assertTrue((source / ".gitmanager-source.json").is_file())
+
     def test_failed_new_archive_download_preserves_the_previous_verified_source(self):
         with tempfile.TemporaryDirectory(prefix="gitmanager-engine-cache-") as temporary:
             cache_root = Path(temporary)
