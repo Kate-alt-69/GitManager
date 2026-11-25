@@ -7,6 +7,7 @@ pinned in GitManager source.
 """
 
 import argparse
+import contextlib
 import http.client
 import hashlib
 import json
@@ -24,7 +25,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Tuple
+from typing import Dict, Iterator, List, Tuple
 
 ENGINE_REPOSITORY = "Kastrick8/nextjs-engine"
 ENGINE_BRANCH = "main-3"
@@ -58,6 +59,15 @@ def log_info(message: str) -> None:
 
 def log_error(message: str) -> None:
     print("[ERR ] " + message, file=sys.stderr, flush=True)
+
+
+@contextlib.contextmanager
+def timed_stage(label: str) -> Iterator[None]:
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        log_info(label + " took " + format(time.monotonic() - started, ".1f") + "s.")
 
 
 def request_bytes(
@@ -1030,10 +1040,14 @@ def _build_metadata(
 
 def build_frontend(project_root: Path, mode: str) -> int:
     try:
-        version = node_version()
+        with timed_stage("Node.js version check"):
+            version = node_version()
+
         cache_root = project_root / ".cache" / "nextjs-engine"
-        source_root, commit, branch_head, checks = ensure_engine_source(cache_root)
-        workspace = prepare_workspace(project_root, source_root)
+        with timed_stage("Engine source resolution"):
+            source_root, commit, branch_head, checks = ensure_engine_source(cache_root)
+        with timed_stage("Engine workspace preparation"):
+            workspace = prepare_workspace(project_root, source_root)
         log_ok("Node.js " + ".".join(str(part) for part in version) + " is available.")
 
         environment = dict(os.environ)
@@ -1041,18 +1055,22 @@ def build_frontend(project_root: Path, mode: str) -> int:
         environment["NEXTJS_ENGINE_SOURCE_COMMIT"] = commit
 
         output_dir = workspace / "out"
+        fingerprint = None
         if mode == "build":
-            fingerprint = _frontend_build_fingerprint(workspace, commit, version, environment)
-            if _frontend_build_cache_valid(workspace, fingerprint):
+            with timed_stage("Frontend export cache verification"):
+                fingerprint = _frontend_build_fingerprint(workspace, commit, version, environment)
+                cache_hit = _frontend_build_cache_valid(workspace, fingerprint)
+            if cache_hit:
                 _atomic_write_json(output_dir / "engine-source.json", _build_metadata(branch_head, commit, checks))
                 log_ok(
                     "Reusing the verified Next.js static export for Engine source "
                     + commit
-                    + "; the Next.js compiler was skipped."
+                    + "; npm installation and the Next.js compiler were skipped."
                 )
                 return 0
 
-        install_result = install_engine_build_dependencies(workspace)
+        with timed_stage("Engine npm dependency preparation"):
+            install_result = install_engine_build_dependencies(workspace)
         if install_result != 0:
             return install_result
 
@@ -1071,7 +1089,8 @@ def build_frontend(project_root: Path, mode: str) -> int:
 
         command = [node, str(next_cli), "build"]
         log_info("Building the GitManager frontend as a Next.js static export.")
-        result = run_command(command, workspace, environment)
+        with timed_stage("Next.js static export compilation"):
+            result = run_command(command, workspace, environment)
         if result != 0:
             return result
         if not (output_dir / "index.html").is_file() or not (output_dir / "_next" / "static").is_dir():
@@ -1079,8 +1098,11 @@ def build_frontend(project_root: Path, mode: str) -> int:
                 "Next.js completed but did not produce out/index.html and out/_next/static."
             )
 
-        _atomic_write_json(output_dir / "engine-source.json", _build_metadata(branch_head, commit, checks))
-        _save_frontend_build_cache(workspace, fingerprint)
+        with timed_stage("Static export verification and cache manifest"):
+            _atomic_write_json(output_dir / "engine-source.json", _build_metadata(branch_head, commit, checks))
+            if fingerprint is None:
+                raise RuntimeError("The frontend build fingerprint was not initialized.")
+            _save_frontend_build_cache(workspace, fingerprint)
         log_ok("Static frontend built with CI-green Engine source " + commit)
         return 0
     except (OSError, RuntimeError, ValueError) as error:
