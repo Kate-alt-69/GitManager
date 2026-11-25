@@ -1,31 +1,25 @@
 "use client";
 
-import { useEffect } from "react";
+import "./globals.css";
 
-type GitManagerGlobalErrorProps = {
-	error: Error & { digest?: string };
-	unstable_retry: () => void;
-};
-
-export default function GitManagerGlobalError({ error, unstable_retry }: GitManagerGlobalErrorProps) {
-	useEffect(() => {
-		console.error("[GitManager] Application rendering failed", {
-			message: error.message,
-			digest: error.digest,
-		});
-	}, [error]);
-
-	return (
-		<html lang="en">
-			<body style={{ minHeight: "100vh", margin: 0, display: "grid", placeContent: "center", padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
-				<main role="alert">
-					<img src="/image/git-managar-orange_default-black.png" alt="" width="64" height="64" style={{ objectFit: "contain" }} />
-					<div><strong>GitManager</strong><p>By Kastrick</p></div>
-					<h1>GitManager encountered an application error.</h1>
-					<p>Try again to reload the affected application tree.</p>
-					<button type="button" onClick={unstable_retry} style={{ padding: "0.6rem 1rem", cursor: "pointer" }}>Try again</button>
-				</main>
-			</body>
-		</html>
-	);
+export default function GlobalErrorBoundary({
+  error,
+  reset,
+}: {
+  error: Error & { digest?: string };
+  reset: () => void;
+}) {
+  return (
+    <html lang="en">
+      <body>
+        <main className="gm-error-screen">
+          <section className="gm-error-content" role="alert">
+            <h1>GitManager could not start this view</h1>
+            <p>{error.message || "An unexpected application error occurred."}</p>
+            <button type="button" onClick={reset}>Try again</button>
+          </section>
+        </main>
+      </body>
+    </html>
+  );
 }

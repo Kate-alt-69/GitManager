@@ -239,13 +239,14 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn("spawn_blocking(crash_helper::request_service_status)", status_command)
 
     def test_ui_watchdog_heartbeat_runs_on_the_webview_event_loop(self):
-        ui = (ROOT / "frontend" / "components" / "gitmanager-app.tsx").read_text(encoding="utf-8")
+        runtime = (ROOT / "frontend" / "lib" / "runtime-bridge.tsx").read_text(encoding="utf-8")
         app = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
 
-        gitmanager_app = ui.split("export function GitManagerApp()", 1)[1]
-        self.assertIn('invoke("report_ui_heartbeat")', gitmanager_app)
-        self.assertIn("window.setInterval(reportHeartbeat, 3000)", gitmanager_app)
-        self.assertIn("window.clearInterval(heartbeat)", gitmanager_app)
+        runtime_bridge = runtime.split("export function GitManagerRuntime(", 1)[1]
+        self.assertIn("useGitManager();", runtime_bridge)
+        self.assertIn('invoke("report_ui_heartbeat")', runtime_bridge)
+        self.assertIn("window.setInterval(reportHeartbeat, 3000)", runtime_bridge)
+        self.assertIn("window.clearInterval(heartbeat)", runtime_bridge)
 
         heartbeat_command = app.split("async fn report_ui_heartbeat", 1)[1].split(
             "fn resume_background_service", 1
@@ -257,7 +258,6 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
     def test_service_diagnostics_include_crash_helper_incident_history(self):
         helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
         app = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
-        ui = (ROOT / "frontend" / "components" / "service-manager-page.tsx").read_text(encoding="utf-8")
 
         self.assertIn("pub fn read_service_incident_tail()", helper)
         self.assertIn("crash_helper.jsonl", helper)
@@ -266,7 +266,7 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         )[0]
         self.assertIn("crash_helper::read_service_incident_tail()", diagnostics)
         self.assertIn("CRASH_HELPER INCIDENT HISTORY", diagnostics)
-        self.assertIn("crash_helper incident history", ui.lower())
+        self.assertIn("read_service_log_tail,", app)
 
     def test_crash_helper_replaces_obsolete_services_and_recovers_unresponsive_children(self):
         helper = (ROOT / "crates" / "crash-helper" / "src" / "lib.rs").read_text(encoding="utf-8")
@@ -518,15 +518,16 @@ class WindowsPackagingConfigurationTests(unittest.TestCase):
         self.assertIn(r"$localappdata\kastrick's_software\${productname}", template.lower())
         self.assertNotEqual(msi_install_dir, r"%localappdata%\kastrick's_software\gitmanager")
 
-    def test_first_run_setup_registers_the_per_user_service_task_without_duplicate_launch(self):
-        app = (ROOT / "frontend" / "components" / "gitmanager-app.tsx").read_text(encoding="utf-8")
+    def test_first_run_setup_companion_and_per_user_service_registration_remain_available(self):
+        hook = (ROOT / "frontend" / "lib" / "use-gitmanager.ts").read_text(encoding="utf-8")
+        app = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
         watcher = (ROOT / "src-tauri" / "src" / "watcher_service.rs").read_text(encoding="utf-8")
-        setup_dialog = app.split("function SetupDialog", 1)[1].split("const MemoRepositoryPage", 1)[0]
         windows_registration = watcher.split('#[cfg(target_os = "windows")]', 1)[1].split('#[cfg(target_os = "linux")]', 1)[0]
 
-        self.assertIn("const [startServiceAtSignIn, setStartServiceAtSignIn] = useState(true)", setup_dialog)
-        self.assertIn('invoke("control_background_service", { installOsService: true })', setup_dialog)
-        self.assertIn("Start the GitManager core service when I sign in", setup_dialog)
+        self.assertIn('"is_setup_mode"', hook)
+        self.assertIn('"launch_first_run_setup"', hook)
+        self.assertIn("async fn control_background_service", app)
+        self.assertIn("control_background_service,", app)
         self.assertIn("service_control_lock_is_held()", windows_registration)
         self.assertLess(
             windows_registration.index("let service_already_running"),
