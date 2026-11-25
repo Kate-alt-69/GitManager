@@ -153,14 +153,59 @@ class EngineSourceCacheTests(unittest.TestCase):
             )
             with (
                 mock.patch.dict(engine_source.os.environ, {"GITMANAGER_ENGINE_CACHE_TTL_SECONDS": "0"}),
-                mock.patch.object(engine_source, "resolve_latest_green_commit", side_effect=RuntimeError("GitHub unavailable")) as resolver,
+                mock.patch.object(engine_source, "resolve_engine_branch_head", side_effect=RuntimeError("GitHub unavailable")) as branch_lookup,
+                mock.patch.object(engine_source, "resolve_latest_green_commit", side_effect=AssertionError("Actions scan should not run after branch lookup fails")),
             ):
                 result = engine_source.ensure_engine_source(cache_root)
 
-            resolver.assert_called_once()
+            branch_lookup.assert_called_once()
             self.assertEqual(result[0], source)
             self.assertEqual(result[1], metadata["commit"])
             self.assertEqual(result[2], metadata["branch_head"])
+
+    def test_unchanged_ci_green_branch_head_skips_actions_history_scan(self):
+        with tempfile.TemporaryDirectory(prefix="gitmanager-engine-cache-") as temporary:
+            cache_root = Path(temporary)
+            source, metadata = self._write_verified_source(
+                cache_root,
+                resolved_at="2000-01-01T00:00:00+00:00",
+            )
+            metadata["commit"] = metadata["branch_head"]
+            (source / ".gitmanager-source.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+            with (
+                mock.patch.dict(engine_source.os.environ, {"GITMANAGER_ENGINE_CACHE_TTL_SECONDS": "0"}),
+                mock.patch.object(engine_source, "resolve_engine_branch_head", return_value=metadata["branch_head"]),
+                mock.patch.object(engine_source, "resolve_latest_green_commit", side_effect=AssertionError("Actions scan should be skipped")),
+            ):
+                result = engine_source.ensure_engine_source(cache_root)
+
+            self.assertEqual(result[1], metadata["commit"])
+            self.assertEqual(result[2], metadata["branch_head"])
+
+    def test_unchanged_branch_still_scans_when_cached_ci_green_commit_lags_head(self):
+        with tempfile.TemporaryDirectory(prefix="gitmanager-engine-cache-") as temporary:
+            cache_root = Path(temporary)
+            source, metadata = self._write_verified_source(
+                cache_root,
+                resolved_at="2000-01-01T00:00:00+00:00",
+            )
+            checks = engine_source._source_checks_from_metadata(metadata)
+
+            with (
+                mock.patch.dict(engine_source.os.environ, {"GITMANAGER_ENGINE_CACHE_TTL_SECONDS": "0"}),
+                mock.patch.object(engine_source, "resolve_engine_branch_head", return_value=metadata["branch_head"]),
+                mock.patch.object(
+                    engine_source,
+                    "resolve_latest_green_commit",
+                    return_value=(metadata["commit"], metadata["branch_head"], checks),
+                ) as resolver,
+            ):
+                result = engine_source.ensure_engine_source(cache_root)
+
+            resolver.assert_called_once_with(metadata["branch_head"])
+            self.assertEqual(result[0], source)
+            self.assertEqual(result[1], metadata["commit"])
 
     def test_failed_new_archive_download_preserves_the_previous_verified_source(self):
         with tempfile.TemporaryDirectory(prefix="gitmanager-engine-cache-") as temporary:
