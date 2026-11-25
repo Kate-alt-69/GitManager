@@ -72,7 +72,7 @@ def request_bytes(
     if parsed_url.scheme != "https" or parsed_url.hostname not in {"api.github.com", "codeload.github.com"}:
         raise RuntimeError("Refusing to request Engine source data from an untrusted host.")
 
-    headers = {
+    base_headers = {
         "User-Agent": USER_AGENT,
         "Accept": accept,
         "X-GitHub-Api-Version": "2022-11-28",
@@ -82,33 +82,100 @@ def request_bytes(
     # Local builds remain usable without a token and never prompt for credentials.
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if parsed_url.hostname == "api.github.com" and token and not any(char in token for char in "\r\n"):
-        headers["Authorization"] = "Bearer " + token
+        base_headers["Authorization"] = "Bearer " + token
 
-    request = urllib.request.Request(url, headers=headers)
+    resumable = parsed_url.hostname == "codeload.github.com"
+    chunks: List[bytes] = []
+    total = 0
+    resume_validator = None
     last_error = None
+
     for attempt in range(attempts):
+        # Small API responses are deliberately restarted from byte zero. Large
+        # codeload archives retain partial bytes and try an HTTP Range request.
+        if not resumable:
+            chunks = []
+            total = 0
+
+        request_headers = dict(base_headers)
+        if resumable and total:
+            request_headers["Range"] = "bytes=" + str(total) + "-"
+            if resume_validator:
+                request_headers["If-Range"] = resume_validator
+            log_info("Resuming the Engine source archive at byte " + str(total) + ".")
+
+        request = urllib.request.Request(url, headers=request_headers)
+        response_offset = total
         try:
             with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 parsed = urllib.parse.urlsplit(response.geturl())
                 if parsed.scheme != "https" or parsed.hostname not in {"api.github.com", "codeload.github.com"}:
                     raise RuntimeError("Refusing an Engine download redirect to an untrusted host.")
+
+                status = getattr(response, "status", None) or getattr(response, "code", None) or 200
+                if resumable and response_offset:
+                    if status == 206:
+                        content_range = response.headers.get("Content-Range", "")
+                        match = re.fullmatch(r"bytes (\d+)-(\d+)/(?:\d+|\*)", content_range.strip())
+                        if not match or int(match.group(1)) != response_offset:
+                            raise RuntimeError(
+                                "The Engine archive server returned an invalid Content-Range while resuming; "
+                                "refusing to combine unrelated archive bytes."
+                            )
+                    elif status == 200:
+                        # A server may ignore Range or the If-Range validator may
+                        # no longer match. Its 200 body is a complete replacement.
+                        log_info("The Engine archive server restarted the transfer; downloading from byte zero.")
+                        chunks = []
+                        total = 0
+                        response_offset = 0
+                        resume_validator = None
+                    else:
+                        raise RuntimeError(
+                            "The Engine archive server returned HTTP "
+                            + str(status)
+                            + " for a byte-range request."
+                        )
+                elif resumable and status == 206:
+                    content_range = response.headers.get("Content-Range", "")
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(?:\d+|\*)", content_range.strip())
+                    if not match or int(match.group(1)) != 0:
+                        raise RuntimeError("The Engine archive server returned an unexpected partial response.")
+
                 declared = response.headers.get("Content-Length")
+                expected_response_bytes = None
                 if declared:
                     try:
-                        if int(declared) > limit:
+                        expected_response_bytes = int(declared)
+                        if expected_response_bytes < 0 or expected_response_bytes + response_offset > limit:
                             raise RuntimeError("The Engine response exceeds the configured download limit.")
                     except ValueError:
                         raise RuntimeError("The Engine response returned an invalid content length.")
-                chunks = []
-                total = 0
+
+                if resumable:
+                    etag = response.headers.get("ETag")
+                    last_modified = response.headers.get("Last-Modified")
+                    if etag and not etag.strip().startswith("W/"):
+                        resume_validator = etag
+                    elif last_modified:
+                        resume_validator = last_modified
+
+                response_bytes = 0
                 while True:
                     chunk = response.read(1024 * 1024)
                     if not chunk:
                         break
+                    response_bytes += len(chunk)
                     total += len(chunk)
                     if total > limit:
                         raise RuntimeError("The Engine response exceeds the configured download limit.")
                     chunks.append(chunk)
+
+                if expected_response_bytes is not None and response_bytes != expected_response_bytes:
+                    raise http.client.IncompleteRead(
+                        b"",
+                        max(0, expected_response_bytes - response_bytes),
+                    )
                 return b"".join(chunks)
         except urllib.error.HTTPError as error:
             if error.code not in RETRYABLE_HTTP_STATUS:
@@ -116,10 +183,15 @@ def request_bytes(
             last_error = error
             if error.fp is not None:
                 error.close()
+        except http.client.IncompleteRead as error:
+            if resumable and isinstance(error.partial, (bytes, bytearray)) and error.partial:
+                partial = bytes(error.partial)
+                if total + len(partial) > limit:
+                    raise RuntimeError("The Engine response exceeds the configured download limit.") from error
+                chunks.append(partial)
+                total += len(partial)
+            last_error = error
         except (http.client.HTTPException, OSError) as error:
-            # IncompleteRead is raised by http.client when a chunked response
-            # ends before the advertised chunk length. Discard this partial
-            # body and retry the complete bounded request from the beginning.
             last_error = error
 
         if attempt + 1 < attempts:
