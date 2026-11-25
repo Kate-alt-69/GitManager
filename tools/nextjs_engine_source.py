@@ -11,6 +11,7 @@ import http.client
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -41,6 +42,8 @@ MAX_MEMBER_BYTES = 80 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 50000
 REQUEST_ATTEMPTS = 3
 RETRYABLE_HTTP_STATUS = frozenset((408, 429, 500, 502, 503, 504))
+DEFAULT_ENGINE_CACHE_TTL_SECONDS = 6 * 60 * 60
+FRONTEND_BUILD_CACHE_FILE = ".gitmanager-next-build-cache.json"
 
 
 def log_ok(message: str) -> None:
@@ -284,36 +287,187 @@ def verify_engine_source(source_root: Path) -> None:
         raise RuntimeError("The Engine source repository package identity did not match.")
 
 
-def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Dict[str, object]]]:
-    commit, branch_head, checks = resolve_latest_green_commit()
-    source_root = cache_root / "source"
+def _atomic_write_json(path: Path, payload: Dict[str, object]) -> None:
+    """Write JSON atomically so an interrupted build never leaves partial metadata."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=path.name + ".",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(json.dumps(payload, indent=2) + "\n")
+        os.replace(str(temporary_path), str(path))
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _source_checks_from_metadata(metadata: Dict[str, object]) -> Dict[str, Dict[str, object]]:
+    raw_checks = metadata.get("required_checks")
+    if not isinstance(raw_checks, dict):
+        raise RuntimeError("The cached Engine source has no required CI-check provenance.")
+
+    checks: Dict[str, Dict[str, object]] = {}
+    for name in REQUIRED_CHECKS:
+        item = raw_checks.get(name)
+        if not isinstance(item, dict):
+            raise RuntimeError("The cached Engine source is missing CI evidence for " + name + ".")
+        if item.get("conclusion") != "success" or not item.get("run_id") or not item.get("updated_at"):
+            raise RuntimeError("The cached Engine source has incomplete or unsuccessful CI evidence for " + name + ".")
+        checks[name] = {
+            "id": item.get("run_id"),
+            "conclusion": item.get("conclusion"),
+            "updated_at": item.get("updated_at"),
+            "html_url": item.get("url"),
+        }
+    return checks
+
+
+def _load_verified_source_cache(source_root: Path) -> Tuple[Dict[str, object], Dict[str, Dict[str, object]]]:
     marker = source_root / ".gitmanager-managed-source"
     metadata_path = source_root / ".gitmanager-source.json"
+    if not marker.is_file() or not metadata_path.is_file():
+        raise RuntimeError("The Engine source cache is missing its GitManager ownership or provenance marker.")
 
-    if marker.is_file() and metadata_path.is_file():
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("The cached Engine source provenance file is invalid.") from error
+    if not isinstance(metadata, dict):
+        raise RuntimeError("The cached Engine source provenance must be a JSON object.")
+    if metadata.get("repository") != "https://github.com/" + ENGINE_REPOSITORY:
+        raise RuntimeError("The cached Engine source belongs to a different repository.")
+    if metadata.get("branch") != ENGINE_BRANCH:
+        raise RuntimeError("The cached Engine source belongs to a different Engine branch.")
+
+    commit = str(metadata.get("commit") or "")
+    branch_head = str(metadata.get("branch_head") or "")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or not re.fullmatch(r"[0-9a-f]{40}", branch_head):
+        raise RuntimeError("The cached Engine source contains an invalid commit or branch-head SHA.")
+
+    checks = _source_checks_from_metadata(metadata)
+    verify_engine_source(source_root)
+    return metadata, checks
+
+
+def _engine_cache_ttl_seconds() -> int:
+    value = os.environ.get("GITMANAGER_ENGINE_CACHE_TTL_SECONDS")
+    if value is None:
+        return DEFAULT_ENGINE_CACHE_TTL_SECONDS
+    try:
+        return max(0, int(value))
+    except ValueError:
+        log_info("Ignoring invalid GITMANAGER_ENGINE_CACHE_TTL_SECONDS; using the six-hour default.")
+        return DEFAULT_ENGINE_CACHE_TTL_SECONDS
+
+
+def _source_cache_age_seconds(metadata: Dict[str, object]) -> float:
+    checked_at = metadata.get("resolved_at")
+    if not checked_at:
+        # Older GitManager cache manifests recorded the successful CI runs but
+        # not when they were checked. Treat that already-verified snapshot as
+        # the starting point for this cache policy instead of forcing the
+        # first upgraded build through the slow GitHub Actions pagination path.
+        return 0.0
+    try:
+        timestamp = datetime.fromisoformat(str(checked_at).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return float("inf")
+    return max(0.0, time.time() - timestamp)
+
+
+def _source_metadata_payload(
+    branch_head: str,
+    commit: str,
+    checks: Dict[str, Dict[str, object]],
+) -> Dict[str, object]:
+    return {
+        "repository": "https://github.com/" + ENGINE_REPOSITORY,
+        "branch": ENGINE_BRANCH,
+        "branch_head": branch_head,
+        "commit": commit,
+        "resolved_at": datetime.now(timezone.utc).isoformat(),
+        "required_checks": {
+            name: {
+                "run_id": checks[name].get("id"),
+                "conclusion": checks[name].get("conclusion"),
+                "updated_at": checks[name].get("updated_at"),
+                "url": checks[name].get("html_url"),
+            }
+            for name in REQUIRED_CHECKS
+        },
+    }
+
+
+def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Dict[str, object]]]:
+    source_root = cache_root / "source"
+    marker = source_root / ".gitmanager-managed-source"
+    if source_root.exists() and not marker.is_file():
+        raise RuntimeError(
+            "The Engine cache directory exists without GitManager's ownership marker; "
+            "move it aside before building rather than allowing the build to replace it."
+        )
+
+    cached_metadata = None
+    cached_checks = None
+    if source_root.is_dir():
         try:
-            current = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            current = {}
-        if current.get("commit") == commit:
-            verify_engine_source(source_root)
-            log_ok("Using cached CI-green Next.js Engine source " + commit)
-            return source_root, commit, branch_head, checks
+            cached_metadata, cached_checks = _load_verified_source_cache(source_root)
+        except RuntimeError as error:
+            log_info("The existing Engine source cache cannot be trusted for reuse: " + str(error))
 
-    if source_root.exists():
-        if not marker.is_file():
-            raise RuntimeError(
-                "The Engine cache directory exists without GitManager's ownership marker; "
-                "move it aside before building rather than allowing the build to replace it."
+    refresh_requested = os.environ.get("GITMANAGER_ENGINE_REFRESH", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if cached_metadata is not None and cached_checks is not None and not refresh_requested:
+        if "resolved_at" not in cached_metadata:
+            cached_metadata["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_write_json(source_root / ".gitmanager-source.json", cached_metadata)
+        if _source_cache_age_seconds(cached_metadata) < _engine_cache_ttl_seconds():
+            commit = str(cached_metadata["commit"])
+            branch_head = str(cached_metadata["branch_head"])
+            log_ok(
+                "Using verified cached CI-green Next.js Engine source "
+                + commit
+                + " (GitHub refresh is checked every "
+                + str(_engine_cache_ttl_seconds())
+                + "s; set GITMANAGER_ENGINE_REFRESH=1 to force it)."
             )
-        shutil.rmtree(source_root)
+            return source_root, commit, branch_head, cached_checks
+
+    try:
+        commit, branch_head, checks = resolve_latest_green_commit()
+    except (RuntimeError, OSError, urllib.error.URLError) as error:
+        if cached_metadata is None or cached_checks is None:
+            raise
+        commit = str(cached_metadata["commit"])
+        branch_head = str(cached_metadata["branch_head"])
+        log_info(
+            "GitHub Engine refresh failed; continuing with the previously verified "
+            + commit
+            + " because its recorded required CI checks are still successful. Cause: "
+            + str(error)
+        )
+        return source_root, commit, branch_head, cached_checks
+
+    if cached_metadata is not None and cached_checks is not None and cached_metadata.get("commit") == commit:
+        refreshed = _source_metadata_payload(branch_head, commit, checks)
+        _atomic_write_json(source_root / ".gitmanager-source.json", refreshed)
+        log_ok("The verified Engine source is already cached; refreshed its CI provenance without downloading it.")
+        return source_root, commit, branch_head, checks
 
     cache_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="engine-source-", dir=str(cache_root)) as temporary:
         staging = Path(temporary) / "source"
         staging.mkdir()
         archive_path = Path(temporary) / "engine-source.tar.gz"
-        archive_url = "https://codeload.github.com/Kastrick8/nextjs-engine/tar.gz/" + commit
+        archive_url = "https://codeload.github.com/" + ENGINE_REPOSITORY + "/tar.gz/" + commit
         log_info("Downloading CI-green Engine source " + commit)
         archive_path.write_bytes(request_bytes(archive_url, MAX_ARCHIVE_BYTES, "application/vnd.github+json"))
         safe_extract_source(archive_path, staging)
@@ -322,37 +476,32 @@ def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Di
             "Generated by GitManager; safe to refresh through tools/nextjs_engine_source.py.\n",
             encoding="utf-8",
         )
-        source_metadata = {
-            "repository": "https://github.com/Kastrick8/nextjs-engine",
-            "branch": ENGINE_BRANCH,
-            "branch_head": branch_head,
-            "commit": commit,
-            "required_checks": {
-                name: {
-                    "run_id": checks[name].get("id"),
-                    "conclusion": checks[name].get("conclusion"),
-                    "updated_at": checks[name].get("updated_at"),
-                    "url": checks[name].get("html_url"),
-                }
-                for name in REQUIRED_CHECKS
-            },
-        }
-        (staging / ".gitmanager-source.json").write_text(
-            json.dumps(source_metadata, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(str(staging), str(source_root))
+        _atomic_write_json(staging / ".gitmanager-source.json", _source_metadata_payload(branch_head, commit, checks))
+
+        # Keep the previous verified source available until the replacement is
+        # fully downloaded, extracted, identity-checked and provenance-stamped.
+        backup = None
+        if source_root.exists():
+            backup = cache_root / (".source-backup-" + str(os.getpid()) + "-" + str(time.time_ns()))
+            os.replace(str(source_root), str(backup))
+        try:
+            os.replace(str(staging), str(source_root))
+        except OSError:
+            if backup is not None and backup.exists() and not source_root.exists():
+                os.replace(str(backup), str(source_root))
+            raise
+        else:
+            if backup is not None:
+                shutil.rmtree(backup, ignore_errors=True)
 
     log_ok("Resolved latest reachable CI-green Engine commit " + commit)
     return source_root, commit, branch_head, checks
 
-
 def node_version() -> Tuple[int, int, int]:
     node = shutil.which("node")
-    npm = shutil.which("npm")
-    if not node or not npm:
+    if not node:
         raise RuntimeError(
-            "The Engine frontend build requires Node.js 20.9+ and npm. Install Node.js 22 or newer, then retry."
+            "The Engine frontend build requires Node.js 20.9+. Install Node.js 22 or newer, then retry."
         )
     try:
         result = subprocess.run([node, "--version"], check=False, capture_output=True, text=True, timeout=15)
@@ -590,6 +739,147 @@ def install_engine_build_dependencies(workspace: Path) -> int:
     stamp.write_text(json.dumps({"package_json_sha256": package_digest}, indent=2) + "\n", encoding="utf-8")
     return 0
 
+
+def _frontend_build_fingerprint(
+    workspace: Path,
+    engine_commit: str,
+    node_version_tuple: Tuple[int, int, int],
+    environment: Dict[str, str],
+) -> str:
+    """Fingerprint every input that can reasonably change the static export."""
+    marker_path = workspace / ".gitmanager-generated-workspace"
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("The generated Engine workspace marker is invalid; cannot reuse a frontend build.") from error
+    frontend_sha256 = str(marker.get("frontend_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", frontend_sha256) or marker.get("engine_commit") != engine_commit:
+        raise RuntimeError("The generated Engine workspace does not match the resolved Engine/frontend inputs.")
+
+    digest = hashlib.sha256()
+    fingerprint_inputs = {
+        "engine_commit": engine_commit,
+        "frontend_sha256": frontend_sha256,
+        "node_version": list(node_version_tuple),
+        "platform": platform.system(),
+        "machine": platform.machine(),
+    }
+    digest.update(json.dumps(fingerprint_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+    for relative in (
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "next.config.js",
+        "tsconfig.json",
+        "postcss.config.js",
+        "postcss.config.mjs",
+        "tailwind.config.js",
+        "tailwind.config.ts",
+    ):
+        path = workspace / relative
+        if path.is_file():
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+
+    # Next.js can inline NEXT_PUBLIC_* values and can also use other NEXT_*
+    # configuration variables during compilation. Hash them without persisting
+    # their values in the cache manifest.
+    for key in sorted(
+        key for key in environment
+        if key.startswith("NEXT_PUBLIC_") or (key.startswith("NEXT_") and key != "NEXT_TELEMETRY_DISABLED")
+    ):
+        digest.update(key.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(environment[key].encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _frontend_output_digest(output_dir: Path) -> Tuple[str, int]:
+    """Hash the static export so a changed or truncated output is never reused."""
+    if not (output_dir / "index.html").is_file() or not (output_dir / "_next" / "static").is_dir():
+        raise RuntimeError("The cached Next.js export is missing index.html or _next/static.")
+    digest = hashlib.sha256()
+    count = 0
+    for path in sorted(item for item in output_dir.rglob("*") if item.is_file() and not item.is_symlink()):
+        relative = path.relative_to(output_dir).as_posix()
+        # This provenance file is refreshed after every successful Engine
+        # resolution and is not an input to the generated frontend assets.
+        if relative == "engine-source.json":
+            continue
+        file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(path.stat().st_size).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(file_hash.encode("ascii"))
+        digest.update(b"\0")
+        count += 1
+    if count == 0:
+        raise RuntimeError("The Next.js static export contains no reusable files.")
+    return digest.hexdigest(), count
+
+
+def _frontend_build_cache_valid(workspace: Path, fingerprint: str) -> bool:
+    cache_path = workspace / FRONTEND_BUILD_CACHE_FILE
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(cache, dict)
+            or cache.get("schema_version") != 1
+            or cache.get("fingerprint") != fingerprint
+            or not isinstance(cache.get("output_files"), int)
+            or not isinstance(cache.get("output_sha256"), str)
+        ):
+            return False
+        digest, count = _frontend_output_digest(workspace / "out")
+        return count == cache["output_files"] and digest == cache["output_sha256"]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeError):
+        return False
+
+
+def _save_frontend_build_cache(workspace: Path, fingerprint: str) -> None:
+    output_digest, output_files = _frontend_output_digest(workspace / "out")
+    _atomic_write_json(
+        workspace / FRONTEND_BUILD_CACHE_FILE,
+        {
+            "schema_version": 1,
+            "fingerprint": fingerprint,
+            "output_sha256": output_digest,
+            "output_files": output_files,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+def _build_metadata(
+    branch_head: str,
+    commit: str,
+    checks: Dict[str, Dict[str, object]],
+) -> Dict[str, object]:
+    return {
+        "repository": "https://github.com/" + ENGINE_REPOSITORY,
+        "branch": ENGINE_BRANCH,
+        "branch_head": branch_head,
+        "commit": commit,
+        "workspace_mode": "full-engine-repository-with-gitmanager-app-overlay",
+        "source_app_preserved": True,
+        "resolved_at": datetime.now(timezone.utc).isoformat(),
+        "required_checks": {
+            name: {
+                "run_id": checks[name].get("id"),
+                "conclusion": checks[name].get("conclusion"),
+                "updated_at": checks[name].get("updated_at"),
+                "url": checks[name].get("html_url"),
+            }
+            for name in REQUIRED_CHECKS
+        },
+    }
+
 def build_frontend(project_root: Path, mode: str) -> int:
     try:
         version = node_version()
@@ -597,16 +887,26 @@ def build_frontend(project_root: Path, mode: str) -> int:
         source_root, commit, branch_head, checks = ensure_engine_source(cache_root)
         workspace = prepare_workspace(project_root, source_root)
         log_ok("Node.js " + ".".join(str(part) for part in version) + " is available.")
-        install_result = install_engine_build_dependencies(workspace)
-        if install_result != 0:
-            return install_result
 
         environment = dict(os.environ)
         environment["NEXT_TELEMETRY_DISABLED"] = "1"
         environment["NEXTJS_ENGINE_SOURCE_COMMIT"] = commit
-        npm = shutil.which("npm")
-        if not npm:
-            raise RuntimeError("npm was not found after dependency installation.")
+
+        output_dir = workspace / "out"
+        if mode == "build":
+            fingerprint = _frontend_build_fingerprint(workspace, commit, version, environment)
+            if _frontend_build_cache_valid(workspace, fingerprint):
+                _atomic_write_json(output_dir / "engine-source.json", _build_metadata(branch_head, commit, checks))
+                log_ok(
+                    "Reusing the verified Next.js static export for Engine source "
+                    + commit
+                    + "; the Next.js compiler was skipped."
+                )
+                return 0
+
+        install_result = install_engine_build_dependencies(workspace)
+        if install_result != 0:
+            return install_result
 
         node = shutil.which("node")
         next_cli = workspace / "node_modules" / "next" / "dist" / "bin" / "next"
@@ -621,7 +921,6 @@ def build_frontend(project_root: Path, mode: str) -> int:
             log_info("Starting the Engine-backed Next.js development server at http://localhost:3000")
             return run_command(command, workspace, environment)
 
-        output_dir = workspace / "out"
         command = [node, str(next_cli), "build"]
         log_info("Building the GitManager frontend as a Next.js static export.")
         result = run_command(command, workspace, environment)
@@ -632,34 +931,13 @@ def build_frontend(project_root: Path, mode: str) -> int:
                 "Next.js completed but did not produce out/index.html and out/_next/static."
             )
 
-        build_metadata = {
-            "repository": "https://github.com/Kastrick8/nextjs-engine",
-            "branch": ENGINE_BRANCH,
-            "branch_head": branch_head,
-            "commit": commit,
-            "workspace_mode": "full-engine-repository-with-gitmanager-app-overlay",
-            "source_app_preserved": True,
-            "resolved_at": datetime.now(timezone.utc).isoformat(),
-            "required_checks": {
-                name: {
-                    "run_id": checks[name].get("id"),
-                    "conclusion": checks[name].get("conclusion"),
-                    "updated_at": checks[name].get("updated_at"),
-                    "url": checks[name].get("html_url"),
-                }
-                for name in REQUIRED_CHECKS
-            },
-        }
-        (output_dir / "engine-source.json").write_text(
-            json.dumps(build_metadata, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        _atomic_write_json(output_dir / "engine-source.json", _build_metadata(branch_head, commit, checks))
+        _save_frontend_build_cache(workspace, fingerprint)
         log_ok("Static frontend built with CI-green Engine source " + commit)
         return 0
     except (OSError, RuntimeError, ValueError) as error:
         log_error(str(error))
         return 1
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -672,7 +950,14 @@ def main() -> int:
         default=Path(__file__).resolve().parents[1],
         help="GitManager repository root (defaults to the parent of tools/).",
     )
+    parser.add_argument(
+        "--refresh-engine-source",
+        action="store_true",
+        help="Bypass the Engine source cache TTL and resolve the newest CI-green main-3 commit.",
+    )
     args = parser.parse_args()
+    if args.refresh_engine_source:
+        os.environ["GITMANAGER_ENGINE_REFRESH"] = "1"
     project_root = args.project_root.resolve()
     if not (project_root / "src-tauri").is_dir() or not (project_root / "frontend").is_dir():
         log_error("The supplied project root is not a GitManager repository.")
