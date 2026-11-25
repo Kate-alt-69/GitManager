@@ -495,7 +495,7 @@ def ensure_engine_source(cache_root: Path) -> Tuple[Path, str, str, Dict[str, Di
     try:
         commit, branch_head, checks = resolve_latest_green_commit(branch_head_hint)
     except (RuntimeError, OSError, urllib.error.URLError) as error:
-        if cached_metadata is None or cached_checks is None:
+        if cached_metadata is None or cached_checks is None or refresh_requested:
             raise
         commit = str(cached_metadata["commit"])
         branch_head = str(cached_metadata["branch_head"])
